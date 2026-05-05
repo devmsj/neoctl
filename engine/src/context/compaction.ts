@@ -1,5 +1,5 @@
-import type { ModelGateway } from "../model/model-gateway";
-import { createTextMessage, type Message, type MessageBlock } from "../types/messages";
+import type { ModelGateway } from "../model/model-gateway.js";
+import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 
 export interface ContextBudgetOptions {
   snipMaxChars?: number;

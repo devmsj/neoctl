@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Message } from "../types/messages";
+import type { Message } from "../types/messages.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 

@@ -1,4 +1,4 @@
-import { createTextMessage, type Message, type MessageBlock } from "../types/messages";
+import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 
 export interface ToolResultBudgetOptions {
   maxSerializedLength?: number;

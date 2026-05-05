@@ -1,5 +1,5 @@
-import { createTextMessage, type Message } from "../types/messages";
-import { writeLocalAgentTaskOutput, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task";
+import { createTextMessage, type Message } from "../types/messages.js";
+import { writeLocalAgentTaskOutput, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
 
 export class TaskStore {
   private readonly tasks = new Map<string, LocalAgentTask>();

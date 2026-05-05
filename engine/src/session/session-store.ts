@@ -2,8 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Message } from "../types/messages";
-import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory";
+import type { Message } from "../types/messages.js";
+import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
 
 export type SessionTranscriptEntry =
   | { type: "message"; sessionId: string; agentId: string; message: Message }

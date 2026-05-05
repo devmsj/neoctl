@@ -1,6 +1,6 @@
-import { createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages";
-import { runToolUse, type RunToolUseOptions, type ToolMessageUpdate } from "./run-tool-use";
-import type { ToolUseContext } from "./tool";
+import { createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
+import { runToolUse, type RunToolUseOptions, type ToolMessageUpdate } from "./run-tool-use.js";
+import type { ToolUseContext } from "./tool.js";
 
 export interface StreamingToolExecutorOptions {
   context: ToolUseContext;

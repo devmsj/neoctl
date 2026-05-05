@@ -1,4 +1,4 @@
-import type { Tool } from "../tool";
+import type { Tool } from "../tool.js";
 
 export const echoTool: Tool<{ text: string }> = {
   name: "echo",

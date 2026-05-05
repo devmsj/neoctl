@@ -1,4 +1,4 @@
-import type { ModelGateway, ModelRequest, ModelStreamEvent } from "./model-gateway";
+import type { ModelGateway, ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 
 export interface ProviderCapabilities {
   streaming: boolean;

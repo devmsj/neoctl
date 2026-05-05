@@ -1,7 +1,7 @@
-import type { ToolDefinition } from "../tools/tool";
-import type { ContextMetrics } from "../types/events";
-import type { Message, MessageBlock } from "../types/messages";
-import { resolveContextWindowTokens } from "../model/context-window";
+import type { ToolDefinition } from "../tools/tool.js";
+import type { ContextMetrics } from "../types/events.js";
+import type { Message, MessageBlock } from "../types/messages.js";
+import { resolveContextWindowTokens } from "../model/context-window.js";
 
 export function buildContextMetrics(input: {
   model?: string;

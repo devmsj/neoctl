@@ -1,4 +1,4 @@
-import type { Message } from "../types/messages";
+import type { Message } from "../types/messages.js";
 
 export interface AppStateSnapshot {
   agentId: string;

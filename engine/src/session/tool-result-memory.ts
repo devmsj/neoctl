@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Message, MessageBlock } from "../types/messages";
+import type { Message, MessageBlock } from "../types/messages.js";
 
 export const TOOL_RESULTS_SUBDIR = "tool-results";
 export const PERSISTED_OUTPUT_TAG = "<persisted-output>";

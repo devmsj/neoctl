@@ -1,30 +1,30 @@
-import { InMemoryAppState } from "../app/app-state";
-import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction";
-import { ModelDrivenCompactor } from "../context/compaction";
-import type { ContextManager, RuntimeContext } from "../context/context-manager";
-import { DefaultContextManager } from "../context/context-manager";
-import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway";
-import { ModelAPIError } from "../model/errors";
-import type { ToolRegistry } from "../tools/registry";
-import { runTools } from "../tools/tool-orchestration";
-import type { CanUseTool, ToolUseContext } from "../tools/tool";
-import type { AgentEvent } from "../types/events";
-import { createTextMessage, type Message, type ToolUseRequest } from "../types/messages";
+import { InMemoryAppState } from "../app/app-state.js";
+import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
+import { ModelDrivenCompactor } from "../context/compaction.js";
+import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
+import { DefaultContextManager } from "../context/context-manager.js";
+import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway.js";
+import { ModelAPIError } from "../model/errors.js";
+import type { ToolRegistry } from "../tools/registry.js";
+import { runTools } from "../tools/tool-orchestration.js";
+import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
+import type { AgentEvent } from "../types/events.js";
+import { createTextMessage, type Message, type ToolUseRequest } from "../types/messages.js";
 import {
   appendSystemContext,
   applyToolResultBudget,
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
   prependUserContext,
-} from "./message-pipeline";
+} from "./message-pipeline.js";
 import {
   createInitialState,
   nextTracking,
   type QueryState,
   type TerminalReason,
-} from "./state";
-import { AssistantOutputFilter } from "./assistant-output-filter";
-import { buildContextMetrics } from "./context-metrics";
+} from "./state.js";
+import { AssistantOutputFilter } from "./assistant-output-filter.js";
+import { buildContextMetrics } from "./context-metrics.js";
 
 export interface QueryOptions {
   agentId: string;

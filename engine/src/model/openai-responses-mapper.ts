@@ -1,7 +1,7 @@
-import { createTextMessage } from "../types/messages";
-import type { HttpJsonResponse } from "./http-transport";
-import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway";
-import { decodeSSE } from "./sse-decoder";
+import { createTextMessage } from "../types/messages.js";
+import type { HttpJsonResponse } from "./http-transport.js";
+import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
+import { decodeSSE } from "./sse-decoder.js";
 import {
   asNumber,
   asString,
@@ -13,7 +13,7 @@ import {
   normalizeUsage,
   toToolUse,
   type ToolBuffer,
-} from "./openai-mappers";
+} from "./openai-mappers.js";
 
 export interface OpenAIResponsesMapperOptions {
   model: string;

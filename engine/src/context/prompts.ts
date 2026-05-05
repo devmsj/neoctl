@@ -1,4 +1,4 @@
-import type { ToolUseContext } from "../tools/tool";
+import type { ToolUseContext } from "../tools/tool.js";
 
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 

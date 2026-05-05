@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface ModelMetadata {
   id: string;
@@ -28,6 +29,7 @@ export interface ContextWindowInfo {
 }
 
 let cachedCatalog: ModelCatalog | undefined;
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveContextWindowTokens(model: string | undefined, env: NodeJS.ProcessEnv = process.env): ContextWindowInfo {
   const override = parsePositiveInteger(env.MODEL_CONTEXT_WINDOW_TOKENS ?? env.OPENAI_CONTEXT_WINDOW_TOKENS);
@@ -60,7 +62,7 @@ export function loadModelCatalog(): ModelCatalog {
 
 function findModelCatalogFile(): string {
   const candidates = [
-    path.join(__dirname, "model-metadata.json"),
+    path.join(moduleDir, "model-metadata.json"),
     path.join(process.cwd(), "dist", "model", "model-metadata.json"),
     path.join(process.cwd(), "src", "model", "model-metadata.json"),
   ];

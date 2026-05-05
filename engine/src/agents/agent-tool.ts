@@ -1,11 +1,11 @@
-import type { ContextManager } from "../context/context-manager";
-import type { Compactor, ContextBudgetOptions } from "../context/compaction";
-import type { ModelGateway } from "../model/model-gateway";
-import { createTextMessage, type Message } from "../types/messages";
-import type { Tool, ToolResult, ToolUseContext } from "../tools/tool";
-import type { ToolRegistry } from "../tools/registry";
-import { runAgent, type RunAgentDependencies } from "../core/run-agent";
-import { createLocalAgentTask, updateProgressFromMessage } from "./local-agent-task";
+import type { ContextManager } from "../context/context-manager.js";
+import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import type { ModelGateway } from "../model/model-gateway.js";
+import { createTextMessage, type Message } from "../types/messages.js";
+import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
+import type { ToolRegistry } from "../tools/registry.js";
+import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
+import { createLocalAgentTask, updateProgressFromMessage } from "./local-agent-task.js";
 import {
   FORK_AGENT,
   GENERAL_PURPOSE_AGENT,
@@ -15,8 +15,8 @@ import {
   type AgentDefinition,
   type AgentIsolation,
   type AgentPermissionMode,
-} from "./agent-definition";
-import { globalTaskStore, type TaskStore } from "../tasks/task-store";
+} from "./agent-definition.js";
+import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
 
 export const AGENT_TOOL_NAME = "agent";
 

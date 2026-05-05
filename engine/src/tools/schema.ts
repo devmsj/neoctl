@@ -1,4 +1,4 @@
-import type { JsonSchema, ValidationResult } from "./tool";
+import type { JsonSchema, ValidationResult } from "./tool.js";
 
 export function validateJsonSchema(input: unknown, schema: JsonSchema, path = "input"): ValidationResult<unknown> {
   if (!schema || Object.keys(schema).length === 0) return { ok: true, value: input };

@@ -1,15 +1,15 @@
-import type { CredentialProvider } from "./credentials";
-import { EnvCredentialProvider, StaticCredentialProvider } from "./credentials";
-import type { OpenAIEndpointPreference } from "./config";
-import { ModelAPIError, normalizeUnknownError } from "./errors";
-import { HttpTransport } from "./http-transport";
-import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway";
-import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter";
-import { streamWithRetry } from "./retry-runner";
-import { buildResponsesRequest, normalizeResponsesObject, normalizeResponsesStream } from "./openai-responses-mapper";
-import { buildChatRequest, normalizeChatObject, normalizeChatStream } from "./openai-chat-mapper";
+import type { CredentialProvider } from "./credentials.js";
+import { EnvCredentialProvider, StaticCredentialProvider } from "./credentials.js";
+import type { OpenAIEndpointPreference } from "./config.js";
+import { ModelAPIError, normalizeUnknownError } from "./errors.js";
+import { HttpTransport } from "./http-transport.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
+import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
+import { streamWithRetry } from "./retry-runner.js";
+import { buildResponsesRequest, normalizeResponsesObject, normalizeResponsesStream } from "./openai-responses-mapper.js";
+import { buildChatRequest, normalizeChatObject, normalizeChatStream } from "./openai-chat-mapper.js";
 
-export type { OpenAIEndpointPreference } from "./config";
+export type { OpenAIEndpointPreference } from "./config.js";
 
 export interface OpenAIAdapterOptions {
   apiKey?: string;

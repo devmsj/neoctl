@@ -1,14 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import type { ToolUseContext } from "../tools/tool";
-import type { Message } from "../types/messages";
+import type { ToolUseContext } from "../tools/tool.js";
+import type { Message } from "../types/messages.js";
 import {
   buildDefaultSystemPromptSections,
   buildEffectiveSystemPrompt,
   type EffectiveSystemPromptOptions,
   type PromptSection,
-} from "./prompts";
+} from "./prompts.js";
 
 export interface ContextBuildInput extends EffectiveSystemPromptOptions {
   agentId: string;

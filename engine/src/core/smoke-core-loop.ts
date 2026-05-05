@@ -1,9 +1,9 @@
-import { QueryEngine } from "./query-engine";
-import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway";
-import { ToolRegistry } from "../tools/registry";
-import { echoTool } from "../tools/builtins/echo-tool";
-import { createTextMessage } from "../types/messages";
-import { stripLeakedReasoningText } from "./assistant-output-filter";
+import { QueryEngine } from "./query-engine.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { echoTool } from "../tools/builtins/echo-tool.js";
+import { createTextMessage } from "../types/messages.js";
+import { stripLeakedReasoningText } from "./assistant-output-filter.js";
 
 class FakeToolCallingGateway implements ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {

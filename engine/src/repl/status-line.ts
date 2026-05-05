@@ -1,7 +1,7 @@
 import readline from "node:readline";
 import type { Writable } from "node:stream";
-import type { AgentEvent, ContextMetrics } from "../types/events";
-import type { ModelUsage } from "../model/model-gateway";
+import type { AgentEvent, ContextMetrics } from "../types/events.js";
+import type { ModelUsage } from "../model/model-gateway.js";
 
 export class ReplStatusLine {
   private phase = "ready";

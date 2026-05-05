@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface RipgrepBinaryResolution {
   executablePath: string;
   platformKey: string;
 }
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveBundledRipgrepBinary(env: NodeJS.ProcessEnv = process.env): RipgrepBinaryResolution {
   const platformKey = ripgrepPlatformKey();
@@ -47,7 +50,7 @@ function candidateRoots(env: NodeJS.ProcessEnv): string[] {
   const roots = [
     env.AGENT_VENDOR_DIR,
     process.cwd(),
-    path.resolve(__dirname, "../../.."),
+    path.resolve(moduleDir, "../../.."),
     electronProcess.resourcesPath,
     path.dirname(process.execPath),
   ].filter((value): value is string => Boolean(value));

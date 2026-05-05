@@ -1,16 +1,16 @@
 import { existsSync } from "node:fs";
-import { InMemoryAppState } from "../app/app-state";
-import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway";
-import { QueryEngine } from "../core/query-engine";
-import { ToolRegistry } from "../tools/registry";
-import { runToolUse } from "../tools/run-tool-use";
-import type { ToolUseContext } from "../tools/tool";
-import { createTextMessage } from "../types/messages";
-import { echoTool } from "../tools/builtins/echo-tool";
-import { createAgentTool } from "./agent-tool";
-import { StaticAgentCatalog, GENERAL_PURPOSE_AGENT } from "./agent-definition";
-import { createTaskTools } from "../tasks/task-tools";
-import { TaskStore } from "../tasks/task-store";
+import { InMemoryAppState } from "../app/app-state.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
+import { QueryEngine } from "../core/query-engine.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { runToolUse } from "../tools/run-tool-use.js";
+import type { ToolUseContext } from "../tools/tool.js";
+import { createTextMessage } from "../types/messages.js";
+import { echoTool } from "../tools/builtins/echo-tool.js";
+import { createAgentTool } from "./agent-tool.js";
+import { StaticAgentCatalog, GENERAL_PURPOSE_AGENT } from "./agent-definition.js";
+import { createTaskTools } from "../tasks/task-tools.js";
+import { TaskStore } from "../tasks/task-store.js";
 
 class ParentAndSubagentGateway implements ModelGateway {
   parentCalls = 0;

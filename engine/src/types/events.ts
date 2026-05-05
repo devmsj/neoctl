@@ -1,6 +1,6 @@
-import type { TerminalReason } from "../core/state";
-import type { ModelUsage } from "../model/model-gateway";
-import type { Message, ToolUseRequest } from "./messages";
+import type { TerminalReason } from "../core/state.js";
+import type { ModelUsage } from "../model/model-gateway.js";
+import type { Message, ToolUseRequest } from "./messages.js";
 
 export interface ContextMetrics {
   model?: string;

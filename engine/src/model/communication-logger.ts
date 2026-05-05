@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Message, MessageBlock, ToolUseRequest } from "../types/messages";
-import type { ModelGateway, ModelRequest, ModelStreamEvent } from "./model-gateway";
+import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 
 export interface CommunicationLogSnapshot {
   enabled: boolean;

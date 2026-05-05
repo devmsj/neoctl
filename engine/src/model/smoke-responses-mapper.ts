@@ -1,7 +1,7 @@
-import { createTextMessage, createToolResultMessage, type Message } from "../types/messages";
-import type { ToolDefinition } from "../tools/tool";
-import { buildChatRequest } from "./openai-chat-mapper";
-import { buildResponsesRequest } from "./openai-responses-mapper";
+import { createTextMessage, createToolResultMessage, type Message } from "../types/messages.js";
+import type { ToolDefinition } from "../tools/tool.js";
+import { buildChatRequest } from "./openai-chat-mapper.js";
+import { buildResponsesRequest } from "./openai-responses-mapper.js";
 
 const tool: ToolDefinition = {
   name: "echo",

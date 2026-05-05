@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../types/events";
+import type { AgentEvent } from "../types/events.js";
 
 export function renderEvent(event: AgentEvent): string | undefined {
   switch (event.type) {

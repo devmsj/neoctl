@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { Tool, ToolResult, ToolUseContext } from "../tool";
+import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 
 export type ExecShell = "auto" | "powershell" | "cmd" | "bash" | "sh";
 

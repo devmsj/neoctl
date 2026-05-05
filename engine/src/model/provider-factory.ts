@@ -1,8 +1,8 @@
-import type { ModelGateway } from "./model-gateway";
-import { NotConfiguredModelGateway } from "./model-gateway";
-import { OpenAIAdapter } from "./openai-adapter";
-import type { ModelProviderConfig, OpenAIProviderConfig } from "./config";
-import { readModelProviderConfig } from "./config";
+import type { ModelGateway } from "./model-gateway.js";
+import { NotConfiguredModelGateway } from "./model-gateway.js";
+import { OpenAIAdapter } from "./openai-adapter.js";
+import type { ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
+import { readModelProviderConfig } from "./config.js";
 
 export function createModelGatewayFromConfig(config: ModelProviderConfig | undefined): ModelGateway {
   if (!config) return new NotConfiguredModelGateway();

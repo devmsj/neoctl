@@ -1,5 +1,5 @@
-import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages";
-import { validateJsonSchema } from "./schema";
+import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
+import { validateJsonSchema } from "./schema.js";
 import type {
   CanUseTool,
   Tool,
@@ -7,7 +7,7 @@ import type {
   ToolProgressEvent,
   ToolResult,
   ToolUseContext,
-} from "./tool";
+} from "./tool.js";
 
 export interface ToolMessageUpdate {
   message: Message;

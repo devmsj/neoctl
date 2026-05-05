@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Tool, ToolResult, ToolUseContext } from "../tool";
-import { resolveBundledRipgrepBinary } from "./ripgrep-binary";
+import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
+import { resolveBundledRipgrepBinary } from "./ripgrep-binary.js";
 
 export interface SearchToolInput {
   query: string;

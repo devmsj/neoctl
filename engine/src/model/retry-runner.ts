@@ -1,5 +1,5 @@
-import { ModelAPIError, normalizeUnknownError } from "./errors";
-import type { ModelStreamEvent } from "./model-gateway";
+import { ModelAPIError, normalizeUnknownError } from "./errors.js";
+import type { ModelStreamEvent } from "./model-gateway.js";
 
 export interface RetryOptions {
   provider: string;

@@ -1,4 +1,4 @@
-import type { Message } from "../types/messages";
+import type { Message } from "../types/messages.js";
 
 const STREAM_HOLD_BACK_CHARS = 64;
 

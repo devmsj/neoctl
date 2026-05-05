@@ -1,4 +1,4 @@
-import type { ToolUseContext } from "../tools/tool";
+import type { ToolUseContext } from "../tools/tool.js";
 
 export type AgentIsolation = "shared" | "worktree" | "remote";
 export type AgentPermissionMode = "inherit" | "readonly" | "workspace-write" | "bubble";

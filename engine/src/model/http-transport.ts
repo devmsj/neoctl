@@ -1,4 +1,4 @@
-import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors";
+import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js";
 
 export interface HttpJsonRequest {
   method: "GET" | "POST";

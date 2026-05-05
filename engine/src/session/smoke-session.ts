@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { FileToolResultMemory, PERSISTED_OUTPUT_TAG } from "./tool-result-memory";
-import { SessionStore } from "./session-store";
-import type { Message } from "../types/messages";
+import { FileToolResultMemory, PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
+import { SessionStore } from "./session-store.js";
+import type { Message } from "../types/messages.js";
 
 async function main(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-session-smoke-"));

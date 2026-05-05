@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Tool, ToolResult, ToolUseContext } from "../tool";
+import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 
 export interface ReadFileToolInput {
   path: string;

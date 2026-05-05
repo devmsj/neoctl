@@ -1,7 +1,7 @@
-import { createTextMessage } from "../types/messages";
-import { readModelProviderConfig } from "./config";
-import { loadDotEnvIfPresent } from "./env";
-import { createModelGatewayFromConfig } from "./provider-factory";
+import { createTextMessage } from "../types/messages.js";
+import { readModelProviderConfig } from "./config.js";
+import { loadDotEnvIfPresent } from "./env.js";
+import { createModelGatewayFromConfig } from "./provider-factory.js";
 
 async function main(): Promise<void> {
   loadDotEnvIfPresent(undefined, { override: true });

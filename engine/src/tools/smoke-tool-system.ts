@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { InMemoryAppState } from "../app/app-state";
-import type { Message } from "../types/messages";
-import { echoTool } from "./builtins/echo-tool";
-import { editTool, writeTool } from "./builtins/edit-tool";
-import { execTool } from "./builtins/exec-tool";
-import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools";
-import { searchTool } from "./builtins/search-tool";
-import { ToolRegistry } from "./registry";
-import { runToolUseToMessages } from "./run-tool-use";
-import { runTools } from "./tool-orchestration";
-import type { Tool, ToolUseContext } from "./tool";
+import { InMemoryAppState } from "../app/app-state.js";
+import type { Message } from "../types/messages.js";
+import { echoTool } from "./builtins/echo-tool.js";
+import { editTool, writeTool } from "./builtins/edit-tool.js";
+import { execTool } from "./builtins/exec-tool.js";
+import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
+import { searchTool } from "./builtins/search-tool.js";
+import { ToolRegistry } from "./registry.js";
+import { runToolUseToMessages } from "./run-tool-use.js";
+import { runTools } from "./tool-orchestration.js";
+import type { Tool, ToolUseContext } from "./tool.js";
 
 const delayTool: Tool<{ id: string; delayMs: number }> = {
   name: "delay",

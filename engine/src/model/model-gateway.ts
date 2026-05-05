@@ -1,6 +1,6 @@
-import type { Message, ToolUseRequest } from "../types/messages";
-import { createTextMessage } from "../types/messages";
-import type { ToolDefinition } from "../tools/tool";
+import type { Message, ToolUseRequest } from "../types/messages.js";
+import { createTextMessage } from "../types/messages.js";
+import type { ToolDefinition } from "../tools/tool.js";
 
 export interface ModelUsage {
   inputTokens?: number;

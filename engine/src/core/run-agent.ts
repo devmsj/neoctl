@@ -1,14 +1,14 @@
-import { DefaultContextManager, type ContextManager } from "../context/context-manager";
-import type { Compactor, ContextBudgetOptions } from "../context/compaction";
-import type { ModelGateway, ModelUsage } from "../model/model-gateway";
-import { ToolRegistry } from "../tools/registry";
-import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool";
-import type { AgentEvent } from "../types/events";
-import { createTextMessage, type Message } from "../types/messages";
-import type { AgentDefinition } from "../agents/agent-definition";
-import { buildForkChildPrompt, FORK_AGENT } from "../agents/agent-definition";
-import type { AgentToolResult } from "../agents/local-agent-task";
-import { query } from "./query";
+import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
+import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import type { ModelGateway, ModelUsage } from "../model/model-gateway.js";
+import { ToolRegistry } from "../tools/registry.js";
+import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
+import type { AgentEvent } from "../types/events.js";
+import { createTextMessage, type Message } from "../types/messages.js";
+import type { AgentDefinition } from "../agents/agent-definition.js";
+import { buildForkChildPrompt, FORK_AGENT } from "../agents/agent-definition.js";
+import type { AgentToolResult } from "../agents/local-agent-task.js";
+import { query } from "./query.js";
 
 export interface RunAgentDependencies {
   modelGateway: ModelGateway;

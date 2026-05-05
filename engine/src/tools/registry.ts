@@ -1,5 +1,5 @@
-import type { Tool, ToolDefinition, ToolUseContext } from "./tool";
-import { resolveToolDescription } from "./tool";
+import type { Tool, ToolDefinition, ToolUseContext } from "./tool.js";
+import { resolveToolDescription } from "./tool.js";
 
 export interface ToolPoolOptions {
   mode?: "default" | "simple" | "repl";

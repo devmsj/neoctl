@@ -1,12 +1,12 @@
-import { ModelAPIError } from "../model/errors";
-import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway";
-import { QueryEngine } from "../core/query-engine";
-import { applyToolResultBudget, appendSystemContext, ensureToolResultPairing, hasValidToolResultPairing, prependUserContext } from "../core/message-pipeline";
-import { ToolRegistry } from "../tools/registry";
-import { createTextMessage, createToolResultMessage } from "../types/messages";
-import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction";
-import { DefaultContextManager } from "./context-manager";
-import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts";
+import { ModelAPIError } from "../model/errors.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
+import { QueryEngine } from "../core/query-engine.js";
+import { applyToolResultBudget, appendSystemContext, ensureToolResultPairing, hasValidToolResultPairing, prependUserContext } from "../core/message-pipeline.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { createTextMessage, createToolResultMessage } from "../types/messages.js";
+import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
+import { DefaultContextManager } from "./context-manager.js";
+import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
 
 class ContextOverflowThenSuccessGateway implements ModelGateway {
   calls = 0;

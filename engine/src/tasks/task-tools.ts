@@ -1,6 +1,6 @@
-import type { Tool, ToolResult } from "../tools/tool";
-import type { LocalAgentTask } from "../agents/local-agent-task";
-import { globalTaskStore, isTerminalStatus, type TaskStore } from "./task-store";
+import type { Tool, ToolResult } from "../tools/tool.js";
+import type { LocalAgentTask } from "../agents/local-agent-task.js";
+import { globalTaskStore, isTerminalStatus, type TaskStore } from "./task-store.js";
 
 export type TaskToolName = "TaskOutput" | "TaskList" | "TaskGet" | "TaskStop" | "SendMessage";
 

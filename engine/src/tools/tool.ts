@@ -1,6 +1,6 @@
-import type { AppStatePort } from "../app/app-state";
-import type { Message, ToolUseRequest } from "../types/messages";
-import type { ContentReplacementRecord, ToolResultMemory } from "../session/tool-result-memory";
+import type { AppStatePort } from "../app/app-state.js";
+import type { Message, ToolUseRequest } from "../types/messages.js";
+import type { ContentReplacementRecord, ToolResultMemory } from "../session/tool-result-memory.js";
 
 export interface JsonSchema {
   type?: string;

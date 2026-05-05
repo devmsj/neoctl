@@ -1,6 +1,6 @@
-import type { Message, MessageBlock, ToolUseRequest } from "../types/messages";
-import type { ToolDefinition } from "../tools/tool";
-import type { ModelRequest, ModelUsage } from "./model-gateway";
+import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
+import type { ToolDefinition } from "../tools/tool.js";
+import type { ModelRequest, ModelUsage } from "./model-gateway.js";
 
 export interface ToolBuffer {
   callId: string;

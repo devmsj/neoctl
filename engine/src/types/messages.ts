@@ -1,4 +1,4 @@
-import type { ModelUsage } from "../model/model-gateway";
+import type { ModelUsage } from "../model/model-gateway.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool_result" | "progress" | "attachment" | "tombstone";
 

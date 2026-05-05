@@ -1,8 +1,8 @@
-import { InMemoryAppState } from "../app/app-state";
-import { ToolRegistry } from "../tools/registry";
-import { runToolUse } from "../tools/run-tool-use";
-import type { ToolUseContext } from "../tools/tool";
-import { createSkillTool, InMemorySkillCatalog } from "./skill-tool";
+import { InMemoryAppState } from "../app/app-state.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { runToolUse } from "../tools/run-tool-use.js";
+import type { ToolUseContext } from "../tools/tool.js";
+import { createSkillTool, InMemorySkillCatalog } from "./skill-tool.js";
 
 async function main(): Promise<void> {
   const catalog = new InMemorySkillCatalog([

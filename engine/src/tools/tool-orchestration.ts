@@ -1,6 +1,6 @@
-import type { Message, ToolUseRequest } from "../types/messages";
-import { runToolUse, type RunToolUseOptions, type ToolMessageUpdate } from "./run-tool-use";
-import type { Tool, ToolUseContext } from "./tool";
+import type { Message, ToolUseRequest } from "../types/messages.js";
+import { runToolUse, type RunToolUseOptions, type ToolMessageUpdate } from "./run-tool-use.js";
+import type { Tool, ToolUseContext } from "./tool.js";
 
 export interface RunToolsResult {
   messages: Message[];

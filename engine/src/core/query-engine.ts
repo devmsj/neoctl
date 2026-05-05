@@ -1,15 +1,15 @@
-import type { ContextManager } from "../context/context-manager";
-import type { Compactor, ContextBudgetOptions } from "../context/compaction";
-import type { ModelGateway } from "../model/model-gateway";
-import type { ToolRegistry } from "../tools/registry";
-import type { CanUseTool } from "../tools/tool";
-import type { QueryOptions } from "./query";
-import type { AgentEvent } from "../types/events";
-import type { Message } from "../types/messages";
-import { createSystemInitMessage, createTextMessage } from "../types/messages";
-import { query } from "./query";
-import type { TerminalReason } from "./state";
-import { SessionStore, type SessionStoreSnapshot } from "../session/session-store";
+import type { ContextManager } from "../context/context-manager.js";
+import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import type { ModelGateway } from "../model/model-gateway.js";
+import type { ToolRegistry } from "../tools/registry.js";
+import type { CanUseTool } from "../tools/tool.js";
+import type { QueryOptions } from "./query.js";
+import type { AgentEvent } from "../types/events.js";
+import type { Message } from "../types/messages.js";
+import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
+import { query } from "./query.js";
+import type { TerminalReason } from "./state.js";
+import { SessionStore, type SessionStoreSnapshot } from "../session/session-store.js";
 
 export interface QueryEngineOptions {
   agentId?: string;

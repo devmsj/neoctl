@@ -1,4 +1,4 @@
-import type { ReasoningConfig } from "./model-gateway";
+import type { ReasoningConfig } from "./model-gateway.js";
 
 export type ModelProviderName = "openai";
 export type ReasoningEffort = NonNullable<ReasoningConfig["effort"]>;

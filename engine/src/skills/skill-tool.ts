@@ -1,5 +1,5 @@
-import { createTextMessage } from "../types/messages";
-import type { Tool } from "../tools/tool";
+import { createTextMessage } from "../types/messages.js";
+import type { Tool } from "../tools/tool.js";
 
 export interface SkillDescriptor {
   name: string;

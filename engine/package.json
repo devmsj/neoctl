@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
-  "type": "commonjs",
+  "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "postinstall": "node scripts/install-ripgrep.cjs --optional",
     "vendor:rg": "node scripts/install-ripgrep.cjs",
-    "build": "tsc -p tsconfig.json && node -e \"require('fs').mkdirSync('dist/model',{recursive:true}); require('fs').copyFileSync('src/model/model-metadata.json','dist/model/model-metadata.json')\"",
+    "build": "tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/repl/index.js",
     "dev": "tsx src/repl/index.ts",
@@ -27,5 +27,14 @@
     "@types/node": "^20.12.12",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@types/react": "^19.2.4",
+    "chalk": "^5.6.2",
+    "figures": "^6.1.0",
+    "ink": "^6.8.0",
+    "react": "^19.2.4",
+    "strip-ansi": "^7.2.0",
+    "wrap-ansi": "^10.0.0"
   }
 }

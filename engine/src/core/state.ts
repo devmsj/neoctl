@@ -1,5 +1,5 @@
-import type { Message } from "../types/messages";
-import type { ModelUsage } from "../model/model-gateway";
+import type { Message } from "../types/messages.js";
+import type { ModelUsage } from "../model/model-gateway.js";
 
 export type QueryPhase =
   | "ready"

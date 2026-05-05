@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ModelGateway } from "./model-gateway";
-import { createModelGatewayFromProcessEnv } from "./provider-factory";
-import { parseReasoning } from "./config";
+import type { ModelGateway } from "./model-gateway.js";
+import { createModelGatewayFromProcessEnv } from "./provider-factory.js";
+import { parseReasoning } from "./config.js";
 
 export interface DotEnvLoadOptions {
   override?: boolean;
