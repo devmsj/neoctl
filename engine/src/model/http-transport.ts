@@ -28,7 +28,7 @@ export class HttpTransport {
     const response = await this.fetch(request);
     const bodyText = await response.text();
     const body = bodyText ? safeJson(bodyText) : undefined;
-    if (!response.ok) throw this.toHttpError(response, body);
+    if (!response.ok) throw this.toHttpError(response, body, request);
     return { status: response.status, headers: response.headers, body: body as T };
   }
 
@@ -36,7 +36,7 @@ export class HttpTransport {
     const response = await this.fetch(request);
     if (!response.ok) {
       const text = await response.text();
-      throw this.toHttpError(response, text ? safeJson(text) : undefined);
+      throw this.toHttpError(response, text ? safeJson(text) : undefined, request);
     }
     if (!response.body) {
       throw new ModelAPIError({ category: "provider_bug", provider: this.provider, message: "Streaming response did not include a body" });
@@ -70,7 +70,7 @@ export class HttpTransport {
     }
   }
 
-  private toHttpError(response: Response, body: unknown): ModelAPIError {
+  private toHttpError(response: Response, body: unknown, request: HttpJsonRequest): ModelAPIError {
     const providerError = typeof body === "object" && body && "error" in body ? (body as { error?: Record<string, unknown> }).error : undefined;
     const message = typeof providerError?.message === "string" ? providerError.message : `HTTP ${response.status} from ${this.provider}`;
     return new ModelAPIError({
@@ -81,6 +81,14 @@ export class HttpTransport {
       message,
       requestId: response.headers.get("x-request-id") ?? response.headers.get("openai-request-id") ?? undefined,
       retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+      request: requestDiagnostics(request),
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeadersForDiagnostics(response.headers),
+        body,
+        bodyPreview: previewBody(body),
+      },
       raw: body,
     });
   }
@@ -92,4 +100,40 @@ function safeJson(text: string): unknown {
   } catch {
     return { text };
   }
+}
+
+function requestDiagnostics(request: HttpJsonRequest): { method: string; url: string; path: string } {
+  const parsed = new URL(request.url);
+  return {
+    method: request.method,
+    url: parsed.search ? `${parsed.origin}${parsed.pathname}?[redacted-query]` : `${parsed.origin}${parsed.pathname}`,
+    path: parsed.pathname,
+  };
+}
+
+function responseHeadersForDiagnostics(headers: Headers): Record<string, string> {
+  const names = [
+    "content-type",
+    "retry-after",
+    "x-request-id",
+    "openai-request-id",
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-limit-tokens",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-reset-tokens",
+  ];
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    const value = headers.get(name);
+    if (value) result[name] = value;
+  }
+  return result;
+}
+
+function previewBody(body: unknown): string | undefined {
+  if (body === undefined) return undefined;
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return text.length > 2000 ? `${text.slice(0, 2000)}... [truncated ${text.length - 2000} chars]` : text;
 }

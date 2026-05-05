@@ -21,7 +21,23 @@ export interface ModelAPIErrorInit {
   requestId?: string;
   retryAfterMs?: number;
   retryable?: boolean;
+  request?: ModelAPIRequestDiagnostics;
+  response?: ModelAPIResponseDiagnostics;
   raw?: unknown;
+}
+
+export interface ModelAPIRequestDiagnostics {
+  method?: string;
+  url?: string;
+  path?: string;
+}
+
+export interface ModelAPIResponseDiagnostics {
+  status?: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  bodyPreview?: string;
 }
 
 export class ModelAPIError extends Error {
@@ -32,6 +48,8 @@ export class ModelAPIError extends Error {
   readonly requestId?: string;
   readonly retryAfterMs?: number;
   readonly retryable: boolean;
+  readonly request?: ModelAPIRequestDiagnostics;
+  readonly response?: ModelAPIResponseDiagnostics;
   readonly raw?: unknown;
 
   constructor(init: ModelAPIErrorInit) {
@@ -44,6 +62,8 @@ export class ModelAPIError extends Error {
     this.requestId = init.requestId;
     this.retryAfterMs = init.retryAfterMs;
     this.retryable = init.retryable ?? defaultRetryable(init.category, init.status);
+    this.request = init.request;
+    this.response = init.response;
     this.raw = init.raw;
   }
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
+import { ModelAPIError } from "./errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 
 export interface CommunicationLogSnapshot {
@@ -176,6 +177,23 @@ function replacer(_key: string, value: unknown): unknown {
 }
 
 function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof ModelAPIError) {
+    return {
+      name: error.name,
+      message: error.message,
+      category: error.category,
+      provider: error.provider,
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+      retryAfterMs: error.retryAfterMs,
+      retryable: error.retryable,
+      request: error.request,
+      response: compactForLog(error.response),
+      raw: compactForLog(error.raw),
+      stack: error.stack,
+    };
+  }
   if (error instanceof Error) {
     return {
       name: error.name,
@@ -184,4 +202,23 @@ function serializeError(error: unknown): Record<string, unknown> {
     };
   }
   return { message: String(error) };
+}
+
+function compactForLog(value: unknown, maxChars = 8000): unknown {
+  if (value === undefined) return undefined;
+  const text = safeStringify(value);
+  if (text.length <= maxChars) return value;
+  return {
+    truncated: true,
+    originalLength: text.length,
+    preview: text.slice(0, maxChars),
+  };
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, replacer);
+  } catch (error) {
+    return String(error);
+  }
 }
