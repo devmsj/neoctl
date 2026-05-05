@@ -26,11 +26,18 @@ export interface SearchMatch {
 
 export interface SearchToolOutput {
   query: string;
-  root: string;
-  path: string;
-  total: number;
+  cwd: string;
+  searchPath: string;
+  returnedMatches: number;
+  totalMatchesKnown: number | null;
   truncated: boolean;
   matches: SearchMatch[];
+  transportTruncation?: {
+    reason: "resultSize";
+    originalLength: number;
+    matchesBeforeTransport: number;
+    maxChars: number;
+  };
   errors?: string[];
 }
 
@@ -64,6 +71,9 @@ export const searchTool: Tool<SearchToolInput> = {
     visible: true,
     maxResultSizeChars: 24000,
     searchHint: "search files with bundled ripgrep",
+  },
+  mapResult(result) {
+    return shrinkSearchOutputForTransport(result.output, 21000);
   },
   validate(input) {
     const record = input as Partial<SearchToolInput>;
@@ -163,9 +173,10 @@ async function runRipgrep(
 
       const output: SearchToolOutput = {
         query: input.query,
-        root,
-        path: path.relative(root, target) || ".",
-        total: matches.length,
+        cwd: root,
+        searchPath: target,
+        returnedMatches: matches.length,
+        totalMatchesKnown: truncated ? null : matches.length,
         truncated,
         matches,
         errors: errors.length ? errors : undefined,
@@ -212,6 +223,40 @@ function handleJsonLine(line: string, root: string, matches: SearchMatch[], erro
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
+}
+
+function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unknown {
+  if (!isSearchOutput(output)) return output;
+  const serialized = JSON.stringify(output);
+  if (serialized.length <= maxChars) return output;
+
+  const originalMatches = output.matches;
+  const compacted: SearchToolOutput = {
+    ...output,
+    returnedMatches: 0,
+    matches: [],
+    truncated: true,
+    totalMatchesKnown: output.truncated ? output.totalMatchesKnown : originalMatches.length,
+    transportTruncation: {
+      reason: "resultSize",
+      originalLength: serialized.length,
+      matchesBeforeTransport: originalMatches.length,
+      maxChars,
+    },
+  };
+
+  for (let count = originalMatches.length; count >= 0; count -= 1) {
+    compacted.matches = originalMatches.slice(0, count);
+    compacted.returnedMatches = compacted.matches.length;
+    const candidate = JSON.stringify(compacted);
+    if (candidate.length <= maxChars) return compacted;
+  }
+
+  return compacted;
+}
+
+function isSearchOutput(output: unknown): output is SearchToolOutput {
+  return typeof output === "object" && output !== null && Array.isArray((output as Partial<SearchToolOutput>).matches);
 }
 
 interface RipgrepJsonEvent {

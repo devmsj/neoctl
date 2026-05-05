@@ -5,6 +5,9 @@ export interface ContextBudgetOptions {
   snipMaxChars?: number;
   microCompactMaxChars?: number;
   autoCompactMaxChars?: number;
+  estimatedInputTokens?: number;
+  contextWindowTokens?: number;
+  autoCompactTriggerRatio?: number;
   keepRecentMessages?: number;
   keepRecentToolResults?: number;
   summaryMaxChars?: number;
@@ -78,8 +81,11 @@ export class ModelDrivenCompactor implements Compactor {
   }
 
   private async modelAutoCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions): Promise<CompactionResult> {
+    if (!shouldCompactForBudget(messages, options, options.autoCompactMaxChars ?? 36000)) {
+      return { messages: [...messages], changed: false, reason: "none" };
+    }
+
     const maxChars = options.autoCompactMaxChars ?? 36000;
-    if (estimateMessagesChars(messages) <= maxChars) return { messages: [...messages], changed: false, reason: "none" };
 
     const keepRecentMessages = options.keepRecentMessages ?? 8;
     const recent = messages.slice(-keepRecentMessages);
@@ -139,7 +145,7 @@ export function estimateMessagesChars(messages: readonly Message[]): number {
 
 export function snipCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions = {}): CompactionResult {
   const maxChars = options.snipMaxChars ?? 90000;
-  if (estimateMessagesChars(messages) <= maxChars) return { messages: [...messages], changed: false, reason: "none" };
+  if (!shouldCompactForBudget(messages, options, maxChars)) return { messages: [...messages], changed: false, reason: "none" };
 
   const keepRecentMessages = options.keepRecentMessages ?? 10;
   const head = messages.slice(0, 1).filter((message) => !message.metadata?.compactBoundary);
@@ -161,7 +167,7 @@ export function snipCompactIfNeeded(messages: readonly Message[], options: Conte
 
 export function microCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions = {}): CompactionResult {
   const maxChars = options.microCompactMaxChars ?? 45000;
-  if (estimateMessagesChars(messages) <= maxChars) return { messages: [...messages], changed: false, reason: "none" };
+  if (!shouldCompactForBudget(messages, options, maxChars)) return { messages: [...messages], changed: false, reason: "none" };
 
   const keepRecentToolResults = Math.max(1, options.keepRecentToolResults ?? 6);
   const toolResultIds = collectToolResultIds(messages);
@@ -207,13 +213,21 @@ export function microCompactIfNeeded(messages: readonly Message[], options: Cont
 
 export function autoCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions = {}): CompactionResult {
   const maxChars = options.autoCompactMaxChars ?? 36000;
-  if (estimateMessagesChars(messages) <= maxChars) return { messages: [...messages], changed: false, reason: "none" };
+  if (!shouldCompactForBudget(messages, options, maxChars)) return { messages: [...messages], changed: false, reason: "none" };
 
   const keepRecentMessages = options.keepRecentMessages ?? 8;
   const recent = messages.slice(-keepRecentMessages);
   const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
   const summary = buildHistorySummary(older, options.summaryMaxChars ?? 5000);
   return buildCompactionResult(messages, recent, summary, "autocompact", false);
+}
+
+function shouldCompactForBudget(messages: readonly Message[], options: ContextBudgetOptions, fallbackMaxChars: number): boolean {
+  if (options.contextWindowTokens && options.estimatedInputTokens !== undefined) {
+    const triggerRatio = options.autoCompactTriggerRatio ?? 0.98;
+    return options.estimatedInputTokens / options.contextWindowTokens >= triggerRatio;
+  }
+  return estimateMessagesChars(messages) > fallbackMaxChars;
 }
 
 function reactiveCompactWithSummary(
@@ -267,10 +281,28 @@ function mergeResults(results: readonly CompactionResult[], reason: CompactionRe
 
 function createCompactionBoundaryMessage(summary: string, reason: string, modelDriven: boolean): Message {
   return {
-    ...createTextMessage("user", `Conversation summary (${reason}):\n${summary}`),
+    ...createTextMessage("system", renderInternalContinuationState(summary, reason)),
     isMeta: true,
     metadata: { compactBoundary: true, compactionReason: reason, modelDriven },
   };
+}
+
+function renderInternalContinuationState(summary: string, reason: string): string {
+  return [
+    `Internal continuation state from context compaction (${reason}).`,
+    "This is not a user message. Use it only to continue the task; do not quote, summarize, or mirror this block in the final answer.",
+    "<compact_state>",
+    normalizeSummaryForInternalState(summary),
+    "</compact_state>",
+  ].join("\n");
+}
+
+function normalizeSummaryForInternalState(summary: string): string {
+  return summary
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s+/, ""))
+    .join("\n")
+    .trim();
 }
 
 function buildHistorySummary(messages: readonly Message[], maxChars: number): string {
@@ -353,5 +385,6 @@ const AUTO_COMPACT_INSTRUCTIONS = [
   "Summarize the earlier agent conversation for continuation after context compaction.",
   "Preserve: user goals and constraints, decisions made, files or commands mentioned, completed work, pending work, task ids, important tool results, and any errors or blockers.",
   "Drop: repetitive logs, transient progress chatter, and irrelevant wording.",
-  "Return a concise structured summary with sections: Goal, Constraints, Work Completed, Important Facts, Pending Work, Open Risks.",
+  "Return concise plain text labels, not Markdown headings. Use labels like Goal:, Constraints:, Work completed:, Important facts:, Pending work:, Open risks:.",
+  "Do not include final-answer prose; this summary is an internal continuation state only.",
 ].join("\n");

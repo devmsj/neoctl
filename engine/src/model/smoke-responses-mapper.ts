@@ -66,6 +66,10 @@ const chat = buildChatRequest(
   { messages: [assistantToolUse, toolResult], tools: [tool], stream: true },
   { model: "gpt-test" },
 );
+const chatWithSystemState = buildChatRequest(
+  { messages: [createTextMessage("system", "Internal continuation state from context compaction.")], tools: [], stream: true },
+  { model: "gpt-test" },
+);
 const danglingChat = buildChatRequest(
   { messages: [danglingToolUse, danglingToolResult], tools: [tool], stream: true },
   { model: "gpt-test" },
@@ -74,6 +78,7 @@ const danglingChat = buildChatRequest(
 const continuationInput = continuation.input as Array<Record<string, unknown>>;
 const danglingInput = dangling.input as Array<Record<string, unknown>>;
 const chatMessages = chat.messages as Array<Record<string, unknown>>;
+const chatWithSystemStateMessages = chatWithSystemState.messages as Array<Record<string, unknown>>;
 const danglingChatMessages = danglingChat.messages as Array<Record<string, unknown>>;
 const chatAssistant = chatMessages.find((message) => message.role === "assistant") as Record<string, unknown> | undefined;
 const ok =
@@ -87,6 +92,7 @@ const ok =
   !JSON.stringify(danglingInput).includes("call_missing_use") &&
   Array.isArray(chatAssistant?.tool_calls) &&
   JSON.stringify(chatMessages).includes('"tool_call_id":"call_1"') &&
+  chatWithSystemStateMessages.some((message) => message.role === "system" && String(message.content).includes("Internal continuation state")) &&
   !JSON.stringify(danglingChatMessages).includes("call_missing_result") &&
   !JSON.stringify(danglingChatMessages).includes("call_missing_use") &&
   override.store === false;

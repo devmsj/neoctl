@@ -53,6 +53,7 @@ export function buildChatMessages(request: ModelRequest): unknown[] {
         block.type === "tool_use" && pairs.pairedIds.has(block.id),
     );
 
+    if (message.role === "system" && text) messages.push({ role: "system", content: text });
     if (message.role === "user" && text) messages.push({ role: "user", content: text });
     if (message.role === "assistant") {
       if (toolUses.length) {

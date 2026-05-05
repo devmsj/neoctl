@@ -3,6 +3,7 @@ import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/mode
 import { ToolRegistry } from "../tools/registry";
 import { echoTool } from "../tools/builtins/echo-tool";
 import { createTextMessage } from "../types/messages";
+import { stripLeakedReasoningText } from "./assistant-output-filter";
 
 class FakeToolCallingGateway implements ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
@@ -33,12 +34,14 @@ async function main(): Promise<void> {
   }
 
   const snapshot = engine.snapshot();
+  const sanitized = stripLeakedReasoningText("目录内容：\n- `package-lock.json`We need answer in Chinese likely. Final maybe mention.");
   const ok =
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
     events.includes("terminal:completed") &&
+    sanitized === "目录内容：\n- `package-lock.json`" &&
     snapshot.messages >= 3;
-  console.log(JSON.stringify({ ok, events, snapshot }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

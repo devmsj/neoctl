@@ -76,7 +76,12 @@ async function main(): Promise<void> {
     autoCompactMaxChars: 1500,
     keepRecentMessages: 4,
   });
-  const compactOk = compacted.changed && compacted.messages.some((message) => message.metadata?.compactBoundary === true);
+  const compactBoundary = compacted.messages.find((message) => message.metadata?.compactBoundary === true);
+  const compactOk =
+    compacted.changed &&
+    compactBoundary?.role === "system" &&
+    JSON.stringify(compactBoundary).includes("Internal continuation state") &&
+    !JSON.stringify(compactBoundary).includes("Conversation summary");
 
   const toolUseOld = {
     id: "assistant_old_tool",
@@ -124,7 +129,7 @@ async function main(): Promise<void> {
     repairedSearch[1]?.blocks[0]?.type === "tool_result" ? String(repairedSearch[1].blocks[0].output) : "";
   const searchRegressionOk =
     hasValidToolResultPairing(repairedSearch) &&
-    searchOutput.startsWith("[Tool result truncated: original ") &&
+    searchOutput.startsWith("[Tool result truncated for context budget: original ") &&
     !searchOutput.includes('"preview"') &&
     !searchOutput.includes('"truncated"');
 

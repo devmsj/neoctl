@@ -1,6 +1,7 @@
 import { InMemoryAppState } from "../app/app-state";
 import type { Message } from "../types/messages";
 import { echoTool } from "./builtins/echo-tool";
+import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools";
 import { searchTool } from "./builtins/search-tool";
 import { ToolRegistry } from "./registry";
 import { runToolUseToMessages } from "./run-tool-use";
@@ -47,6 +48,8 @@ const largeTool: Tool<{ size: number }> = {
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.register(echoTool);
+  registry.register(listDirectoryTool);
+  registry.register(readFileTool);
   registry.register(searchTool);
   registry.register(delayTool);
   registry.register(largeTool);
@@ -66,6 +69,38 @@ async function main(): Promise<void> {
     { id: "search", name: "search", input: { query: "echoTool", path: "src/tools/builtins/echo-tool.ts", maxResults: 5 } },
     context,
   );
+  const truncatedSearch = await runToolUseToMessages(
+    { id: "search-truncated", name: "search", input: { query: "import", path: "src", maxResults: 1 } },
+    context,
+  );
+  const read = await runToolUseToMessages(
+    { id: "read", name: "read", input: { path: "src/tools/builtins/echo-tool.ts", offset: 1, limit: 5 } },
+    context,
+  );
+  const list = await runToolUseToMessages(
+    { id: "list", name: "list", input: { path: "src/tools/builtins", recursive: false, maxEntries: 20 } },
+    context,
+  );
+  const recursiveList = await runToolUseToMessages(
+    { id: "list-recursive", name: "list", input: { path: ".", recursive: true, maxEntries: 20, includeHidden: true } },
+    context,
+  );
+  const searchOutput = toolOutput(search[search.length - 1]) as {
+    cwd?: string;
+    searchPath?: string;
+    returnedMatches?: number;
+    totalMatchesKnown?: number | null;
+  };
+  const truncatedSearchOutput = toolOutput(truncatedSearch[truncatedSearch.length - 1]) as {
+    returnedMatches?: number;
+    totalMatchesKnown?: number | null;
+    truncated?: boolean;
+  };
+  const recursiveListOutput = toolOutput(recursiveList[recursiveList.length - 1]) as {
+    exclude?: string[];
+    excludedCounts?: Record<string, number>;
+    entries?: Array<{ name: string; path: string }>;
+  };
   const started = Date.now();
   const batch = await runTools(
     [
@@ -76,22 +111,52 @@ async function main(): Promise<void> {
   );
   const elapsedMs = Date.now() - started;
 
-  const ok =
-    toolOk(valid[valid.length - 1]) &&
-    !toolOk(invalid[invalid.length - 1]) &&
-    !toolOk(unknown[0]) &&
-    JSON.stringify(large[large.length - 1]).includes("truncated") &&
-    toolOk(search[search.length - 1]) &&
-    JSON.stringify(search[search.length - 1]).includes("echo-tool.ts") &&
-    batch.messages.length === 4 &&
-    elapsedMs < 110;
+  const checks = {
+    validTool: toolOk(valid[valid.length - 1]),
+    invalidRejected: !toolOk(invalid[invalid.length - 1]),
+    unknownRejected: !toolOk(unknown[0]),
+    transportTruncationLabel: JSON.stringify(large[large.length - 1]).includes("truncated"),
+    searchOk: toolOk(search[search.length - 1]),
+    searchFindsFile: JSON.stringify(search[search.length - 1]).includes("echo-tool.ts"),
+    searchFields: searchOutput.cwd !== undefined && searchOutput.searchPath !== undefined,
+    searchKnownTotal: searchOutput.returnedMatches === searchOutput.totalMatchesKnown,
+    searchNoLegacyRoot: !JSON.stringify(search[search.length - 1]).includes('"root"'),
+    truncatedSearchOk: toolOk(truncatedSearch[truncatedSearch.length - 1]),
+    truncatedSearchCounts:
+      (truncatedSearchOutput.returnedMatches ?? 0) >= 1 &&
+      truncatedSearchOutput.totalMatchesKnown === null &&
+      truncatedSearchOutput.truncated === true,
+    readOk: toolOk(read[read.length - 1]),
+    readLineMetadata: JSON.stringify(read[read.length - 1]).includes('"startLine":1'),
+    readContent: JSON.stringify(read[read.length - 1]).includes("echoTool"),
+    listOk: toolOk(list[list.length - 1]),
+    listFindsFile: JSON.stringify(list[list.length - 1]).includes("search-tool.ts"),
+    recursiveListOk: toolOk(recursiveList[recursiveList.length - 1]),
+    recursiveListDefaultExcludes:
+      recursiveListOutput.exclude?.includes(".git") === true &&
+      recursiveListOutput.exclude?.includes(".idea") === true &&
+      recursiveListOutput.exclude?.includes(".agent-tasks") === true,
+    recursiveListTracksExcluded:
+      recursiveListOutput.excludedCounts?.[".idea"] !== undefined &&
+      recursiveListOutput.excludedCounts?.[".agent-tasks"] !== undefined,
+    recursiveListEntriesClean:
+      recursiveListOutput.entries?.every((entry) => ![".git", ".idea", ".agent-tasks", "node_modules", "dist"].includes(entry.name)) === true,
+    batchMessages: batch.messages.length === 4,
+    batchConcurrent: elapsedMs < 110,
+  };
+  const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
 function toolOk(message: Message): boolean {
   return message.blocks.every((block) => block.type !== "tool_result" || block.ok);
+}
+
+function toolOutput(message: Message): unknown {
+  const block = message.blocks.find((candidate) => candidate.type === "tool_result");
+  return block?.type === "tool_result" ? block.output : undefined;
 }
 
 main().catch((error) => {

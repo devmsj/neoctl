@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/install-ripgrep.cjs --optional",
     "vendor:rg": "node scripts/install-ripgrep.cjs",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').mkdirSync('dist/model',{recursive:true}); require('fs').copyFileSync('src/model/model-metadata.json','dist/model/model-metadata.json')\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/repl/index.js",
     "dev": "tsx src/repl/index.ts",

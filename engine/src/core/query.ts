@@ -23,6 +23,8 @@ import {
   type QueryState,
   type TerminalReason,
 } from "./state";
+import { AssistantOutputFilter } from "./assistant-output-filter";
+import { buildContextMetrics } from "./context-metrics";
 
 export interface QueryOptions {
   agentId: string;
@@ -57,6 +59,7 @@ interface PreparedMessages {
   messagesForQuery: Message[];
   compactedMessages: Message[];
   compaction?: CompactionResult;
+  metrics: ReturnType<typeof buildContextMetrics>;
 }
 
 export async function* query(
@@ -107,7 +110,13 @@ async function* queryLoop(
       enabledTools: dependencies.tools.definitions(toolContext).map((tool) => tool.name),
       toolUseContext: toolContext,
     });
-    const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor);
+    const toolDefinitions = dependencies.tools.definitions(toolContext);
+    const systemPrompt = appendSystemContext(context.systemPrompt, context.systemContext);
+    const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
+      model: state.currentModel ?? options.model,
+      systemPrompt,
+      toolDefinitions,
+    });
     if (prepared.compaction?.changed) {
       state = { ...state, messages: prepared.compactedMessages };
       yield { type: "state", phase: "compacting", detail: formatCompactionDetail(prepared.compaction) };
@@ -116,7 +125,11 @@ async function* queryLoop(
       }
     }
 
-    const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext);
+    const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
+      systemPrompt,
+      toolDefinitions,
+      metrics: prepared.metrics,
+    });
     if (modelOutput.reactiveCompact) {
       state = modelOutput.reactiveCompact;
       continue;
@@ -160,18 +173,37 @@ async function prepareMessagesForQuery(
   context: RuntimeContext,
   dependencies: QueryDependencies,
   compactor: Compactor,
+  telemetry: { model?: string; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]> },
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgeted = applyToolResultBudget(baseMessages, {
     maxSerializedLength: dependencies.maxToolResultSerializedLength,
   });
   const pairedBudgeted = ensureToolResultPairing(budgeted);
-  const compaction = await compactor.compact(pairedBudgeted, dependencies.contextBudget);
+  const metricsBeforeCompact = buildContextMetrics({
+    model: telemetry.model,
+    messages: prependUserContext(pairedBudgeted, context.userContext),
+    systemPrompt: telemetry.systemPrompt,
+    tools: telemetry.toolDefinitions,
+  });
+  const compaction = await compactor.compact(pairedBudgeted, {
+    ...dependencies.contextBudget,
+    estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
+    contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
+  });
   const compactedMessages = ensureToolResultPairing(compaction.messages);
+  const messagesForQuery = prependUserContext(compactedMessages, context.userContext);
+  const metrics = buildContextMetrics({
+    model: telemetry.model,
+    messages: messagesForQuery,
+    systemPrompt: telemetry.systemPrompt,
+    tools: telemetry.toolDefinitions,
+  });
   return {
-    messagesForQuery: prependUserContext(compactedMessages, context.userContext),
+    messagesForQuery,
     compactedMessages,
     compaction: compaction.changed ? compaction : undefined,
+    metrics,
   };
 }
 
@@ -182,14 +214,17 @@ async function* callModelForTurn(
   dependencies: QueryDependencies,
   options: QueryOptions,
   toolContext: ToolUseContext,
+  telemetry: { systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; metrics: ReturnType<typeof buildContextMetrics> },
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput; reactiveCompact?: QueryState }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
+  const outputFilter = new AssistantOutputFilter();
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
 
   yield { type: "state", phase: "compacting", detail: "messages prepared for model" };
+  yield { type: "context.metrics", metrics: telemetry.metrics };
   yield { type: "state", phase: "calling_model", detail: activeModel ? `model stream opened (${activeModel})` : "model stream opened" };
 
   try {
@@ -197,8 +232,8 @@ async function* callModelForTurn(
       model: activeModel,
       fallbackModel: state.fallbackModel ?? options.fallbackModel,
       messages: messagesForQuery,
-      systemPrompt: appendSystemContext(context.systemPrompt, context.systemContext),
-      tools: dependencies.tools.definitions(toolContext),
+      systemPrompt: telemetry.systemPrompt,
+      tools: telemetry.toolDefinitions,
       stream: true,
       maxOutputTokens: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
       previousResponseId: state.previousResponseId,
@@ -206,7 +241,7 @@ async function* callModelForTurn(
       cancellation: options.abortSignal,
     })) {
       if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
-      const handled = yield* handleModelEvent(event, assistantMessages, toolUses);
+      const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
 
@@ -251,16 +286,19 @@ async function* handleModelEvent(
   event: ModelStreamEvent,
   assistantMessages: Message[],
   toolUses: ToolUseRequest[],
+  outputFilter: AssistantOutputFilter,
 ): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
   if (event.type === "assistant_delta") {
-    yield { type: "assistant.delta", text: event.text };
+    const text = outputFilter.push(event.text);
+    if (text) yield { type: "assistant.delta", text };
     return {};
   }
 
   if (event.type === "assistant_message") {
-    assistantMessages.push(event.message);
-    for (const toolUse of extractToolUses(event.message)) toolUses.push(toolUse);
-    yield { type: "message", message: event.message };
+    const message = outputFilter.sanitizeMessage(event.message);
+    assistantMessages.push(message);
+    for (const toolUse of extractToolUses(message)) toolUses.push(toolUse);
+    yield { type: "message", message };
     return {};
   }
 

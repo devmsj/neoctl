@@ -132,7 +132,7 @@ export function appendSystemContext<T extends object>(systemPrompt: string, syst
 
 function buildStableToolResultPreview(serialized: string, maxSerializedLength: number): string {
   const previewLength = Math.max(0, maxSerializedLength - 120);
-  return `[Tool result truncated: original ${serialized.length} chars, showing first ${previewLength} chars]\n${serialized.slice(0, previewLength)}`;
+  return `[Tool result truncated for context budget: original ${serialized.length} chars, showing first ${previewLength} chars]\n${serialized.slice(0, previewLength)}`;
 }
 
 function serializeToolOutput(output: unknown): string {

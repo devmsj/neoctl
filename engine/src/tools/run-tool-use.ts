@@ -154,12 +154,7 @@ function processToolOutput(tool: Tool, request: ToolUseRequest, result: ToolResu
   const serialized = typeof mapped === "string" ? mapped : JSON.stringify(mapped);
   if (serialized.length <= maxSize) return mapped;
 
-  return {
-    truncated: true,
-    originalLength: serialized.length,
-    preview: serialized.slice(0, maxSize),
-    summary: result.summary,
-  };
+  return `[Tool result truncated by transport: original ${serialized.length} chars, showing first ${maxSize} chars${result.summary ? `, summary: ${result.summary}` : ""}]\n${serialized.slice(0, maxSize)}`;
 }
 
 function buildSchemaNotSentHint(toolName: string): string {

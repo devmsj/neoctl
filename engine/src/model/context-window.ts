@@ -1,0 +1,77 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+
+export interface ModelMetadata {
+  id: string;
+  provider: string;
+  match: string[];
+  contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  knowledgeCutoff?: string;
+  reasoning?: boolean;
+  source?: string;
+  notes?: string;
+}
+
+export interface ModelCatalog {
+  updatedAt?: string;
+  notes?: string[];
+  sources?: Record<string, string>;
+  models: ModelMetadata[];
+}
+
+export interface ContextWindowInfo {
+  tokens?: number;
+  source: "env" | "known" | "unknown";
+  model?: ModelMetadata;
+  catalogUpdatedAt?: string;
+}
+
+let cachedCatalog: ModelCatalog | undefined;
+
+export function resolveContextWindowTokens(model: string | undefined, env: NodeJS.ProcessEnv = process.env): ContextWindowInfo {
+  const override = parsePositiveInteger(env.MODEL_CONTEXT_WINDOW_TOKENS ?? env.OPENAI_CONTEXT_WINDOW_TOKENS);
+  if (override) return { tokens: override, source: "env" };
+  if (!model) return { source: "unknown", catalogUpdatedAt: loadModelCatalog().updatedAt };
+
+  const catalog = loadModelCatalog();
+  const metadata = findModelMetadata(model, catalog);
+  if (!metadata?.contextWindowTokens) return { source: "unknown", catalogUpdatedAt: catalog.updatedAt };
+
+  return {
+    tokens: metadata.contextWindowTokens,
+    source: "known",
+    model: metadata,
+    catalogUpdatedAt: catalog.updatedAt,
+  };
+}
+
+export function findModelMetadata(model: string, catalog: ModelCatalog = loadModelCatalog()): ModelMetadata | undefined {
+  return catalog.models.find((entry) => entry.match.some((pattern) => new RegExp(pattern, "i").test(model)));
+}
+
+export function loadModelCatalog(): ModelCatalog {
+  if (cachedCatalog) return cachedCatalog;
+  const file = findModelCatalogFile();
+  const raw = readFileSync(file, "utf8");
+  cachedCatalog = JSON.parse(raw) as ModelCatalog;
+  return cachedCatalog;
+}
+
+function findModelCatalogFile(): string {
+  const candidates = [
+    path.join(__dirname, "model-metadata.json"),
+    path.join(process.cwd(), "dist", "model", "model-metadata.json"),
+    path.join(process.cwd(), "src", "model", "model-metadata.json"),
+  ];
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (!found) throw new Error(`model-metadata.json not found in: ${candidates.join(", ")}`);
+  return found;
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
