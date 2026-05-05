@@ -9,6 +9,7 @@ import type { Message } from "../types/messages";
 import { createSystemInitMessage, createTextMessage } from "../types/messages";
 import { query } from "./query";
 import type { TerminalReason } from "./state";
+import { SessionStore, type SessionStoreSnapshot } from "../session/session-store";
 
 export interface QueryEngineOptions {
   agentId?: string;
@@ -27,33 +28,62 @@ export interface QueryEngineOptions {
   agents?: readonly string[];
   skills?: readonly string[];
   plugins?: readonly string[];
+  session?: {
+    enabled?: boolean;
+    sessionId?: string;
+    rootDir?: string;
+    resume?: boolean;
+    toolResultThresholdChars?: number;
+  };
 }
 
 export class QueryEngine {
   private readonly agentId: string;
   private readonly history: Message[] = [];
   private lastTerminalReason?: TerminalReason;
+  private sessionStore?: SessionStore;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
   }
 
+  async initialize(): Promise<void> {
+    if (this.sessionStore || this.options.session?.enabled === false) return;
+    if (!this.options.session) return;
+    this.sessionStore = await SessionStore.open({
+      agentId: this.agentId,
+      cwd: process.cwd(),
+      sessionId: this.options.session.sessionId,
+      rootDir: this.options.session.rootDir,
+      resume: this.options.session.resume,
+      toolResultThresholdChars: this.options.session.toolResultThresholdChars,
+    });
+    if (this.options.session.resume) {
+      this.history.length = 0;
+      this.history.push(...this.sessionStore.getInitialMessages());
+    }
+  }
+
   async *sendUserText(text: string): AsyncGenerator<AgentEvent> {
+    await this.initialize();
     const userMessage = createTextMessage("user", text);
     this.history.push(userMessage);
+    this.sessionStore?.recordMessage(userMessage);
 
+    const initMessage = createSystemInitMessage({
+      agentId: this.agentId,
+      tools: this.options.tools.names(),
+      model: this.options.model,
+      commands: [...(this.options.commands ?? [])],
+      agents: [...(this.options.agents ?? [])],
+      skills: [...(this.options.skills ?? [])],
+      plugins: [...(this.options.plugins ?? [])],
+    });
     yield {
       type: "message",
-      message: createSystemInitMessage({
-        agentId: this.agentId,
-        tools: this.options.tools.names(),
-        model: this.options.model,
-        commands: [...(this.options.commands ?? [])],
-        agents: [...(this.options.agents ?? [])],
-        skills: [...(this.options.skills ?? [])],
-        plugins: [...(this.options.plugins ?? [])],
-      }),
+      message: initMessage,
     };
+    this.sessionStore?.recordMessage(initMessage);
 
     const queryOptions: QueryOptions = {
       agentId: this.agentId,
@@ -64,10 +94,19 @@ export class QueryEngine {
       maxTurns: this.options.maxTurns,
     };
 
-    const stream = query(this.history, this.options, queryOptions);
+    const stream = query(
+      this.history,
+      {
+        ...this.options,
+        toolResultMemory: this.sessionStore?.toolResultMemory,
+        recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
+      },
+      queryOptions,
+    );
     for await (const event of stream) {
       if (event.type === "message") {
         this.history.push(event.message);
+        this.sessionStore?.recordMessage(event.message);
       }
       if (event.type === "terminal") {
         this.lastTerminalReason = event.reason;
@@ -79,13 +118,19 @@ export class QueryEngine {
   reset(): void {
     this.history.length = 0;
     this.lastTerminalReason = undefined;
+    this.sessionStore?.reset();
   }
 
-  snapshot(): { agentId: string; messages: number; lastTerminalReason?: TerminalReason } {
+  snapshot(): { agentId: string; messages: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
       lastTerminalReason: this.lastTerminalReason,
+      session: this.sessionStore?.snapshot(),
     };
+  }
+
+  get toolResultMemory() {
+    return this.sessionStore?.toolResultMemory;
   }
 }

@@ -46,6 +46,8 @@ export interface QueryDependencies {
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
+  toolResultMemory?: ToolUseContext["toolResultMemory"];
+  recordContentReplacements?: ToolUseContext["recordContentReplacements"];
 }
 
 interface ModelTurnOutput {
@@ -93,6 +95,8 @@ async function* queryLoop(
     abortSignal: options.abortSignal,
     tools: dependencies.tools,
     appState,
+    toolResultMemory: dependencies.toolResultMemory,
+    recordContentReplacements: dependencies.recordContentReplacements,
     emit: () => undefined,
   };
 
@@ -116,6 +120,7 @@ async function* queryLoop(
       model: state.currentModel ?? options.model,
       systemPrompt,
       toolDefinitions,
+      toolUseContext: toolContext,
     });
     if (prepared.compaction?.changed) {
       state = { ...state, messages: prepared.compactedMessages };
@@ -173,12 +178,21 @@ async function prepareMessagesForQuery(
   context: RuntimeContext,
   dependencies: QueryDependencies,
   compactor: Compactor,
-  telemetry: { model?: string; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]> },
+  telemetry: { model?: string; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext },
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
-  const budgeted = applyToolResultBudget(baseMessages, {
-    maxSerializedLength: dependencies.maxToolResultSerializedLength,
-  });
+  const budgetResult = telemetry.toolUseContext?.toolResultMemory
+    ? await telemetry.toolUseContext.toolResultMemory.applyBudget(baseMessages, {
+        maxSerializedLength: dependencies.maxToolResultSerializedLength,
+      })
+    : {
+        messages: applyToolResultBudget(baseMessages, {
+          maxSerializedLength: dependencies.maxToolResultSerializedLength,
+        }),
+        records: [],
+      };
+  if (budgetResult.records.length) telemetry.toolUseContext?.recordContentReplacements?.(budgetResult.records);
+  const budgeted = budgetResult.messages;
   const pairedBudgeted = ensureToolResultPairing(budgeted);
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,

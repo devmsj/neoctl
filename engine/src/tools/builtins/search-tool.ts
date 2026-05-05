@@ -21,7 +21,23 @@ export interface SearchMatch {
   line: number;
   column?: number;
   text: string;
+  textTruncated?: {
+    originalLength: number;
+    maxChars: number;
+  };
   submatches: Array<{ start: number; end: number; text: string }>;
+  contextBefore?: SearchContextLine[];
+  contextAfter?: SearchContextLine[];
+}
+
+export interface SearchContextLine {
+  file: string;
+  line: number;
+  text: string;
+  textTruncated?: {
+    originalLength: number;
+    maxChars: number;
+  };
 }
 
 export interface SearchToolOutput {
@@ -36,6 +52,7 @@ export interface SearchToolOutput {
     reason: "resultSize";
     originalLength: number;
     matchesBeforeTransport: number;
+    omittedMatches: number;
     maxChars: number;
   };
   errors?: string[];
@@ -44,7 +61,7 @@ export interface SearchToolOutput {
 export const searchTool: Tool<SearchToolInput> = {
   name: "search",
   aliases: ["grep", "rg"],
-  description: "Search files with the bundled ripgrep binary. Accepts absolute paths and cwd-relative paths. Use this for fast code and text search before reading files.",
+  description: "Search files with the bundled ripgrep binary. Accepts absolute paths and cwd-relative paths. It does not exclude heavy directories by default; pass explicit negated glob filters such as !node_modules/** when you want to skip them.",
   inputSchema: {
     type: "object",
     properties: {
@@ -53,7 +70,7 @@ export const searchTool: Tool<SearchToolInput> = {
       glob: {
         type: "array",
         items: { type: "string" },
-        description: "Optional ripgrep glob filters such as src/**/*.ts or !dist/**.",
+        description: "Optional ripgrep glob filters such as src/**/*.ts, !dist/**, or !node_modules/**.",
       },
       caseMode: { type: "string", enum: ["smart", "sensitive", "insensitive"], description: "Case handling mode." },
       fixedStrings: { type: "boolean", description: "Treat query as literal text instead of a regex." },
@@ -132,24 +149,32 @@ async function runRipgrep(
   input: SearchToolInput,
 ): Promise<ToolResult> {
   const args = buildArgs(input, target);
-  const matches: SearchMatch[] = [];
-  const errors: string[] = [];
+  const state: SearchParseState = {
+    matches: [],
+    errors: [],
+    pendingContext: [],
+    maxResults: input.maxResults,
+    maxContextLines: input.contextLines,
+    truncated: false,
+    stopped: false,
+    overflowedMaxResults: false,
+  };
   let stderr = "";
   let stdoutBuffer = "";
-  let truncated = false;
 
   const child = spawn(executablePath, args, { cwd: root, windowsHide: true });
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
+    if (state.stopped) return;
     stdoutBuffer += chunk;
     let newline = stdoutBuffer.indexOf("\n");
     while (newline >= 0) {
       const line = stdoutBuffer.slice(0, newline).trim();
       stdoutBuffer = stdoutBuffer.slice(newline + 1);
-      if (line) handleJsonLine(line, root, matches, errors);
-      if (matches.length >= input.maxResults) {
-        truncated = true;
+      if (line) handleJsonLine(line, root, state);
+      if (shouldStopSearch(state)) {
+        state.stopped = true;
         child.kill();
         break;
       }
@@ -169,7 +194,9 @@ async function runRipgrep(
 
     child.on("close", (code) => {
       const remaining = stdoutBuffer.trim();
-      if (remaining && !truncated) handleJsonLine(remaining, root, matches, errors);
+      if (remaining && !state.stopped) handleJsonLine(remaining, root, state);
+      const matches = state.matches.slice(0, input.maxResults);
+      const truncated = state.truncated || state.matches.length > input.maxResults;
 
       const output: SearchToolOutput = {
         query: input.query,
@@ -179,7 +206,7 @@ async function runRipgrep(
         totalMatchesKnown: truncated ? null : matches.length,
         truncated,
         matches,
-        errors: errors.length ? errors : undefined,
+        errors: state.errors.length ? state.errors : undefined,
       };
 
       if (code === 0 || code === 1 || truncated) {
@@ -204,50 +231,112 @@ function buildArgs(input: SearchToolInput, target: string): string[] {
   return args;
 }
 
-function handleJsonLine(line: string, root: string, matches: SearchMatch[], errors: string[]): void {
+function handleJsonLine(line: string, root: string, state: SearchParseState): void {
   try {
     const event = JSON.parse(line) as RipgrepJsonEvent;
-    if (event.type !== "match") return;
-    const text = event.data.lines.text.replace(/[\r\n]+$/, "");
-    matches.push({
-      file: path.relative(root, event.data.path.text) || event.data.path.text,
-      line: event.data.line_number,
-      column: event.data.submatches[0]?.start + 1,
-      text,
-      submatches: event.data.submatches.map((submatch) => ({
-        start: submatch.start,
-        end: submatch.end,
-        text: submatch.match.text,
-      })),
-    });
+    if (event.type === "match") {
+      if (state.matches.length >= state.maxResults) {
+        state.truncated = true;
+        state.overflowedMaxResults = true;
+        return;
+      }
+      const match = mapMatchEvent(event, root);
+      if (state.pendingContext.length) {
+        match.contextBefore = state.pendingContext.slice(-state.maxContextLines);
+        state.pendingContext = [];
+      }
+      state.matches.push(match);
+      if (state.matches.length >= state.maxResults) state.truncated = true;
+      return;
+    }
+
+    if (event.type === "context" && state.maxContextLines > 0) {
+      const context = mapContextEvent(event, root);
+      const lastMatch = state.matches[state.matches.length - 1];
+      if (!lastMatch) {
+        state.pendingContext = [...state.pendingContext, context].slice(-state.maxContextLines);
+        return;
+      }
+      const contextAfter = [...(lastMatch.contextAfter ?? []), context].slice(0, state.maxContextLines);
+      lastMatch.contextAfter = contextAfter;
+    }
   } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
+    state.errors.push(error instanceof Error ? error.message : String(error));
   }
+}
+
+function mapMatchEvent(event: RipgrepJsonEvent, root: string): SearchMatch {
+  const text = normalizeLine(event.data.lines.text);
+  return {
+    file: relativeEventPath(root, event),
+    line: event.data.line_number,
+    column: event.data.submatches[0]?.start + 1,
+    text,
+    submatches: event.data.submatches.map((submatch) => ({
+      start: submatch.start,
+      end: submatch.end,
+      text: submatch.match.text,
+    })),
+  };
+}
+
+function mapContextEvent(event: RipgrepJsonEvent, root: string): SearchContextLine {
+  return {
+    file: relativeEventPath(root, event),
+    line: event.data.line_number,
+    text: normalizeLine(event.data.lines.text),
+  };
+}
+
+function relativeEventPath(root: string, event: RipgrepJsonEvent): string {
+  return path.relative(root, event.data.path.text) || event.data.path.text;
+}
+
+function normalizeLine(text: string): string {
+  return text.replace(/[\r\n]+$/, "");
+}
+
+function shouldStopSearch(state: SearchParseState): boolean {
+  if (!state.truncated) return false;
+  if (state.overflowedMaxResults) return true;
+  if (state.maxContextLines === 0) return true;
+  const lastMatch = state.matches[state.matches.length - 1];
+  return (lastMatch?.contextAfter?.length ?? 0) >= state.maxContextLines;
 }
 
 function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unknown {
   if (!isSearchOutput(output)) return output;
-  const serialized = JSON.stringify(output);
-  if (serialized.length <= maxChars) return output;
+  const boundedOutput = boundLongSearchLines(output);
+  const serialized = JSON.stringify(boundedOutput);
+  if (serialized.length <= maxChars) return boundedOutput;
 
-  const originalMatches = output.matches;
+  const originalMatches = boundedOutput.matches;
+  const transportTruncation = {
+    reason: "resultSize" as const,
+    originalLength: serialized.length,
+    matchesBeforeTransport: originalMatches.length,
+    omittedMatches: originalMatches.length,
+    maxChars,
+  };
   const compacted: SearchToolOutput = {
-    ...output,
+    ...boundedOutput,
     returnedMatches: 0,
     matches: [],
     truncated: true,
-    totalMatchesKnown: output.truncated ? output.totalMatchesKnown : originalMatches.length,
-    transportTruncation: {
-      reason: "resultSize",
-      originalLength: serialized.length,
-      matchesBeforeTransport: originalMatches.length,
-      maxChars,
-    },
+    totalMatchesKnown: boundedOutput.truncated ? boundedOutput.totalMatchesKnown : originalMatches.length,
+    transportTruncation,
   };
 
   for (let count = originalMatches.length; count >= 0; count -= 1) {
     compacted.matches = originalMatches.slice(0, count);
     compacted.returnedMatches = compacted.matches.length;
+    compacted.transportTruncation = {
+      reason: transportTruncation.reason,
+      originalLength: transportTruncation.originalLength,
+      matchesBeforeTransport: transportTruncation.matchesBeforeTransport,
+      maxChars: transportTruncation.maxChars,
+      omittedMatches: originalMatches.length - count,
+    };
     const candidate = JSON.stringify(compacted);
     if (candidate.length <= maxChars) return compacted;
   }
@@ -257,6 +346,56 @@ function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unkn
 
 function isSearchOutput(output: unknown): output is SearchToolOutput {
   return typeof output === "object" && output !== null && Array.isArray((output as Partial<SearchToolOutput>).matches);
+}
+
+function boundLongSearchLines(output: SearchToolOutput): SearchToolOutput {
+  return {
+    ...output,
+    matches: output.matches.map((match) => ({
+      ...match,
+      ...truncateTextField(match.text, MAX_MATCH_TEXT_CHARS),
+      submatches: match.submatches.map((submatch) => ({
+        ...submatch,
+        text: truncatePlainText(submatch.text, MAX_SUBMATCH_TEXT_CHARS),
+      })),
+      contextBefore: match.contextBefore?.map(truncateContextLine),
+      contextAfter: match.contextAfter?.map(truncateContextLine),
+    })),
+  };
+}
+
+function truncateContextLine(line: SearchContextLine): SearchContextLine {
+  return {
+    ...line,
+    ...truncateTextField(line.text, MAX_CONTEXT_TEXT_CHARS),
+  };
+}
+
+function truncateTextField(text: string, maxChars: number): { text: string; textTruncated?: { originalLength: number; maxChars: number } } {
+  if (text.length <= maxChars) return { text };
+  return {
+    text: `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`,
+    textTruncated: { originalLength: text.length, maxChars },
+  };
+}
+
+function truncatePlainText(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`;
+}
+
+const MAX_MATCH_TEXT_CHARS = 4000;
+const MAX_CONTEXT_TEXT_CHARS = 2000;
+const MAX_SUBMATCH_TEXT_CHARS = 500;
+
+interface SearchParseState {
+  matches: SearchMatch[];
+  errors: string[];
+  pendingContext: SearchContextLine[];
+  maxResults: number;
+  maxContextLines: number;
+  truncated: boolean;
+  stopped: boolean;
+  overflowedMaxResults: boolean;
 }
 
 interface RipgrepJsonEvent {

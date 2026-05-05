@@ -17,6 +17,7 @@
     "smoke:core": "tsx src/core/smoke-core-loop.ts",
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",
+    "smoke:session": "tsx src/session/smoke-session.ts",
     "smoke:agents": "tsx src/agents/smoke-agents.ts",
     "smoke:skills": "tsx src/skills/smoke-skills.ts",
     "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",

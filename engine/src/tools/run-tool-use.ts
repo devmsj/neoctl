@@ -66,7 +66,7 @@ export async function runToolUse(
       onProgress,
     });
 
-    const output = processToolOutput(tool, request, result);
+    const output = await processToolOutput(tool, request, result, contextWithToolUseId);
     const resultMessage = tool.renderToolResultMessage?.(result) ?? createToolResultMessage(request, result.ok, output);
     updates.push({ message: resultMessage, context: result.contextModifier?.(contextWithToolUseId) });
 
@@ -146,8 +146,18 @@ async function callTool<TInput>(
   return { ok: false, output: { error: `Tool ${tool.name} has no call implementation` } };
 }
 
-function processToolOutput(tool: Tool, request: ToolUseRequest, result: ToolResult): unknown {
+async function processToolOutput(tool: Tool, request: ToolUseRequest, result: ToolResult, context: ToolUseContext): Promise<unknown> {
   const mapped = tool.mapResult ? tool.mapResult(result, request) : result.output;
+  if (context.toolResultMemory) {
+    const processed = await context.toolResultMemory.processToolResult(
+      request.id,
+      mapped,
+      tool.metadata.maxResultSizeChars,
+    );
+    if (processed.record) context.recordContentReplacements?.([processed.record]);
+    return processed.output;
+  }
+
   const maxSize = tool.metadata.maxResultSizeChars;
   if (!maxSize) return mapped;
 

@@ -22,6 +22,8 @@ export * from "./model/provider-adapter";
 export * from "./model/env";
 export * from "./model/errors";
 export * from "./tools/tool";
+export * from "./session/session-store";
+export * from "./session/tool-result-memory";
 export * from "./tools/registry";
 export * from "./tools/run-tool-use";
 export * from "./tools/tool-orchestration";

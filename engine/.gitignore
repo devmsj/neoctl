@@ -5,5 +5,6 @@ dist/
 .env.*
 !.env.example
 *.log
+.agent/sessions/
 .agent-tasks/
 .DS_Store

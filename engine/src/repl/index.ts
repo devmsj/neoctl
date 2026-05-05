@@ -34,12 +34,24 @@ async function main(): Promise<void> {
     fallbackModel: modelConfig?.fallbackModel,
     modelGateway,
     tools,
+    session: {
+      enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
+      sessionId: process.env.AGENT_SESSION_ID,
+      rootDir: process.env.AGENT_SESSION_DIR,
+      resume: process.env.AGENT_SESSION_RESUME === "1",
+      toolResultThresholdChars: process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS
+        ? Number(process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS)
+        : undefined,
+    },
   });
+  await engine.initialize();
 
   const rl = readline.createInterface({ input, output, prompt: "agent> " });
   const statusLine = new ReplStatusLine(output);
   console.log("Agent Scaffold REPL");
   console.log("Type /help for commands.");
+  const session = engine.snapshot().session;
+  if (session) console.log(`Session transcript: ${session.transcriptPath}`);
   rl.prompt();
 
   for await (const line of rl) {

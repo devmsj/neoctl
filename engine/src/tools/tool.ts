@@ -1,5 +1,6 @@
 import type { AppStatePort } from "../app/app-state";
 import type { Message, ToolUseRequest } from "../types/messages";
+import type { ContentReplacementRecord, ToolResultMemory } from "../session/tool-result-memory";
 
 export interface JsonSchema {
   type?: string;
@@ -82,7 +83,9 @@ export interface ToolUseContext {
   queryTracking?: unknown;
   requestPrompt?: string;
   options?: ToolRuntimeOptions;
+  toolResultMemory?: ToolResultMemory;
   emit(event: ToolProgressEvent): void;
+  recordContentReplacements?(records: ContentReplacementRecord[]): void;
   appendSystemMessage?(message: Message): void;
   setResponseLength?(length: "short" | "medium" | "long"): void;
   pushApiMetricsEntry?(entry: Record<string, unknown>): void;

@@ -73,6 +73,10 @@ async function main(): Promise<void> {
     { id: "search-truncated", name: "search", input: { query: "import", path: "src", maxResults: 1 } },
     context,
   );
+  const contextSearch = await runToolUseToMessages(
+    { id: "search-context", name: "search", input: { query: "description", path: "src/tools/builtins/echo-tool.ts", contextLines: 1, maxResults: 2 } },
+    context,
+  );
   const read = await runToolUseToMessages(
     { id: "read", name: "read", input: { path: "src/tools/builtins/echo-tool.ts", offset: 1, limit: 5 } },
     context,
@@ -95,6 +99,9 @@ async function main(): Promise<void> {
     returnedMatches?: number;
     totalMatchesKnown?: number | null;
     truncated?: boolean;
+  };
+  const contextSearchOutput = toolOutput(contextSearch[contextSearch.length - 1]) as {
+    matches?: Array<{ contextBefore?: unknown[]; contextAfter?: unknown[] }>;
   };
   const recursiveListOutput = toolOutput(recursiveList[recursiveList.length - 1]) as {
     exclude?: string[];
@@ -123,9 +130,13 @@ async function main(): Promise<void> {
     searchNoLegacyRoot: !JSON.stringify(search[search.length - 1]).includes('"root"'),
     truncatedSearchOk: toolOk(truncatedSearch[truncatedSearch.length - 1]),
     truncatedSearchCounts:
-      (truncatedSearchOutput.returnedMatches ?? 0) >= 1 &&
+      truncatedSearchOutput.returnedMatches === 1 &&
       truncatedSearchOutput.totalMatchesKnown === null &&
       truncatedSearchOutput.truncated === true,
+    contextSearchOk: toolOk(contextSearch[contextSearch.length - 1]),
+    contextSearchLines:
+      (contextSearchOutput.matches?.some((match) => (match.contextBefore?.length ?? 0) > 0) ?? false) ||
+      (contextSearchOutput.matches?.some((match) => (match.contextAfter?.length ?? 0) > 0) ?? false),
     readOk: toolOk(read[read.length - 1]),
     readLineMetadata: JSON.stringify(read[read.length - 1]).includes('"startLine":1'),
     readContent: JSON.stringify(read[read.length - 1]).includes("echoTool"),
@@ -146,7 +157,7 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
