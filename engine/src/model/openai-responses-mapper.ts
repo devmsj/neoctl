@@ -35,7 +35,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     reasoning: request.reasoning ?? options.defaultReasoning,
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
-    store: false,
+    store: shouldStoreResponse(request, tools.length),
     ...((request.providerOptions?.responses as Record<string, unknown> | undefined) ?? {}),
   });
 }
@@ -163,4 +163,8 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
   } else {
     yield { type: "response_completed", responseId, stopReason: asString(body.status), usage };
   }
+}
+
+function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean {
+  return Boolean(request.previousResponseId || toolCount > 0);
 }

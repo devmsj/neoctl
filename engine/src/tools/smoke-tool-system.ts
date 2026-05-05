@@ -1,6 +1,7 @@
 import { InMemoryAppState } from "../app/app-state";
 import type { Message } from "../types/messages";
 import { echoTool } from "./builtins/echo-tool";
+import { searchTool } from "./builtins/search-tool";
 import { ToolRegistry } from "./registry";
 import { runToolUseToMessages } from "./run-tool-use";
 import { runTools } from "./tool-orchestration";
@@ -46,13 +47,14 @@ const largeTool: Tool<{ size: number }> = {
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.register(echoTool);
+  registry.register(searchTool);
   registry.register(delayTool);
   registry.register(largeTool);
 
   const context: ToolUseContext = {
     agentId: "tool-smoke",
     tools: registry,
-    appState: new InMemoryAppState("tool-smoke"),
+    appState: new InMemoryAppState("tool-smoke", process.cwd()),
     emit: () => undefined,
   };
 
@@ -60,6 +62,10 @@ async function main(): Promise<void> {
   const invalid = await runToolUseToMessages({ id: "echo2", name: "echo", input: { text: "" } }, context);
   const unknown = await runToolUseToMessages({ id: "missing", name: "missing", input: {} }, context);
   const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20 } }, context);
+  const search = await runToolUseToMessages(
+    { id: "search", name: "search", input: { query: "echoTool", path: "src/tools/builtins/echo-tool.ts", maxResults: 5 } },
+    context,
+  );
   const started = Date.now();
   const batch = await runTools(
     [
@@ -75,10 +81,12 @@ async function main(): Promise<void> {
     !toolOk(invalid[invalid.length - 1]) &&
     !toolOk(unknown[0]) &&
     JSON.stringify(large[large.length - 1]).includes("truncated") &&
+    toolOk(search[search.length - 1]) &&
+    JSON.stringify(search[search.length - 1]).includes("echo-tool.ts") &&
     batch.messages.length === 4 &&
     elapsedMs < 110;
 
-  console.log(JSON.stringify({ ok, elapsedMs, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

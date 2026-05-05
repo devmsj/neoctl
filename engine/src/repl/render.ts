@@ -10,6 +10,7 @@ export function renderEvent(event: AgentEvent): string | undefined {
       return event.message.blocks
         .map((block) => {
           if (block.type === "text") return `${event.message.role}> ${block.text}`;
+          if (block.type === "thinking") return `thinking> ${block.text}`;
           if (block.type === "tool_result") return `tool_result:${block.name}> ${JSON.stringify(block.output)}`;
           return `tool_use:${block.name}> ${JSON.stringify(block.input)}`;
         })

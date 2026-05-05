@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { InMemoryAppState } from "../app/app-state";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway";
 import { QueryEngine } from "../core/query-engine";
@@ -108,10 +109,11 @@ async function main(): Promise<void> {
   const outputText = JSON.stringify(output.map((update) => update.message.blocks));
   const sendOk = send.at(-1)?.message.blocks.some((block) => block.type === "tool_result" && block.ok) ?? false;
   const listOk = list.at(-1)?.message.blocks.some((block) => block.type === "tool_result" && block.ok) ?? false;
-  const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk);
+  const outputFileOk = Boolean(task?.outputFile && existsSync(task.outputFile));
+  const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
   const ok = syncOk && asyncOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status }, null, 2));
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

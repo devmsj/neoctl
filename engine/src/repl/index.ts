@@ -5,6 +5,7 @@ import { QueryEngine } from "../core/query-engine";
 import { createModelGatewayFromEnv } from "../model/env";
 import { ToolRegistry } from "../tools/registry";
 import { echoTool } from "../tools/builtins/echo-tool";
+import { searchTool } from "../tools/builtins/search-tool";
 import { createAgentTool } from "../agents/agent-tool";
 import { createTaskTools } from "../tasks/task-tools";
 import { TaskStore } from "../tasks/task-store";
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
   tools.register(echoTool);
+  tools.register(searchTool);
   for (const tool of createTaskTools(taskStore)) tools.register(tool);
   tools.register(createAgentTool({ modelGateway, tools, taskStore }));
 

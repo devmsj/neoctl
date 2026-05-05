@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Message } from "../types/messages";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
@@ -61,7 +63,7 @@ export function createLocalAgentTask(input: {
     prompt: input.prompt,
     messages: [],
     progress: { totalEvents: 0, totalToolUseCount: 0 },
-    outputFile: input.outputFile ?? `agent-output://${input.taskId}`,
+    outputFile: input.outputFile ?? defaultTaskOutputFile(input.taskId),
     notified: false,
     retain: input.retain ?? true,
     abortController: input.abortController,
@@ -82,4 +84,33 @@ export function updateProgressFromMessage(task: LocalAgentTask, message: Message
   if (text) task.progress.lastText = text.slice(-1000);
   task.progress.totalToolUseCount += message.blocks.filter((block) => block.type === "tool_use").length;
   task.updatedAt = new Date().toISOString();
+}
+
+export function writeLocalAgentTaskOutput(task: LocalAgentTask): void {
+  const content = renderLocalAgentTaskOutput(task);
+  mkdirSync(resolve(task.outputFile, ".."), { recursive: true });
+  writeFileSync(task.outputFile, content, "utf8");
+}
+
+export function renderLocalAgentTaskOutput(task: LocalAgentTask): string {
+  return [
+    `task_id: ${task.taskId}`,
+    `agent_id: ${task.agentId}`,
+    `status: ${task.status}`,
+    `description: ${task.description}`,
+    `created_at: ${task.createdAt}`,
+    `updated_at: ${task.updatedAt}`,
+    task.completedAt ? `completed_at: ${task.completedAt}` : undefined,
+    "",
+    "prompt:",
+    task.prompt,
+    "",
+    "result:",
+    task.result?.content ?? "",
+    task.error ? `\nerror:\n${task.error}` : undefined,
+  ].filter((line) => line !== undefined).join("\n");
+}
+
+function defaultTaskOutputFile(taskId: string): string {
+  return resolve(process.cwd(), ".agent-tasks", `${taskId}.txt`);
 }

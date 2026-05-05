@@ -8,6 +8,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "postinstall": "node scripts/install-ripgrep.cjs --optional",
+    "vendor:rg": "node scripts/install-ripgrep.cjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/repl/index.js",
@@ -16,6 +18,8 @@
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",
     "smoke:agents": "tsx src/agents/smoke-agents.ts",
+    "smoke:skills": "tsx src/skills/smoke-skills.ts",
+    "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {

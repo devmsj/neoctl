@@ -20,6 +20,14 @@ import { globalTaskStore, type TaskStore } from "../tasks/task-store";
 
 export const AGENT_TOOL_NAME = "agent";
 
+export const AGENT_TOOL_PROMPT_RULES = [
+  "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
+  "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
+  "Background agents return an output file and task notification; do not fabricate results before the task completes.",
+  "Launch independent agents in the same model turn when parallel work is useful.",
+  "Avoid vague delegation; give each worker a concrete scope and say whether edits are allowed.",
+].join("\n");
+
 export interface AgentToolInput {
   prompt: string;
   description?: string;
@@ -48,9 +56,9 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
     name: AGENT_TOOL_NAME,
     searchHint: "delegate work to a subagent",
     description: [
-      "Delegate a scoped task to a subagent. Use a fresh agent when the prompt fully explains the task.",
-      "Use background mode for long work. Use fork mode only for scoped work that should not pollute the main context.",
-    ].join(" "),
+      "Delegate a scoped task to a subagent.",
+      AGENT_TOOL_PROMPT_RULES,
+    ].join("\n"),
     inputSchema: {
       type: "object",
       properties: {

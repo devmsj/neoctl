@@ -1,10 +1,10 @@
 import { ModelAPIError } from "../model/errors";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway";
 import { QueryEngine } from "../core/query-engine";
-import { applyToolResultBudget, appendSystemContext, prependUserContext } from "../core/message-pipeline";
+import { applyToolResultBudget, appendSystemContext, ensureToolResultPairing, hasValidToolResultPairing, prependUserContext } from "../core/message-pipeline";
 import { ToolRegistry } from "../tools/registry";
 import { createTextMessage, createToolResultMessage } from "../types/messages";
-import { DeterministicCompactor } from "./compaction";
+import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction";
 import { DefaultContextManager } from "./context-manager";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts";
 
@@ -31,6 +31,17 @@ class ContextOverflowThenSuccessGateway implements ModelGateway {
     this.sawBoundaryOnRetry = request.messages.some((message) => message.metadata?.compactBoundary === true);
     yield { type: "assistant_message", message: createTextMessage("assistant", "compacted") };
     yield { type: "response_completed", responseId: "resp_context", stopReason: "completed" };
+  }
+}
+
+class SummaryGateway implements ModelGateway {
+  compactCalls = 0;
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    if (request.queryOrigin !== "compact") throw new Error(`Unexpected query origin: ${request.queryOrigin}`);
+    this.compactCalls += 1;
+    yield { type: "assistant_delta", text: "Goal: keep working.\nPending Work: finish validation." };
+    yield { type: "response_completed", responseId: "compact_1", stopReason: "completed" };
   }
 }
 
@@ -67,6 +78,70 @@ async function main(): Promise<void> {
   });
   const compactOk = compacted.changed && compacted.messages.some((message) => message.metadata?.compactBoundary === true);
 
+  const toolUseOld = {
+    id: "assistant_old_tool",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "call_old", name: "search", input: { query: "old" } }],
+  };
+  const toolUseNew = {
+    id: "assistant_new_tool",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "call_new", name: "search", input: { query: "new" } }],
+  };
+  const oldResult = createToolResultMessage({ id: "call_old", name: "search", input: {} }, true, "old".repeat(1200));
+  const newResult = createToolResultMessage({ id: "call_new", name: "search", input: {} }, true, "new".repeat(1200));
+  const micro = microCompactIfNeeded([toolUseOld, oldResult, toolUseNew, newResult], { microCompactMaxChars: 100, keepRecentToolResults: 1 });
+  const oldOutput = micro.messages[1]?.blocks[0]?.type === "tool_result" ? micro.messages[1].blocks[0].output : undefined;
+  const newOutput = micro.messages[3]?.blocks[0]?.type === "tool_result" ? micro.messages[3].blocks[0].output : undefined;
+  const microOk = micro.changed && oldOutput === CLEARED_TOOL_RESULT_CONTENT && typeof newOutput === "string" && newOutput.startsWith("new");
+
+  const orphanResult = createToolResultMessage({ id: "call_orphan", name: "search", input: {} }, true, "orphan");
+  const paired = ensureToolResultPairing([toolUseOld, createTextMessage("assistant", "done"), orphanResult]);
+  const pairedJson = JSON.stringify(paired);
+  const pairingOk =
+    hasValidToolResultPairing(paired) &&
+    pairedJson.includes("call_old") &&
+    pairedJson.includes("synthetic failure result") &&
+    !pairedJson.includes("call_orphan");
+
+  const bigSearchUse = {
+    id: "assistant_big_search",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "call_big_search", name: "search", input: { query: "^|\\S", root: ".." } }],
+  };
+  const bigSearchResult = createToolResultMessage(
+    { id: "call_big_search", name: "search", input: {} },
+    true,
+    JSON.stringify({ query: "^|\\S", root: "..", matches: Array.from({ length: 600 }, (_, index) => `match ${index}: ${"x".repeat(80)}`) }),
+  );
+  const budgetedSearch = applyToolResultBudget([bigSearchUse, bigSearchResult], { maxSerializedLength: 1200 });
+  const microSearch = microCompactIfNeeded(budgetedSearch, { microCompactMaxChars: 100, keepRecentToolResults: 1 });
+  const repairedSearch = ensureToolResultPairing(microSearch.messages);
+  const searchOutput =
+    repairedSearch[1]?.blocks[0]?.type === "tool_result" ? String(repairedSearch[1].blocks[0].output) : "";
+  const searchRegressionOk =
+    hasValidToolResultPairing(repairedSearch) &&
+    searchOutput.startsWith("[Tool result truncated: original ") &&
+    !searchOutput.includes('"preview"') &&
+    !searchOutput.includes('"truncated"');
+
+  const summaryGateway = new SummaryGateway();
+  const modelCompactor = new ModelDrivenCompactor(summaryGateway);
+  const modelCompacted = await modelCompactor.compact(longHistory, {
+    snipMaxChars: 20000,
+    microCompactMaxChars: 19000,
+    autoCompactMaxChars: 1500,
+    keepRecentMessages: 3,
+  });
+  const modelCompactOk =
+    summaryGateway.compactCalls === 1 &&
+    modelCompacted.changed &&
+    modelCompacted.summary?.includes("Pending Work") === true &&
+    modelCompacted.messages.some((message) => message.metadata?.modelDriven === true);
+
   const gateway = new ContextOverflowThenSuccessGateway();
   const engine = new QueryEngine({
     modelGateway: gateway,
@@ -89,8 +164,8 @@ async function main(): Promise<void> {
     gateway.sawSystemContext &&
     events.includes("terminal:completed");
 
-  const ok = promptOk && contextOk && budgetOk && compactOk && reactiveOk;
-  console.log(JSON.stringify({ ok, promptOk, contextOk, budgetOk, compactOk, reactiveOk, events, calls: gateway.calls }, null, 2));
+  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && searchRegressionOk && modelCompactOk && reactiveOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, searchRegressionOk, modelCompactOk, reactiveOk, events, calls: gateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

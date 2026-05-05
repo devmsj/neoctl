@@ -6,7 +6,7 @@ import type { CanUseTool } from "../tools/tool";
 import type { QueryOptions } from "./query";
 import type { AgentEvent } from "../types/events";
 import type { Message } from "../types/messages";
-import { createTextMessage } from "../types/messages";
+import { createSystemInitMessage, createTextMessage } from "../types/messages";
 import { query } from "./query";
 import type { TerminalReason } from "./state";
 
@@ -23,6 +23,10 @@ export interface QueryEngineOptions {
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
+  commands?: readonly string[];
+  agents?: readonly string[];
+  skills?: readonly string[];
+  plugins?: readonly string[];
 }
 
 export class QueryEngine {
@@ -37,6 +41,19 @@ export class QueryEngine {
   async *sendUserText(text: string): AsyncGenerator<AgentEvent> {
     const userMessage = createTextMessage("user", text);
     this.history.push(userMessage);
+
+    yield {
+      type: "message",
+      message: createSystemInitMessage({
+        agentId: this.agentId,
+        tools: this.options.tools.names(),
+        model: this.options.model,
+        commands: [...(this.options.commands ?? [])],
+        agents: [...(this.options.agents ?? [])],
+        skills: [...(this.options.skills ?? [])],
+        plugins: [...(this.options.plugins ?? [])],
+      }),
+    };
 
     const queryOptions: QueryOptions = {
       agentId: this.agentId,

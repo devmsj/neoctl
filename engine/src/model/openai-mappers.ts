@@ -10,18 +10,28 @@ export interface ToolBuffer {
 
 export function buildResponsesInput(messages: readonly Message[]): unknown[] {
   const input: unknown[] = [];
+  const pairs = collectToolPairs(messages);
+
   for (const message of messages) {
     if (message.role === "progress") continue;
+
+    const text = textFromBlocks(message.blocks);
+    if (message.role === "assistant") {
+      if (text) input.push({ role: "assistant", content: [{ type: "output_text", text }] });
+      for (const block of message.blocks) {
+        if (block.type === "tool_use" && pairs.pairedIds.has(block.id)) input.push(toResponsesFunctionCall(block));
+      }
+      continue;
+    }
+
     for (const block of message.blocks) {
-      if (block.type === "tool_result") {
+      if (block.type === "tool_result" && pairs.pairedIds.has(block.toolUseId)) {
         input.push({ type: "function_call_output", call_id: block.toolUseId, output: serializeToolOutput(block.output) });
       }
     }
-    const text = textFromBlocks(message.blocks);
+
     if (!text) continue;
-    if (message.role === "assistant") {
-      input.push({ role: "assistant", content: [{ type: "output_text", text }] });
-    } else if (message.role === "system") {
+    if (message.role === "system") {
       input.push({ role: "developer", content: [{ type: "input_text", text }] });
     } else if (message.role !== "tool_result") {
       input.push({ role: "user", content: [{ type: "input_text", text }] });
@@ -32,14 +42,32 @@ export function buildResponsesInput(messages: readonly Message[]): unknown[] {
 
 export function buildChatMessages(request: ModelRequest): unknown[] {
   const messages: unknown[] = [];
+  const pairs = collectToolPairs(request.messages);
   const instructions = request.instructions ?? request.systemPrompt;
   if (instructions) messages.push({ role: "system", content: instructions });
+
   for (const message of request.messages) {
     const text = textFromBlocks(message.blocks);
+    const toolUses = message.blocks.filter(
+      (block): block is { type: "tool_use"; id: string; name: string; input: unknown } =>
+        block.type === "tool_use" && pairs.pairedIds.has(block.id),
+    );
+
     if (message.role === "user" && text) messages.push({ role: "user", content: text });
-    if (message.role === "assistant" && text) messages.push({ role: "assistant", content: text });
+    if (message.role === "assistant") {
+      if (toolUses.length) {
+        messages.push({
+          role: "assistant",
+          content: text || null,
+          tool_calls: toolUses.map(toChatToolCall),
+        });
+      } else if (text) {
+        messages.push({ role: "assistant", content: text });
+      }
+    }
+
     for (const block of message.blocks) {
-      if (block.type === "tool_result") {
+      if (block.type === "tool_result" && pairs.pairedIds.has(block.toolUseId)) {
         messages.push({ role: "tool", tool_call_id: block.toolUseId, content: serializeToolOutput(block.output) });
       }
     }
@@ -117,8 +145,48 @@ export function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function collectToolPairs(messages: readonly Message[]): { pairedIds: Set<string> } {
+  const toolUseIds = new Set<string>();
+  const toolResultIds = new Set<string>();
+
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      if (block.type === "tool_use") toolUseIds.add(block.id);
+      if (block.type === "tool_result") toolResultIds.add(block.toolUseId);
+    }
+  }
+
+  return {
+    pairedIds: new Set([...toolUseIds].filter((id) => toolResultIds.has(id))),
+  };
+}
+
 function textFromBlocks(blocks: readonly MessageBlock[]): string {
   return blocks.filter((block): block is { type: "text"; text: string } => block.type === "text").map((block) => block.text).join("\n");
+}
+
+function toResponsesFunctionCall(block: { type: "tool_use"; id: string; name: string; input: unknown }): Record<string, unknown> {
+  return {
+    type: "function_call",
+    call_id: block.id,
+    name: block.name,
+    arguments: serializeToolInput(block.input),
+  };
+}
+
+function toChatToolCall(block: { type: "tool_use"; id: string; name: string; input: unknown }): Record<string, unknown> {
+  return {
+    id: block.id,
+    type: "function",
+    function: {
+      name: block.name,
+      arguments: serializeToolInput(block.input),
+    },
+  };
+}
+
+function serializeToolInput(input: unknown): string {
+  return typeof input === "string" ? input : JSON.stringify(input ?? {});
 }
 
 function serializeToolOutput(output: unknown): string {

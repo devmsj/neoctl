@@ -1,5 +1,5 @@
 import { createTextMessage, type Message } from "../types/messages";
-import type { AgentToolResult, LocalAgentTask, LocalAgentTaskStatus } from "../agents/local-agent-task";
+import { writeLocalAgentTaskOutput, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task";
 
 export class TaskStore {
   private readonly tasks = new Map<string, LocalAgentTask>();
@@ -53,11 +53,11 @@ export class TaskStore {
   }
 
   complete(taskId: string, result: AgentToolResult): void {
-    this.patch(taskId, { status: "completed", result, completedAt: new Date().toISOString() });
+    this.patchTerminal(taskId, { status: "completed", result, completedAt: new Date().toISOString() });
   }
 
   fail(taskId: string, error: string): void {
-    this.patch(taskId, { status: "failed", error, completedAt: new Date().toISOString() });
+    this.patchTerminal(taskId, { status: "failed", error, completedAt: new Date().toISOString() });
   }
 
   kill(taskId: string, reason = "Task stopped"): void {
@@ -66,6 +66,7 @@ export class TaskStore {
     task.status = "killed";
     task.error = reason;
     task.completedAt = new Date().toISOString();
+    this.persistTerminalOutput(task);
     this.upsert(task);
   }
 
@@ -106,6 +107,21 @@ export class TaskStore {
     const task = this.require(taskId);
     Object.assign(task, fields);
     this.upsert(task);
+  }
+
+  private patchTerminal(taskId: string, fields: Partial<LocalAgentTask>): void {
+    const task = this.require(taskId);
+    Object.assign(task, fields);
+    this.persistTerminalOutput(task);
+    this.upsert(task);
+  }
+
+  private persistTerminalOutput(task: LocalAgentTask): void {
+    try {
+      writeLocalAgentTaskOutput(task);
+    } catch (error) {
+      task.error = task.error ?? `Failed to write output file: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   private require(taskId: string): LocalAgentTask {

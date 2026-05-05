@@ -1,6 +1,6 @@
 import { InMemoryAppState } from "../app/app-state";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction";
-import { DeterministicCompactor } from "../context/compaction";
+import { ModelDrivenCompactor } from "../context/compaction";
 import type { ContextManager, RuntimeContext } from "../context/context-manager";
 import { DefaultContextManager } from "../context/context-manager";
 import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway";
@@ -13,6 +13,7 @@ import { createTextMessage, type Message, type ToolUseRequest } from "../types/m
 import {
   appendSystemContext,
   applyToolResultBudget,
+  ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
   prependUserContext,
 } from "./message-pipeline";
@@ -80,7 +81,7 @@ async function* queryLoop(
   options: QueryOptions,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
-  const compactor = dependencies.compactor ?? new DeterministicCompactor();
+  const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
   const appState = new InMemoryAppState(options.agentId);
   const maxTurns = options.maxTurns ?? 12;
   let state = initialState;
@@ -109,7 +110,7 @@ async function* queryLoop(
     const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor);
     if (prepared.compaction?.changed) {
       state = { ...state, messages: prepared.compactedMessages };
-      yield { type: "state", phase: "compacting", detail: `${prepared.compaction.reason} freed ${prepared.compaction.tokensFreed ?? 0} chars` };
+      yield { type: "state", phase: "compacting", detail: formatCompactionDetail(prepared.compaction) };
       for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
         yield { type: "message", message };
       }
@@ -164,8 +165,9 @@ async function prepareMessagesForQuery(
   const budgeted = applyToolResultBudget(baseMessages, {
     maxSerializedLength: dependencies.maxToolResultSerializedLength,
   });
-  const compaction = await compactor.compact(budgeted, dependencies.contextBudget);
-  const compactedMessages = compaction.messages;
+  const pairedBudgeted = ensureToolResultPairing(budgeted);
+  const compaction = await compactor.compact(pairedBudgeted, dependencies.contextBudget);
+  const compactedMessages = ensureToolResultPairing(compaction.messages);
   return {
     messagesForQuery: prependUserContext(compactedMessages, context.userContext),
     compactedMessages,
@@ -217,7 +219,7 @@ async function* callModelForTurn(
     }
   } catch (error) {
     if (isContextLengthError(error) && !state.hasAttemptedReactiveCompact) {
-      const compactor = dependencies.compactor ?? new DeterministicCompactor();
+      const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
       const normalized = error instanceof Error ? error : new Error(String(error));
       const compacted = await (compactor.reactiveCompact?.(state.messages, normalized, dependencies.contextBudget) ?? compactor.compact(state.messages, dependencies.contextBudget));
       yield { type: "state", phase: "compacting", detail: "reactive compact retry after prompt-too-long" };
@@ -241,6 +243,7 @@ async function* callModelForTurn(
     return { terminal };
   }
 
+  appendSyntheticToolUseMessage(assistantMessages, toolUses);
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
 }
 
@@ -357,14 +360,37 @@ function buildNextTurnState(
     ...state,
     phase: "injecting_context",
     messages: allMessages,
-    modelInputMessages: input.previousResponseId ? input.toolResults : undefined,
-    previousResponseId: input.previousResponseId,
+    modelInputMessages: undefined,
+    previousResponseId: undefined,
     turnCount: state.turnCount + 1,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
     maxOutputTokensOverride: undefined,
     transition: { reason: "next_turn" },
   };
+}
+
+function appendSyntheticToolUseMessage(assistantMessages: Message[], toolUses: ToolUseRequest[]): void {
+  const missing = toolUses.filter((toolUse) =>
+    !assistantMessages.some((message) =>
+      message.blocks.some((block) => block.type === "tool_use" && block.id === toolUse.id),
+    ),
+  );
+  if (!missing.length) return;
+
+  assistantMessages.push({
+    id: `tool-use-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    role: "assistant",
+    createdAt: new Date().toISOString(),
+    blocks: missing.map((toolUse) => ({
+      type: "tool_use",
+      id: toolUse.id,
+      name: toolUse.name,
+      input: toolUse.input,
+    })),
+    isMeta: true,
+    metadata: { syntheticToolUse: true },
+  });
 }
 
 function extractToolUses(message: Message): ToolUseRequest[] {
@@ -375,6 +401,11 @@ function extractToolUses(message: Message): ToolUseRequest[] {
 
 function toolResultOk(message: Message): boolean {
   return message.blocks.every((block) => block.type !== "tool_result" || block.ok);
+}
+
+function formatCompactionDetail(compaction: CompactionResult): string {
+  if (compaction.reason === "microcompact" && compaction.summary) return compaction.summary;
+  return `${compaction.reason ?? "compact"} reduced context by ${compaction.tokensFreed ?? 0} chars`;
 }
 
 function terminalForModelError(error: unknown): TerminalReason {
