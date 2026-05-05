@@ -1,6 +1,10 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { InMemoryAppState } from "../app/app-state";
 import type { Message } from "../types/messages";
 import { echoTool } from "./builtins/echo-tool";
+import { editTool, writeTool } from "./builtins/edit-tool";
 import { execTool } from "./builtins/exec-tool";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools";
 import { searchTool } from "./builtins/search-tool";
@@ -49,6 +53,8 @@ const largeTool: Tool<{ size: number }> = {
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.register(echoTool);
+  registry.register(editTool);
+  registry.register(writeTool);
   registry.register(execTool);
   registry.register(listDirectoryTool);
   registry.register(readFileTool);
@@ -62,6 +68,7 @@ async function main(): Promise<void> {
     appState: new InMemoryAppState("tool-smoke", process.cwd()),
     emit: () => undefined,
   };
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-tools-smoke-"));
 
   const valid = await runToolUseToMessages({ id: "echo1", name: "say", input: { text: "ok" } }, context);
   const invalid = await runToolUseToMessages({ id: "echo2", name: "echo", input: { text: "" } }, context);
@@ -99,6 +106,22 @@ async function main(): Promise<void> {
     { id: "exec-fail", name: "exec", input: { command: "node -e \"process.exit(7)\"", timeoutMs: 10000 } },
     context,
   );
+  const editCreate = await runToolUseToMessages(
+    { id: "edit-create", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "", newString: "alpha\nbeta\nalpha\n" } },
+    context,
+  );
+  const editAmbiguous = await runToolUseToMessages(
+    { id: "edit-ambiguous", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma" } },
+    context,
+  );
+  const editReplaceAll = await runToolUseToMessages(
+    { id: "edit-all", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma", replaceAll: true } },
+    context,
+  );
+  const write = await runToolUseToMessages(
+    { id: "write", name: "write", input: { path: path.join(tempDir, "nested", "write.txt"), content: "full\ncontent\n" } },
+    context,
+  );
   const searchOutput = toolOutput(search[search.length - 1]) as {
     cwd?: string;
     searchPath?: string;
@@ -126,6 +149,20 @@ async function main(): Promise<void> {
   };
   const execFailureOutput = toolOutput(execFailure[execFailure.length - 1]) as {
     exitCode?: number | null;
+  };
+  const editCreateOutput = toolOutput(editCreate[editCreate.length - 1]) as {
+    operation?: string;
+    replacements?: number;
+    patch?: unknown[];
+  };
+  const editReplaceAllOutput = toolOutput(editReplaceAll[editReplaceAll.length - 1]) as {
+    operation?: string;
+    replacements?: number;
+    patch?: unknown[];
+  };
+  const writeOutput = toolOutput(write[write.length - 1]) as {
+    operation?: string;
+    bytesAfter?: number;
   };
   const started = Date.now();
   const batch = await runTools(
@@ -180,12 +217,28 @@ async function main(): Promise<void> {
       !toolOk(execFailure[execFailure.length - 1]) &&
       typeof execFailureOutput.exitCode === "number" &&
       execFailureOutput.exitCode !== 0,
+    editCreateOk:
+      toolOk(editCreate[editCreate.length - 1]) &&
+      editCreateOutput.operation === "create" &&
+      editCreateOutput.replacements === 1 &&
+      (editCreateOutput.patch?.length ?? 0) > 0,
+    editAmbiguousRejected: !toolOk(editAmbiguous[editAmbiguous.length - 1]),
+    editReplaceAllOk:
+      toolOk(editReplaceAll[editReplaceAll.length - 1]) &&
+      editReplaceAllOutput.operation === "edit" &&
+      editReplaceAllOutput.replacements === 2 &&
+      (await fs.readFile(path.join(tempDir, "sample.txt"), "utf8")).includes("gamma\nbeta\ngamma"),
+    writeOk:
+      toolOk(write[write.length - 1]) &&
+      writeOutput.operation === "create" &&
+      writeOutput.bytesAfter === Buffer.byteLength("full\ncontent\n") &&
+      (await fs.readFile(path.join(tempDir, "nested", "write.txt"), "utf8")) === "full\ncontent\n",
     batchMessages: batch.messages.length === 4,
     batchConcurrent: elapsedMs < 110,
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, write: write.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

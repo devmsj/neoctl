@@ -5,6 +5,10 @@ dist/
 .env.*
 !.env.example
 *.log
+model-call-*.request.json
+model-call-*.events.jsonl
+model-call-*.final.json
+model-call-*.final.txt
 .agent/sessions/
 .agent-tasks/
 .DS_Store
