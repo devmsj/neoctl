@@ -15,6 +15,7 @@
     "smoke:core": "tsx src/core/smoke-core-loop.ts",
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",
+    "smoke:agents": "tsx src/agents/smoke-agents.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {
