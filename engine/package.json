@@ -1,0 +1,22 @@
+{
+  "name": "agent-scaffold",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/repl/index.js",
+    "dev": "tsx src/repl/index.ts",
+    "smoke:openai": "tsx src/model/smoke-openai.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
