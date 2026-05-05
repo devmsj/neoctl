@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/repl/index.js",
     "dev": "tsx src/repl/index.ts",
+    "smoke:core": "tsx src/core/smoke-core-loop.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {

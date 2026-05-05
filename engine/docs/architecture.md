@@ -10,7 +10,10 @@ This map translates the parent README into source modules without implementing e
 | Single tool execution pipeline | `src/tools/run-tool-use.ts` |
 | Streaming tool execution | `src/tools/streaming-tool-executor.ts` |
 | Main query loop | `src/core/query.ts` |
+| Loop state and terminal reasons | `src/core/state.ts` |
+| Pre-model message pipeline | `src/core/message-pipeline.ts` |
 | Query engine / headless entry | `src/core/query-engine.ts` |
+| Core loop smoke test | `src/core/smoke-core-loop.ts` |
 | Sub-agent runner | `src/core/run-agent.ts` |
 | AgentTool | `src/agents/agent-tool.ts` |
 | Background task state | `src/agents/local-agent-task.ts`, `src/tasks/task-store.ts` |
@@ -29,4 +32,4 @@ This map translates the parent README into source modules without implementing e
 | Optional safety layer | `src/safety/*` |
 | REPL UI layer | `src/repl/*` |
 
-The API layer now supports OpenAI Responses first and an OpenAI-compatible Chat Completions fallback for gateways that do not expose `/v1/responses`.
+Chapter 01 is implemented as a runnable multi-turn state machine. Chapter 07 supports OpenAI Responses first and an OpenAI-compatible Chat Completions fallback for gateways that do not expose `/v1/responses`.

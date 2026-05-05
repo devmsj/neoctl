@@ -1,6 +1,7 @@
 export * from "./core/query-engine";
 export * from "./core/query";
 export * from "./core/state";
+export * from "./core/message-pipeline";
 export * from "./model/model-gateway";
 export * from "./model/openai-responses-adapter";
 export * from "./model/provider-adapter";

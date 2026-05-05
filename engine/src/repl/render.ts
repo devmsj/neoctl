@@ -18,6 +18,12 @@ export function renderEvent(event: AgentEvent): string | undefined {
       return `tool started: ${event.toolUse.name}`;
     case "tool.finished":
       return `tool finished: ${event.toolUse.name} (${event.ok ? "ok" : "failed"})`;
+    case "usage":
+      return undefined;
+    case "retrying":
+      return `retrying model request: attempt ${event.attempt}, delay ${event.delayMs}ms, ${event.error.message}`;
+    case "terminal":
+      return `[stopped] ${event.reason}${event.detail ? `: ${event.detail}` : ""}`;
     case "error":
       return `error: ${event.error.message}`;
   }

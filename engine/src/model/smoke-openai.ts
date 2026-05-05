@@ -1,7 +1,9 @@
 import { createTextMessage } from "../types/messages";
+import { loadDotEnvIfPresent } from "./env";
 import { OpenAIResponsesAdapter } from "./openai-responses-adapter";
 
 async function main(): Promise<void> {
+  loadDotEnvIfPresent(undefined, { override: true });
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is required");
 
