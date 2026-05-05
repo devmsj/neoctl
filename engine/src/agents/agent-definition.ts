@@ -33,7 +33,6 @@ export const FORK_AGENT: AgentDefinition = {
   tools: ["*"],
   model: "inherit",
   permissionMode: "bubble",
-  maxTurns: 200,
   buildSystemPrompt: () => "",
 };
 
@@ -42,7 +41,6 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   whenToUse: "General engineering worker for scoped implementation, investigation, or verification tasks.",
   tools: ["*"],
   permissionMode: "inherit",
-  maxTurns: 12,
   buildSystemPrompt: () => [
     "You are a subagent worker inside the same TypeScript scaffold runtime.",
     "Stay within the assigned prompt. Use available tools when needed and return a concise final result.",

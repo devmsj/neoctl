@@ -88,7 +88,7 @@ async function* queryLoop(
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
   const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
   const appState = new InMemoryAppState(options.agentId);
-  const maxTurns = options.maxTurns ?? 12;
+  const maxTurns = options.maxTurns;
   let state = initialState;
   let toolContext: ToolUseContext = {
     agentId: options.agentId,
@@ -102,7 +102,7 @@ async function* queryLoop(
 
   while (true) {
     if (options.abortSignal?.aborted) return "aborted_streaming";
-    if (state.turnCount >= maxTurns) return "max_turns";
+    if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
     state = beginTurn(state);
     toolContext = { ...toolContext, queryTracking: state.queryTracking, messages: state.messages };
@@ -291,6 +291,8 @@ async function* callModelForTurn(
     yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
     return { terminal };
   }
+
+  if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
 
   appendSyntheticToolUseMessage(assistantMessages, toolUses);
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };

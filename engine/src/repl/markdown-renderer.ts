@@ -1,0 +1,406 @@
+import React, { useEffect, useState } from "react";
+import { Box, Text } from "ink";
+import { Lexer, type Token, type Tokens } from "marked";
+import { bundledLanguages, codeToTokens, type ThemedToken } from "shiki";
+
+const e = React.createElement;
+const SHIKI_THEME = "dark-plus";
+
+export type MarkdownLineKind = "system" | "user" | "assistant" | "tool" | "error" | "meta";
+
+interface Segment {
+  text: string;
+  color?: string;
+  backgroundColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  dimColor?: boolean;
+}
+
+interface RenderedLine {
+  segments: Segment[];
+  color?: string;
+}
+
+const tokenCache = new Map<string, Promise<Segment[][]>>();
+
+export function MarkdownText({ text, kind, width }: { text: string; kind: MarkdownLineKind; width: number }) {
+  const [lines, setLines] = useState<RenderedLine[] | undefined>();
+
+  useEffect(() => {
+    let cancelled = false;
+    setLines(undefined);
+    const timer = setTimeout(() => {
+      void renderMarkdownToLines(text, kind, width).then((rendered) => {
+        if (!cancelled) setLines(rendered);
+      });
+    }, 40);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [text, kind, width]);
+
+  if (!lines) {
+    return e(Text, { color: kind === "meta" ? "gray" : undefined }, text || "");
+  }
+
+  return e(
+    Box,
+    { flexDirection: "column" },
+    ...lines.map((line, lineIndex) =>
+      e(
+        Text,
+        { key: `md-line-${lineIndex}`, color: line.color ?? (kind === "meta" ? "gray" : undefined) },
+        ...line.segments.map((segment, segmentIndex) =>
+          e(
+            Text,
+            {
+              key: `md-seg-${lineIndex}-${segmentIndex}`,
+              color: segment.color,
+              backgroundColor: segment.backgroundColor,
+              bold: segment.bold,
+              italic: segment.italic,
+              underline: segment.underline,
+              dimColor: segment.dimColor,
+            },
+            segment.text,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+async function renderMarkdownToLines(markdown: string, kind: MarkdownLineKind, width: number): Promise<RenderedLine[]> {
+  const normalized = normalizeIndentedFences(markdown.replace(/\r\n/g, "\n"));
+  const tokens = Lexer.lex(normalized, { gfm: true });
+  const lines: RenderedLine[] = [];
+  const usableWidth = Math.max(10, width);
+
+  for (const token of tokens) {
+    await appendToken(lines, token, kind, usableWidth);
+  }
+
+  return lines.length ? lines : [{ segments: [{ text: "" }] }];
+}
+
+async function appendToken(lines: RenderedLine[], token: Token, kind: MarkdownLineKind, width: number): Promise<void> {
+  switch (token.type) {
+    case "space":
+      if (lines.length > 0) lines.push({ segments: [{ text: " " }] });
+      return;
+    case "heading": {
+      const heading = token as Tokens.Heading;
+      const prefix = `${"#".repeat(heading.depth)} `;
+      const segments = [
+        { text: prefix, color: heading.depth <= 2 ? "cyan" : "blue", bold: true },
+        ...inlineSegments(heading.tokens, { bold: true, color: heading.depth <= 2 ? "cyan" : "blue" }),
+      ];
+      lines.push(...wrapSegments(segments, width).map((wrapped) => ({ segments: wrapped })));
+      return;
+    }
+    case "paragraph": {
+      const paragraph = token as Tokens.Paragraph;
+      appendWrapped(lines, inlineSegments(paragraph.tokens, {}), width, kind);
+      return;
+    }
+    case "text": {
+      const textToken = token as Tokens.Text;
+      appendWrapped(lines, inlineSegments(textToken.tokens ?? [textToken], {}), width, kind);
+      return;
+    }
+    case "code": {
+      await appendCode(lines, token as Tokens.Code, width);
+      return;
+    }
+    case "list": {
+      await appendList(lines, token as Tokens.List, kind, width);
+      return;
+    }
+    case "blockquote": {
+      await appendBlockquote(lines, token as Tokens.Blockquote, kind, width);
+      return;
+    }
+    case "hr":
+      lines.push({ segments: [{ text: "-".repeat(Math.min(width, 80)), color: "gray" }] });
+      return;
+    case "table": {
+      appendTable(lines, token as Tokens.Table, width);
+      return;
+    }
+    case "html": {
+      const html = token as Tokens.HTML;
+      appendWrapped(lines, [{ text: html.text || html.raw, color: "gray" }], width, kind);
+      return;
+    }
+    default: {
+      const fallback = fallbackText(token);
+      if (fallback) appendWrapped(lines, [{ text: fallback }], width, kind);
+    }
+  }
+}
+
+function appendWrapped(lines: RenderedLine[], segments: Segment[], width: number, kind: MarkdownLineKind): void {
+  const wrapped = wrapSegments(segments, width);
+  for (const line of wrapped) {
+    lines.push({ segments: line, color: kind === "error" ? "red" : undefined });
+  }
+}
+
+async function appendCode(lines: RenderedLine[], token: Tokens.Code, width: number): Promise<void> {
+  const language = normalizeLanguage(token.lang ?? "");
+  const highlighted = await highlightCode(token.text, language);
+  for (const line of highlighted) {
+    lines.push({
+      segments: line.length ? line : [{ text: " " }],
+    });
+  }
+}
+
+async function appendList(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): Promise<void> {
+  let number = typeof token.start === "number" ? token.start : 1;
+  for (const item of token.items) {
+    const marker = token.ordered ? `${number}. ` : "- ";
+    number += 1;
+    const segments = inlineSegments(flatInlineTokens(item.tokens, item.text), {});
+    const wrapped = wrapSegments(segments, Math.max(10, width - marker.length));
+    for (const [index, wrappedLine] of wrapped.entries()) {
+      lines.push({
+        color: kind === "error" ? "red" : undefined,
+        segments: [{ text: index === 0 ? marker : " ".repeat(marker.length), color: "gray" }, ...wrappedLine],
+      });
+    }
+  }
+}
+
+async function appendBlockquote(
+  lines: RenderedLine[],
+  token: Tokens.Blockquote,
+  kind: MarkdownLineKind,
+  width: number,
+): Promise<void> {
+  const nested: RenderedLine[] = [];
+  for (const child of token.tokens) {
+    await appendToken(nested, child, kind, Math.max(10, width - 2));
+  }
+  for (const line of nested) {
+    lines.push({ segments: [{ text: "| ", color: "gray" }, ...line.segments] });
+  }
+}
+
+function appendTable(lines: RenderedLine[], token: Tokens.Table, width: number): void {
+  const renderRow = (cells: Tokens.TableCell[]) => cells.map((cell) => plainFromInline(cell.tokens)).join("  |  ");
+  const rows = [renderRow(token.header), ...token.rows.map(renderRow)];
+  for (const row of rows) {
+    lines.push({ segments: [{ text: truncate(row, width), color: "gray" }] });
+  }
+}
+
+function inlineSegments(tokens: Token[], base: Omit<Segment, "text">): Segment[] {
+  const segments: Segment[] = [];
+  for (const token of tokens) {
+    switch (token.type) {
+      case "text": {
+        const textToken = token as Tokens.Text;
+        if (textToken.tokens?.length) segments.push(...inlineSegments(textToken.tokens, base));
+        else segments.push({ ...base, text: textToken.text });
+        break;
+      }
+      case "strong":
+        segments.push(...inlineSegments((token as Tokens.Strong).tokens, { ...base, bold: true }));
+        break;
+      case "em":
+        segments.push(...inlineSegments((token as Tokens.Em).tokens, { ...base, italic: true }));
+        break;
+      case "codespan":
+        segments.push({ ...base, text: (token as Tokens.Codespan).text, color: "yellow" });
+        break;
+      case "link":
+        segments.push(...inlineSegments((token as Tokens.Link).tokens, { ...base, color: "cyan", underline: true }));
+        break;
+      case "del":
+        segments.push(...inlineSegments((token as Tokens.Del).tokens, { ...base, dimColor: true }));
+        break;
+      case "br":
+        segments.push({ ...base, text: "\n" });
+        break;
+      case "escape":
+        segments.push({ ...base, text: (token as Tokens.Escape).text });
+        break;
+      case "image":
+        segments.push({ ...base, text: (token as Tokens.Image).text, color: "cyan" });
+        break;
+      default:
+        segments.push({ ...base, text: fallbackText(token) });
+    }
+  }
+  return mergeAdjacent(segments.filter((segment) => segment.text.length > 0));
+}
+
+function flatInlineTokens(tokens: Token[], fallback: string): Token[] {
+  if (tokens.length === 1 && tokens[0]?.type === "paragraph") return (tokens[0] as Tokens.Paragraph).tokens;
+  const inline = tokens.flatMap((token) => {
+    if (token.type === "paragraph") return (token as Tokens.Paragraph).tokens;
+    if (token.type === "text") return [token];
+    return [];
+  });
+  return inline.length ? inline : Lexer.lexInline(fallback);
+}
+
+function plainFromInline(tokens: Token[]): string {
+  return inlineSegments(tokens, {}).map((segment) => segment.text).join("");
+}
+
+function fallbackText(token: Token): string {
+  const value = token as Token & { text?: string; raw?: string };
+  return value.text ?? value.raw ?? "";
+}
+
+function wrapSegments(segments: Segment[], width: number): Segment[][] {
+  const lines: Segment[][] = [[]];
+  let used = 0;
+  const max = Math.max(1, width);
+
+  for (const segment of segments) {
+    for (const part of segment.text.split(/(\n)/u)) {
+      if (part === "") continue;
+      if (part === "\n") {
+        lines.push([]);
+        used = 0;
+        continue;
+      }
+      for (const char of [...part]) {
+        if (used >= max) {
+          lines.push([]);
+          used = 0;
+        }
+        const current = lines[lines.length - 1] ?? [];
+        const previous = current[current.length - 1];
+        if (previous && sameStyle(previous, segment)) {
+          previous.text += char;
+        } else {
+          current.push({ ...segment, text: char });
+        }
+        used += 1;
+      }
+    }
+  }
+
+  return lines.length ? lines : [[{ text: "" }]];
+}
+
+function mergeAdjacent(segments: Segment[]): Segment[] {
+  const merged: Segment[] = [];
+  for (const segment of segments) {
+    const previous = merged[merged.length - 1];
+    if (previous && sameStyle(previous, segment)) previous.text += segment.text;
+    else merged.push({ ...segment });
+  }
+  return merged;
+}
+
+function sameStyle(left: Segment, right: Segment): boolean {
+  return (
+    left.color === right.color &&
+    left.backgroundColor === right.backgroundColor &&
+    left.bold === right.bold &&
+    left.italic === right.italic &&
+    left.underline === right.underline &&
+    left.dimColor === right.dimColor
+  );
+}
+
+async function highlightCode(code: string, language: string): Promise<Segment[][]> {
+  const cacheKey = `${SHIKI_THEME}\0${language}\0${code}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = highlightCodeUncached(code, language);
+  tokenCache.set(cacheKey, promise);
+  const firstKey = tokenCache.keys().next().value;
+  if (tokenCache.size > 200 && firstKey) tokenCache.delete(firstKey);
+  return promise;
+}
+
+async function highlightCodeUncached(code: string, language: string): Promise<Segment[][]> {
+  if (!code) return [[{ text: "" }]];
+  if (language === "text") return code.split("\n").map((line) => [{ text: line }]);
+
+  try {
+    const result = await codeToTokens(code, {
+      lang: language as never,
+      theme: SHIKI_THEME,
+      tokenizeMaxLineLength: 1000,
+      tokenizeTimeLimit: 500,
+    });
+    return result.tokens.map((line) => line.map(tokenToSegment));
+  } catch {
+    return code.split("\n").map((line) => [{ text: line }]);
+  }
+}
+
+function tokenToSegment(token: ThemedToken): Segment {
+  const fontStyle = Number(token.fontStyle ?? 0);
+  return {
+    text: token.content,
+    color: token.color,
+    backgroundColor: token.bgColor,
+    italic: (fontStyle & 1) !== 0,
+    bold: (fontStyle & 2) !== 0,
+    underline: (fontStyle & 4) !== 0,
+  };
+}
+
+function normalizeLanguage(language: string): string {
+  const normalized = language.trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    cjs: "javascript",
+    js: "javascript",
+    jsx: "jsx",
+    mjs: "javascript",
+    node: "javascript",
+    py: "python",
+    python3: "python",
+    rb: "ruby",
+    sh: "bash",
+    shell: "bash",
+    ts: "typescript",
+    tsx: "tsx",
+    yml: "yaml",
+  };
+  const lang = aliases[normalized] ?? normalized;
+  if (!lang) return "text";
+  return Object.prototype.hasOwnProperty.call(bundledLanguages, lang) ? lang : "text";
+}
+
+function normalizeIndentedFences(markdown: string): string {
+  const lines = markdown.split("\n");
+  const result: string[] = [];
+  let fenceIndent: string | undefined;
+
+  for (const line of lines) {
+    if (!fenceIndent) {
+      const opening = line.match(/^([ \t]{4,})(```+|~~~+)/u);
+      if (opening) {
+        fenceIndent = opening[1];
+        result.push(line.slice(fenceIndent.length));
+        continue;
+      }
+      result.push(line);
+      continue;
+    }
+
+    const deindented = line.startsWith(fenceIndent) ? line.slice(fenceIndent.length) : line;
+    result.push(deindented);
+    if (/^(```+|~~~+)\s*$/u.test(deindented)) fenceIndent = undefined;
+  }
+
+  return result.join("\n");
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}

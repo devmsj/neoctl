@@ -64,7 +64,7 @@ export class QueryEngine {
     }
   }
 
-  async *sendUserText(text: string): AsyncGenerator<AgentEvent> {
+  async *sendUserText(text: string, options: { abortSignal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = createTextMessage("user", text);
     this.history.push(userMessage);
@@ -92,6 +92,7 @@ export class QueryEngine {
       queryOrigin: this.options.queryOrigin ?? "repl",
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
       maxTurns: this.options.maxTurns,
+      abortSignal: options.abortSignal,
     };
 
     const stream = query(
