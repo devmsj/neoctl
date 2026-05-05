@@ -17,6 +17,10 @@ This map translates the parent README into source modules without implementing e
 | Pre-model message pipeline | `src/core/message-pipeline.ts` |
 | Query engine / headless entry | `src/core/query-engine.ts` |
 | Core loop smoke test | `src/core/smoke-core-loop.ts` |
+| System prompt sections and cache boundary | `src/context/prompts.ts` |
+| Runtime user/system context | `src/context/context-manager.ts` |
+| Snip/micro/auto/reactive compaction | `src/context/compaction.ts` |
+| Context smoke test | `src/context/smoke-context.ts` |
 | Sub-agent runner | `src/core/run-agent.ts` |
 | AgentTool | `src/agents/agent-tool.ts` |
 | Background task state | `src/agents/local-agent-task.ts`, `src/tasks/task-store.ts` |
@@ -41,4 +45,4 @@ This map translates the parent README into source modules without implementing e
 | Optional safety layer | `src/safety/*` |
 | REPL UI layer | `src/repl/*` |
 
-Chapter 01 is implemented as a runnable multi-turn state machine. Chapter 02 is implemented as a lifecycle tool system with schema validation, permission hooks, result mapping, batching, and streaming execution. Chapter 07 is organized around a provider-neutral gateway plus a small provider factory; provider-specific settings live in typed provider config and the OpenAI-compatible adapter keeps Responses and Chat mappings split by API surface.
+Chapter 01 is implemented as a runnable multi-turn state machine. Chapter 02 is implemented as a lifecycle tool system with schema validation, permission hooks, result mapping, batching, and streaming execution. Chapter 03 now has prompt section assembly, user/system context separation, tool-result budgeting, compact-boundary handling, deterministic snip/micro/auto compaction, and reactive compact retry. Chapter 07 is organized around a provider-neutral gateway plus a small provider factory; provider-specific settings live in typed provider config and the OpenAI-compatible adapter keeps Responses and Chat mappings split by API surface.

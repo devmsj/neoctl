@@ -1,38 +1,154 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import type { ToolUseContext } from "../tools/tool";
 import type { Message } from "../types/messages";
-import { buildEffectiveSystemPrompt } from "./prompts";
+import {
+  buildDefaultSystemPromptSections,
+  buildEffectiveSystemPrompt,
+  type EffectiveSystemPromptOptions,
+  type PromptSection,
+} from "./prompts";
 
-export interface ContextBuildInput {
+export interface ContextBuildInput extends EffectiveSystemPromptOptions {
   agentId: string;
   messages: readonly Message[];
+  cwd?: string;
+  enabledTools?: readonly string[];
+  toolUseContext?: ToolUseContext;
+  omitProjectMemory?: boolean;
+  disableGitContext?: boolean;
+}
+
+export interface UserContext {
+  currentDate: string;
+  projectMemory?: string;
+  memoryFiles?: string[];
+}
+
+export interface SystemContext {
+  cwd: string;
+  platform: NodeJS.Platform;
+  git?: GitContext;
+}
+
+export interface GitContext {
+  branch?: string;
+  recentCommit?: string;
+  status?: string;
 }
 
 export interface RuntimeContext {
   systemPrompt: string;
-  userContext: Record<string, unknown>;
-  systemContext: Record<string, unknown>;
+  promptSections: PromptSection[];
+  userContext: UserContext;
+  systemContext: SystemContext;
 }
 
 export interface ContextManager {
   build(input: ContextBuildInput): Promise<RuntimeContext>;
 }
 
-export class NoopContextManager implements ContextManager {
-  async build(input: ContextBuildInput): Promise<RuntimeContext> {
-    return {
-      systemPrompt: buildEffectiveSystemPrompt([
-        {
-          name: "Agent Scaffold",
-          content: "You are running inside the TypeScript scaffold. Core behavior is intentionally not implemented yet.",
-          cacheStable: true,
-        },
-        {
-          name: "Runtime",
-          content: `agentId=${input.agentId}; messages=${input.messages.length}`,
-          cacheStable: false,
-        },
-      ]),
-      userContext: {},
-      systemContext: {},
-    };
+export interface DefaultContextManagerOptions {
+  cwd?: string;
+  memoryFileNames?: readonly string[];
+  currentDate?: () => string;
+}
+
+export class DefaultContextManager implements ContextManager {
+  private readonly cwd: string;
+  private userContextCache?: UserContext;
+  private systemContextCache?: SystemContext;
+
+  constructor(private readonly options: DefaultContextManagerOptions = {}) {
+    this.cwd = resolve(options.cwd ?? process.cwd());
   }
+
+  async build(input: ContextBuildInput): Promise<RuntimeContext> {
+    const cwd = resolve(input.cwd ?? this.cwd);
+    const promptSections = [
+      ...buildDefaultSystemPromptSections(input.enabledTools ?? []),
+      {
+        name: "Runtime",
+        cacheStable: false,
+        content: `agentId=${input.agentId}; messages=${input.messages.length}`,
+      },
+    ];
+
+    const systemPrompt = buildEffectiveSystemPrompt(promptSections, input);
+    const userContext = input.omitProjectMemory ? stripProjectMemory(this.getUserContext(cwd)) : this.getUserContext(cwd);
+    const systemContext = input.disableGitContext ? stripGitContext(this.getSystemContext(cwd)) : this.getSystemContext(cwd);
+
+    return { systemPrompt, promptSections, userContext, systemContext };
+  }
+
+  private getUserContext(cwd: string): UserContext {
+    if (this.userContextCache) return this.userContextCache;
+    const memory = readProjectMemory(cwd, this.options.memoryFileNames ?? DEFAULT_MEMORY_FILE_NAMES);
+    this.userContextCache = {
+      currentDate: this.options.currentDate?.() ?? new Date().toISOString().slice(0, 10),
+      ...(memory.content ? { projectMemory: memory.content, memoryFiles: memory.files } : {}),
+    };
+    return this.userContextCache;
+  }
+
+  private getSystemContext(cwd: string): SystemContext {
+    if (this.systemContextCache) return this.systemContextCache;
+    this.systemContextCache = {
+      cwd,
+      platform: process.platform,
+      git: readGitContext(cwd),
+    };
+    return this.systemContextCache;
+  }
+}
+
+export class NoopContextManager extends DefaultContextManager {}
+
+const DEFAULT_MEMORY_FILE_NAMES = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".agent/memory.md",
+  ".codex/memory.md",
+  ".github/copilot-instructions.md",
+];
+
+function readProjectMemory(cwd: string, memoryFileNames: readonly string[]): { content?: string; files?: string[] } {
+  const parts: string[] = [];
+  const files: string[] = [];
+  for (const name of memoryFileNames) {
+    const path = join(cwd, name);
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf8").trim();
+    if (!content) continue;
+    files.push(path);
+    parts.push(`### ${name}\n${content}`);
+  }
+  return parts.length ? { content: parts.join("\n\n"), files } : {};
+}
+
+function readGitContext(cwd: string): GitContext | undefined {
+  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const recentCommit = git(cwd, ["log", "-1", "--oneline"]);
+  const status = git(cwd, ["status", "--short"]);
+  if (!branch && !recentCommit && !status) return undefined;
+  return { branch, recentCommit, status: status || "clean" };
+}
+
+function git(cwd: string, args: readonly string[]): string | undefined {
+  try {
+    return execFileSync("git", [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stripProjectMemory(context: UserContext): UserContext {
+  const { projectMemory: _projectMemory, memoryFiles: _memoryFiles, ...rest } = context;
+  return rest;
+}
+
+function stripGitContext(context: SystemContext): SystemContext {
+  const { git: _git, ...rest } = context;
+  return rest;
 }

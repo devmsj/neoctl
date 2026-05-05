@@ -36,8 +36,8 @@ export function applyToolResultBudget(
   });
 }
 
-export function prependUserContext(messages: readonly Message[], userContext: Record<string, unknown>): Message[] {
-  const entries = Object.entries(userContext);
+export function prependUserContext<T extends object>(messages: readonly Message[], userContext: T): Message[] {
+  const entries = Object.entries(userContext).filter(([, value]) => value !== undefined);
   if (entries.length === 0) return [...messages];
   const contextText = entries
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
@@ -51,8 +51,8 @@ export function prependUserContext(messages: readonly Message[], userContext: Re
   ];
 }
 
-export function appendSystemContext(systemPrompt: string, systemContext: Record<string, unknown>): string {
-  const entries = Object.entries(systemContext);
+export function appendSystemContext<T extends object>(systemPrompt: string, systemContext: T): string {
+  const entries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
   if (entries.length === 0) return systemPrompt;
   const rendered = entries
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)

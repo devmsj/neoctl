@@ -1,4 +1,5 @@
 import type { ContextManager } from "../context/context-manager";
+import type { Compactor, ContextBudgetOptions } from "../context/compaction";
 import type { ModelGateway } from "../model/model-gateway";
 import type { ToolRegistry } from "../tools/registry";
 import type { CanUseTool } from "../tools/tool";
@@ -19,6 +20,8 @@ export interface QueryEngineOptions {
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
+  compactor?: Compactor;
+  contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
 }
 

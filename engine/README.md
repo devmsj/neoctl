@@ -1,6 +1,6 @@
 # Agent Scaffold Source
 
-This directory is a TypeScript implementation scaffold for the parent README. Chapters 01, 02, and 07 now have runnable paths; later chapters still expose stable module boundaries and placeholders.
+This directory is a TypeScript implementation scaffold for the parent README. Chapters 01, 02, 03, and 07 now have runnable paths; later chapters still expose stable module boundaries and placeholders.
 
 ## Shape
 
@@ -8,7 +8,7 @@ This directory is a TypeScript implementation scaffold for the parent README. Ch
 - `src/core`: the multi-turn query loop, loop state, message pipeline, `QueryEngine`, and child-agent runner entry points.
 - `src/model`: provider-neutral model gateway/config/factory, provider adapters, OpenAI Responses/Chat mappers, HTTP transport, SSE decoder, retry, and normalized errors.
 - `src/tools`: lifecycle tool contracts, registry, schema validation, execution pipeline, batch orchestration, and streaming executor.
-- `src/context`: prompt assembly, runtime context, and compaction policy boundaries.
+- `src/context`: system prompt sections, runtime user/system context, and deterministic compaction policies.
 - `src/agents`: `AgentTool`, local task lifecycle, and team-related contracts.
 - `src/tasks`: background task store and task-control service contracts.
 - `src/skills`: workflow-as-tool boundary.
@@ -23,6 +23,7 @@ npm run typecheck
 npm run build
 npm run smoke:core
 npm run smoke:tools
+npm run smoke:context
 npm run smoke:openai -- "Say pong"
 npm run dev
 ```
@@ -38,7 +39,7 @@ npm run dev
 - collects `tool_use` events, executes tools, and feeds `tool_result` messages into the next model turn
 - tracks `previousResponseId` for Responses API tool-result continuation
 - emits terminal reasons such as `completed`, `max_turns`, `model_error`, and abort states
-- keeps max-output-token recovery and hook/compact continuation points explicit for later chapters
+- keeps max-output-token recovery and reactive compact continuation points explicit
 
 `npm run smoke:core` verifies the tool-call follow-up loop with a fake model and the built-in `echo` tool.
 
@@ -53,6 +54,18 @@ npm run dev
 - `StreamingToolExecutor` can start tools as tool calls arrive and can synthesize discarded results on fallback/abort
 
 `npm run smoke:tools` verifies aliases, schema/custom validation, unknown-tool errors, max result truncation, and concurrent batch execution.
+
+## Context And Prompts
+
+`src/context` implements the Chapter 03 prompt/context path:
+
+- `prompts.ts` builds system prompt sections with `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`, replacement priority, proactive agent append mode, and prefix splitting for cache-aware providers
+- `DefaultContextManager` memoizes user context (`currentDate`, project memory files) and system context (`cwd`, platform, git branch/status/recent commit)
+- `message-pipeline.ts` prepends user context as a user message, appends system context to the system prompt, respects compact boundaries, and budgets oversized tool results
+- `DeterministicCompactor` provides snip, microcompact, autocompact, and reactive compact fallback without adding another model dependency
+- `query.ts` persists compact-boundary messages into the event stream and retries once after provider `context_length` errors
+
+`npm run smoke:context` verifies prompt boundary splitting, context injection, tool result budgeting, compaction, and prompt-too-long recovery.
 
 ## Model Providers
 

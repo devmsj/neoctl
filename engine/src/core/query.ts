@@ -1,6 +1,8 @@
 import { InMemoryAppState } from "../app/app-state";
+import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction";
+import { DeterministicCompactor } from "../context/compaction";
 import type { ContextManager, RuntimeContext } from "../context/context-manager";
-import { NoopContextManager } from "../context/context-manager";
+import { DefaultContextManager } from "../context/context-manager";
 import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway";
 import { ModelAPIError } from "../model/errors";
 import type { ToolRegistry } from "../tools/registry";
@@ -37,6 +39,8 @@ export interface QueryDependencies {
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
+  compactor?: Compactor;
+  contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
 }
@@ -46,6 +50,12 @@ interface ModelTurnOutput {
   toolUses: ToolUseRequest[];
   previousResponseId?: string;
   incompleteReason?: string;
+}
+
+interface PreparedMessages {
+  messagesForQuery: Message[];
+  compactedMessages: Message[];
+  compaction?: CompactionResult;
 }
 
 export async function* query(
@@ -69,7 +79,8 @@ async function* queryLoop(
   dependencies: QueryDependencies,
   options: QueryOptions,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
-  const contextManager = dependencies.contextManager ?? new NoopContextManager();
+  const contextManager = dependencies.contextManager ?? new DefaultContextManager();
+  const compactor = dependencies.compactor ?? new DeterministicCompactor();
   const appState = new InMemoryAppState(options.agentId);
   const maxTurns = options.maxTurns ?? 12;
   let state = initialState;
@@ -89,10 +100,26 @@ async function* queryLoop(
     toolContext = { ...toolContext, queryTracking: state.queryTracking, messages: state.messages };
     yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
 
-    const context = await contextManager.build({ agentId: options.agentId, messages: state.messages });
-    const messagesForQuery = prepareMessagesForQuery(state, context, dependencies);
+    const context = await contextManager.build({
+      agentId: options.agentId,
+      messages: state.messages,
+      enabledTools: dependencies.tools.definitions(toolContext).map((tool) => tool.name),
+      toolUseContext: toolContext,
+    });
+    const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor);
+    if (prepared.compaction?.changed) {
+      state = { ...state, messages: prepared.compactedMessages };
+      yield { type: "state", phase: "compacting", detail: `${prepared.compaction.reason} freed ${prepared.compaction.tokensFreed ?? 0} chars` };
+      for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
+        yield { type: "message", message };
+      }
+    }
 
-    const modelOutput = yield* callModelForTurn(state, context, messagesForQuery, dependencies, options, toolContext);
+    const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext);
+    if (modelOutput.reactiveCompact) {
+      state = modelOutput.reactiveCompact;
+      continue;
+    }
     if (modelOutput.terminal) return modelOutput.terminal;
     if (!modelOutput.output) return "model_error";
 
@@ -112,7 +139,6 @@ async function* queryLoop(
     toolContext = toolResult.context;
 
     state = buildNextTurnState(state, {
-      messagesForQuery,
       assistantMessages,
       toolResults: toolResult.messages,
       previousResponseId,
@@ -128,16 +154,23 @@ function beginTurn(state: QueryState): QueryState {
   };
 }
 
-function prepareMessagesForQuery(
+async function prepareMessagesForQuery(
   state: QueryState,
   context: RuntimeContext,
   dependencies: QueryDependencies,
-): Message[] {
+  compactor: Compactor,
+): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgeted = applyToolResultBudget(baseMessages, {
     maxSerializedLength: dependencies.maxToolResultSerializedLength,
   });
-  return prependUserContext(budgeted, context.userContext);
+  const compaction = await compactor.compact(budgeted, dependencies.contextBudget);
+  const compactedMessages = compaction.messages;
+  return {
+    messagesForQuery: prependUserContext(compactedMessages, context.userContext),
+    compactedMessages,
+    compaction: compaction.changed ? compaction : undefined,
+  };
 }
 
 async function* callModelForTurn(
@@ -147,7 +180,7 @@ async function* callModelForTurn(
   dependencies: QueryDependencies,
   options: QueryOptions,
   toolContext: ToolUseContext,
-): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput }, void> {
+): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput; reactiveCompact?: QueryState }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
   let previousResponseId = state.previousResponseId;
@@ -183,6 +216,26 @@ async function* callModelForTurn(
       }
     }
   } catch (error) {
+    if (isContextLengthError(error) && !state.hasAttemptedReactiveCompact) {
+      const compactor = dependencies.compactor ?? new DeterministicCompactor();
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      const compacted = await (compactor.reactiveCompact?.(state.messages, normalized, dependencies.contextBudget) ?? compactor.compact(state.messages, dependencies.contextBudget));
+      yield { type: "state", phase: "compacting", detail: "reactive compact retry after prompt-too-long" };
+      for (const message of compacted.messages.filter((message) => message.metadata?.compactBoundary === true)) {
+        yield { type: "message", message };
+      }
+      return {
+        reactiveCompact: {
+          ...state,
+          messages: compacted.messages,
+          modelInputMessages: compacted.messages,
+          hasAttemptedReactiveCompact: true,
+          turnCount: state.turnCount + 1,
+          transition: { reason: "reactive_compact_retry", detail: normalized.message },
+        },
+      };
+    }
+
     const terminal = terminalForModelError(error);
     yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
     return { terminal };
@@ -294,7 +347,6 @@ function maybeRecoverWithoutTools(
 function buildNextTurnState(
   state: QueryState,
   input: {
-    messagesForQuery: Message[];
     assistantMessages: Message[];
     toolResults: Message[];
     previousResponseId?: string;
@@ -332,4 +384,8 @@ function terminalForModelError(error: unknown): TerminalReason {
     if (error.category === "max_output_tokens") return "model_error";
   }
   return "model_error";
+}
+
+function isContextLengthError(error: unknown): boolean {
+  return error instanceof ModelAPIError && error.category === "context_length";
 }
