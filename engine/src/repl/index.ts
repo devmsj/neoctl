@@ -6,6 +6,7 @@ import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env";
 import { readModelProviderConfig } from "../model/config";
 import { ToolRegistry } from "../tools/registry";
 import { echoTool } from "../tools/builtins/echo-tool";
+import { execTool } from "../tools/builtins/exec-tool";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools";
 import { searchTool } from "../tools/builtins/search-tool";
 import { createAgentTool } from "../agents/agent-tool";
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
   tools.register(echoTool);
+  tools.register(execTool);
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(searchTool);

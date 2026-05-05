@@ -1,6 +1,7 @@
 import { InMemoryAppState } from "../app/app-state";
 import type { Message } from "../types/messages";
 import { echoTool } from "./builtins/echo-tool";
+import { execTool } from "./builtins/exec-tool";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools";
 import { searchTool } from "./builtins/search-tool";
 import { ToolRegistry } from "./registry";
@@ -48,6 +49,7 @@ const largeTool: Tool<{ size: number }> = {
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.register(echoTool);
+  registry.register(execTool);
   registry.register(listDirectoryTool);
   registry.register(readFileTool);
   registry.register(searchTool);
@@ -89,6 +91,14 @@ async function main(): Promise<void> {
     { id: "list-recursive", name: "list", input: { path: ".", recursive: true, maxEntries: 20, includeHidden: true } },
     context,
   );
+  const exec = await runToolUseToMessages(
+    { id: "exec", name: "exec", input: { command: "node -e \"console.log(process.cwd()); console.error('warn')\"", timeoutMs: 10000, maxOutputChars: 4000 } },
+    context,
+  );
+  const execFailure = await runToolUseToMessages(
+    { id: "exec-fail", name: "exec", input: { command: "node -e \"process.exit(7)\"", timeoutMs: 10000 } },
+    context,
+  );
   const searchOutput = toolOutput(search[search.length - 1]) as {
     cwd?: string;
     searchPath?: string;
@@ -107,6 +117,15 @@ async function main(): Promise<void> {
     exclude?: string[];
     excludedCounts?: Record<string, number>;
     entries?: Array<{ name: string; path: string }>;
+  };
+  const execOutput = toolOutput(exec[exec.length - 1]) as {
+    exitCode?: number | null;
+    stdout?: string;
+    stderr?: string;
+    cwd?: string;
+  };
+  const execFailureOutput = toolOutput(execFailure[execFailure.length - 1]) as {
+    exitCode?: number | null;
   };
   const started = Date.now();
   const batch = await runTools(
@@ -152,12 +171,21 @@ async function main(): Promise<void> {
       recursiveListOutput.excludedCounts?.[".agent-tasks"] !== undefined,
     recursiveListEntriesClean:
       recursiveListOutput.entries?.every((entry) => ![".git", ".idea", ".agent-tasks", "node_modules", "dist"].includes(entry.name)) === true,
+    execOk:
+      toolOk(exec[exec.length - 1]) &&
+      execOutput.exitCode === 0 &&
+      execOutput.stdout?.includes(process.cwd()) === true &&
+      execOutput.stderr?.includes("warn") === true,
+    execFailureRejected:
+      !toolOk(execFailure[execFailure.length - 1]) &&
+      typeof execFailureOutput.exitCode === "number" &&
+      execFailureOutput.exitCode !== 0,
     batchMessages: batch.messages.length === 4,
     batchConcurrent: elapsedMs < 110,
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

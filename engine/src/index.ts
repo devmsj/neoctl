@@ -30,6 +30,7 @@ export * from "./tools/tool-orchestration";
 export * from "./tools/streaming-tool-executor";
 export * from "./tools/schema";
 export * from "./tools/builtins/echo-tool";
+export * from "./tools/builtins/exec-tool";
 export * from "./tools/builtins/filesystem-tools";
 export * from "./tools/builtins/search-tool";
 export * from "./tools/builtins/ripgrep-binary";
