@@ -1,13 +1,13 @@
 # Agent Scaffold Source
 
-This directory is a TypeScript implementation scaffold for the parent README. Chapter 01 and Chapter 07 now have runnable paths; later chapters still expose stable module boundaries and placeholders.
+This directory is a TypeScript implementation scaffold for the parent README. Chapters 01, 02, and 07 now have runnable paths; later chapters still expose stable module boundaries and placeholders.
 
 ## Shape
 
 - `src/repl`: the UI layer. It owns terminal input, slash commands, and rendering streamed events.
 - `src/core`: the multi-turn query loop, loop state, message pipeline, `QueryEngine`, and child-agent runner entry points.
-- `src/model`: provider-neutral model gateway, OpenAI Responses/Chat-compatible adapter, HTTP transport, SSE decoder, retry, and normalized errors.
-- `src/tools`: tool contracts, registry, execution pipeline, and streaming orchestration placeholders.
+- `src/model`: provider-neutral model gateway/config/factory, provider adapters, OpenAI Responses/Chat mappers, HTTP transport, SSE decoder, retry, and normalized errors.
+- `src/tools`: lifecycle tool contracts, registry, schema validation, execution pipeline, batch orchestration, and streaming executor.
 - `src/context`: prompt assembly, runtime context, and compaction policy boundaries.
 - `src/agents`: `AgentTool`, local task lifecycle, and team-related contracts.
 - `src/tasks`: background task store and task-control service contracts.
@@ -22,6 +22,7 @@ npm install
 npm run typecheck
 npm run build
 npm run smoke:core
+npm run smoke:tools
 npm run smoke:openai -- "Say pong"
 npm run dev
 ```
@@ -41,19 +42,38 @@ npm run dev
 
 `npm run smoke:core` verifies the tool-call follow-up loop with a fake model and the built-in `echo` tool.
 
-## OpenAI-compatible API
+## Tool System
 
-The REPL uses `NotConfiguredModelGateway` when `OPENAI_API_KEY` is absent. When the key is present, it uses `OpenAIResponsesAdapter`.
+`src/tools` implements the Chapter 02 tool system contract:
 
-The project loads `.env` from the current working directory and lets it override stale process-level OpenAI variables, which is useful on developer machines with old global settings.
+- tools are lifecycle objects with identity, aliases, schemas, metadata, validators, execution, result mapping, progress rendering, and optional context modifiers
+- `ToolRegistry` keeps built-in tools as a stable prompt-cache prefix, supports aliases, filters deferred tools, and merges external tools deterministically
+- `runToolUse()` performs schema validation, custom validation, permission decision, progress emission, abort handling, result mapping, max-result truncation, new messages, and context modifier propagation
+- `runTools()` partitions tool calls into concurrency-safe batches and serial batches, applying context modifiers in tool-use order
+- `StreamingToolExecutor` can start tools as tool calls arrive and can synthesize discarded results on fallback/abort
+
+`npm run smoke:tools` verifies aliases, schema/custom validation, unknown-tool errors, max result truncation, and concurrent batch execution.
+
+## Model Providers
+
+The REPL calls `createModelGatewayFromEnv()`, which loads `.env`, reads `MODEL_*` settings into a small discriminated provider config, and constructs a provider through `provider-factory.ts`. Provider-specific switches stay inside provider-owned config (`OpenAIProviderConfig.openai.endpoint` today), while `OPENAI_*` variables remain supported as compatibility aliases.
 
 ```bash
-set OPENAI_API_KEY=your-api-key
-set OPENAI_BASE_URL=https://api.openai.com
-set OPENAI_MODEL=gpt-5.4-mini
-set OPENAI_ENDPOINT=auto
+set MODEL_PROVIDER=openai
+set MODEL_API_KEY=your-api-key
+set MODEL_BASE_URL=https://api.openai.com
+set MODEL_ID=gpt-5.5
+set MODEL_REASONING_EFFORT=high
+set MODEL_ENDPOINT=auto
 npm run smoke:openai -- "Say pong"
 npm run dev
 ```
 
-`OPENAI_ENDPOINT=auto` tries `/v1/responses` first and falls back to `/v1/chat/completions` for OpenAI-compatible gateways that do not expose Responses API.
+The OpenAI adapter is split into a small provider facade plus mappers:
+
+- `openai-adapter.ts`: endpoint selection, auth, transport, retry, and Responses-to-Chat fallback
+- `openai-responses-mapper.ts`: `/v1/responses` request and event mapping
+- `openai-chat-mapper.ts`: OpenAI-compatible `/v1/chat/completions` fallback mapping
+- `openai-mappers.ts`: shared tool/message/usage helpers
+
+`MODEL_ENDPOINT=auto` tries `/v1/responses` first and falls back to `/v1/chat/completions` for OpenAI-compatible gateways that do not expose Responses API.

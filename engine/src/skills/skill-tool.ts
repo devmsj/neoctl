@@ -22,14 +22,11 @@ export function createSkillTool(_catalog: SkillCatalog): Tool<{ name: string; in
       required: ["name"],
       additionalProperties: false,
     },
-    metadata: { readOnly: false, concurrent: true, visible: true },
+    metadata: { readOnly: false, concurrent: false, visible: true, shouldDefer: true, searchHint: "skill workflow" },
     validate(input: unknown) {
-      if (!input || typeof input !== "object" || typeof (input as { name?: unknown }).name !== "string") {
-        throw new Error("skill.name must be a string");
-      }
       return input as { name: string; input?: unknown };
     },
-    async execute(input) {
+    async call(input) {
       return { ok: false, output: { message: "SkillTool boundary exists but execution is not implemented yet.", input } };
     },
   };

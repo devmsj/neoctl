@@ -1,7 +1,8 @@
 import type { ContextManager } from "../context/context-manager";
 import type { ModelGateway } from "../model/model-gateway";
 import type { ToolRegistry } from "../tools/registry";
-import type { CanUseTool, QueryOptions } from "./query";
+import type { CanUseTool } from "../tools/tool";
+import type { QueryOptions } from "./query";
 import type { AgentEvent } from "../types/events";
 import type { Message } from "../types/messages";
 import { createTextMessage } from "../types/messages";

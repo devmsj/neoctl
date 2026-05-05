@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ModelGateway } from "./model-gateway";
-import { NotConfiguredModelGateway } from "./model-gateway";
-import { OpenAIResponsesAdapter, type OpenAIEndpointPreference } from "./openai-responses-adapter";
+import { createModelGatewayFromProcessEnv } from "./provider-factory";
+import { parseReasoning } from "./config";
 
 export interface DotEnvLoadOptions {
   override?: boolean;
@@ -10,21 +10,7 @@ export interface DotEnvLoadOptions {
 
 export function createModelGatewayFromEnv(): ModelGateway {
   loadDotEnvIfPresent(undefined, { override: true });
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return new NotConfiguredModelGateway();
-
-  return new OpenAIResponsesAdapter({
-    apiKey,
-    baseUrl: process.env.OPENAI_BASE_URL,
-    model: process.env.OPENAI_MODEL ?? "gpt-5.4-mini",
-    fallbackModel: process.env.OPENAI_FALLBACK_MODEL,
-    endpoint: parseEndpoint(process.env.OPENAI_ENDPOINT),
-    timeoutMs: parseNumber(process.env.OPENAI_TIMEOUT_MS),
-    streamIdleTimeoutMs: parseNumber(process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS),
-    maxRetries: parseNumber(process.env.OPENAI_MAX_RETRIES),
-    defaultMaxOutputTokens: parseNumber(process.env.OPENAI_MAX_OUTPUT_TOKENS) ?? 800,
-  });
+  return createModelGatewayFromProcessEnv(process.env);
 }
 
 export function loadDotEnvIfPresent(
@@ -46,20 +32,11 @@ export function loadDotEnvIfPresent(
   }
 }
 
+export { parseReasoning };
+
 function stripQuotes(value: string): string {
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1);
   }
   return value;
-}
-
-function parseEndpoint(value: string | undefined): OpenAIEndpointPreference | undefined {
-  if (value === "responses" || value === "chat" || value === "auto") return value;
-  return undefined;
-}
-
-function parseNumber(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
 }

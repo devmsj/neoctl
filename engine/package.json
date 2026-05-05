@@ -13,6 +13,7 @@
     "start": "node dist/repl/index.js",
     "dev": "tsx src/repl/index.ts",
     "smoke:core": "tsx src/core/smoke-core-loop.ts",
+    "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {

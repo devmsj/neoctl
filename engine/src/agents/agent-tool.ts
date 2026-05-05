@@ -20,14 +20,11 @@ export function createAgentTool(): Tool<AgentToolInput> {
       required: ["prompt"],
       additionalProperties: false,
     },
-    metadata: { readOnly: false, concurrent: true, visible: true, requiresApproval: false },
+    metadata: { readOnly: false, concurrent: false, visible: true, requiresApproval: false },
     validate(input: unknown): AgentToolInput {
-      if (!input || typeof input !== "object" || typeof (input as { prompt?: unknown }).prompt !== "string") {
-        throw new Error("agent.prompt must be a string");
-      }
       return input as AgentToolInput;
     },
-    async execute(input) {
+    async call(input) {
       return { ok: false, output: { message: "AgentTool boundary exists but spawning is not implemented yet.", input } };
     },
   };

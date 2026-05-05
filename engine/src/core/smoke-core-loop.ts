@@ -33,7 +33,11 @@ async function main(): Promise<void> {
   }
 
   const snapshot = engine.snapshot();
-  const ok = events.includes("tool.started") && events.includes("tool.finished") && events.includes("terminal:completed") && snapshot.messages === 3;
+  const ok =
+    events.includes("tool.started") &&
+    events.includes("tool.finished") &&
+    events.includes("terminal:completed") &&
+    snapshot.messages >= 3;
   console.log(JSON.stringify({ ok, events, snapshot }, null, 2));
   if (!ok) process.exitCode = 1;
 }

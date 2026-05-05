@@ -6,9 +6,12 @@ This map translates the parent README into source modules without implementing e
 | --- | --- |
 | Message model | `src/types/messages.ts` |
 | Tool interface and metadata | `src/tools/tool.ts` |
+| Tool schema validation | `src/tools/schema.ts` |
 | Tool pool assembly | `src/tools/registry.ts` |
 | Single tool execution pipeline | `src/tools/run-tool-use.ts` |
+| Batch tool orchestration | `src/tools/tool-orchestration.ts` |
 | Streaming tool execution | `src/tools/streaming-tool-executor.ts` |
+| Tool system smoke test | `src/tools/smoke-tool-system.ts` |
 | Main query loop | `src/core/query.ts` |
 | Loop state and terminal reasons | `src/core/state.ts` |
 | Pre-model message pipeline | `src/core/message-pipeline.ts` |
@@ -20,8 +23,14 @@ This map translates the parent README into source modules without implementing e
 | Task control tools | `src/tasks/task-tools.ts` |
 | Prompt and context assembly | `src/context/context-manager.ts`, `src/context/prompts.ts` |
 | Compaction boundary | `src/context/compaction.ts` |
-| Model gateway | `src/model/model-gateway.ts`, `src/model/env.ts` |
-| OpenAI provider adapter | `src/model/openai-responses-adapter.ts` |
+| Model gateway contract | `src/model/model-gateway.ts` |
+| Provider config and factory | `src/model/config.ts`, `src/model/provider-factory.ts`, `src/model/env.ts` |
+| Provider adapter contract | `src/model/provider-adapter.ts` |
+| OpenAI provider facade | `src/model/openai-adapter.ts` |
+| OpenAI compatibility export | `src/model/openai-responses-adapter.ts` |
+| OpenAI Responses mapper | `src/model/openai-responses-mapper.ts` |
+| OpenAI Chat fallback mapper | `src/model/openai-chat-mapper.ts` |
+| OpenAI shared mappers | `src/model/openai-mappers.ts` |
 | HTTP transport | `src/model/http-transport.ts` |
 | SSE decoder | `src/model/sse-decoder.ts` |
 | Retry runner | `src/model/retry-runner.ts` |
@@ -32,4 +41,4 @@ This map translates the parent README into source modules without implementing e
 | Optional safety layer | `src/safety/*` |
 | REPL UI layer | `src/repl/*` |
 
-Chapter 01 is implemented as a runnable multi-turn state machine. Chapter 07 supports OpenAI Responses first and an OpenAI-compatible Chat Completions fallback for gateways that do not expose `/v1/responses`.
+Chapter 01 is implemented as a runnable multi-turn state machine. Chapter 02 is implemented as a lifecycle tool system with schema validation, permission hooks, result mapping, batching, and streaming execution. Chapter 07 is organized around a provider-neutral gateway plus a small provider factory; provider-specific settings live in typed provider config and the OpenAI-compatible adapter keeps Responses and Chat mappings split by API surface.

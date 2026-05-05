@@ -11,6 +11,11 @@ export interface ModelUsage {
   raw?: unknown;
 }
 
+export interface ReasoningConfig {
+  effort?: "minimal" | "low" | "medium" | "high";
+  summary?: "auto" | "concise" | "detailed";
+}
+
 export interface TextFormat {
   type: "json_schema" | "text" | "json_object";
   name?: string;
@@ -27,7 +32,7 @@ export interface ModelRequest {
   tools: readonly ToolDefinition[];
   toolChoice?: "auto" | "none" | "required" | { type: "function"; name: string };
   maxOutputTokens?: number;
-  reasoning?: Record<string, unknown>;
+  reasoning?: ReasoningConfig;
   textFormat?: TextFormat;
   metadata?: Record<string, string>;
   previousResponseId?: string;
@@ -35,6 +40,7 @@ export interface ModelRequest {
   timeoutMs?: number;
   queryOrigin?: string;
   cancellation?: AbortSignal;
+  providerOptions?: Record<string, unknown>;
 }
 
 export type ModelStreamEvent =

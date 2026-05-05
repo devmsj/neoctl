@@ -1,17 +1,15 @@
 import { createTextMessage } from "../types/messages";
+import { readModelProviderConfig } from "./config";
 import { loadDotEnvIfPresent } from "./env";
-import { OpenAIResponsesAdapter } from "./openai-responses-adapter";
+import { createModelGatewayFromConfig } from "./provider-factory";
 
 async function main(): Promise<void> {
   loadDotEnvIfPresent(undefined, { override: true });
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is required");
+  const config = readModelProviderConfig(process.env);
+  if (!config) throw new Error("MODEL_API_KEY or OPENAI_API_KEY is required");
 
-  const gateway = new OpenAIResponsesAdapter({
-    apiKey,
-    baseUrl: process.env.OPENAI_BASE_URL,
-    model: process.env.OPENAI_MODEL ?? "gpt-5.4-mini",
-    endpoint: process.env.OPENAI_ENDPOINT === "chat" ? "chat" : process.env.OPENAI_ENDPOINT === "responses" ? "responses" : "auto",
+  const gateway = createModelGatewayFromConfig({
+    ...config,
     defaultMaxOutputTokens: 64,
     timeoutMs: 120000,
     streamIdleTimeoutMs: 120000,
@@ -22,7 +20,7 @@ async function main(): Promise<void> {
   let completed = false;
 
   for await (const event of gateway.stream({
-    model: process.env.OPENAI_MODEL,
+    model: config.model,
     instructions: "Answer with exactly one short word when possible.",
     messages: [createTextMessage("user", process.argv.slice(2).join(" ") || "Say pong")],
     tools: [],

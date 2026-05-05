@@ -17,9 +17,3 @@ export interface ProviderAdapter extends ModelGateway {
   readonly capabilities: ProviderCapabilities;
   stream(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
 }
-
-export interface RetryPolicy {
-  maxAttempts: number;
-  retryableStatusCodes: readonly number[];
-  fallbackModel?: string;
-}

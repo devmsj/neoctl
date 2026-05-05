@@ -1,14 +1,13 @@
-import type { AppStatePort } from "../app/app-state";
 import { InMemoryAppState } from "../app/app-state";
 import type { ContextManager, RuntimeContext } from "../context/context-manager";
 import { NoopContextManager } from "../context/context-manager";
 import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway";
 import { ModelAPIError } from "../model/errors";
 import type { ToolRegistry } from "../tools/registry";
-import { runToolUse } from "../tools/run-tool-use";
-import type { ToolUseContext } from "../tools/tool";
+import { runTools } from "../tools/tool-orchestration";
+import type { CanUseTool, ToolUseContext } from "../tools/tool";
 import type { AgentEvent } from "../types/events";
-import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages";
+import { createTextMessage, type Message, type ToolUseRequest } from "../types/messages";
 import {
   appendSystemContext,
   applyToolResultBudget,
@@ -21,16 +20,6 @@ import {
   type QueryState,
   type TerminalReason,
 } from "./state";
-
-export interface ToolPermissionDecision {
-  allowed: boolean;
-  reason?: string;
-}
-
-export type CanUseTool = (
-  toolUse: ToolUseRequest,
-  context: ToolUseContext,
-) => boolean | ToolPermissionDecision | Promise<boolean | ToolPermissionDecision>;
 
 export interface QueryOptions {
   agentId: string;
@@ -50,12 +39,6 @@ export interface QueryDependencies {
   contextManager?: ContextManager;
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
-}
-
-interface TurnResult {
-  terminal?: TerminalReason;
-  detail?: string;
-  nextState?: QueryState;
 }
 
 interface ModelTurnOutput {
@@ -90,18 +73,26 @@ async function* queryLoop(
   const appState = new InMemoryAppState(options.agentId);
   const maxTurns = options.maxTurns ?? 12;
   let state = initialState;
+  let toolContext: ToolUseContext = {
+    agentId: options.agentId,
+    abortSignal: options.abortSignal,
+    tools: dependencies.tools,
+    appState,
+    emit: () => undefined,
+  };
 
   while (true) {
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (state.turnCount >= maxTurns) return "max_turns";
 
     state = beginTurn(state);
+    toolContext = { ...toolContext, queryTracking: state.queryTracking, messages: state.messages };
     yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
 
     const context = await contextManager.build({ agentId: options.agentId, messages: state.messages });
     const messagesForQuery = prepareMessagesForQuery(state, context, dependencies);
 
-    const modelOutput = yield* callModelForTurn(state, context, messagesForQuery, dependencies, options);
+    const modelOutput = yield* callModelForTurn(state, context, messagesForQuery, dependencies, options, toolContext);
     if (modelOutput.terminal) return modelOutput.terminal;
     if (!modelOutput.output) return "model_error";
 
@@ -116,8 +107,9 @@ async function* queryLoop(
       return "completed";
     }
 
-    const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, appState);
+    const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, toolContext);
     if (toolResult.terminal) return toolResult.terminal;
+    toolContext = toolResult.context;
 
     state = buildNextTurnState(state, {
       messagesForQuery,
@@ -154,6 +146,7 @@ async function* callModelForTurn(
   messagesForQuery: Message[],
   dependencies: QueryDependencies,
   options: QueryOptions,
+  toolContext: ToolUseContext,
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
@@ -170,7 +163,7 @@ async function* callModelForTurn(
       fallbackModel: state.fallbackModel ?? options.fallbackModel,
       messages: messagesForQuery,
       systemPrompt: appendSystemContext(context.systemPrompt, context.systemContext),
-      tools: dependencies.tools.definitions(),
+      tools: dependencies.tools.definitions(toolContext),
       stream: true,
       maxOutputTokens: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
       previousResponseId: state.previousResponseId,
@@ -252,36 +245,28 @@ async function* executeToolsForTurn(
   toolUses: ToolUseRequest[],
   dependencies: QueryDependencies,
   options: QueryOptions,
-  appState: AppStatePort,
-): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; messages: Message[] }, void> {
+  context: ToolUseContext,
+): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; messages: Message[]; context: ToolUseContext }, void> {
   yield { type: "state", phase: "running_tools", detail: `${toolUses.length} tool call(s)` };
-  const toolResults: Message[] = [];
+  for (const toolUse of toolUses) yield { type: "tool.started", toolUse };
 
-  for (const toolUse of toolUses) {
-    if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: toolResults };
+  if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
-    const context: ToolUseContext = {
-      agentId: options.agentId,
-      abortSignal: options.abortSignal,
-      tools: dependencies.tools,
-      appState,
-      emit: () => undefined,
-    };
+  const result = await runTools(toolUses, context, { canUseTool: dependencies.canUseTool });
 
-    const decision = await canRunTool(toolUse, context, dependencies.canUseTool);
-    yield { type: "tool.started", toolUse };
-
-    const result = decision.allowed
-      ? await runToolUse(toolUse, context)
-      : createToolResultMessage(toolUse, false, { error: decision.reason ?? "Tool use denied" });
-
-    appState.appendMessage(result);
-    toolResults.push(result);
-    yield { type: "message", message: result };
-    yield { type: "tool.finished", toolUse, ok: decision.allowed && toolResultOk(result) };
+  for (const message of result.messages) {
+    context.appState.appendMessage(message);
+    yield { type: "message", message };
   }
 
-  return { messages: toolResults };
+  for (const toolUse of toolUses) {
+    const resultMessage = result.messages.find((message) =>
+      message.blocks.some((block) => block.type === "tool_result" && block.toolUseId === toolUse.id),
+    );
+    yield { type: "tool.finished", toolUse, ok: resultMessage ? toolResultOk(resultMessage) : false };
+  }
+
+  return { messages: result.messages, context: result.context };
 }
 
 function maybeRecoverWithoutTools(
@@ -328,17 +313,6 @@ function buildNextTurnState(
     maxOutputTokensOverride: undefined,
     transition: { reason: "next_turn" },
   };
-}
-
-async function canRunTool(
-  toolUse: ToolUseRequest,
-  context: ToolUseContext,
-  canUseTool?: CanUseTool,
-): Promise<ToolPermissionDecision> {
-  if (!canUseTool) return { allowed: true };
-  const decision = await canUseTool(toolUse, context);
-  if (typeof decision === "boolean") return { allowed: decision };
-  return decision;
 }
 
 function extractToolUses(message: Message): ToolUseRequest[] {
