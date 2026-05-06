@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
 import stripAnsi from "strip-ansi";
@@ -24,7 +24,7 @@ import { createAgentTool } from "../agents/agent-tool.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import { parseReplCommand, helpText } from "./commands.js";
-import { estimateMarkdownLineCount, MarkdownText } from "./markdown-renderer.js";
+import { MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 
@@ -156,9 +156,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
-  const [scrollOffset, setScrollOffset] = useState(0);
   const [animationTick, setAnimationTick] = useState(0);
-  const previousMessageContentHeight = useRef<number | undefined>(undefined);
   const inputRef = useRef(input);
   const cursorRef = useRef(cursor);
   const busyRef = useRef(busy);
@@ -285,7 +283,6 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
     setPromptState("", 0);
-    setScrollOffset(0);
     await handleCommandOrPrompt(text);
   };
 
@@ -372,34 +369,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
     setStatus(initialStatus(runtime));
-    setScrollOffset(0);
   }, [runtime]);
 
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
-  const promptHeight = estimatePromptHeight(input, cursor, width, prompt);
-  const contentWidth = messageContentWidth(width);
-  const toolWidth = toolContentWidth(width);
-  const maxMessageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
-  const messageLayout = useMemo(() => measureUiLines(lines, contentWidth, toolWidth), [lines, contentWidth, toolWidth]);
-  const messageContentHeight = messageLayout.totalHeight;
-  const messageViewportHeight = Math.min(messageContentHeight, maxMessageViewportHeight);
-  const maxScrollOffset = maxScrollForHeight(messageContentHeight, messageViewportHeight);
-  const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
-  const scrollPage = Math.max(1, messageViewportHeight - 1);
-
-  useEffect(() => {
-    const previousHeight = previousMessageContentHeight.current;
-    previousMessageContentHeight.current = messageContentHeight;
-    setScrollOffset((current) => {
-      const clamped = Math.min(current, maxScrollOffset);
-      if (current <= 0 || previousHeight === undefined) return clamped;
-      const heightDelta = messageContentHeight - previousHeight;
-      if (heightDelta <= 0) return clamped;
-      return Math.min(maxScrollOffset, clamped + heightDelta);
-    });
-  }, [messageContentHeight, maxScrollOffset]);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -414,22 +388,6 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         }
       }
       app.exit();
-      return;
-    }
-    if (key.pageUp || (key.ctrl && key.upArrow)) {
-      setScrollOffset((current) => Math.min(maxScrollOffset, current + scrollPage));
-      return;
-    }
-    if (key.pageDown || (key.ctrl && key.downArrow)) {
-      setScrollOffset((current) => Math.max(0, current - scrollPage));
-      return;
-    }
-    if (key.ctrl && key.home) {
-      setScrollOffset(maxScrollOffset);
-      return;
-    }
-    if (key.ctrl && key.end) {
-      setScrollOffset(0);
       return;
     }
     if (busyRef.current) return;
@@ -493,29 +451,21 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
-    e(MessageList, { lines, layout: messageLayout, height: messageViewportHeight, scrollOffset: effectiveScrollOffset, width }),
-    e(StatusBar, { status, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick, width }),
+    e(MessageList, { lines, width }),
+    e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
-interface MessageLayout {
-  heights: number[];
-  totalHeight: number;
-}
-
 const MessageList = React.memo(function MessageList(
-  { lines, layout, height, scrollOffset, width }:
-  { lines: UiLine[]; layout: MessageLayout; height: number; scrollOffset: number; width: number },
+  { lines, width }: { lines: UiLine[]; width: number },
 ) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
-  const visible = selectVisibleLines(lines, layout, height, scrollOffset);
   return e(
     Box,
-    { flexDirection: "column", height, overflow: "hidden" },
-    ...visible.map((entry) => {
-      const line = entry.line;
+    { flexDirection: "column" },
+    ...lines.map((line) => {
       if (line.previewStyle === "summary") {
         return e(
           Box,
@@ -523,67 +473,18 @@ const MessageList = React.memo(function MessageList(
           e(
             Box,
             { flexDirection: "column", width: toolWidth },
-            ...renderDisplayText(line, toolWidth, entry.maxLines, entry.skipTop),
+            ...renderDisplayText(line, toolWidth),
           ),
         );
       }
       return e(Box, { key: line.id, flexDirection: "row" },
         e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
-        e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth, entry.maxLines, entry.skipTop)),
+        e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
       );
     }),
   );
 });
 
-interface VisibleLine {
-  line: UiLine;
-  maxLines: number;
-  skipTop: number;
-}
-
-function selectVisibleLines(lines: UiLine[], layout: MessageLayout, maxHeight: number, scrollOffset: number): VisibleLine[] {
-  const selected: VisibleLine[] = [];
-  const viewportHeight = Math.max(1, maxHeight);
-  const viewportEnd = Math.max(0, layout.totalHeight - Math.max(0, scrollOffset));
-  const viewportStart = Math.max(0, viewportEnd - viewportHeight);
-  let lineStart = 0;
-
-  for (const [index, line] of lines.entries()) {
-    const lineHeight = layout.heights[index] ?? 0;
-    const lineEnd = lineStart + lineHeight;
-    const visibleStart = Math.max(lineStart, viewportStart);
-    const visibleEnd = Math.min(lineEnd, viewportEnd);
-    if (visibleEnd > visibleStart) {
-      selected.push({ line, skipTop: visibleStart - lineStart, maxLines: visibleEnd - visibleStart });
-    }
-    lineStart = lineEnd;
-    if (lineStart >= viewportEnd) break;
-  }
-
-  return selected;
-}
-
-function maxScrollForHeight(totalHeight: number, maxHeight: number): number {
-  return Math.max(0, totalHeight - Math.max(1, maxHeight));
-}
-
-function measureUiLines(lines: UiLine[], contentWidth: number, toolWidth: number): MessageLayout {
-  const heights = lines.map((line) => estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)));
-  return {
-    heights,
-    totalHeight: heights.reduce((total, height) => total + height, 0),
-  };
-}
-
-function displayWidthForLine(line: UiLine, contentWidth: number, toolWidth: number): number {
-  return line.previewStyle === "summary" || line.kind === "tool" ? toolWidth : contentWidth;
-}
-
-function estimateUiLineHeight(line: UiLine, width: number): number {
-  if (line.previewStyle === "summary") return renderSummaryLines(line, width).length;
-  if (line.format === "ansi") return wrapAnsi(line.text, Math.max(10, width), { hard: true, trim: false }).split("\n").length;
-  return estimateMarkdownLineCount(line.text, width);
-}
 function renderDisplayText(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
   if (line.previewStyle === "summary") return renderSummaryBlock(line, width, maxLines, skipTop);
   if (line.format === "ansi") return renderAnsiBlock(line.text, width, maxLines, skipTop);
@@ -730,11 +631,11 @@ interface StatusSegment {
 }
 
 function StatusBar(
-  { status, scrollOffset, maxScrollOffset, animationTick, width: terminalWidth }:
-  { status: UiStatus; scrollOffset: number; maxScrollOffset: number; animationTick: number; width: number },
+  { status, animationTick, width: terminalWidth }:
+  { status: UiStatus; animationTick: number; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const segments = fitStatusSegments(renderCompactStatusSegments(status, scrollOffset, maxScrollOffset, animationTick, width), width);
+  const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width), width);
   return e(
     Box,
     { marginTop: 1, width, height: 1, overflow: "hidden" },
@@ -748,8 +649,6 @@ function StatusBar(
 
 function renderCompactStatusSegments(
   status: UiStatus,
-  scrollOffset: number,
-  maxScrollOffset: number,
   animationTick: number,
   width: number,
 ): StatusSegment[] {
@@ -785,9 +684,6 @@ function renderCompactStatusSegments(
     { text: contextText },
   ];
 
-  if (scrollOffset > 0 && maxScrollOffset > 0) {
-    segments.push({ text: STATUS_SEPARATOR }, { text: `scroll ${scrollOffset}/${maxScrollOffset}` });
-  }
   return segments;
 }
 
@@ -1289,7 +1185,6 @@ function statusBarWidth(columns: number): number {
 
 interface TerminalSize {
   columns: number;
-  rows: number;
 }
 
 function useTerminalSize(): TerminalSize {
@@ -1310,13 +1205,7 @@ function useTerminalSize(): TerminalSize {
 function currentTerminalSize(): TerminalSize {
   return {
     columns: terminalColumns(),
-    rows: terminalRows(),
   };
-}
-
-function terminalRows(): number {
-  const rows = stdout.rows ?? 30;
-  return Math.max(8, rows - 1);
 }
 
 function terminalColumns(): number {
@@ -1331,10 +1220,6 @@ interface PromptVisualLine {
 
 function promptPrefix(busy: boolean): string {
   return busy ? "working> " : "agent> ";
-}
-
-function estimatePromptHeight(text: string, cursor: number, terminalWidth: number, prompt: string): number {
-  return promptTextView(text, cursor, terminalWidth, prompt).length;
 }
 
 function promptTextView(text: string, cursor: number, terminalWidth: number, prompt: string): PromptVisualLine[] {
@@ -1458,8 +1343,6 @@ function isFullWidthCodePoint(codePoint: number): boolean {
   );
 }
 
-const STATUS_BAR_ROWS = 2;
-const MESSAGE_VIEWPORT_PADDING_ROWS = 1;
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOKEN_PULSE_MS = 900;
 const STATUS_BLINK_TICKS = 2;
