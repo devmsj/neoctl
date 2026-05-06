@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import readline from "node:readline";
-import { stdin, stdout } from "node:process";
+import { stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Static, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
@@ -25,8 +24,6 @@ import { createAgentTool } from "../agents/agent-tool.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import { parseReplCommand, helpText } from "./commands.js";
-import { renderEvent } from "./render.js";
-import { ReplStatusLine } from "./status-line.js";
 import { estimateMarkdownLineCount, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
@@ -64,11 +61,6 @@ interface UiStatus {
 
 async function main(): Promise<void> {
   const runtime = await createRuntime();
-  if (!stdin.isTTY || process.env.AGENT_REPL_LEGACY === "1") {
-    await runLineRepl(runtime);
-    return;
-  }
-
   const instance = render(e(InkRepl, { runtime }), {
     exitOnCtrlC: false,
   });
@@ -463,7 +455,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }),
     e(MessageList, { lines: liveLines, height: liveOutputHeight, scrollOffset: effectiveScrollOffset }),
     e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
-    e(PromptLine, { text: input, cursor, busy, animationTick }),
+    e(PromptLine, { text: input, cursor, busy }),
   );
 }
 
@@ -690,23 +682,8 @@ function StatusBar(
 ) {
   const width = statusBarWidth();
   const phase = status.phase;
-  const activityPixel = statusActivityPixel(phase, animationTick);
-  const phaseWord = fixed(phaseLabelForStatus(phase).toUpperCase(), 11, "left");
-  const modelWidth = width >= 120 ? 24 : 18;
-  const model = fixed(truncateMiddle(status.metrics?.model ?? "model?", modelWidth), modelWidth, "left");
-  const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
-  const outputTokens = status.usage?.outputTokens ?? status.streamedOutputTokens;
-  const up = fixed(compactNumber(inputTokens), 7, "left");
-  const down = fixed(compactNumber(outputTokens), 7, "left");
-  const ctx = fixed(renderContext(status.metrics), 20, "left");
-  const meter = contextMeter(status.metrics, 10);
-  const log = logging ? "log on " : "log off";
-  const fixedPrefix = `${activityPixel} ${phaseWord} ${meter}  model ${model}  in ${up} out ${down} ctx ${ctx}  ${log}`;
-  const detailWidth = Math.max(0, width - fixedPrefix.length - 3);
-  const scrollDetail = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : undefined;
-  const detail = detailWidth > 0 ? ` - ${fixed(scrollDetail ?? status.detail ?? "", detailWidth, "left")}` : "";
-  const line = fitToWidth(`${fixedPrefix}${detail}`, width);
-  const accentWidth = Math.min(line.length, phaseWord.length);
+  const line = renderCompactStatusLine(status, logging, scrollOffset, maxScrollOffset, animationTick, width);
+  const accentWidth = Math.min(line.length, statusAccentLength(status.phase, animationTick));
   const accent = line.slice(0, accentWidth);
   const rest = line.slice(accentWidth);
   return e(
@@ -717,9 +694,43 @@ function StatusBar(
   );
 }
 
-function PromptLine({ text, cursor, busy, animationTick }: { text: string; cursor: number; busy: boolean; animationTick: number }) {
-  const frame = animationTick % WORKING_FRAMES.length;
-  const prompt = busy ? `working ${WORKING_FRAMES[frame]}> ` : "agent> ";
+function renderCompactStatusLine(
+  status: UiStatus,
+  logging: boolean,
+  scrollOffset: number,
+  maxScrollOffset: number,
+  animationTick: number,
+  width: number,
+): string {
+  const phase = status.phase;
+  const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
+  const outputTokens = status.usage?.outputTokens ?? status.streamedOutputTokens;
+  const source = truncateMiddle(status.metrics?.contextWindowSource ?? "unknown", width >= 90 ? 10 : 6);
+  const meterWidth = width >= 100 ? 8 : width >= 72 ? 6 : 4;
+  const reserved = [
+    `${statusActivityPixel(phase, animationTick)}${phaseLabelForStatus(phase)}`,
+    contextMeter(status.metrics, meterWidth),
+    `io:${compactNumber(inputTokens)}/${compactNumber(outputTokens)}`,
+    `ctx:${renderContext(status.metrics)}`,
+    `src:${source}`,
+    `log:${logging ? "on" : "off"}`,
+  ];
+  const reservedText = reserved.join(STATUS_SEPARATOR);
+  const detailText = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : status.detail;
+  const detailBudget = detailText ? Math.max(0, Math.min(28, width - reservedText.length - STATUS_SEPARATOR.length * 2 - 10)) : 0;
+  const detailSegment = detailText && detailBudget > 2 ? `d:${truncate(detailText, detailBudget - 2)}` : undefined;
+  const modelBudget = Math.max(6, width - reservedText.length - (detailSegment ? detailSegment.length + STATUS_SEPARATOR.length : 0) - STATUS_SEPARATOR.length);
+  const model = `m:${truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 24 : width >= 90 ? 18 : 14, modelBudget - 2))}`;
+  const segments = [reserved[0], reserved[1], model, ...reserved.slice(2), detailSegment].filter((segment): segment is string => Boolean(segment));
+  return fitToWidth(segments.join(STATUS_SEPARATOR), width);
+}
+
+function statusAccentLength(phase: string, animationTick: number): number {
+  return `${statusActivityPixel(phase, animationTick)}${phaseLabelForStatus(phase)}`.length;
+}
+
+function PromptLine({ text, cursor, busy }: { text: string; cursor: number; busy: boolean }) {
+  const prompt = busy ? "working> " : "agent> ";
   const view = promptTextView(text, cursor, Math.max(1, terminalColumns() - prompt.length));
   return e(
     Box,
@@ -825,77 +836,6 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   return status;
 }
 
-async function runLineRepl(runtime: ReplRuntime): Promise<void> {
-  const rl = readline.createInterface({ input: stdin, output: stdout, prompt: "agent> " });
-  const statusLine = new ReplStatusLine(stdout);
-  let activeAbortController: AbortController | undefined;
-  let interruptArmed = false;
-  let shouldExit = false;
-  console.log("Agent Scaffold REPL");
-  console.log("Type /help for commands.");
-  const session = runtime.engine.snapshot().session;
-  if (session) {
-    console.log(`Session transcript: ${session.transcriptPath}`);
-    if (session.resumedMessages > 0) console.log(`Resumed ${session.resumedMessages} messages from ${session.sessionId}.`);
-  }
-
-  rl.on("SIGINT", () => {
-    if (activeAbortController) {
-      if (!activeAbortController.signal.aborted && !interruptArmed) {
-        interruptArmed = true;
-        activeAbortController.abort("Interrupted by Ctrl+C");
-        statusLine.clear();
-        console.log("interrupt requested; press Ctrl+C again to exit");
-        return;
-      }
-      shouldExit = true;
-      rl.close();
-      return;
-    }
-    rl.close();
-  });
-
-  rl.prompt();
-
-  for await (const line of rl) {
-    const command = parseReplCommand(line);
-    if (command.type === "exit") break;
-    if (command.type === "help") console.log(helpText);
-    else if (command.type === "log") await handleLineLogCommand(command, runtime);
-    else if (command.type === "sessions") await handleLineSessionsCommand(command.limit, runtime);
-    else if (command.type === "resume") await handleLineResumeCommand(command.sessionId, runtime);
-    else if (command.type === "reset") {
-      runtime.engine.reset();
-      console.log("transcript reset");
-    } else if (command.type === "state") {
-      console.log(JSON.stringify({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, null, 2));
-    } else if (command.text.trim()) {
-      const abortController = new AbortController();
-      activeAbortController = abortController;
-      interruptArmed = false;
-      try {
-        for await (const event of runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
-          statusLine.handle(event);
-          const rendered = renderEvent(event);
-          statusLine.clear();
-          if (rendered) console.log(rendered);
-          statusLine.render();
-        }
-      } catch (error) {
-        statusLine.clear();
-        console.error(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (activeAbortController === abortController) activeAbortController = undefined;
-        interruptArmed = false;
-      }
-      statusLine.clear();
-    }
-    if (shouldExit) break;
-    rl.prompt();
-  }
-  rl.close();
-}
-
 async function handleSessionsCommand(limit: number | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number) {
   const sessions = await runtime.engine.listSessions(limit ?? 10);
   append(systemLine(formatSessions(sessions)));
@@ -910,35 +850,6 @@ async function handleResumeCommand(sessionId: string | undefined, runtime: ReplR
     append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     return false;
   }
-}
-
-async function handleLineSessionsCommand(limit: number | undefined, runtime: ReplRuntime) {
-  const sessions = await runtime.engine.listSessions(limit ?? 10);
-  console.log(formatSessions(sessions));
-}
-
-async function handleLineResumeCommand(sessionId: string | undefined, runtime: ReplRuntime) {
-  try {
-    const snapshot = await runtime.engine.resumeSession(sessionId);
-    console.log(formatResume(snapshot));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function handleLineLogCommand(command: Extract<ReturnType<typeof parseReplCommand>, { type: "log" }>, runtime: ReplRuntime) {
-  if (command.off) {
-    runtime.communicationLogger.setDirectory(undefined);
-    console.log("model communication logging disabled");
-    return;
-  }
-  if (!command.path || !path.isAbsolute(command.path)) {
-    console.log("usage: /log <absolute-directory> or /log off");
-    return;
-  }
-  await fs.mkdir(command.path, { recursive: true });
-  runtime.communicationLogger.setDirectory(command.path);
-  console.log(`model communication logs: ${path.resolve(command.path)}`);
 }
 
 function initialLines(runtime: ReplRuntime): UiLine[] {
@@ -1055,10 +966,6 @@ function formatMessageBlockSummary(block: Message["blocks"][number]): string {
   if (block.type === "tool_use") return `Tool call: ${block.name}\n${formatJson(block.input, 1200)}`;
   if (block.type === "tool_result") return `Tool result: ${block.name}\n${formatJson(block.output, 1200)}`;
   return "";
-}
-
-function renderWrapped(text: string): string {
-  return wrapAnsi(text, Math.max(40, (stdout.columns ?? 100) - 16), { hard: true, trim: false });
 }
 
 function formatJson(value: unknown, maxLength: number): string {
@@ -1266,8 +1173,8 @@ function promptTextView(text: string, cursor: number, width: number): { before: 
 const UI_FIXED_ROWS = 6;
 const LIVE_OUTPUT_ROWS = 12;
 const REPL_ANIMATION_INTERVAL_MS = 420;
-const WORKING_FRAMES = ["⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠", "⢀"];
 const PIXEL_BLOCK_FRAMES = ["⣀", "⡄", "⠆", "⠃", "⠉", "⠘", "⠰", "⢠", "⣤", "⣶"];
+const STATUS_SEPARATOR = " ";
 const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
