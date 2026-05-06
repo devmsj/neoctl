@@ -363,14 +363,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const toolWidth = toolContentWidth(width);
   const maxMessageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
   const messageContentHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
-  const reviewingHistory = scrollOffset > 0;
-  const messageViewportHeight = reviewingHistory
-    ? maxMessageViewportHeight
-    : Math.max(1, messageContentHeight);
-  const scrollViewportHeight = Math.min(maxMessageViewportHeight, Math.max(1, messageContentHeight));
-  const maxScrollOffset = maxScrollForLines(lines, scrollViewportHeight, contentWidth, toolWidth);
+  const messageViewportHeight = Math.min(maxMessageViewportHeight, Math.max(1, messageContentHeight));
+  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
   const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
-  const scrollPage = Math.max(1, scrollViewportHeight - 1);
+  const scrollPage = Math.max(1, messageViewportHeight - 1);
 
   useEffect(() => {
     setScrollOffset((current) => Math.min(current, maxScrollOffset));
@@ -478,12 +474,12 @@ function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; 
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
   const reviewingHistory = scrollOffset > 0;
-  const visible = reviewingHistory
-    ? selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset)
-    : lines.map((line) => ({ line, maxLines: estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)), skipTop: 0 }));
+  const visible = selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset);
   return e(
     Box,
-    reviewingHistory ? { flexDirection: "column", height, overflow: "hidden" } : { flexDirection: "column" },
+    reviewingHistory || totalUiLinesHeight(lines, contentWidth, toolWidth) > height
+      ? { flexDirection: "column", height, overflow: "hidden" }
+      : { flexDirection: "column" },
     ...visible.map((entry) => {
       const line = entry.line;
       if (line.previewStyle === "summary") {
