@@ -62,10 +62,12 @@ export class ReplStatusLine {
     const source = this.metrics?.contextWindowSource ?? "unknown";
     const detail = this.lastDetail ? ` - ${this.lastDetail}` : "";
     const width = terminalWidth(this.output);
-    const label = animatedPhaseLabel(this.phase, this.pulseFrame);
+    const activityPixel = statusActivityPixel(this.phase, this.pulseFrame);
+    const label = phaseLabel(this.phase).toUpperCase();
     if (isActivePhase(this.phase)) this.pulseFrame += 1;
     const fixedPrefix = [
-      fixed(label, 12, "left"),
+      activityPixel,
+      fixed(label, 11, "left"),
       contextMeter(this.metrics, 10),
       `model ${fixed(truncateMiddle(model, 20), 20, "left")}`,
       `in ${fixed(formatCompact(input), 7, "left")}`,
@@ -108,10 +110,9 @@ function terminalWidth(output: Writable & { columns?: number }): number {
   return Math.max(72, Math.min(output.columns ?? 100, 160)) - 1;
 }
 
-function animatedPhaseLabel(phase: string, tick: number): string {
-  const label = phaseLabel(phase).toUpperCase();
-  if (!isActivePhase(phase)) return label;
-  return `${label}${STATUS_PULSE_FRAMES[tick % STATUS_PULSE_FRAMES.length]}`;
+function statusActivityPixel(phase: string, tick: number): string {
+  if (!isActivePhase(phase)) return "□";
+  return PIXEL_BLOCK_FRAMES[tick % PIXEL_BLOCK_FRAMES.length];
 }
 
 function phaseLabel(phase: string): string {
@@ -156,4 +157,4 @@ function truncateMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
 }
 
-const STATUS_PULSE_FRAMES = ["", ".", "..", "..."];
+const PIXEL_BLOCK_FRAMES = ["⣀", "⡄", "⠆", "⠃", "⠉", "⠘", "⠰", "⢠", "⣤", "⣶"];

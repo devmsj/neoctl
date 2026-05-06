@@ -172,7 +172,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   useEffect(() => {
     if (!busy) return undefined;
-    const interval = setInterval(() => setAnimationTick((current) => current + 1), 220);
+    const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [busy]);
 
@@ -690,7 +690,8 @@ function StatusBar(
 ) {
   const width = statusBarWidth();
   const phase = status.phase;
-  const phaseWord = fixed(animatedPhaseLabel(phase, animationTick), 12, "left");
+  const activityPixel = statusActivityPixel(phase, animationTick);
+  const phaseWord = fixed(phaseLabelForStatus(phase).toUpperCase(), 11, "left");
   const modelWidth = width >= 120 ? 24 : 18;
   const model = fixed(truncateMiddle(status.metrics?.model ?? "model?", modelWidth), modelWidth, "left");
   const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
@@ -700,7 +701,7 @@ function StatusBar(
   const ctx = fixed(renderContext(status.metrics), 20, "left");
   const meter = contextMeter(status.metrics, 10);
   const log = logging ? "log on " : "log off";
-  const fixedPrefix = `${phaseWord} ${meter}  model ${model}  in ${up} out ${down} ctx ${ctx}  ${log}`;
+  const fixedPrefix = `${activityPixel} ${phaseWord} ${meter}  model ${model}  in ${up} out ${down} ctx ${ctx}  ${log}`;
   const detailWidth = Math.max(0, width - fixedPrefix.length - 3);
   const scrollDetail = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : undefined;
   const detail = detailWidth > 0 ? ` - ${fixed(scrollDetail ?? status.detail ?? "", detailWidth, "left")}` : "";
@@ -718,7 +719,7 @@ function StatusBar(
 
 function PromptLine({ text, cursor, busy, animationTick }: { text: string; cursor: number; busy: boolean; animationTick: number }) {
   const frame = animationTick % WORKING_FRAMES.length;
-  const prompt = busy ? `working${WORKING_FRAMES[frame]}> ` : "agent> ";
+  const prompt = busy ? `working ${WORKING_FRAMES[frame]}> ` : "agent> ";
   const view = promptTextView(text, cursor, Math.max(1, terminalColumns() - prompt.length));
   return e(
     Box,
@@ -1180,10 +1181,9 @@ function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 }
 
-function animatedPhaseLabel(phase: string, tick: number): string {
-  const label = phaseLabelForStatus(phase).toUpperCase();
-  if (!isActivePhase(phase)) return label;
-  return `${label}${STATUS_PULSE_FRAMES[tick % STATUS_PULSE_FRAMES.length]}`;
+function statusActivityPixel(phase: string, tick: number): string {
+  if (!isActivePhase(phase)) return "□";
+  return PIXEL_BLOCK_FRAMES[tick % PIXEL_BLOCK_FRAMES.length];
 }
 
 function phaseLabelForStatus(phase: string): string {
@@ -1265,8 +1265,9 @@ function promptTextView(text: string, cursor: number, width: number): { before: 
 
 const UI_FIXED_ROWS = 6;
 const LIVE_OUTPUT_ROWS = 12;
-const WORKING_FRAMES = [".  ", ".. ", "..."];
-const STATUS_PULSE_FRAMES = ["", ".", "..", "..."];
+const REPL_ANIMATION_INTERVAL_MS = 420;
+const WORKING_FRAMES = ["⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠", "⢀"];
+const PIXEL_BLOCK_FRAMES = ["⣀", "⡄", "⠆", "⠃", "⠉", "⠘", "⠰", "⢠", "⣤", "⣶"];
 const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
