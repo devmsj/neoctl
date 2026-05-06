@@ -57,6 +57,8 @@ interface UiStatus {
   usage?: ModelUsage;
   streamedOutputTokens: number;
   activityTick: number;
+  inputTokenUpdatedAt?: number;
+  outputTokenUpdatedAt?: number;
 }
 
 async function main(): Promise<void> {
@@ -310,7 +312,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     activeAbortController.current = abortController;
     interruptArmed.current = false;
     setBusy(true);
-    setStatus((current) => ({ ...current, phase: "running", detail: "working", streamedOutputTokens: 0 }));
+    setStatus((current) => ({
+      ...current,
+      phase: "running",
+      detail: "working",
+      usage: undefined,
+      streamedOutputTokens: 0,
+      inputTokenUpdatedAt: undefined,
+      outputTokenUpdatedAt: undefined,
+    }));
     try {
       for await (const event of runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
         handleEvent(event);
@@ -329,7 +339,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
       setBusy(false);
-      setStatus((current) => ({ ...current, phase: "ready", detail: undefined }));
+      setStatus((current) => ({
+        ...current,
+        phase: "ready",
+        detail: undefined,
+        inputTokenUpdatedAt: undefined,
+        outputTokenUpdatedAt: undefined,
+      }));
     }
   };
 
@@ -454,7 +470,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       children: (line) => e(MessageList, { key: `static-${line.id}`, lines: [line], scrollOffset: 0 }),
     }),
     e(MessageList, { lines: liveLines, height: liveOutputHeight, scrollOffset: effectiveScrollOffset }),
-    e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
+    e(StatusBar, { status, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
     e(PromptLine, { text: input, cursor, busy }),
   );
 }
@@ -676,57 +692,90 @@ function hasAnsi(text: string): boolean {
   return /\x1b\[[0-9;]*m/.test(text);
 }
 
+interface StatusSegment {
+  text: string;
+  color?: string;
+  bold?: boolean;
+}
+
 function StatusBar(
-  { status, logging, scrollOffset, maxScrollOffset, animationTick }:
-  { status: UiStatus; logging: boolean; scrollOffset: number; maxScrollOffset: number; animationTick: number },
+  { status, scrollOffset, maxScrollOffset, animationTick }:
+  { status: UiStatus; scrollOffset: number; maxScrollOffset: number; animationTick: number },
 ) {
   const width = statusBarWidth();
-  const phase = status.phase;
-  const line = renderCompactStatusLine(status, logging, scrollOffset, maxScrollOffset, animationTick, width);
-  const accentWidth = Math.min(line.length, statusAccentLength(status.phase, animationTick));
-  const accent = line.slice(0, accentWidth);
-  const rest = line.slice(accentWidth);
+  const segments = fitStatusSegments(renderCompactStatusSegments(status, scrollOffset, maxScrollOffset, animationTick, width), width);
   return e(
     Box,
     { marginTop: 1, width, height: 1, overflow: "hidden" },
-    e(Text, { bold: true, color: phaseColor(phase) }, accent),
-    e(Text, { color: "gray" }, rest),
+    ...segments.map((segment, index) => e(
+      Text,
+      { key: index, color: segment.color ?? "gray", bold: segment.bold ?? false },
+      segment.text,
+    )),
   );
 }
 
-function renderCompactStatusLine(
+function renderCompactStatusSegments(
   status: UiStatus,
-  logging: boolean,
   scrollOffset: number,
   maxScrollOffset: number,
   animationTick: number,
   width: number,
-): string {
+): StatusSegment[] {
   const phase = status.phase;
-  const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
-  const outputTokens = status.usage?.outputTokens ?? status.streamedOutputTokens;
-  const source = truncateMiddle(status.metrics?.contextWindowSource ?? "unknown", width >= 90 ? 10 : 6);
+  const now = Date.now();
+  const inputTokens = statusInputTokens(status);
+  const outputTokens = statusOutputTokens(status);
   const meterWidth = width >= 100 ? 8 : width >= 72 ? 6 : 4;
-  const reserved = [
-    `${statusActivityPixel(phase, animationTick)}${phaseLabelForStatus(phase)}`,
-    contextMeter(status.metrics, meterWidth),
-    `io:${compactNumber(inputTokens)}/${compactNumber(outputTokens)}`,
-    `ctx:${renderContext(status.metrics)}`,
-    `src:${source}`,
-    `log:${logging ? "on" : "off"}`,
+  const phaseText = `${statusActivityPixel(phase, animationTick)} ${phaseLabelForStatus(phase)}`;
+  const meter = contextMeter(status.metrics, meterWidth);
+  const inputText = `↑${compactNumber(inputTokens)}`;
+  const outputText = `↓${compactNumber(outputTokens)}`;
+  const contextText = `ctx:${renderContext(status.metrics)}`;
+  const fixedText = [phaseText, meter, inputText, outputText, contextText].join(STATUS_SEPARATOR);
+  const modelBudget = Math.max(4, width - fixedText.length - STATUS_SEPARATOR.length);
+  const model = truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 26 : width >= 90 ? 20 : 14, modelBudget));
+  const tokenInputColor = tokenArrowColor(status.inputTokenUpdatedAt, now, "green");
+  const tokenOutputColor = tokenArrowColor(status.outputTokenUpdatedAt, now, "cyan");
+
+  const segments: StatusSegment[] = [
+    { text: phaseText, color: phaseColor(phase), bold: true },
+    { text: STATUS_SEPARATOR },
+    { text: meter },
+    { text: STATUS_SEPARATOR },
+    { text: model },
+    { text: STATUS_SEPARATOR },
+    { text: "↑", color: tokenInputColor, bold: tokenInputColor !== "gray" },
+    { text: compactNumber(inputTokens) },
+    { text: STATUS_SEPARATOR },
+    { text: "↓", color: tokenOutputColor, bold: tokenOutputColor !== "gray" },
+    { text: compactNumber(outputTokens) },
+    { text: STATUS_SEPARATOR },
+    { text: contextText },
   ];
-  const reservedText = reserved.join(STATUS_SEPARATOR);
-  const detailText = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : status.detail;
-  const detailBudget = detailText ? Math.max(0, Math.min(28, width - reservedText.length - STATUS_SEPARATOR.length * 2 - 10)) : 0;
-  const detailSegment = detailText && detailBudget > 2 ? `d:${truncate(detailText, detailBudget - 2)}` : undefined;
-  const modelBudget = Math.max(6, width - reservedText.length - (detailSegment ? detailSegment.length + STATUS_SEPARATOR.length : 0) - STATUS_SEPARATOR.length);
-  const model = `m:${truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 24 : width >= 90 ? 18 : 14, modelBudget - 2))}`;
-  const segments = [reserved[0], reserved[1], model, ...reserved.slice(2), detailSegment].filter((segment): segment is string => Boolean(segment));
-  return fitToWidth(segments.join(STATUS_SEPARATOR), width);
+
+  if (scrollOffset > 0 && maxScrollOffset > 0) {
+    segments.push({ text: STATUS_SEPARATOR }, { text: `scroll ${scrollOffset}/${maxScrollOffset}` });
+  }
+  return segments;
 }
 
-function statusAccentLength(phase: string, animationTick: number): number {
-  return `${statusActivityPixel(phase, animationTick)}${phaseLabelForStatus(phase)}`.length;
+function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegment[] {
+  const fitted: StatusSegment[] = [];
+  let remaining = width;
+  for (const segment of segments) {
+    if (remaining <= 0) break;
+    const textWidth = stripAnsi(segment.text).length;
+    if (textWidth <= remaining) {
+      fitted.push(segment);
+      remaining -= textWidth;
+      continue;
+    }
+    const text = fitToWidth(segment.text, remaining);
+    if (text.length > 0) fitted.push({ ...segment, text });
+    remaining = 0;
+  }
+  return fitted;
 }
 
 function PromptLine({ text, cursor, busy }: { text: string; cursor: number; busy: boolean }) {
@@ -822,14 +871,47 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
       detail: event.detail,
       usage: event.phase === "preparing" ? undefined : status.usage,
       streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens,
+      inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt,
+      outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt,
       activityTick: status.activityTick + 1,
     };
   }
-  if (event.type === "context.metrics") return { ...status, metrics: event.metrics };
-  if (event.type === "usage") return { ...status, usage: event.usage, activityTick: status.activityTick + 1 };
-  if (event.type === "assistant.delta") return { ...status, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), activityTick: status.activityTick + 1 };
+  if (event.type === "context.metrics") {
+    return {
+      ...status,
+      metrics: event.metrics,
+      inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt,
+      activityTick: status.activityTick + 1,
+    };
+  }
+  if (event.type === "usage") {
+    return {
+      ...status,
+      usage: event.usage,
+      inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt,
+      outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt,
+      activityTick: status.activityTick + 1,
+    };
+  }
+  if (event.type === "assistant.delta") {
+    return {
+      ...status,
+      streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text),
+      outputTokenUpdatedAt: Date.now(),
+      activityTick: status.activityTick + 1,
+    };
+  }
   if (event.type === "thinking.delta") return { ...status, activityTick: status.activityTick + 1 };
-  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, activityTick: status.activityTick + 1 };
+  if (event.type === "terminal") {
+    return {
+      ...status,
+      phase: "stopped",
+      detail: event.reason,
+      inputTokenUpdatedAt: undefined,
+      outputTokenUpdatedAt: undefined,
+      activityTick: status.activityTick + 1,
+    };
+  }
   if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "retrying" || event.type === "error") {
     return { ...status, activityTick: status.activityTick + 1 };
   }
@@ -1076,6 +1158,18 @@ function renderContext(metrics: ContextMetrics | undefined): string {
   return `${compactNumber(metrics.estimatedInputTokens)}/${compactNumber(metrics.contextWindowTokens)} ${percent}`;
 }
 
+function statusInputTokens(status: UiStatus): number | undefined {
+  return status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
+}
+
+function statusOutputTokens(status: UiStatus): number | undefined {
+  return status.usage?.outputTokens ?? status.streamedOutputTokens;
+}
+
+function tokenArrowColor(updatedAt: number | undefined, now: number, activeColor: string): string {
+  return updatedAt !== undefined && now - updatedAt <= TOKEN_PULSE_MS ? activeColor : "gray";
+}
+
 function estimateTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
 }
@@ -1089,7 +1183,7 @@ function truncate(value: string, maxLength: number): string {
 }
 
 function statusActivityPixel(phase: string, tick: number): string {
-  if (!isActivePhase(phase)) return "□";
+  if (!isActivePhase(phase)) return "  ";
   return PIXEL_BLOCK_FRAMES[tick % PIXEL_BLOCK_FRAMES.length];
 }
 
@@ -1173,7 +1267,8 @@ function promptTextView(text: string, cursor: number, width: number): { before: 
 const UI_FIXED_ROWS = 6;
 const LIVE_OUTPUT_ROWS = 12;
 const REPL_ANIMATION_INTERVAL_MS = 420;
-const PIXEL_BLOCK_FRAMES = ["⣀", "⡄", "⠆", "⠃", "⠉", "⠘", "⠰", "⢠", "⣤", "⣶"];
+const TOKEN_PULSE_MS = 900;
+const PIXEL_BLOCK_FRAMES = ["  ", "▌ ", "█ ", "█▌", "██", "▐█", " █", " ▐"];
 const STATUS_SEPARATOR = " ";
 const SUMMARY_BLOCK = {
   maxLines: 6,
