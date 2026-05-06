@@ -658,7 +658,8 @@ function MessageLine(
       ),
     );
   }
-  const display = displayWindowForLine(line, contentWidth, line.live ? liveMaxLines : undefined);
+  const clipPendingMarkdown = !line.live && onMarkdownRenderComplete !== undefined && lineNeedsDynamicRender(line, contentWidth);
+  const display = displayWindowForLine(line, contentWidth, line.live || clipPendingMarkdown ? liveMaxLines : undefined);
   return e(Box, { flexDirection: "row" },
     e(Text, { color: colorForKind(line.kind) }, messageRoleMarker()),
     e(
@@ -700,6 +701,7 @@ function renderDisplayText(
 ): React.ReactNode[] {
   if (line.previewStyle === "summary") return renderSummaryBlock(line, width, maxLines, skipTop);
   if (line.format === "ansi") return renderAnsiBlock(line.text, width, maxLines, skipTop);
+  const shouldAsyncRenderMarkdown = !line.live && onMarkdownRenderComplete !== undefined;
   return [e(MarkdownText, {
     key: `markdown-${line.id}`,
     text: line.text,
@@ -707,7 +709,8 @@ function renderDisplayText(
     width,
     maxLines,
     skipLines: skipTop,
-    onRenderComplete: onMarkdownRenderComplete ? (renderKey: string) => onMarkdownRenderComplete(line.id, renderKey) : undefined,
+    asyncRender: shouldAsyncRenderMarkdown,
+    onRenderComplete: shouldAsyncRenderMarkdown ? (renderKey: string) => onMarkdownRenderComplete(line.id, renderKey) : undefined,
   })];
 }
 
@@ -736,10 +739,10 @@ function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skip
     const detail = sourceIndex > 0;
     const text = detail ? `${SUMMARY_BLOCK.detailIndent}${previewLine}` : previewLine;
     if (line.format === "ansi") {
-      const props = detail
-        ? { key: `summary-${line.id}-${index}` }
-        : { key: `summary-${line.id}-${index}`, color: colorForKind(line.kind), bold: true };
-      return e(Text, props, ...renderAnsiInline(text));
+      const baseStyle: AnsiStyle = detail
+        ? { color: "gray", dimColor: true }
+        : { color: colorForKind(line.kind), bold: true };
+      return e(Text, { key: `summary-${line.id}-${index}` }, ...renderAnsiInline(text, baseStyle));
     }
     return e(
       Text,
@@ -765,23 +768,23 @@ function clipStrings(lines: string[], maxLines: number | undefined, skipTop = 0)
   if (maxLines <= 0) return [];
   return lines.slice(start, start + maxLines);
 }
-function renderAnsiInline(text: string): React.ReactNode[] {
+function renderAnsiInline(text: string, baseStyle: AnsiStyle = {}): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   const pattern = /\x1b\[([0-9;]*)m/g;
   let lastIndex = 0;
-  let style: AnsiStyle = {};
+  let style: AnsiStyle = { ...baseStyle };
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > lastIndex) {
       nodes.push(e(Text, { key: `ansi-${nodes.length}`, ...style }, text.slice(lastIndex, match.index)));
     }
-    style = nextAnsiStyle(style, match[1]);
+    style = nextAnsiStyle(style, match[1], baseStyle);
     lastIndex = match.index + match[0].length;
   }
 
   if (lastIndex < text.length) nodes.push(e(Text, { key: `ansi-${nodes.length}`, ...style }, text.slice(lastIndex)));
-  return nodes.length ? nodes : [e(Text, { key: "ansi-empty" }, "")];
+  return nodes.length ? nodes : [e(Text, { key: "ansi-empty", ...baseStyle }, "")];
 }
 
 interface AnsiStyle {
@@ -793,12 +796,12 @@ interface AnsiStyle {
   underline?: boolean;
 }
 
-function nextAnsiStyle(current: AnsiStyle, rawCodes: string | undefined): AnsiStyle {
+function nextAnsiStyle(current: AnsiStyle, rawCodes: string | undefined, baseStyle: AnsiStyle = {}): AnsiStyle {
   const codes = rawCodes ? rawCodes.split(";").filter(Boolean).map((code) => Number(code)) : [0];
   let next = { ...current };
   for (let index = 0; index < codes.length; index += 1) {
     const code = codes[index] ?? 0;
-    if (code === 0) next = {};
+    if (code === 0) next = { ...baseStyle };
     else if (code === 1) next.bold = true;
     else if (code === 2) next.dimColor = true;
     else if (code === 3) next.italic = true;

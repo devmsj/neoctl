@@ -41,6 +41,7 @@ export function MarkdownText({
   width,
   maxLines,
   skipLines = 0,
+  asyncRender = true,
   onRenderComplete,
 }: {
   text: string;
@@ -48,18 +49,25 @@ export function MarkdownText({
   width: number;
   maxLines?: number;
   skipLines?: number;
+  asyncRender?: boolean;
   onRenderComplete?: (renderKey: string) => void;
 }) {
   const renderKey = markdownRenderKey(text, kind, width);
-  const cachedLines = renderedLinesCache.get(renderKey);
+  const useCachedRender = asyncRender || maxLines === undefined;
+  const cachedLines = useCachedRender ? renderedLinesCache.get(renderKey) : undefined;
   const fallbackLines = useMemo(() => cachedLines ?? renderMarkdownPreviewToLines(text, kind, width), [cachedLines, text, kind, width]);
   const [asyncLines, setAsyncLines] = useState<AsyncRenderedLines | undefined>(() => cachedLines ? { key: renderKey, lines: cachedLines } : undefined);
 
   useEffect(() => {
-    const cached = renderedLinesCache.get(renderKey);
+    const cached = useCachedRender ? renderedLinesCache.get(renderKey) : undefined;
     if (cached) {
       setAsyncLines({ key: renderKey, lines: cached });
-      onRenderComplete?.(renderKey);
+      if (asyncRender) onRenderComplete?.(renderKey);
+      return undefined;
+    }
+
+    if (!asyncRender) {
+      setAsyncLines(undefined);
       return undefined;
     }
 
@@ -81,7 +89,7 @@ export function MarkdownText({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [text, kind, width, renderKey, onRenderComplete]);
+  }, [text, kind, width, renderKey, asyncRender, useCachedRender, onRenderComplete]);
 
   const renderedLines = clipRenderedLines(asyncLines?.key === renderKey ? asyncLines.lines : fallbackLines, maxLines, skipLines);
 
