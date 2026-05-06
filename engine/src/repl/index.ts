@@ -799,10 +799,7 @@ async function handleLogCommand(
 
 function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number): boolean {
   if (message.metadata?.syntheticToolUse === true) return false;
-  if (message.role === "progress" || message.isMeta) {
-    append(formatMetaMessage(message));
-    return true;
-  }
+  if (message.role === "progress" || message.isMeta) return false;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) {
     return true;
   }
@@ -811,7 +808,8 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
   for (const block of message.blocks) {
     if (block.type === "text") {
       const kind = kindForRole(message.role);
-      if (kind === "system" || kind === "meta") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
+      if (kind === "meta") continue;
+      if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
       else append({ kind, text: block.text });
       rendered = true;
     }
@@ -1013,16 +1011,6 @@ function titleForRole(role: Message["role"]): string {
   return titleForKind(kindForRole(role));
 }
 
-function formatMetaMessage(message: Message): Omit<UiLine, "id"> {
-  const text = message.blocks.map(formatMessageBlockSummary).filter(Boolean).join("\n") || titleForRole(message.role);
-  return {
-    kind: kindForRole(message.role),
-    title: message.metadata?.systemInit ? "System" : titleForRole(message.role),
-    text,
-    previewStyle: "summary",
-  };
-}
-
 function systemLine(text: string): Omit<UiLine, "id"> {
   return {
     kind: "system",
@@ -1044,7 +1032,7 @@ function metaLine(text: string): Omit<UiLine, "id"> {
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   return {
     kind: "tool",
-    title: `Tool call: ${toolUse.name}`,
+    title: toolTitle(toolUse.name, "running"),
     text: formatJson(toolUse.input, 1200),
     previewStyle: "summary",
   };
@@ -1054,7 +1042,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   const formatted = formatToolResult(toolName, output, ok);
   return {
     kind: ok ? "tool" : "error",
-    title: `Tool result: ${toolName}`,
+    title: toolTitle(toolName, "finished"),
     text: formatted.text,
     format: formatted.format,
     previewStyle: "summary",
@@ -1063,21 +1051,18 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 }
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Omit<UiLine, "id"> {
+  const inputText = formatJson(toolUse.input, 1200);
   return {
     kind: ok ? "tool" : "error",
-    title: `Tool result: ${toolUse.name}`,
-    text: `${toolUse.name} · ${ok ? "finished" : "failed"}\n${formatJson(toolUse.input, 1200)}`,
+    title: toolTitle(toolUse.name, "finished"),
+    text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed",
     previewStyle: "summary",
     live: false,
   };
 }
 
-function formatMessageBlockSummary(block: Message["blocks"][number]): string {
-  if (block.type === "text") return block.text;
-  if (block.type === "thinking") return block.text;
-  if (block.type === "tool_use") return `Tool call: ${block.name}\n${formatJson(block.input, 1200)}`;
-  if (block.type === "tool_result") return `Tool result: ${block.name}\n${formatJson(block.output, 1200)}`;
-  return "";
+function toolTitle(toolName: string, phase: "running" | "finished"): string {
+  return `${phase === "running" ? "◇" : "◆"} ${toolName}`;
 }
 
 function formatJson(value: unknown, maxLength: number): string {
@@ -1093,7 +1078,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
         ? "exit 0"
         : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
     const sections = [
-      `${toolName} · ${status} · ${output.durationMs}ms`,
+      `${status} · ${output.durationMs}ms`,
       `$ ${output.command}`,
     ];
     if (output.stdout) sections.push("stdout:", output.stdout.replace(/\s+$/u, ""));
@@ -1103,7 +1088,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (typeof output === "string" && hasAnsi(output)) {
-    return { text: `${toolName}\n${output}`, format: "ansi" };
+    return { text: output, format: "ansi" };
   }
 
   if (toolName === "list" && isRecord(output)) {
@@ -1114,7 +1099,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: formatReadToolResult(output, ok) };
   }
 
-  return { text: `${toolName}${ok ? "" : " · failed"}\n${formatJson(output, 6000)}` };
+  return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}` };
 }
 
 interface ExecResultLike {
@@ -1156,7 +1141,7 @@ function formatListToolResult(output: Record<string, unknown>, ok: boolean): str
     .filter((name): name is string => Boolean(name))
     .slice(0, 3);
 
-  const lines = [`list · ${ok ? typeValue : "failed"}`];
+  const lines = [ok ? typeValue : "failed"];
   if (pathValue) lines.push(pathValue);
   const counts = [
     returnedEntries !== undefined ? `${returnedEntries} shown` : undefined,
@@ -1173,7 +1158,7 @@ function formatReadToolResult(output: Record<string, unknown>, ok: boolean): str
   const endLine = typeof output.endLine === "number" ? output.endLine : undefined;
   const totalLines = typeof output.totalLines === "number" ? output.totalLines : undefined;
   const content = typeof output.content === "string" ? output.content : "";
-  const lines = [`read${ok ? "" : " · failed"}`];
+  const lines = [ok ? "ok" : "failed"];
   if (startLine !== undefined && endLine !== undefined && totalLines !== undefined) {
     lines.push(`lines ${startLine}-${endLine} of ${totalLines}`);
   }
