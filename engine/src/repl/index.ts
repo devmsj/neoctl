@@ -41,6 +41,7 @@ interface UiLine {
   kind: "system" | "user" | "assistant" | "tool" | "error" | "meta";
   text: string;
   format?: "markdown" | "ansi";
+  previewStyle?: "tool";
 }
 
 interface UiStatus {
@@ -49,6 +50,7 @@ interface UiStatus {
   metrics?: ContextMetrics;
   usage?: ModelUsage;
   streamedOutputTokens: number;
+  activityTick: number;
 }
 
 async function main(): Promise<void> {
@@ -113,7 +115,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [cursor, setCursor] = useState(0);
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<UiStatus>({ phase: "ready", streamedOutputTokens: 0 });
+  const [status, setStatus] = useState<UiStatus>({ phase: "ready", streamedOutputTokens: 0, activityTick: 0 });
 
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
@@ -127,10 +129,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   const handleEvent = (event: AgentEvent) => {
     setStatus((current) => reduceStatus(current, event));
-    if (event.type === "state") {
-      append({ kind: "meta", text: `[${event.phase}]${event.detail ? ` ${event.detail}` : ""}` });
-      return;
-    }
+    if (event.type === "state") return;
     if (event.type === "context.metrics" || event.type === "usage") return;
     if (event.type === "assistant.delta") {
       const id = assistantLineId.current ?? append({ kind: "assistant", text: "" });
@@ -142,21 +141,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       renderMessage(event.message, append, assistantLineId.current);
       return;
     }
-    if (event.type === "tool.started") {
-      append({ kind: "tool", text: `${figures.pointerSmall} ${event.toolUse.name} started ${formatJson(event.toolUse.input, 800)}` });
-      return;
-    }
-    if (event.type === "tool.finished") {
-      append({ kind: event.ok ? "tool" : "error", text: `${event.ok ? figures.tick : figures.cross} ${event.toolUse.name} ${event.ok ? "ok" : "failed"}` });
-      return;
-    }
-    if (event.type === "retrying") {
-      append({ kind: "meta", text: `retrying model request: attempt ${event.attempt}, delay ${event.delayMs}ms, ${event.error.message}` });
-      return;
-    }
+    if (event.type === "tool.started") return;
+    if (event.type === "tool.finished") return;
+    if (event.type === "retrying") return;
     if (event.type === "terminal") {
       assistantLineId.current = undefined;
-      append({ kind: "meta", text: `[stopped] ${event.reason}${event.detail ? `: ${event.detail}` : ""}` });
       return;
     }
     if (event.type === "error") {
@@ -203,7 +192,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     activeAbortController.current = abortController;
     interruptArmed.current = false;
     setBusy(true);
-    setStatus((current) => ({ ...current, phase: "running", detail: "request in progress", streamedOutputTokens: 0 }));
+    setStatus((current) => ({ ...current, phase: "running", detail: "working", streamedOutputTokens: 0 }));
     try {
       for await (const event of runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
         handleEvent(event);
@@ -294,7 +283,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     e(Header, { runtime }),
     e(MessageList, { lines }),
     e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled }),
-    e(PromptLine, { text: input, cursor, busy }),
+    e(PromptLine, { text: input, cursor, busy, activityTick: status.activityTick }),
   );
 }
 
@@ -313,18 +302,57 @@ function MessageList({ lines }: { lines: UiLine[] }) {
   return e(
     Box,
     { flexDirection: "column" },
-    ...lines.slice(-60).map((line) =>
-      e(Box, { key: line.id, flexDirection: "row" },
+    ...lines.slice(-60).map((line) => {
+      if (line.kind === "tool") {
+        return e(
+          Box,
+          { key: line.id, flexDirection: "row" },
+          e(
+            Box,
+            { flexDirection: "column", width: Math.max(40, (stdout.columns ?? 100) - 2) },
+            ...renderDisplayText(line, Math.max(40, (stdout.columns ?? 100) - 2)),
+          ),
+        );
+      }
+      return e(Box, { key: line.id, flexDirection: "row" },
         e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
         e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
-      ),
-    ),
+      );
+    }),
   );
 }
 
 function renderDisplayText(line: UiLine, width: number): React.ReactNode[] {
+  if (line.previewStyle === "tool") return renderToolPreview(line, width);
+  if (line.kind === "tool") return renderToolPreview(line, width);
   if (line.format === "ansi") return renderAnsiBlock(line.text, width);
   return [e(MarkdownText, { key: `markdown-${line.id}`, text: line.text, kind: line.kind, width })];
+}
+
+function renderToolPreview(line: UiLine, width: number): React.ReactNode[] {
+  const content = line.format === "ansi" ? stripAnsi(line.text) : line.text;
+  const detailWidth = Math.max(10, width - TOOL_PREVIEW.detailIndent.length);
+  const rawLines = content.replace(/\r\n/g, "\n").split("\n");
+  const wrapped = rawLines.flatMap((rawLine, index) => {
+    const lineWidth = index === 0 ? width : detailWidth;
+    return wrapAnsi(rawLine, Math.max(10, lineWidth), { hard: true, trim: false }).split("\n");
+  });
+  const preview = wrapped.slice(0, TOOL_PREVIEW.maxLines);
+  if (wrapped.length > TOOL_PREVIEW.maxLines && preview.length > 0) {
+    preview[preview.length - 1] = truncate(preview[preview.length - 1], Math.max(1, detailWidth - 1)) + "…";
+  }
+  return preview.map((previewLine, index) => {
+    const detail = index > 0;
+    return e(
+      Text,
+      {
+        key: `tool-preview-${line.id}-${index}`,
+        color: detail ? toolPreviewDetailColor(index) : colorForKind("tool"),
+        dimColor: detail,
+      },
+      detail ? `${TOOL_PREVIEW.detailIndent}${previewLine}` : previewLine,
+    );
+  });
 }
 
 function renderAnsiBlock(text: string, width: number): React.ReactNode[] {
@@ -442,14 +470,15 @@ function StatusBar({ status, logging }: { status: UiStatus; logging: boolean }) 
   );
 }
 
-function PromptLine({ text, cursor, busy }: { text: string; cursor: number; busy: boolean }) {
+function PromptLine({ text, cursor, busy, activityTick }: { text: string; cursor: number; busy: boolean; activityTick: number }) {
+  const frame = activityTick % WORKING_FRAMES.length;
   const before = text.slice(0, cursor);
   const selected = text[cursor] ?? " ";
   const after = text.slice(cursor + 1);
   return e(
     Box,
     null,
-    e(Text, { color: busy ? "gray" : "cyan" }, busy ? "busy> " : "agent> "),
+    e(Text, { color: busy ? "gray" : "cyan" }, busy ? `working${WORKING_FRAMES[frame]}> ` : "agent> "),
     e(Text, null, before),
     e(Text, { inverse: true }, selected),
     e(Text, null, after),
@@ -476,19 +505,16 @@ async function handleLogCommand(
 }
 
 function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number) {
+  if (message.role === "progress" || message.isMeta) return;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) {
-    for (const block of message.blocks) {
-      if (block.type === "tool_use") append({ kind: "tool", text: `${block.name} ${formatJson(block.input, 1200)}` });
-    }
     return;
   }
   for (const block of message.blocks) {
-    if (block.type === "text") append({ kind: message.isMeta ? "meta" : kindForRole(message.role), text: block.text });
-    if (block.type === "thinking") append({ kind: "meta", text: `thinking: ${block.text}` });
-    if (block.type === "tool_use") append({ kind: "tool", text: `${block.name} ${formatJson(block.input, 1200)}` });
+    if (block.type === "text") append({ kind: kindForRole(message.role), text: block.text });
+    if (block.type === "thinking") continue;
     if (block.type === "tool_result") {
       const formatted = formatToolResult(block.name, block.output, block.ok);
-      append({ kind: block.ok ? "tool" : "error", text: formatted.text, format: formatted.format });
+      append({ kind: block.ok ? "tool" : "error", text: formatted.text, format: formatted.format, previewStyle: "tool" });
     }
   }
 }
@@ -501,12 +527,16 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
       detail: event.detail,
       usage: event.phase === "preparing" ? undefined : status.usage,
       streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens,
+      activityTick: status.activityTick + 1,
     };
   }
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics };
-  if (event.type === "usage") return { ...status, usage: event.usage };
-  if (event.type === "assistant.delta") return { ...status, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text) };
-  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason };
+  if (event.type === "usage") return { ...status, usage: event.usage, activityTick: status.activityTick + 1 };
+  if (event.type === "assistant.delta") return { ...status, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), activityTick: status.activityTick + 1 };
+  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, activityTick: status.activityTick + 1 };
+  if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "retrying" || event.type === "error") {
+    return { ...status, activityTick: status.activityTick + 1 };
+  }
   return status;
 }
 
@@ -592,17 +622,15 @@ async function handleLineLogCommand(command: Extract<ReturnType<typeof parseRepl
 }
 
 function initialLines(runtime: ReplRuntime): UiLine[] {
-  const session = runtime.engine.snapshot().session;
   return [
     { id: 0, kind: "system", text: "Interactive UI enabled. Type /help for commands." },
-    ...(session ? [{ id: -1, kind: "meta" as const, text: `Session transcript: ${session.transcriptPath}` }] : []),
   ];
 }
 
 function colorForKind(kind: UiLine["kind"]) {
   if (kind === "user") return "cyan";
   if (kind === "assistant") return "green";
-  if (kind === "tool") return "yellow";
+  if (kind === "tool") return "#d4b04c";
   if (kind === "error") return "red";
   if (kind === "meta") return "gray";
   return "white";
@@ -613,7 +641,6 @@ function prefixForKind(kind: UiLine["kind"]): string {
   if (kind === "assistant") return "assistant>";
   if (kind === "tool") return "tool>";
   if (kind === "error") return "error>";
-  if (kind === "meta") return "meta>";
   return "system>";
 }
 
@@ -643,7 +670,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
         ? "exit 0"
         : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
     const sections = [
-      `${toolName}> ${status} (${output.durationMs}ms)`,
+      `${toolName} · ${status} · ${output.durationMs}ms`,
       `$ ${output.command}`,
     ];
     if (output.stdout) sections.push("stdout:", output.stdout.replace(/\s+$/u, ""));
@@ -653,10 +680,18 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (typeof output === "string" && hasAnsi(output)) {
-    return { text: `${toolName}>\n${output}`, format: "ansi" };
+    return { text: `${toolName}\n${output}`, format: "ansi" };
   }
 
-  return { text: `${toolName}> ${formatJson(output, 6000)}` };
+  if (toolName === "list" && isRecord(output)) {
+    return { text: formatListToolResult(output, ok) };
+  }
+
+  if (toolName === "read" && isRecord(output)) {
+    return { text: formatReadToolResult(output, ok) };
+  }
+
+  return { text: `${toolName}${ok ? "" : " · failed"}\n${formatJson(output, 6000)}` };
 }
 
 interface ExecResultLike {
@@ -680,6 +715,47 @@ function isExecOutput(value: unknown): value is ExecResultLike {
     typeof record.stdout === "string" &&
     typeof record.stderr === "string"
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatListToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const pathValue = typeof output.path === "string" ? output.path : "";
+  const typeValue = typeof output.type === "string" ? output.type : "result";
+  const returnedEntries = typeof output.returnedEntries === "number" ? output.returnedEntries : undefined;
+  const totalFiles = typeof output.totalFiles === "number" ? output.totalFiles : undefined;
+  const totalDirectories = typeof output.totalDirectories === "number" ? output.totalDirectories : undefined;
+  const entries = Array.isArray(output.entries) ? output.entries : [];
+  const names = entries
+    .map((entry) => (isRecord(entry) && typeof entry.name === "string" ? entry.name : undefined))
+    .filter((name): name is string => Boolean(name))
+    .slice(0, 3);
+
+  const lines = [`list · ${ok ? typeValue : "failed"}`];
+  if (pathValue) lines.push(pathValue);
+  const counts = [
+    returnedEntries !== undefined ? `${returnedEntries} shown` : undefined,
+    totalFiles !== undefined ? `${totalFiles} files` : undefined,
+    totalDirectories !== undefined ? `${totalDirectories} dirs` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  if (counts.length > 0) lines.push(counts.join(" · "));
+  for (const name of names) lines.push(name);
+  return lines.join("\n");
+}
+
+function formatReadToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const startLine = typeof output.startLine === "number" ? output.startLine : undefined;
+  const endLine = typeof output.endLine === "number" ? output.endLine : undefined;
+  const totalLines = typeof output.totalLines === "number" ? output.totalLines : undefined;
+  const content = typeof output.content === "string" ? output.content : "";
+  const lines = [`read${ok ? "" : " · failed"}`];
+  if (startLine !== undefined && endLine !== undefined && totalLines !== undefined) {
+    lines.push(`lines ${startLine}-${endLine} of ${totalLines}`);
+  }
+  if (content) lines.push(content);
+  return lines.join("\n");
 }
 
 function renderContext(metrics: ContextMetrics | undefined): string {
@@ -737,6 +813,22 @@ function trimFixed(value: number): string {
 function statusBarWidth(): number {
   const columns = stdout.columns ?? 100;
   return Math.max(72, Math.min(columns - 1, 160));
+}
+
+const WORKING_FRAMES = [".  ", ".. ", "..."];
+const TOOL_PREVIEW = {
+  maxLines: 6,
+  detailIndent: "    ",
+  detailGrayStart: 170,
+  detailGrayEnd: 96,
+};
+
+function toolPreviewDetailColor(lineIndex: number): string {
+  const detailCount = Math.max(1, TOOL_PREVIEW.maxLines - 1);
+  const ratio = Math.min(1, Math.max(0, (lineIndex - 1) / (detailCount - 1 || 1)));
+  const channel = Math.round(TOOL_PREVIEW.detailGrayStart + (TOOL_PREVIEW.detailGrayEnd - TOOL_PREVIEW.detailGrayStart) * ratio);
+  const hex = channel.toString(16).padStart(2, "0");
+  return `#${hex}${hex}${hex}`;
 }
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
