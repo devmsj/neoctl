@@ -117,6 +117,7 @@ interface UiLine {
   title?: string;
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
+  summaryMaxLines?: number;
   live?: boolean;
   renderedKey?: string;
 }
@@ -711,7 +712,7 @@ function renderDisplayText(
 }
 
 function renderSummaryLines(line: UiLine, width: number): string[] {
-  const content = line.format === "ansi" ? stripAnsi(line.text) : line.text;
+  const content = line.text;
   const detailWidth = Math.max(10, width - SUMMARY_BLOCK.detailIndent.length);
   const title = line.title ?? titleForKind(line.kind);
   const rawLines = content.replace(/\r\n/g, "\n").split("\n");
@@ -719,9 +720,10 @@ function renderSummaryLines(line: UiLine, width: number): string[] {
     const lineWidth = index === 0 && !title ? width : detailWidth;
     return wrapAnsi(rawLine, Math.max(10, lineWidth), { hard: true, trim: false }).split("\n");
   });
-  const preview = [title, ...wrapped].filter((value) => value.length > 0).slice(0, SUMMARY_BLOCK.maxLines);
-  if (wrapped.length + (title ? 1 : 0) > SUMMARY_BLOCK.maxLines && preview.length > 0) {
-    preview[preview.length - 1] = truncate(preview[preview.length - 1], Math.max(1, detailWidth - 1)) + "…";
+  const maxLines = line.summaryMaxLines ?? SUMMARY_BLOCK.maxLines;
+  const preview = [title, ...wrapped].filter((value) => stripAnsi(value).length > 0).slice(0, maxLines);
+  if (wrapped.length + (title ? 1 : 0) > maxLines && preview.length > 0) {
+    preview[preview.length - 1] = truncateAnsi(preview[preview.length - 1], Math.max(1, detailWidth - 1)) + "…";
   }
   return preview.length ? preview : [""];
 }
@@ -732,6 +734,13 @@ function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skip
   return preview.map((previewLine, index) => {
     const sourceIndex = skipTop + index;
     const detail = sourceIndex > 0;
+    const text = detail ? `${SUMMARY_BLOCK.detailIndent}${previewLine}` : previewLine;
+    if (line.format === "ansi") {
+      const props = detail
+        ? { key: `summary-${line.id}-${index}` }
+        : { key: `summary-${line.id}-${index}`, color: colorForKind(line.kind), bold: true };
+      return e(Text, props, ...renderAnsiInline(text));
+    }
     return e(
       Text,
       {
@@ -740,7 +749,7 @@ function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skip
         dimColor: detail,
         bold: !detail,
       },
-      detail ? `${SUMMARY_BLOCK.detailIndent}${previewLine}` : previewLine,
+      text,
     );
   });
 }
@@ -1223,14 +1232,20 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return {
+  const line: Omit<UiLine, "id"> = {
     kind: ok ? "tool" : "error",
     title: toolTitle(toolName, "finished"),
     text: formatted.text,
     format: formatted.format,
-    previewStyle: "summary",
     live: false,
   };
+  if (formatted.summaryMaxLines !== undefined) {
+    line.previewStyle = "summary";
+    line.summaryMaxLines = formatted.summaryMaxLines;
+  } else if (!formatted.full) {
+    line.previewStyle = "summary";
+  }
+  return line;
 }
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Omit<UiLine, "id"> {
@@ -1253,7 +1268,11 @@ function formatJson(value: unknown, maxLength: number): string {
   return truncate(text ?? "", maxLength);
 }
 
-function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; format?: UiLine["format"] } {
+function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
+  if (toolName === "edit" && isRecord(output) && isEditToolOutput(output)) {
+    return { text: formatEditToolDiff(output, ok), format: "ansi", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
+  }
+
   if (isExecOutput(output)) {
     const status = output.timedOut
       ? "timed out"
@@ -1282,7 +1301,106 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: formatReadToolResult(output, ok) };
   }
 
+  if (toolName === "search" && isRecord(output)) {
+    return { text: formatSearchToolResult(output, ok) };
+  }
+
   return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}` };
+}
+
+interface EditToolOutputLike extends Record<string, unknown> {
+  path: string;
+  operation: string;
+  replacements: number;
+  patch: EditPatchHunkLike[];
+}
+
+interface EditPatchHunkLike {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+function isEditToolOutput(value: Record<string, unknown>): value is EditToolOutputLike {
+  return (
+    typeof value.path === "string" &&
+    typeof value.operation === "string" &&
+    typeof value.replacements === "number" &&
+    Array.isArray(value.patch) &&
+    value.patch.every(isEditPatchHunk)
+  );
+}
+
+function isEditPatchHunk(value: unknown): value is EditPatchHunkLike {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.oldStart === "number" &&
+    typeof value.oldLines === "number" &&
+    typeof value.newStart === "number" &&
+    typeof value.newLines === "number" &&
+    Array.isArray(value.lines) &&
+    value.lines.every((line) => typeof line === "string")
+  );
+}
+
+function formatEditToolDiff(output: EditToolOutputLike, ok: boolean): string {
+  const lines = [
+    dimAnsi(`${ok ? output.operation : "failed"} ${output.path}, ${output.replacements} replacement(s)`),
+    `\x1b[2;31m--- ${output.path}\x1b[0m`,
+    `\x1b[2;32m+++ ${output.path}\x1b[0m`,
+  ];
+  for (const hunk of output.patch) {
+    lines.push(colorizeDiffLine(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`));
+    lines.push(...formatEditPatchHunkLines(hunk));
+  }
+  if (output.patch.length === 0) lines.push(dimAnsi("no changes"));
+  return lines.join("\n");
+}
+
+function formatEditPatchHunkLines(hunk: EditPatchHunkLike): string[] {
+  const oldLineWidth = diffLineNumberWidth(hunk.oldStart, hunk.oldLines);
+  const newLineWidth = diffLineNumberWidth(hunk.newStart, hunk.newLines);
+  let oldLineNumber = hunk.oldStart;
+  let newLineNumber = hunk.newStart;
+
+  return hunk.lines.map((rawLine) => {
+    const marker = diffLineMarker(rawLine);
+    if (!marker) return rawLine;
+
+    const showOldLineNumber = marker !== "+";
+    const showNewLineNumber = marker !== "-";
+    const oldLineLabel = showOldLineNumber ? String(oldLineNumber).padStart(oldLineWidth) : " ".repeat(oldLineWidth);
+    const newLineLabel = showNewLineNumber ? String(newLineNumber).padStart(newLineWidth) : " ".repeat(newLineWidth);
+    const line = `${oldLineLabel} ${newLineLabel} │ ${marker}${rawLine.slice(1)}`;
+
+    if (showOldLineNumber) oldLineNumber += 1;
+    if (showNewLineNumber) newLineNumber += 1;
+    return colorizeDiffLine(line, marker);
+  });
+}
+
+function diffLineNumberWidth(start: number, lineCount: number): number {
+  const end = lineCount > 0 ? start + lineCount - 1 : start;
+  return Math.max(String(start).length, String(end).length, 2);
+}
+
+function diffLineMarker(line: string): "+" | "-" | " " | undefined {
+  const marker = line[0];
+  if (marker === "+" || marker === "-" || marker === " ") return marker;
+  return undefined;
+}
+
+function colorizeDiffLine(line: string, marker?: "+" | "-" | " "): string {
+  if (marker === "+" || (!marker && line.startsWith("+"))) return `\x1b[2;32m${line}\x1b[0m`;
+  if (marker === "-" || (!marker && line.startsWith("-"))) return `\x1b[2;31m${line}\x1b[0m`;
+  if (line.startsWith("@@")) return `\x1b[2;36m${line}\x1b[0m`;
+  return dimAnsi(line);
+}
+
+function dimAnsi(line: string): string {
+  return `\x1b[2m${line}\x1b[0m`;
 }
 
 interface ExecResultLike {
@@ -1337,16 +1455,113 @@ function formatListToolResult(output: Record<string, unknown>, ok: boolean): str
 }
 
 function formatReadToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
+
+  const pathValue = typeof output.path === "string" ? output.path : undefined;
   const startLine = typeof output.startLine === "number" ? output.startLine : undefined;
   const endLine = typeof output.endLine === "number" ? output.endLine : undefined;
   const totalLines = typeof output.totalLines === "number" ? output.totalLines : undefined;
-  const content = typeof output.content === "string" ? output.content : "";
-  const lines = [ok ? "ok" : "failed"];
+  const hasMoreBefore = output.hasMoreBefore === true;
+  const hasMoreAfter = output.hasMoreAfter === true;
+  const content = typeof output.content === "string" ? output.content.trimEnd() : "";
+
+  const lines = ["read result"];
+  if (pathValue) lines.push(`file: ${pathValue}`);
   if (startLine !== undefined && endLine !== undefined && totalLines !== undefined) {
-    lines.push(`lines ${startLine}-${endLine} of ${totalLines}`);
+    const more = [hasMoreBefore ? "more before" : undefined, hasMoreAfter ? "more after" : undefined]
+      .filter((value): value is string => Boolean(value))
+      .join(", ");
+    lines.push(`range: lines ${startLine}-${endLine} of ${totalLines}${more ? ` (${more})` : ""}`);
   }
-  if (content) lines.push(content);
+  lines.push("content:");
+  lines.push(content || "(empty range)");
   return lines.join("\n");
+}
+
+function formatSearchToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
+
+  const query = typeof output.query === "string" ? output.query : undefined;
+  const searchPath = typeof output.searchPath === "string" ? output.searchPath : undefined;
+  const returnedMatches = typeof output.returnedMatches === "number" ? output.returnedMatches : undefined;
+  const totalMatchesKnown = typeof output.totalMatchesKnown === "number" ? output.totalMatchesKnown : undefined;
+  const truncated = output.truncated === true;
+  const matches = Array.isArray(output.matches) ? output.matches.filter(isSearchMatchLike) : [];
+  const errors = Array.isArray(output.errors)
+    ? output.errors.filter((value): value is string => typeof value === "string")
+    : [];
+  const transportTruncation = isRecord(output.transportTruncation) ? output.transportTruncation : undefined;
+  const omittedMatches = typeof transportTruncation?.omittedMatches === "number" ? transportTruncation.omittedMatches : undefined;
+
+  const lines = ["search result"];
+  if (query !== undefined) lines.push(`query: ${query}`);
+  if (searchPath !== undefined) lines.push(`path: ${searchPath}`);
+  const countParts = [
+    `${returnedMatches ?? matches.length} shown`,
+    totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined,
+    truncated ? "truncated" : undefined,
+    omittedMatches !== undefined && omittedMatches > 0 ? `${omittedMatches} omitted` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  lines.push(`matches: ${countParts.join(" · ")}`);
+
+  if (errors.length > 0) {
+    lines.push("errors:");
+    lines.push(...errors.slice(0, 5).map((message) => `  ${message}`));
+    if (errors.length > 5) lines.push(`  ... ${errors.length - 5} more error(s)`);
+  }
+
+  if (matches.length === 0) {
+    lines.push("no matches");
+    return lines.join("\n");
+  }
+
+  lines.push("results:");
+  for (const match of matches) {
+    for (const context of match.contextBefore ?? []) {
+      lines.push(formatSearchContextLine(context, "-"));
+    }
+    lines.push(formatSearchMatchLine(match));
+    for (const context of match.contextAfter ?? []) {
+      lines.push(formatSearchContextLine(context, "+"));
+    }
+  }
+  return lines.join("\n");
+}
+
+interface SearchMatchLike {
+  file: string;
+  line: number;
+  column?: number;
+  text: string;
+  contextBefore?: SearchContextLineLike[];
+  contextAfter?: SearchContextLineLike[];
+}
+
+interface SearchContextLineLike {
+  file: string;
+  line: number;
+  text: string;
+}
+
+function isSearchMatchLike(value: unknown): value is SearchMatchLike {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.file === "string" &&
+    typeof value.line === "number" &&
+    typeof value.text === "string" &&
+    (value.column === undefined || typeof value.column === "number")
+  );
+}
+
+function formatSearchMatchLine(match: SearchMatchLike): string {
+  const column = match.column !== undefined ? `:${match.column}` : "";
+  return `  ${match.file}:${match.line}${column}: ${match.text}`;
+}
+
+function formatSearchContextLine(line: SearchContextLineLike, marker: "-" | "+"): string {
+  return `  ${line.file}:${line.line}${marker} ${line.text}`;
 }
 
 function renderContext(metrics: ContextMetrics | undefined): string {
@@ -1392,6 +1607,35 @@ function formatNumber(value: number | undefined): string {
 
 function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
+}
+
+function truncateAnsi(value: string, maxLength: number): string {
+  if (stripAnsi(value).length <= maxLength) return value;
+  if (maxLength <= 0) return "";
+
+  let visibleLength = 0;
+  let index = 0;
+  let output = "";
+  const ansiPattern = /\x1b\[[0-9;]*m/y;
+
+  while (index < value.length && visibleLength < maxLength) {
+    ansiPattern.lastIndex = index;
+    const ansiMatch = ansiPattern.exec(value);
+    if (ansiMatch) {
+      output += ansiMatch[0];
+      index = ansiPattern.lastIndex;
+      continue;
+    }
+
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) break;
+    const char = String.fromCodePoint(codePoint);
+    output += char;
+    visibleLength += 1;
+    index += char.length;
+  }
+
+  return hasAnsi(output) ? `${output}\x1b[0m` : output;
 }
 
 function phaseLabelForStatus(phase: string): string {
@@ -1628,6 +1872,7 @@ const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
 };
+const EDIT_TOOL_SUMMARY_MAX_LINES = 1000;
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
   const stripped = stripAnsi(value);

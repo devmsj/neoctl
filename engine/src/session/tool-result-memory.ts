@@ -128,7 +128,8 @@ export class FileToolResultMemory implements ToolResultMemory {
     } catch (error) {
       if (!isFileExistsError(error)) throw error;
     }
-    const preview = generatePreview(serialized, this.previewChars);
+    const previewSource = formatToolOutputPreview(output, serialized);
+    const preview = generatePreview(previewSource, this.previewChars);
     return {
       filepath,
       originalSize: serialized.length,
@@ -274,6 +275,80 @@ function generatePreview(content: string, maxChars: number): { preview: string; 
   const lastNewline = truncated.lastIndexOf("\n");
   const cutPoint = lastNewline > maxChars * 0.5 ? lastNewline : maxChars;
   return { preview: content.slice(0, cutPoint), hasMore: true };
+}
+
+function formatToolOutputPreview(output: unknown, fallback: string): string {
+  if (typeof output === "string") return output;
+  if (!isRecord(output)) return fallback;
+  if (isReadOutputLike(output)) return formatReadOutputPreview(output);
+  if (isSearchOutputLike(output)) return formatSearchOutputPreview(output);
+  return fallback;
+}
+
+function isReadOutputLike(output: Record<string, unknown>): boolean {
+  return typeof output.path === "string" && typeof output.content === "string" && typeof output.startLine === "number";
+}
+
+function formatReadOutputPreview(output: Record<string, unknown>): string {
+  const lines = ["read result", `file: ${output.path}`];
+  if (typeof output.startLine === "number" && typeof output.endLine === "number" && typeof output.totalLines === "number") {
+    const more = [output.hasMoreBefore === true ? "more before" : undefined, output.hasMoreAfter === true ? "more after" : undefined]
+      .filter((value): value is string => Boolean(value))
+      .join(", ");
+    lines.push(`range: lines ${output.startLine}-${output.endLine} of ${output.totalLines}${more ? ` (${more})` : ""}`);
+  }
+  lines.push("content:");
+  lines.push(typeof output.content === "string" ? output.content.trimEnd() : "");
+  return lines.join("\n");
+}
+
+function isSearchOutputLike(output: Record<string, unknown>): boolean {
+  return typeof output.query === "string" && Array.isArray(output.matches);
+}
+
+function formatSearchOutputPreview(output: Record<string, unknown>): string {
+  const matches = Array.isArray(output.matches) ? output.matches.filter(isSearchMatchPreviewLike) : [];
+  const returnedMatches = typeof output.returnedMatches === "number" ? output.returnedMatches : matches.length;
+  const totalMatchesKnown = typeof output.totalMatchesKnown === "number" ? output.totalMatchesKnown : undefined;
+  const transportTruncation = isRecord(output.transportTruncation) ? output.transportTruncation : undefined;
+  const omittedMatches = typeof transportTruncation?.omittedMatches === "number" ? transportTruncation.omittedMatches : undefined;
+  const countParts = [
+    `${returnedMatches} shown`,
+    totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined,
+    output.truncated === true ? "truncated" : undefined,
+    omittedMatches !== undefined && omittedMatches > 0 ? `${omittedMatches} omitted` : undefined,
+  ].filter((value): value is string => Boolean(value));
+
+  const lines = [
+    "search result",
+    `query: ${output.query}`,
+  ];
+  if (typeof output.searchPath === "string") lines.push(`path: ${output.searchPath}`);
+  lines.push(`matches: ${countParts.join(" · ")}`);
+  if (matches.length === 0) {
+    lines.push("no matches");
+    return lines.join("\n");
+  }
+  lines.push("results:");
+  for (const match of matches) {
+    const column = match.column !== undefined ? `:${match.column}` : "";
+    lines.push(`  ${match.file}:${match.line}${column}: ${match.text}`);
+  }
+  return lines.join("\n");
+}
+
+function isSearchMatchPreviewLike(value: unknown): value is { file: string; line: number; column?: number; text: string } {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.file === "string" &&
+    typeof value.line === "number" &&
+    typeof value.text === "string" &&
+    (value.column === undefined || typeof value.column === "number")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 export function serializeToolOutput(output: unknown): string {
