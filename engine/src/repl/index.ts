@@ -50,6 +50,7 @@ interface UiLine {
   title?: string;
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
+  live?: boolean;
 }
 
 interface UiStatus {
@@ -159,8 +160,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
-  const [staticLines, setStaticLines] = useState<UiLine[]>(() => initialLines(runtime));
-  const [liveLines, setLiveLines] = useState<UiLine[]>([]);
+  const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined);
@@ -177,27 +177,18 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
-    const next = { id, ...line };
-    if (line.kind === "assistant" && line.text.length === 0) {
-      setLiveLines((current) => [...current, next]);
-    } else {
-      setStaticLines((current) => [...current, next]);
-    }
+    const next: UiLine = { id, ...line };
+    setLines((current) => [...current, next]);
     return id;
   };
 
   const updateLine = (id: number, updater: (text: string) => string) => {
-    setLiveLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
+    setLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
   };
 
   const finalizeLiveLine = (id: number | undefined) => {
     if (id === undefined) return;
-    setLiveLines((current) => {
-      const finalized = current.find((line) => line.id === id);
-      if (!finalized) return current;
-      setStaticLines((existing) => [...existing, finalized]);
-      return current.filter((line) => line.id !== id);
-    });
+    setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
   };
 
   const handleEvent = (event: AgentEvent) => {
@@ -205,16 +196,26 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "state") return;
     if (event.type === "context.metrics" || event.type === "usage") return;
     if (event.type === "assistant.delta") {
-      const id = assistantLineId.current ?? append({ kind: "assistant", text: "" });
+      const id = assistantLineId.current ?? append({ kind: "assistant", text: "", live: true });
       assistantLineId.current = id;
       updateLine(id, (text) => text + event.text);
       return;
     }
     if (event.type === "message") {
-      renderMessage(event.message, append, assistantLineId.current);
+      if (event.message.role !== "assistant") {
+        finalizeLiveLine(assistantLineId.current);
+        assistantLineId.current = undefined;
+      }
+      const rendered = renderMessage(event.message, append, assistantLineId.current);
+      if (rendered && event.message.role === "assistant") {
+        finalizeLiveLine(assistantLineId.current);
+        assistantLineId.current = undefined;
+      }
       return;
     }
     if (event.type === "tool.started") {
+      finalizeLiveLine(assistantLineId.current);
+      assistantLineId.current = undefined;
       append(formatToolUse(event.toolUse));
       return;
     }
@@ -286,10 +287,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         handleEvent(event);
       }
     } catch (error) {
+      finalizeLiveLine(assistantLineId.current);
+      assistantLineId.current = undefined;
       append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
+      finalizeLiveLine(assistantLineId.current);
       assistantLineId.current = undefined;
       setBusy(false);
       setStatus((current) => ({ ...current, phase: "ready", detail: undefined }));
@@ -297,8 +301,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   useEffect(() => {
-    setStaticLines(initialLines(runtime));
-    setLiveLines([]);
+    setLines(initialLines(runtime));
+    assistantLineId.current = undefined;
     setStatus(initialStatus(runtime));
     setScrollOffset(0);
   }, [runtime]);
@@ -307,6 +311,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const messageViewportHeight = Math.max(1, terminalRows() - UI_FIXED_ROWS);
   const contentWidth = Math.max(40, width - 16);
   const toolWidth = Math.max(40, width - 2);
+  const liveLines = lines.filter((line) => line.live);
+  const staticLines = lines.filter((line) => !line.live);
   const liveContentHeight = totalUiLinesHeight(liveLines, contentWidth, toolWidth);
   const liveOutputHeight = liveContentHeight > LIVE_OUTPUT_ROWS ? Math.min(messageViewportHeight, LIVE_OUTPUT_ROWS) : undefined;
   const maxScrollOffset = 0;
@@ -413,22 +419,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       items: staticLines,
       children: (line) => e(MessageList, { key: `static-${line.id}`, lines: [line], scrollOffset: 0 }),
     }),
-    e(Header, { runtime }),
     e(MessageList, { lines: liveLines, height: liveOutputHeight, scrollOffset: effectiveScrollOffset }),
     e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
     e(PromptLine, { text: input, cursor, busy, animationTick }),
-  );
-}
-
-function Header({ runtime }: { runtime: ReplRuntime }) {
-  const session = runtime.engine.snapshot().session;
-  const width = Math.max(1, terminalColumns() - 1);
-  const sessionText = session ? ` Session: ${truncateMiddle(session.transcriptPath, Math.max(10, width - 34))}` : "";
-  return e(
-    Box,
-    { flexDirection: "column", marginBottom: 1 },
-    e(Text, { bold: true }, fitToWidth("Agent Scaffold REPL", width)),
-    e(Text, { color: "gray" }, fitToWidth(`Type /help for commands.${sessionText}`, width)),
   );
 }
 
@@ -714,20 +707,23 @@ async function handleLogCommand(
   append(systemLine(`model communication logs: ${path.resolve(command.path)}`));
 }
 
-function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number) {
-  if (message.metadata?.syntheticToolUse === true) return;
+function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number): boolean {
+  if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) {
     append(formatMetaMessage(message));
-    return;
+    return true;
   }
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) {
-    return;
+    return true;
   }
+
+  let rendered = false;
   for (const block of message.blocks) {
     if (block.type === "text") {
       const kind = kindForRole(message.role);
       if (kind === "system" || kind === "meta") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
       else append({ kind, text: block.text });
+      rendered = true;
     }
     if (block.type === "thinking") continue;
     if (block.type === "tool_result") {
@@ -739,8 +735,10 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
         format: formatted.format,
         previewStyle: "summary",
       });
+      rendered = true;
     }
   }
+  return rendered;
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
