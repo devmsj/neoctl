@@ -268,7 +268,16 @@ async function appendCode(lines: RenderedLine[], token: Tokens.Code, width: numb
   }
 }
 async function appendList(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): Promise<void> {
-  appendListLike(lines, token, kind, width);
+  let number = typeof token.start === "number" ? token.start : 1;
+  for (const item of token.items) {
+    const marker = token.ordered ? `${number}. ` : "- ";
+    number += 1;
+    const nested: RenderedLine[] = [];
+    for (const child of item.tokens) {
+      await appendToken(nested, child, kind, Math.max(10, width - marker.length));
+    }
+    appendListItemLines(lines, marker, nested, kind);
+  }
 }
 
 async function appendBlockquote(
@@ -296,22 +305,25 @@ function appendCodePreview(lines: RenderedLine[], token: Tokens.Code, width: num
 }
 
 function appendListPreview(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): void {
-  appendListLike(lines, token, kind, width);
-}
-
-function appendListLike(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): void {
   let number = typeof token.start === "number" ? token.start : 1;
   for (const item of token.items) {
     const marker = token.ordered ? `${number}. ` : "- ";
     number += 1;
-    const segments = inlineSegments(flatInlineTokens(item.tokens, item.text), {});
-    const wrapped = wrapSegments(segments, Math.max(10, width - marker.length));
-    for (const [index, wrappedLine] of wrapped.entries()) {
-      lines.push({
-        color: kind === "error" ? "red" : undefined,
-        segments: [{ text: index === 0 ? marker : " ".repeat(marker.length), color: "gray" }, ...wrappedLine],
-      });
+    const nested: RenderedLine[] = [];
+    for (const child of item.tokens) {
+      appendPreviewToken(nested, child, kind, Math.max(10, width - marker.length));
     }
+    appendListItemLines(lines, marker, nested, kind);
+  }
+}
+
+function appendListItemLines(lines: RenderedLine[], marker: string, nested: RenderedLine[], kind: MarkdownLineKind): void {
+  const itemLines = nested.length ? nested : [{ segments: [{ text: "" }] }];
+  for (const [index, line] of itemLines.entries()) {
+    lines.push({
+      color: line.color ?? (kind === "error" ? "red" : undefined),
+      segments: [{ text: index === 0 ? marker : " ".repeat(marker.length), color: "gray" }, ...line.segments],
+    });
   }
 }
 
@@ -374,16 +386,6 @@ function inlineSegments(tokens: Token[], base: Omit<Segment, "text">): Segment[]
     }
   }
   return mergeAdjacent(segments.filter((segment) => segment.text.length > 0));
-}
-
-function flatInlineTokens(tokens: Token[], fallback: string): Token[] {
-  if (tokens.length === 1 && tokens[0]?.type === "paragraph") return (tokens[0] as Tokens.Paragraph).tokens;
-  const inline = tokens.flatMap((token) => {
-    if (token.type === "paragraph") return (token as Tokens.Paragraph).tokens;
-    if (token.type === "text") return [token];
-    return [];
-  });
-  return inline.length ? inline : Lexer.lexInline(fallback);
 }
 
 function plainFromInline(tokens: Token[]): string {
