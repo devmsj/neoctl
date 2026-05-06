@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
 import stripAnsi from "strip-ansi";
@@ -154,18 +154,38 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
-  const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const [scrollOffset, setScrollOffset] = useState(0);
   const [animationTick, setAnimationTick] = useState(0);
   const previousMessageContentHeight = useRef<number | undefined>(undefined);
+  const inputRef = useRef(input);
+  const cursorRef = useRef(cursor);
+  const busyRef = useRef(busy);
+  const historyIndexRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (!busy) return undefined;
     const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [busy]);
+
+  const setPromptState = (text: string, nextCursor: number) => {
+    const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
+    inputRef.current = text;
+    cursorRef.current = safeCursor;
+    setInput(text);
+    setCursor(safeCursor);
+  };
+
+  const setHistorySelection = (next: number | undefined) => {
+    historyIndexRef.current = next;
+  };
+
+  const setBusyState = (next: boolean) => {
+    busyRef.current = next;
+    setBusy(next);
+  };
 
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
@@ -261,11 +281,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   const submitLine = async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    if (!trimmed || busyRef.current) return;
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
-    setHistoryIndex(undefined);
-    setInput("");
-    setCursor(0);
+    setHistorySelection(undefined);
+    setPromptState("", 0);
     setScrollOffset(0);
     await handleCommandOrPrompt(text);
   };
@@ -308,7 +327,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const abortController = new AbortController();
     activeAbortController.current = abortController;
     interruptArmed.current = false;
-    setBusy(true);
+    setBusyState(true);
     setStatus((current) => ({
       ...current,
       phase: "running",
@@ -336,7 +355,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       finalizeLiveLine(thinkingLineId.current);
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
-      setBusy(false);
+      setBusyState(false);
       setStatus((current) => ({
         ...current,
         phase: "ready",
@@ -363,9 +382,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
   const maxMessageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
-  const messageContentHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
+  const messageLayout = useMemo(() => measureUiLines(lines, contentWidth, toolWidth), [lines, contentWidth, toolWidth]);
+  const messageContentHeight = messageLayout.totalHeight;
   const messageViewportHeight = Math.min(messageContentHeight, maxMessageViewportHeight);
-  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
+  const maxScrollOffset = maxScrollForHeight(messageContentHeight, messageViewportHeight);
   const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
   const scrollPage = Math.max(1, messageViewportHeight - 1);
 
@@ -383,7 +403,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
-      if (busy) {
+      if (busyRef.current) {
         const controller = activeAbortController.current;
         if (controller && !controller.signal.aborted && !interruptArmed.current) {
           interruptArmed.current = true;
@@ -412,77 +432,85 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       setScrollOffset(0);
       return;
     }
-    if (busy) return;
+    if (busyRef.current) return;
     if (key.return) {
-      void submitLine(input);
+      void submitLine(inputRef.current);
       return;
     }
     if (key.backspace || key.delete) {
-      if (cursor > 0) {
-        setInput((current) => `${current.slice(0, cursor - 1)}${current.slice(cursor)}`);
-        setCursor((current) => Math.max(0, current - 1));
+      const currentText = inputRef.current;
+      const currentCursor = cursorRef.current;
+      if (currentCursor > 0) {
+        setPromptState(`${currentText.slice(0, currentCursor - 1)}${currentText.slice(currentCursor)}`, currentCursor - 1);
       }
       return;
     }
     if (key.leftArrow) {
-      setCursor((current) => Math.max(0, current - 1));
+      setPromptState(inputRef.current, cursorRef.current - 1);
       return;
     }
     if (key.rightArrow) {
-      setCursor((current) => Math.min(input.length, current + 1));
+      setPromptState(inputRef.current, cursorRef.current + 1);
       return;
     }
     if (key.home) {
-      setCursor(0);
+      setPromptState(inputRef.current, 0);
       return;
     }
     if (key.end) {
-      setCursor(input.length);
+      setPromptState(inputRef.current, inputRef.current.length);
       return;
     }
     if (key.upArrow) {
-      const next = Math.min(history.current.length - 1, (historyIndex ?? -1) + 1);
+      const next = Math.min(history.current.length - 1, (historyIndexRef.current ?? -1) + 1);
       if (next >= 0 && history.current[next] !== undefined) {
-        setHistoryIndex(next);
-        setInput(history.current[next]);
-        setCursor(history.current[next].length);
+        setHistorySelection(next);
+        setPromptState(history.current[next], history.current[next].length);
       }
       return;
     }
     if (key.downArrow) {
-      if (historyIndex === undefined) return;
-      const next = historyIndex - 1;
+      if (historyIndexRef.current === undefined) return;
+      const next = historyIndexRef.current - 1;
       if (next < 0) {
-        setHistoryIndex(undefined);
-        setInput("");
-        setCursor(0);
+        setHistorySelection(undefined);
+        setPromptState("", 0);
       } else {
-        setHistoryIndex(next);
-        setInput(history.current[next] ?? "");
-        setCursor((history.current[next] ?? "").length);
+        const historyText = history.current[next] ?? "";
+        setHistorySelection(next);
+        setPromptState(historyText, historyText.length);
       }
       return;
     }
     if (key.tab) return;
     if (value && !key.ctrl && !key.meta) {
-      setInput((current) => `${current.slice(0, cursor)}${value}${current.slice(cursor)}`);
-      setCursor((current) => current + value.length);
+      const currentText = inputRef.current;
+      const currentCursor = cursorRef.current;
+      setPromptState(`${currentText.slice(0, currentCursor)}${value}${currentText.slice(currentCursor)}`, currentCursor + value.length);
     }
   });
 
   return e(
     Box,
     { flexDirection: "column" },
-    e(MessageList, { lines, height: messageViewportHeight, scrollOffset: effectiveScrollOffset, width }),
+    e(MessageList, { lines, layout: messageLayout, height: messageViewportHeight, scrollOffset: effectiveScrollOffset, width }),
     e(StatusBar, { status, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
-function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; height: number; scrollOffset: number; width: number }) {
+interface MessageLayout {
+  heights: number[];
+  totalHeight: number;
+}
+
+const MessageList = React.memo(function MessageList(
+  { lines, layout, height, scrollOffset, width }:
+  { lines: UiLine[]; layout: MessageLayout; height: number; scrollOffset: number; width: number },
+) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
-  const visible = selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset);
+  const visible = selectVisibleLines(lines, layout, height, scrollOffset);
   return e(
     Box,
     { flexDirection: "column", height, overflow: "hidden" },
@@ -505,7 +533,7 @@ function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; 
       );
     }),
   );
-}
+});
 
 interface VisibleLine {
   line: UiLine;
@@ -513,17 +541,15 @@ interface VisibleLine {
   skipTop: number;
 }
 
-function selectVisibleLines(lines: UiLine[], maxHeight: number, contentWidth: number, toolWidth: number, scrollOffset: number): VisibleLine[] {
+function selectVisibleLines(lines: UiLine[], layout: MessageLayout, maxHeight: number, scrollOffset: number): VisibleLine[] {
   const selected: VisibleLine[] = [];
   const viewportHeight = Math.max(1, maxHeight);
-  const totalHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
-  const viewportEnd = Math.max(0, totalHeight - Math.max(0, scrollOffset));
+  const viewportEnd = Math.max(0, layout.totalHeight - Math.max(0, scrollOffset));
   const viewportStart = Math.max(0, viewportEnd - viewportHeight);
   let lineStart = 0;
 
-  for (const line of lines) {
-    const displayWidth = displayWidthForLine(line, contentWidth, toolWidth);
-    const lineHeight = estimateUiLineHeight(line, displayWidth);
+  for (const [index, line] of lines.entries()) {
+    const lineHeight = layout.heights[index] ?? 0;
     const lineEnd = lineStart + lineHeight;
     const visibleStart = Math.max(lineStart, viewportStart);
     const visibleEnd = Math.min(lineEnd, viewportEnd);
@@ -537,12 +563,16 @@ function selectVisibleLines(lines: UiLine[], maxHeight: number, contentWidth: nu
   return selected;
 }
 
-function maxScrollForLines(lines: UiLine[], maxHeight: number, contentWidth: number, toolWidth: number): number {
-  return Math.max(0, totalUiLinesHeight(lines, contentWidth, toolWidth) - Math.max(1, maxHeight));
+function maxScrollForHeight(totalHeight: number, maxHeight: number): number {
+  return Math.max(0, totalHeight - Math.max(1, maxHeight));
 }
 
-function totalUiLinesHeight(lines: UiLine[], contentWidth: number, toolWidth: number): number {
-  return lines.reduce((total, line) => total + estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)), 0);
+function measureUiLines(lines: UiLine[], contentWidth: number, toolWidth: number): MessageLayout {
+  const heights = lines.map((line) => estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)));
+  return {
+    heights,
+    totalHeight: heights.reduce((total, height) => total + height, 0),
+  };
 }
 
 function displayWidthForLine(line: UiLine, contentWidth: number, toolWidth: number): number {
