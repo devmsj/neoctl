@@ -31,7 +31,83 @@ const e = React.createElement;
 interface ReplRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
+  usage: SessionUsageTracker;
   initialMetrics: ContextMetrics;
+}
+
+interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  requests: number;
+  computedTotalTokens: boolean;
+}
+
+class SessionUsageTracker {
+  private totals: UsageTotals = emptyUsageTotals();
+  private lastUsage?: ModelUsage;
+
+  add(usage: ModelUsage): void {
+    if (usage === this.lastUsage) return;
+    this.lastUsage = usage;
+
+    const inputTokens = usageTokenValue(usage.inputTokens);
+    const outputTokens = usageTokenValue(usage.outputTokens);
+    const reportedTotalTokens = usageTokenValue(usage.totalTokens);
+    const computedTotalTokens = reportedTotalTokens ?? sumUsageTokens(inputTokens, outputTokens);
+    const reasoningTokens = usageTokenValue(usage.reasoningTokens);
+    const cachedTokens = usageTokenValue(usage.cachedTokens);
+
+    if (
+      inputTokens === undefined &&
+      outputTokens === undefined &&
+      computedTotalTokens === undefined &&
+      reasoningTokens === undefined &&
+      cachedTokens === undefined
+    ) return;
+
+    this.totals = {
+      inputTokens: this.totals.inputTokens + (inputTokens ?? 0),
+      outputTokens: this.totals.outputTokens + (outputTokens ?? 0),
+      totalTokens: this.totals.totalTokens + (computedTotalTokens ?? 0),
+      reasoningTokens: this.totals.reasoningTokens + (reasoningTokens ?? 0),
+      cachedTokens: this.totals.cachedTokens + (cachedTokens ?? 0),
+      requests: this.totals.requests + 1,
+      computedTotalTokens: this.totals.computedTotalTokens || (reportedTotalTokens === undefined && computedTotalTokens !== undefined),
+    };
+  }
+
+  reset(): void {
+    this.totals = emptyUsageTotals();
+    this.lastUsage = undefined;
+  }
+
+  snapshot(): UsageTotals {
+    return { ...this.totals };
+  }
+}
+
+function emptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    requests: 0,
+    computedTotalTokens: false,
+  };
+}
+
+function usageTokenValue(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function sumUsageTokens(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined && right === undefined) return undefined;
+  return (left ?? 0) + (right ?? 0);
 }
 
 interface UiLine {
@@ -98,7 +174,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
-  return { engine, communicationLogger, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
+  return { engine, communicationLogger, usage: new SessionUsageTracker(), initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -216,6 +292,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   const handleEvent = (event: AgentEvent) => {
     setStatus((current) => reduceStatus(current, event));
+    if (event.type === "usage") runtime.usage.add(event.usage);
     if (event.type === "state") return;
     if (event.type === "context.metrics" || event.type === "usage") return;
     if (event.type === "assistant.delta") {
@@ -318,8 +395,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       append(systemLine(helpText));
       return;
     }
+    if (command.type === "cost") {
+      append(systemLine(formatUsageTotals(runtime.usage.snapshot())));
+      return;
+    }
     if (command.type === "reset") {
       runtime.engine.reset();
+      runtime.usage.reset();
       setStatus(initialStatus(runtime));
       append(systemLine("transcript reset"));
       return;
@@ -334,7 +416,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (command.type === "resume") {
       const resumed = await handleResumeCommand(command.sessionId, runtime, (line) => append(line));
-      if (resumed) setStatus(initialStatus(runtime));
+      if (resumed) {
+        runtime.usage.reset();
+        setStatus(initialStatus(runtime));
+      }
       return;
     }
     if (command.type === "log") {
@@ -989,6 +1074,24 @@ function formatSessions(sessions: readonly SessionSummary[]): string {
 
 function formatResume(snapshot: SessionStoreSnapshot): string {
   return `resumed session ${snapshot.sessionId}: ${snapshot.resumedMessages} messages from ${snapshot.transcriptPath}`;
+}
+
+function formatUsageTotals(totals: UsageTotals): string {
+  if (totals.requests === 0) return "No token usage recorded for this REPL session yet.";
+
+  const totalLabel = totals.computedTotalTokens ? "Total tokens (computed)" : "Total tokens";
+  const lines = [
+    "Session token usage:",
+    `  ${totalLabel}: ${formatNumber(totals.totalTokens)}`,
+    `  Input tokens: ${formatNumber(totals.inputTokens)}`,
+    `  Output tokens: ${formatNumber(totals.outputTokens)}`,
+    `  Model requests: ${formatNumber(totals.requests)}`,
+  ];
+
+  if (totals.reasoningTokens > 0) lines.push(`  Reasoning tokens: ${formatNumber(totals.reasoningTokens)}`);
+  if (totals.cachedTokens > 0) lines.push(`  Cached input tokens: ${formatNumber(totals.cachedTokens)}`);
+
+  return lines.join("\n");
 }
 
 function colorForKind(kind: UiLine["kind"]) {

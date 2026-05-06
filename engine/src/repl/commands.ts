@@ -1,5 +1,6 @@
 export type ReplCommand =
   | { type: "help" }
+  | { type: "cost" }
   | { type: "exit" }
   | { type: "log"; path?: string; off?: boolean }
   | { type: "reset" }
@@ -11,6 +12,7 @@ export type ReplCommand =
 export function parseReplCommand(line: string): ReplCommand {
   const trimmed = line.trim();
   if (trimmed === "/help") return { type: "help" };
+  if (trimmed === "/cost") return { type: "cost" };
   if (trimmed === "/exit" || trimmed === "/quit") return { type: "exit" };
   if (trimmed === "/log" || trimmed.startsWith("/log ")) {
     const argument = trimmed.slice("/log".length).trim();
@@ -34,6 +36,7 @@ export function parseReplCommand(line: string): ReplCommand {
 export const helpText = [
   "Commands:",
   "  /help                 Show commands",
+  "  /cost                 Show total token usage for this REPL session",
   "  /log <dir>            Write model communication logs to an absolute directory",
   "  /log off              Disable model communication logs",
   "  /sessions [limit]     List saved sessions, newest first",
