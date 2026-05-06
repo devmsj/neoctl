@@ -721,7 +721,9 @@ function renderCompactStatusSegments(
   const now = Date.now();
   const inputTokens = statusInputTokens(status);
   const outputTokens = statusOutputTokens(status);
-  const phaseText = `${statusActivityPixel(phase, animationTick)} ${phaseLabelForStatus(phase)}`;
+  const activityPixel = statusActivityPixel(phase, animationTick).trimEnd();
+  const phaseLabel = phaseLabelForStatus(phase);
+  const phaseText = activityPixel ? `${activityPixel} ${phaseLabel}` : phaseLabel;
   const inputText = `↑${compactNumber(inputTokens)}`;
   const outputText = `↓${compactNumber(outputTokens)}`;
   const contextText = `ctx:${renderContext(status.metrics)}`;
