@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Text, render, useApp, useInput } from "ink";
+import { Box, Static, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
@@ -374,6 +374,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
+  const staticLines = lines.filter((line) => !line.live);
+  const liveLines = lines.filter((line) => line.live);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -451,7 +453,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
-    e(MessageList, { lines, width }),
+    e(Static<UiLine>, { items: staticLines, children: (line) => e(MessageLine, { key: line.id, line, width }) }),
+    e(MessageList, { lines: liveLines, width }),
     e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
@@ -465,25 +468,30 @@ const MessageList = React.memo(function MessageList(
   return e(
     Box,
     { flexDirection: "column" },
-    ...lines.map((line) => {
-      if (line.previewStyle === "summary") {
-        return e(
-          Box,
-          { key: line.id, flexDirection: "row" },
-          e(
-            Box,
-            { flexDirection: "column", width: toolWidth },
-            ...renderDisplayText(line, toolWidth),
-          ),
-        );
-      }
-      return e(Box, { key: line.id, flexDirection: "row" },
-        e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
-        e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
-      );
-    }),
+    ...lines.map((line) => e(MessageLine, { key: line.id, line, width, contentWidth, toolWidth })),
   );
 });
+
+function MessageLine(
+  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width) }:
+  { line: UiLine; width: number; contentWidth?: number; toolWidth?: number },
+) {
+  if (line.previewStyle === "summary") {
+    return e(
+      Box,
+      { flexDirection: "row" },
+      e(
+        Box,
+        { flexDirection: "column", width: toolWidth },
+        ...renderDisplayText(line, toolWidth),
+      ),
+    );
+  }
+  return e(Box, { flexDirection: "row" },
+    e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
+    e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
+  );
+}
 
 function renderDisplayText(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
   if (line.previewStyle === "summary") return renderSummaryBlock(line, width, maxLines, skipTop);
