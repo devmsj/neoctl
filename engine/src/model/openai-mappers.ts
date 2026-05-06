@@ -1,5 +1,6 @@
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { ToolDefinition } from "../tools/tool.js";
+import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
 
 export interface ToolBuffer {
@@ -146,6 +147,22 @@ export function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+export function normalizeOpenAIStreamError(event: Record<string, unknown>): ModelAPIError {
+  const error = isRecord(event.error) ? event.error : event;
+  const status = asNumber(error.status ?? event.status);
+  const type = asString(error.type);
+  const code = asString(error.code);
+  const message = asString(error.message) ?? JSON.stringify(error);
+  return new ModelAPIError({
+    category: status !== undefined ? categoryForStatus(status, error) : categoryForOpenAIError(type, code, message),
+    provider: "openai",
+    message,
+    status,
+    code,
+    raw: event,
+  });
+}
+
 function collectToolPairs(messages: readonly Message[]): { pairedIds: Set<string> } {
   const toolUseIds = new Set<string>();
   const toolResultIds = new Set<string>();
@@ -160,6 +177,23 @@ function collectToolPairs(messages: readonly Message[]): { pairedIds: Set<string
   return {
     pairedIds: new Set([...toolUseIds].filter((id) => toolResultIds.has(id))),
   };
+}
+
+function categoryForOpenAIError(type: string | undefined, code: string | undefined, message: string): ModelAPIErrorCategory {
+  const text = `${type ?? ""} ${code ?? ""} ${message}`.toLowerCase();
+  if (text.includes("overloaded") || text.includes("service_unavailable")) return "overloaded";
+  if (text.includes("rate_limit")) return "rate_limit";
+  if (text.includes("timeout")) return "timeout";
+  if (text.includes("context") && text.includes("length")) return "context_length";
+  if (text.includes("max_output_tokens")) return "max_output_tokens";
+  if (text.includes("permission")) return "permission_denied";
+  if (text.includes("auth") || text.includes("api_key")) return "auth_unavailable";
+  if (text.includes("server")) return "server_error";
+  return "provider_bug";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function textFromBlocks(blocks: readonly MessageBlock[]): string {

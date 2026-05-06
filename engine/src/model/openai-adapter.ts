@@ -56,6 +56,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     yield* streamWithRetry((attempt) => this.streamAttempt(request, endpoint, attempt), {
       provider: this.name,
       maxRetries: this.options.maxRetries ?? 2,
+      delayMs: 3000,
     });
   }
 

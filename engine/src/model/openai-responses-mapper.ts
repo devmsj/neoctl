@@ -10,6 +10,7 @@ import {
   dropUndefined,
   ensureToolBuffer,
   extractResponsesMessageText,
+  normalizeOpenAIStreamError,
   normalizeUsage,
   toToolUse,
   type ToolBuffer,
@@ -139,7 +140,7 @@ export async function* normalizeResponsesStream(
     }
 
     if (type === "error") {
-      yield { type: "error", error: new Error(JSON.stringify(event.error ?? event)) };
+      throw normalizeOpenAIStreamError(event);
     }
   }
 }

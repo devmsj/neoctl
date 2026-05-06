@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Static, Text, render, useApp, useInput } from "ink";
+import { Box, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
@@ -29,11 +29,6 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 
 const e = React.createElement;
-const StaticLines = Static as React.ComponentType<{
-  items: UiLine[];
-  children: (line: UiLine, index: number) => React.ReactNode;
-}>;
-
 interface ReplRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
@@ -59,6 +54,7 @@ interface UiStatus {
   activityTick: number;
   inputTokenUpdatedAt?: number;
   outputTokenUpdatedAt?: number;
+  retryCooldownUntil?: number;
 }
 
 async function main(): Promise<void> {
@@ -320,6 +316,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       streamedOutputTokens: 0,
       inputTokenUpdatedAt: undefined,
       outputTokenUpdatedAt: undefined,
+      retryCooldownUntil: undefined,
     }));
     try {
       for await (const event of runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
@@ -345,6 +342,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         detail: undefined,
         inputTokenUpdatedAt: undefined,
         outputTokenUpdatedAt: undefined,
+        retryCooldownUntil: undefined,
       }));
     }
   };
@@ -357,16 +355,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setScrollOffset(0);
   }, [runtime]);
 
-  const width = terminalColumns();
-  const messageViewportHeight = Math.max(1, terminalRows() - UI_FIXED_ROWS);
-  const contentWidth = Math.max(40, width - 16);
-  const toolWidth = Math.max(40, width - 2);
-  const liveLines = lines.filter((line) => line.live);
-  const staticLines = lines.filter((line) => !line.live);
-  const liveContentHeight = totalUiLinesHeight(liveLines, contentWidth, toolWidth);
-  const liveOutputHeight = liveContentHeight > LIVE_OUTPUT_ROWS ? Math.min(messageViewportHeight, LIVE_OUTPUT_ROWS) : undefined;
-  const maxScrollOffset = 0;
-  const effectiveScrollOffset = 0;
+  const terminalSize = useTerminalSize();
+  const width = terminalSize.columns;
+  const prompt = promptPrefix(busy);
+  const promptHeight = estimatePromptHeight(input, cursor, width, prompt);
+  const messageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
+  const contentWidth = messageContentWidth(width);
+  const toolWidth = toolContentWidth(width);
+  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
+  const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
   const scrollPage = Math.max(1, messageViewportHeight - 1);
 
   useEffect(() => {
@@ -465,29 +462,22 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
-    e(StaticLines, {
-      items: staticLines,
-      children: (line) => e(MessageList, { key: `static-${line.id}`, lines: [line], scrollOffset: 0 }),
-    }),
-    e(MessageList, { lines: liveLines, height: liveOutputHeight, scrollOffset: effectiveScrollOffset }),
-    e(StatusBar, { status, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
-    e(PromptLine, { text: input, cursor, busy }),
+    e(MessageList, { lines, height: messageViewportHeight, scrollOffset: effectiveScrollOffset, width }),
+    e(StatusBar, { status, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick, width }),
+    e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
-function MessageList({ lines, height, scrollOffset }: { lines: UiLine[]; height?: number; scrollOffset: number }) {
-  const width = terminalColumns();
-  const contentWidth = Math.max(40, width - 16);
-  const visible = height === undefined
-    ? lines.map((line) => ({ line, maxLines: undefined, skipTop: 0 }))
-    : selectVisibleLines(lines, height, contentWidth, Math.max(40, width - 2), scrollOffset);
+function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; height: number; scrollOffset: number; width: number }) {
+  const contentWidth = messageContentWidth(width);
+  const toolWidth = toolContentWidth(width);
+  const visible = selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset);
   return e(
     Box,
-    { flexDirection: "column", ...(height === undefined ? {} : { height, overflow: "hidden" }) },
+    { flexDirection: "column", height, overflow: "hidden" },
     ...visible.map((entry) => {
       const line = entry.line;
       if (line.previewStyle === "summary") {
-        const toolWidth = Math.max(40, width - 2);
         return e(
           Box,
           { key: line.id, flexDirection: "row" },
@@ -699,10 +689,10 @@ interface StatusSegment {
 }
 
 function StatusBar(
-  { status, scrollOffset, maxScrollOffset, animationTick }:
-  { status: UiStatus; scrollOffset: number; maxScrollOffset: number; animationTick: number },
+  { status, scrollOffset, maxScrollOffset, animationTick, width: terminalWidth }:
+  { status: UiStatus; scrollOffset: number; maxScrollOffset: number; animationTick: number; width: number },
 ) {
-  const width = statusBarWidth();
+  const width = statusBarWidth(terminalWidth);
   const segments = fitStatusSegments(renderCompactStatusSegments(status, scrollOffset, maxScrollOffset, animationTick, width), width);
   return e(
     Box,
@@ -726,29 +716,29 @@ function renderCompactStatusSegments(
   const now = Date.now();
   const inputTokens = statusInputTokens(status);
   const outputTokens = statusOutputTokens(status);
-  const meterWidth = width >= 100 ? 8 : width >= 72 ? 6 : 4;
   const phaseText = `${statusActivityPixel(phase, animationTick)} ${phaseLabelForStatus(phase)}`;
-  const meter = contextMeter(status.metrics, meterWidth);
   const inputText = `↑${compactNumber(inputTokens)}`;
   const outputText = `↓${compactNumber(outputTokens)}`;
   const contextText = `ctx:${renderContext(status.metrics)}`;
-  const fixedText = [phaseText, meter, inputText, outputText, contextText].join(STATUS_SEPARATOR);
+  const fixedText = [phaseText, inputText, outputText, contextText].join(STATUS_SEPARATOR);
   const modelBudget = Math.max(4, width - fixedText.length - STATUS_SEPARATOR.length);
   const model = truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 26 : width >= 90 ? 20 : 14, modelBudget));
-  const tokenInputColor = tokenArrowColor(status.inputTokenUpdatedAt, now, "green");
-  const tokenOutputColor = tokenArrowColor(status.outputTokenUpdatedAt, now, "cyan");
+  const retryPending = retryCooldownActive(status, now);
+  const outputPulseColor = tokenArrowColor(status.outputTokenUpdatedAt, now, "cyan");
+  const outputPending = modelOutputPending(status, now);
+  const tokenInputColor = retryPending ? "red" : tokenArrowColor(status.inputTokenUpdatedAt, now, "green");
+  const tokenOutputColor = outputPending ? "yellow" : outputPulseColor;
+  const outputArrow = outputPending && !slowBlinkVisible(animationTick) ? " " : "↓";
 
   const segments: StatusSegment[] = [
     { text: phaseText, color: phaseColor(phase), bold: true },
-    { text: STATUS_SEPARATOR },
-    { text: meter },
     { text: STATUS_SEPARATOR },
     { text: model },
     { text: STATUS_SEPARATOR },
     { text: "↑", color: tokenInputColor, bold: tokenInputColor !== "gray" },
     { text: compactNumber(inputTokens) },
     { text: STATUS_SEPARATOR },
-    { text: "↓", color: tokenOutputColor, bold: tokenOutputColor !== "gray" },
+    { text: outputArrow, color: tokenOutputColor, bold: tokenOutputColor !== "gray" },
     { text: compactNumber(outputTokens) },
     { text: STATUS_SEPARATOR },
     { text: contextText },
@@ -778,16 +768,22 @@ function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegm
   return fitted;
 }
 
-function PromptLine({ text, cursor, busy }: { text: string; cursor: number; busy: boolean }) {
-  const prompt = busy ? "working> " : "agent> ";
-  const view = promptTextView(text, cursor, Math.max(1, terminalColumns() - prompt.length));
+function PromptLine(
+  { text, cursor, busy, width, prompt }:
+  { text: string; cursor: number; busy: boolean; width: number; prompt: string },
+) {
+  const visualLines = promptTextView(text, cursor, width, prompt);
   return e(
     Box,
-    { height: 1, overflow: "hidden" },
-    e(Text, { color: busy ? "gray" : "cyan" }, prompt),
-    e(Text, null, view.before),
-    e(Text, { inverse: true }, view.selected),
-    e(Text, null, view.after),
+    { flexDirection: "column" },
+    ...visualLines.map((line, index) => e(
+      Box,
+      { key: index, height: 1, overflow: "hidden" },
+      e(Text, { color: busy ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
+      e(Text, null, line.before),
+      e(Text, { inverse: true }, line.selected),
+      e(Text, null, line.after),
+    )),
   );
 }
 
@@ -873,6 +869,7 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
       streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens,
       inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt,
       outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt,
+      retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil,
       activityTick: status.activityTick + 1,
     };
   }
@@ -902,6 +899,15 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
     };
   }
   if (event.type === "thinking.delta") return { ...status, activityTick: status.activityTick + 1 };
+  if (event.type === "retrying") {
+    return {
+      ...status,
+      phase: "calling_model",
+      detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`,
+      retryCooldownUntil: Date.now() + event.delayMs,
+      activityTick: status.activityTick + 1,
+    };
+  }
   if (event.type === "terminal") {
     return {
       ...status,
@@ -909,10 +915,11 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
       detail: event.reason,
       inputTokenUpdatedAt: undefined,
       outputTokenUpdatedAt: undefined,
+      retryCooldownUntil: undefined,
       activityTick: status.activityTick + 1,
     };
   }
-  if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "retrying" || event.type === "error") {
+  if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "error") {
     return { ...status, activityTick: status.activityTick + 1 };
   }
   return status;
@@ -1170,6 +1177,20 @@ function tokenArrowColor(updatedAt: number | undefined, now: number, activeColor
   return updatedAt !== undefined && now - updatedAt <= TOKEN_PULSE_MS ? activeColor : "gray";
 }
 
+function retryCooldownActive(status: UiStatus, now: number): boolean {
+  return status.retryCooldownUntil !== undefined && now < status.retryCooldownUntil;
+}
+
+function modelOutputPending(status: UiStatus, now: number): boolean {
+  if (retryCooldownActive(status, now)) return true;
+  if (status.phase !== "calling_model") return false;
+  return tokenArrowColor(status.outputTokenUpdatedAt, now, "cyan") === "gray";
+}
+
+function slowBlinkVisible(tick: number): boolean {
+  return Math.floor(tick / STATUS_BLINK_TICKS) % 2 === 0;
+}
+
 function estimateTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
 }
@@ -1212,12 +1233,6 @@ function phaseColor(phase: string): string {
   return "cyan";
 }
 
-function contextMeter(metrics: ContextMetrics | undefined, width: number): string {
-  if (!metrics || metrics.contextUsageRatio === undefined) return `[${"-".repeat(width)}]`;
-  const ratio = Math.max(0, Math.min(1, metrics.contextUsageRatio));
-  const filled = Math.min(width, Math.max(0, Math.round(ratio * width)));
-  return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
-}
 
 function compactNumber(value: number | undefined): string {
   if (value === undefined) return "?";
@@ -1232,9 +1247,35 @@ function trimFixed(value: number): string {
   return value >= 10 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "");
 }
 
-function statusBarWidth(): number {
-  const columns = terminalColumns();
+function statusBarWidth(columns: number): number {
   return Math.max(1, Math.min(columns - 1, 160));
+}
+
+interface TerminalSize {
+  columns: number;
+  rows: number;
+}
+
+function useTerminalSize(): TerminalSize {
+  const [size, setSize] = useState<TerminalSize>(() => currentTerminalSize());
+
+  useEffect(() => {
+    const onResize = () => setSize(currentTerminalSize());
+    stdout.on("resize", onResize);
+    onResize();
+    return () => {
+      stdout.off("resize", onResize);
+    };
+  }, []);
+
+  return size;
+}
+
+function currentTerminalSize(): TerminalSize {
+  return {
+    columns: terminalColumns(),
+    rows: terminalRows(),
+  };
 }
 
 function terminalRows(): number {
@@ -1243,31 +1284,149 @@ function terminalRows(): number {
 }
 
 function terminalColumns(): number {
-  return stdout.columns ?? 100;
+  return Math.max(1, stdout.columns ?? 100);
 }
 
-function promptTextView(text: string, cursor: number, width: number): { before: string; selected: string; after: string } {
+interface PromptVisualLine {
+  before: string;
+  selected: string;
+  after: string;
+}
+
+function promptPrefix(busy: boolean): string {
+  return busy ? "working> " : "agent> ";
+}
+
+function estimatePromptHeight(text: string, cursor: number, terminalWidth: number, prompt: string): number {
+  return promptTextView(text, cursor, terminalWidth, prompt).length;
+}
+
+function promptTextView(text: string, cursor: number, terminalWidth: number, prompt: string): PromptVisualLine[] {
   const normalized = text.replace(/\r?\n/g, " ");
   const safeCursor = Math.max(0, Math.min(cursor, normalized.length));
-  const viewWidth = Math.max(1, width);
-  if (viewWidth === 1) return { before: "", selected: normalized[safeCursor] ?? " ", after: "" };
-  const maxStart = Math.max(0, normalized.length - viewWidth);
-  const start = Math.max(0, Math.min(safeCursor - Math.floor(viewWidth / 2), maxStart));
-  const end = Math.min(normalized.length, start + viewWidth);
-  const visible = normalized.slice(start, end);
-  const visibleCursor = safeCursor - start;
-  let before = visible.slice(0, visibleCursor);
-  const selected = visible[visibleCursor] ?? " ";
-  let after = visible.slice(visibleCursor + 1);
-  if (start > 0 && before.length > 0) before = `…${before.slice(1)}`;
-  if (end < normalized.length && after.length > 0) after = `${after.slice(0, -1)}…`;
-  return { before, selected, after };
+  const prefixWidth = stringCellWidth(prompt);
+  const firstContentWidth = Math.max(1, terminalWidth - prefixWidth);
+  const continuationWidth = firstContentWidth;
+  const segments = wrapPromptText(normalized, safeCursor, firstContentWidth, continuationWidth);
+  return segments.length > 0 ? segments : [{ before: "", selected: " ", after: "" }];
 }
 
-const UI_FIXED_ROWS = 6;
-const LIVE_OUTPUT_ROWS = 12;
+interface PromptSegment {
+  start: number;
+  end: number;
+}
+
+function wrapPromptText(text: string, cursor: number, firstWidth: number, continuationWidth: number): PromptVisualLine[] {
+  const segments: PromptSegment[] = [];
+  let start = 0;
+  let index = 0;
+  let width = Math.max(1, firstWidth);
+  let used = 0;
+
+  while (index < text.length) {
+    const char = nextTextChar(text, index);
+    const charWidth = Math.max(1, stringCellWidth(char.value));
+    if (used > 0 && used + charWidth > width) {
+      segments.push({ start, end: index });
+      start = index;
+      used = 0;
+      width = Math.max(1, continuationWidth);
+      continue;
+    }
+    used += charWidth;
+    index = char.nextIndex;
+  }
+
+  segments.push({ start, end: text.length });
+
+  const cursorSegmentIndex = segmentIndexForCursor(segments, cursor);
+  return segments.map((segment, index) => {
+    if (index !== cursorSegmentIndex) return { before: text.slice(segment.start, segment.end), selected: "", after: "" };
+    const selected = cursor < segment.end ? nextTextChar(text, cursor).value : " ";
+    const selectedEnd = cursor < segment.end ? nextTextChar(text, cursor).nextIndex : cursor;
+    return {
+      before: text.slice(segment.start, cursor),
+      selected,
+      after: text.slice(selectedEnd, segment.end),
+    };
+  });
+}
+
+function segmentIndexForCursor(segments: PromptSegment[], cursor: number): number {
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (!segment) continue;
+    const isLast = index === segments.length - 1;
+    if (cursor >= segment.start && (cursor < segment.end || isLast || segment.start === segment.end)) return index;
+  }
+  return Math.max(0, segments.length - 1);
+}
+
+function nextTextChar(text: string, index: number): { value: string; nextIndex: number } {
+  const codePoint = text.codePointAt(index);
+  if (codePoint === undefined) return { value: "", nextIndex: index };
+  const value = String.fromCodePoint(codePoint);
+  return { value, nextIndex: index + value.length };
+}
+
+function messageContentWidth(columns: number): number {
+  return Math.max(10, columns - 16);
+}
+
+function toolContentWidth(columns: number): number {
+  return Math.max(10, columns - 2);
+}
+
+function stringCellWidth(value: string): number {
+  let width = 0;
+  for (const char of [...value]) width += charCellWidth(char);
+  return width;
+}
+
+function charCellWidth(char: string): number {
+  const codePoint = char.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint === 0) return 0;
+  if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0;
+  if (isCombiningMark(codePoint)) return 0;
+  return isFullWidthCodePoint(codePoint) ? 2 : 1;
+}
+
+function isCombiningMark(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+    (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
+  );
+}
+
+function isFullWidthCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    )
+  );
+}
+
+const STATUS_BAR_ROWS = 2;
+const MESSAGE_VIEWPORT_PADDING_ROWS = 1;
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOKEN_PULSE_MS = 900;
+const STATUS_BLINK_TICKS = 2;
 const PIXEL_BLOCK_FRAMES = ["  ", "▌ ", "█ ", "█▌", "██", "▐█", " █", " ▐"];
 const STATUS_SEPARATOR = " ";
 const SUMMARY_BLOCK = {

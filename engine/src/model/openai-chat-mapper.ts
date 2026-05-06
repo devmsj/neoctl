@@ -8,6 +8,7 @@ import {
   buildChatMessages,
   buildChatTools,
   dropUndefined,
+  normalizeOpenAIStreamError,
   normalizeUsage,
   toToolUse,
   type ToolBuffer,
@@ -42,7 +43,9 @@ export async function* normalizeChatStream(
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
+    const type = asString(event.type ?? sse.event);
     yield { type: "provider_event", event };
+    if (type === "error") throw normalizeOpenAIStreamError(event);
     responseId = asString(event.id) ?? responseId;
     const choices = Array.isArray(event.choices) ? event.choices : [];
 
