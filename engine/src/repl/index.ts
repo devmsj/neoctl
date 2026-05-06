@@ -159,6 +159,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const [scrollOffset, setScrollOffset] = useState(0);
   const [animationTick, setAnimationTick] = useState(0);
+  const previousMessageContentHeight = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (!busy) return undefined;
@@ -363,14 +364,22 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const toolWidth = toolContentWidth(width);
   const maxMessageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
   const messageContentHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
-  const messageViewportHeight = Math.min(maxMessageViewportHeight, Math.max(1, messageContentHeight));
+  const messageViewportHeight = Math.min(messageContentHeight, maxMessageViewportHeight);
   const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
   const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
   const scrollPage = Math.max(1, messageViewportHeight - 1);
 
   useEffect(() => {
-    setScrollOffset((current) => Math.min(current, maxScrollOffset));
-  }, [maxScrollOffset]);
+    const previousHeight = previousMessageContentHeight.current;
+    previousMessageContentHeight.current = messageContentHeight;
+    setScrollOffset((current) => {
+      const clamped = Math.min(current, maxScrollOffset);
+      if (current <= 0 || previousHeight === undefined) return clamped;
+      const heightDelta = messageContentHeight - previousHeight;
+      if (heightDelta <= 0) return clamped;
+      return Math.min(maxScrollOffset, clamped + heightDelta);
+    });
+  }, [messageContentHeight, maxScrollOffset]);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -473,13 +482,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; height: number; scrollOffset: number; width: number }) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
-  const reviewingHistory = scrollOffset > 0;
   const visible = selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset);
   return e(
     Box,
-    reviewingHistory || totalUiLinesHeight(lines, contentWidth, toolWidth) > height
-      ? { flexDirection: "column", height, overflow: "hidden" }
-      : { flexDirection: "column" },
+    { flexDirection: "column", height, overflow: "hidden" },
     ...visible.map((entry) => {
       const line = entry.line;
       if (line.previewStyle === "summary") {
