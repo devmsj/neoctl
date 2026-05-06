@@ -23,7 +23,7 @@ import { createAgentTool } from "../agents/agent-tool.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import { parseReplCommand, helpText } from "./commands.js";
-import { MarkdownText } from "./markdown-renderer.js";
+import { estimateMarkdownLineCount, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 
@@ -150,6 +150,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
+  const toolLineIds = useRef(new Map<string, number>());
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -199,9 +200,18 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, text } : line));
   };
 
+  const replaceLine = (id: number, patch: Partial<UiLine>) => {
+    setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
+  };
+
   const finalizeLiveLine = (id: number | undefined) => {
     if (id === undefined) return;
     setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
+  };
+
+  const finalizeActiveToolLines = () => {
+    for (const id of toolLineIds.current.values()) finalizeLiveLine(id);
+    toolLineIds.current.clear();
   };
 
   const handleEvent = (event: AgentEvent) => {
@@ -240,6 +250,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
           return;
         }
       }
+      if (event.message.role === "tool_result") {
+        renderToolResultMessage(event.message, append, replaceLine, toolLineIds.current);
+        return;
+      }
       if (event.message.role !== "assistant") {
         finalizeLiveLine(assistantLineId.current);
         finalizeLiveLine(thinkingLineId.current);
@@ -259,14 +273,23 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       finalizeLiveLine(assistantLineId.current);
       finalizeLiveLine(thinkingLineId.current);
       thinkingLineId.current = undefined;
-      append(formatToolUse(event.toolUse));
+      const id = append({ ...formatToolUse(event.toolUse), live: true });
+      toolLineIds.current.set(event.toolUse.id, id);
       return;
     }
-    if (event.type === "tool.finished") return;
+    if (event.type === "tool.finished") {
+      const id = toolLineIds.current.get(event.toolUse.id);
+      if (id !== undefined) {
+        replaceLine(id, formatToolFinishedWithoutResult(event.toolUse, event.ok));
+        toolLineIds.current.delete(event.toolUse.id);
+      }
+      return;
+    }
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
       finalizeLiveLine(assistantLineId.current);
       finalizeLiveLine(thinkingLineId.current);
+      finalizeActiveToolLines();
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
       return;
@@ -341,6 +364,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     } catch (error) {
       finalizeLiveLine(assistantLineId.current);
       finalizeLiveLine(thinkingLineId.current);
+      finalizeActiveToolLines();
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
       append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -349,6 +373,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       interruptArmed.current = false;
       finalizeLiveLine(assistantLineId.current);
       finalizeLiveLine(thinkingLineId.current);
+      finalizeActiveToolLines();
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
       setBusyState(false);
@@ -367,14 +392,18 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines(initialLines(runtime));
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
+    toolLineIds.current.clear();
     setStatus(initialStatus(runtime));
   }, [runtime]);
 
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
-  const staticLines = lines.filter((line) => !line.live);
-  const liveLines = lines.filter((line) => line.live);
+  const promptHeight = promptTextView(input, cursor, width, prompt).length;
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS);
+  const firstLiveLineIndex = lines.findIndex((line) => line.live);
+  const staticLines = firstLiveLineIndex === -1 ? lines : lines.slice(0, firstLiveLineIndex);
+  const dynamicLines = firstLiveLineIndex === -1 ? [] : lines.slice(firstLiveLineIndex);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -453,43 +482,61 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     Box,
     { flexDirection: "column" },
     e(Static<UiLine>, { items: staticLines, children: (line) => e(MessageLine, { key: line.id, line, width }) }),
-    e(MessageList, { lines: liveLines, width }),
+    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines }),
     e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
 const MessageList = React.memo(function MessageList(
-  { lines, width }: { lines: UiLine[]; width: number },
+  { lines, width, liveMaxLines }: { lines: UiLine[]; width: number; liveMaxLines?: number },
 ) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
   return e(
     Box,
     { flexDirection: "column" },
-    ...lines.map((line) => e(MessageLine, { key: line.id, line, width, contentWidth, toolWidth })),
+    ...lines.map((line) => e(MessageLine, { key: line.id, line, width, contentWidth, toolWidth, liveMaxLines })),
   );
 });
 
 function MessageLine(
-  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width) }:
-  { line: UiLine; width: number; contentWidth?: number; toolWidth?: number },
+  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), liveMaxLines }:
+  { line: UiLine; width: number; contentWidth?: number; toolWidth?: number; liveMaxLines?: number },
 ) {
   if (line.previewStyle === "summary") {
+    const display = displayWindowForLine(line, toolWidth, line.live ? liveMaxLines : undefined);
     return e(
       Box,
       { flexDirection: "row" },
       e(
         Box,
         { flexDirection: "column", width: toolWidth },
-        ...renderDisplayText(line, toolWidth),
+        ...renderDisplayText(line, toolWidth, display.maxLines, display.skipTop),
       ),
     );
   }
+  const display = displayWindowForLine(line, contentWidth, line.live ? liveMaxLines : undefined);
   return e(Box, { flexDirection: "row" },
     e(Text, { color: colorForKind(line.kind) }, messageRoleMarker()),
-    e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
+    e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth, display.maxLines, display.skipTop)),
   );
+}
+
+function displayWindowForLine(line: UiLine, width: number, maxLines: number | undefined): { maxLines?: number; skipTop: number } {
+  if (maxLines === undefined) return { skipTop: 0 };
+  const safeMaxLines = Math.max(1, maxLines);
+  const lineCount = estimateRenderedLineCount(line, width);
+  return {
+    maxLines: safeMaxLines,
+    skipTop: Math.max(0, lineCount - safeMaxLines),
+  };
+}
+
+function estimateRenderedLineCount(line: UiLine, width: number): number {
+  if (line.previewStyle === "summary") return renderSummaryLines(line, width).length;
+  if (line.format === "ansi") return wrapAnsi(line.text, Math.max(10, width), { hard: true, trim: false }).split("\n").length;
+  return estimateMarkdownLineCount(line.text, width);
 }
 
 function renderDisplayText(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
@@ -773,16 +820,31 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       rendered = true;
     }
     if (block.type === "tool_result") {
-      const formatted = formatToolResult(block.name, block.output, block.ok);
-      append({
-        kind: block.ok ? "tool" : "error",
-        title: `Tool result: ${block.name}`,
-        text: formatted.text,
-        format: formatted.format,
-        previewStyle: "summary",
-      });
+      append(formatToolResultLine(block.name, block.output, block.ok));
       rendered = true;
     }
+  }
+  return rendered;
+}
+
+function renderToolResultMessage(
+  message: Message,
+  append: (line: Omit<UiLine, "id">) => number,
+  replaceLine: (id: number, patch: Partial<UiLine>) => void,
+  activeToolLineIds: Map<string, number>,
+): boolean {
+  let rendered = false;
+  for (const block of message.blocks) {
+    if (block.type !== "tool_result") continue;
+    const line = formatToolResultLine(block.name, block.output, block.ok);
+    const id = activeToolLineIds.get(block.toolUseId);
+    if (id === undefined) {
+      append(line);
+    } else {
+      replaceLine(id, line);
+      activeToolLineIds.delete(block.toolUseId);
+    }
+    rendered = true;
   }
   return rendered;
 }
@@ -988,6 +1050,28 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   };
 }
 
+function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
+  const formatted = formatToolResult(toolName, output, ok);
+  return {
+    kind: ok ? "tool" : "error",
+    title: `Tool result: ${toolName}`,
+    text: formatted.text,
+    format: formatted.format,
+    previewStyle: "summary",
+    live: false,
+  };
+}
+
+function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Omit<UiLine, "id"> {
+  return {
+    kind: ok ? "tool" : "error",
+    title: `Tool result: ${toolUse.name}`,
+    text: `${toolUse.name} · ${ok ? "finished" : "failed"}\n${formatJson(toolUse.input, 1200)}`,
+    previewStyle: "summary",
+    live: false,
+  };
+}
+
 function formatMessageBlockSummary(block: Message["blocks"][number]): string {
   if (block.type === "text") return block.text;
   if (block.type === "thinking") return block.text;
@@ -1187,6 +1271,7 @@ function statusBarWidth(columns: number): number {
 
 interface TerminalSize {
   columns: number;
+  rows: number;
 }
 
 function useTerminalSize(): TerminalSize {
@@ -1207,7 +1292,12 @@ function useTerminalSize(): TerminalSize {
 function currentTerminalSize(): TerminalSize {
   return {
     columns: terminalColumns(),
+    rows: terminalRows(),
   };
+}
+
+function terminalRows(): number {
+  return Math.max(8, stdout.rows ?? 30);
 }
 
 function terminalColumns(): number {
@@ -1349,6 +1439,8 @@ const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOKEN_PULSE_MS = 900;
 const STATUS_BLINK_TICKS = 2;
 const STATUS_SEPARATOR = " ";
+const STATUS_BAR_RENDER_ROWS = 2;
+const MIN_LIVE_VIEWPORT_LINES = 4;
 const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
