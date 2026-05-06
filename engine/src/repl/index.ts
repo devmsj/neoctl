@@ -4,7 +4,6 @@ import path from "node:path";
 import { stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Static, Text, render, useApp, useInput } from "ink";
-import figures from "figures";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
@@ -488,7 +487,7 @@ function MessageLine(
     );
   }
   return e(Box, { flexDirection: "row" },
-    e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
+    e(Text, { color: colorForKind(line.kind) }, messageRoleMarker()),
     e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
   );
 }
@@ -922,13 +921,8 @@ function colorForKind(kind: UiLine["kind"]) {
   return "white";
 }
 
-function prefixForKind(kind: UiLine["kind"]): string {
-  if (kind === "user") return "user>";
-  if (kind === "assistant") return "assistant>";
-  if (kind === "thinking") return "think>";
-  if (kind === "tool") return "tool>";
-  if (kind === "error") return "error>";
-  return "system>";
+function messageRoleMarker(): string {
+  return "● ";
 }
 
 function kindForRole(role: Message["role"]): UiLine["kind"] {
@@ -1227,7 +1221,7 @@ interface PromptVisualLine {
 }
 
 function promptPrefix(busy: boolean): string {
-  return busy ? "working> " : "agent> ";
+  return messageRoleMarker();
 }
 
 function promptTextView(text: string, cursor: number, terminalWidth: number, prompt: string): PromptVisualLine[] {
@@ -1299,7 +1293,7 @@ function nextTextChar(text: string, index: number): { value: string; nextIndex: 
 }
 
 function messageContentWidth(columns: number): number {
-  return Math.max(10, columns - 16);
+  return Math.max(10, columns - messageRoleMarker().length);
 }
 
 function toolContentWidth(columns: number): number {
