@@ -721,9 +721,7 @@ function renderCompactStatusSegments(
   const now = Date.now();
   const inputTokens = statusInputTokens(status);
   const outputTokens = statusOutputTokens(status);
-  const activityPixel = statusActivityPixel(phase, animationTick).trimEnd();
-  const phaseLabel = phaseLabelForStatus(phase);
-  const phaseText = activityPixel ? `${activityPixel} ${phaseLabel}` : phaseLabel;
+  const phaseText = phaseLabelForStatus(phase);
   const inputText = `↑${compactNumber(inputTokens)}`;
   const outputText = `↓${compactNumber(outputTokens)}`;
   const contextText = `ctx:${renderContext(status.metrics)}`;
@@ -1210,11 +1208,6 @@ function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 }
 
-function statusActivityPixel(phase: string, tick: number): string {
-  if (!isActivePhase(phase)) return "  ";
-  return PIXEL_BLOCK_FRAMES[tick % PIXEL_BLOCK_FRAMES.length];
-}
-
 function phaseLabelForStatus(phase: string): string {
   if (phase === "calling_model") return "model";
   if (phase === "running_tools") return "tools";
@@ -1434,7 +1427,6 @@ const MESSAGE_VIEWPORT_PADDING_ROWS = 1;
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOKEN_PULSE_MS = 900;
 const STATUS_BLINK_TICKS = 2;
-const PIXEL_BLOCK_FRAMES = ["  ", "▌ ", "█ ", "█▌", "██", "▐█", " █", " ▐"];
 const STATUS_SEPARATOR = " ";
 const SUMMARY_BLOCK = {
   maxLines: 6,
