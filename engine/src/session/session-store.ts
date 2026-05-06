@@ -19,6 +19,23 @@ export interface SessionStoreOptions {
   toolResultThresholdChars?: number;
 }
 
+export interface SessionListOptions {
+  cwd?: string;
+  agentId?: string;
+  rootDir?: string;
+  limit?: number;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  sessionDir: string;
+  transcriptPath: string;
+  updatedAt?: string;
+  entryCount: number;
+  messages: number;
+  contentReplacements: number;
+}
+
 export interface SessionStoreSnapshot {
   sessionId: string;
   sessionDir: string;
@@ -53,12 +70,50 @@ export class SessionStore {
   }
 
   static async open(options: SessionStoreOptions): Promise<SessionStore> {
-    const sessionId = options.sessionId ?? createSessionId();
+    const requestedSessionId = normalizeRequestedSessionId(options.sessionId);
+    const sessionId =
+      options.resume && (!requestedSessionId || requestedSessionId === "latest")
+        ? (await findLatestSessionId(options)) ?? createSessionId()
+        : requestedSessionId ?? createSessionId();
     const sessionDir = path.join(resolveSessionRoot(options), sessionId);
     const transcriptPath = path.join(sessionDir, "transcript.jsonl");
-    const loaded = options.resume ? await loadTranscript(transcriptPath) : { messages: [], replacements: [] };
+    const loaded = options.resume ? await loadTranscript(transcriptPath, options.agentId) : { messages: [], replacements: [] };
     await fsp.mkdir(sessionDir, { recursive: true });
     return new SessionStore(options, sessionId, loaded);
+  }
+
+  static async list(options: SessionListOptions = {}): Promise<SessionSummary[]> {
+    const root = resolveSessionRoot(options);
+    const entries = await fsp.readdir(root, { withFileTypes: true }).catch(() => []);
+    const summaries = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const sessionId = entry.name;
+          const sessionDir = path.join(root, sessionId);
+          const transcriptPath = path.join(sessionDir, "transcript.jsonl");
+          const stat = await fsp.stat(transcriptPath).catch(() => undefined);
+          if (!stat) return undefined;
+          const loaded = await loadTranscript(transcriptPath, options.agentId);
+          return {
+            sessionId,
+            sessionDir,
+            transcriptPath,
+            updatedAt: stat.mtime.toISOString(),
+            updatedAtMs: stat.mtimeMs,
+            entryCount: loaded.entries,
+            messages: loaded.messages.length,
+            contentReplacements: loaded.replacements.length,
+          };
+        }),
+    );
+
+    return summaries
+      .filter(isSessionSummaryWithUpdatedAtMs)
+      .filter((summary) => !options.agentId || summary.entryCount > 0)
+      .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
+      .slice(0, Math.max(0, options.limit ?? Number.POSITIVE_INFINITY))
+      .map(({ updatedAtMs: _updatedAtMs, ...summary }) => summary);
   }
 
   getInitialMessages(): Message[] {
@@ -103,16 +158,33 @@ export class SessionStore {
   }
 }
 
-async function loadTranscript(transcriptPath: string): Promise<{ messages: Message[]; replacements: ContentReplacementRecord[] }> {
+interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
+  updatedAt: string;
+  updatedAtMs: number;
+}
+
+function isSessionSummaryWithUpdatedAtMs(summary: SessionSummaryWithUpdatedAtMs | undefined): summary is SessionSummaryWithUpdatedAtMs {
+  return summary !== undefined;
+}
+
+async function findLatestSessionId(options: SessionStoreOptions): Promise<string | undefined> {
+  const [latest] = await SessionStore.list({ cwd: options.cwd, rootDir: options.rootDir, agentId: options.agentId, limit: 1 });
+  return latest?.sessionId;
+}
+
+async function loadTranscript(transcriptPath: string, agentId?: string): Promise<{ messages: Message[]; replacements: ContentReplacementRecord[]; entries: number }> {
   const text = await fsp.readFile(transcriptPath, "utf8").catch(() => "");
   const messages: Message[] = [];
   const replacements: ContentReplacementRecord[] = [];
-  if (!text.trim()) return { messages, replacements };
+  let entries = 0;
+  if (!text.trim()) return { messages, replacements, entries };
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as SessionTranscriptEntry;
+      if (agentId && "agentId" in entry && entry.agentId !== agentId) continue;
+      entries += 1;
       if (entry.type === "reset") {
         messages.length = 0;
         replacements.length = 0;
@@ -123,10 +195,10 @@ async function loadTranscript(transcriptPath: string): Promise<{ messages: Messa
       // Skip malformed lines so a partial write does not make the session unusable.
     }
   }
-  return { messages, replacements };
+  return { messages, replacements, entries };
 }
 
-function resolveSessionRoot(options: SessionStoreOptions): string {
+function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {
   if (options.rootDir) return path.resolve(options.rootDir);
   const cwd = path.resolve(options.cwd ?? process.cwd());
   return path.join(cwd, ".agent", "sessions");
@@ -144,4 +216,9 @@ function shouldPersistMessage(message: Message): boolean {
   if (message.role === "progress") return false;
   if (message.metadata?.systemInit === true) return false;
   return true;
+}
+
+function normalizeRequestedSessionId(sessionId: string | undefined): string | undefined {
+  const normalized = sessionId?.trim();
+  return normalized ? normalized : undefined;
 }

@@ -8,6 +8,8 @@ export function renderEvent(event: AgentEvent): string | undefined {
       return undefined;
     case "assistant.delta":
       return event.text;
+    case "thinking.delta":
+      return `thinking> ${event.text}`;
     case "message":
       return event.message.blocks
         .map((block) => {

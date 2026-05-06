@@ -37,12 +37,12 @@ export const editTool: Tool<EditToolInput> = {
   name: "edit",
   aliases: ["replace"],
   description:
-    "Modify a text file by replacing oldString with newString. oldString must match exactly and must be unique unless replaceAll is true. Use oldString='' only to create a new file.",
+    "Modify a text file by replacing oldString with newString. oldString must match uniquely unless replaceAll is true; LF/CRLF line-ending differences and straight/curly quote differences are tolerated. Use oldString='' only to create a new file.",
   inputSchema: {
     type: "object",
     properties: {
       path: { type: "string", description: "Absolute or cwd-relative path of the text file to modify." },
-      oldString: { type: "string", description: "Exact text to replace. Use an empty string only when creating a new file." },
+      oldString: { type: "string", description: "Text to replace. LF/CRLF line-ending differences and straight/curly quote differences are tolerated. Use an empty string only when creating a new file." },
       newString: { type: "string", description: "Replacement text. Must differ from oldString." },
       replaceAll: { type: "boolean", description: "Replace every occurrence of oldString. Defaults to false." },
     },
@@ -107,8 +107,8 @@ export const editTool: Tool<EditToolInput> = {
       });
     }
 
-    const actualOldString = findActualString(current.content, input.oldString);
-    if (!actualOldString) {
+    const match = findActualString(current.content, input.oldString);
+    if (!match) {
       return {
         ok: false,
         output: {
@@ -119,6 +119,7 @@ export const editTool: Tool<EditToolInput> = {
       };
     }
 
+    const actualOldString = match.actual;
     const matches = countOccurrences(current.content, actualOldString);
     if (matches > 1 && !input.replaceAll) {
       return {
@@ -131,7 +132,7 @@ export const editTool: Tool<EditToolInput> = {
       };
     }
 
-    const actualNewString = preserveQuoteStyle(input.oldString, actualOldString, input.newString);
+    const actualNewString = adaptReplacementString(input.oldString, actualOldString, input.newString);
     const after = input.replaceAll
       ? current.content.replaceAll(actualOldString, actualNewString)
       : replaceOne(current.content, actualOldString, actualNewString);
@@ -252,12 +253,46 @@ function resolveTarget(context: ToolUseContext, targetPath: string): string {
   return path.isAbsolute(targetPath) ? path.normalize(targetPath) : path.resolve(root, targetPath);
 }
 
-function findActualString(fileContent: string, searchString: string): string | null {
-  if (fileContent.includes(searchString)) return searchString;
-  const normalizedFile = normalizeQuotes(fileContent);
-  const normalizedSearch = normalizeQuotes(searchString);
-  const index = normalizedFile.indexOf(normalizedSearch);
-  return index >= 0 ? fileContent.slice(index, index + searchString.length) : null;
+function findActualString(fileContent: string, searchString: string): { actual: string } | null {
+  if (fileContent.includes(searchString)) return { actual: searchString };
+  const normalizedSearch = normalizeForMatch(searchString);
+  const match = findNormalizedMatch(fileContent, normalizedSearch);
+  return match ? { actual: fileContent.slice(match.start, match.end) } : null;
+}
+
+function normalizeForMatch(value: string): string {
+  return normalizeLineEndings(normalizeQuotes(value));
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function findNormalizedMatch(fileContent: string, normalizedSearch: string): { start: number; end: number } | null {
+  if (!normalizedSearch) return null;
+  const indexMap: number[] = [];
+  let normalizedFile = "";
+
+  for (let index = 0; index < fileContent.length; index += 1) {
+    const char = fileContent[index];
+    if (char === "\r") {
+      normalizedFile += "\n";
+      indexMap.push(index);
+      if (fileContent[index + 1] === "\n") index += 1;
+      continue;
+    }
+
+    normalizedFile += normalizeQuotes(char);
+    indexMap.push(index);
+  }
+
+  const normalizedIndex = normalizedFile.indexOf(normalizedSearch);
+  if (normalizedIndex < 0) return null;
+
+  const normalizedEnd = normalizedIndex + normalizedSearch.length;
+  const start = indexMap[normalizedIndex];
+  const end = normalizedEnd < indexMap.length ? indexMap[normalizedEnd] : fileContent.length;
+  return { start, end };
 }
 
 const LEFT_SINGLE = "\u2018";
@@ -273,8 +308,37 @@ function normalizeQuotes(value: string): string {
     .replaceAll(RIGHT_DOUBLE, "\"");
 }
 
-function preserveQuoteStyle(oldString: string, actualOldString: string, newString: string): string {
-  if (oldString === actualOldString) return newString;
+function adaptReplacementString(oldString: string, actualOldString: string, newString: string): string {
+  let result = newString;
+  if (oldString !== actualOldString) {
+    result = preserveLineEndingStyle(oldString, actualOldString, result);
+    result = preserveQuoteStyle(actualOldString, result);
+  }
+  return result;
+}
+
+function preserveLineEndingStyle(oldString: string, actualOldString: string, newString: string): string {
+  if (lineEndingPattern(oldString) !== "LF") return newString;
+  const actualPattern = lineEndingPattern(actualOldString);
+  if (actualPattern === "CRLF") return newString.replace(/(?<!\r)\n/g, "\r\n");
+  if (actualPattern === "CR") return newString.replace(/\r?\n/g, "\r");
+  return newString;
+}
+
+function lineEndingPattern(value: string): "LF" | "CRLF" | "CR" | "mixed" | "none" {
+  const hasCrLf = /\r\n/.test(value);
+  const withoutCrLf = value.replace(/\r\n/g, "");
+  const hasLf = withoutCrLf.includes("\n");
+  const hasCr = withoutCrLf.includes("\r");
+  const kinds = [hasCrLf, hasLf, hasCr].filter(Boolean).length;
+  if (kinds === 0) return "none";
+  if (kinds > 1) return "mixed";
+  if (hasCrLf) return "CRLF";
+  if (hasCr) return "CR";
+  return "LF";
+}
+
+function preserveQuoteStyle(actualOldString: string, newString: string): string {
   let result = newString;
   if (actualOldString.includes(LEFT_DOUBLE) || actualOldString.includes(RIGHT_DOUBLE)) result = applyCurlyQuotes(result, "\"", LEFT_DOUBLE, RIGHT_DOUBLE);
   if (actualOldString.includes(LEFT_SINGLE) || actualOldString.includes(RIGHT_SINGLE)) result = applyCurlyQuotes(result, "'", LEFT_SINGLE, RIGHT_SINGLE);

@@ -20,6 +20,7 @@ This map translates the parent README into source modules without implementing e
 | Core loop smoke test | `src/core/smoke-core-loop.ts` |
 | System prompt sections and cache boundary | `src/context/prompts.ts` |
 | Runtime user/system context | `src/context/context-manager.ts` |
+| Session transcripts and resume | `src/session/session-store.ts`, `src/session/tool-result-memory.ts` |
 | Snip/micro/model-auto/reactive compaction | `src/context/compaction.ts` |
 | Context smoke test | `src/context/smoke-context.ts` |
 | Agent definitions and fork rules | `src/agents/agent-definition.ts` |

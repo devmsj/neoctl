@@ -42,7 +42,7 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   tools: ["*"],
   permissionMode: "inherit",
   buildSystemPrompt: () => [
-    "You are a subagent worker inside the same TypeScript scaffold runtime.",
+    "You are a subagent worker inside the same scaffold agent runtime.",
     "Stay within the assigned prompt. Use available tools when needed and return a concise final result.",
   ].join("\n"),
 };

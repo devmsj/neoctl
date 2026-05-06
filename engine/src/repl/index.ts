@@ -45,7 +45,7 @@ interface ReplRuntime {
 
 interface UiLine {
   id: number;
-  kind: "system" | "user" | "assistant" | "tool" | "error" | "meta";
+  kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
   title?: string;
   format?: "markdown" | "ansi";
@@ -157,6 +157,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const app = useApp();
   const lineId = useRef(0);
   const assistantLineId = useRef<number | undefined>(undefined);
+  const thinkingLineId = useRef<number | undefined>(undefined);
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
@@ -200,8 +201,16 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "state") return;
     if (event.type === "context.metrics" || event.type === "usage") return;
     if (event.type === "assistant.delta") {
+      finalizeLiveLine(thinkingLineId.current);
+      thinkingLineId.current = undefined;
       const id = assistantLineId.current ?? append({ kind: "assistant", text: "", live: true });
       assistantLineId.current = id;
+      updateLine(id, (text) => text + event.text);
+      return;
+    }
+    if (event.type === "thinking.delta") {
+      const id = thinkingLineId.current ?? append({ kind: "thinking", title: "Think", text: "", previewStyle: "summary", live: true });
+      thinkingLineId.current = id;
       updateLine(id, (text) => text + event.text);
       return;
     }
@@ -214,19 +223,34 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
           return;
         }
       }
+      if (event.message.role === "assistant" && thinkingLineId.current !== undefined) {
+        const text = thinkingText(event.message);
+        if (text !== undefined) {
+          replaceLineText(thinkingLineId.current, text);
+          finalizeLiveLine(thinkingLineId.current);
+          thinkingLineId.current = undefined;
+          return;
+        }
+      }
       if (event.message.role !== "assistant") {
         finalizeLiveLine(assistantLineId.current);
+        finalizeLiveLine(thinkingLineId.current);
         assistantLineId.current = undefined;
+        thinkingLineId.current = undefined;
       }
       const rendered = renderMessage(event.message, append, assistantLineId.current);
       if (rendered && event.message.role === "assistant") {
         finalizeLiveLine(assistantLineId.current);
+        finalizeLiveLine(thinkingLineId.current);
         assistantLineId.current = undefined;
+        thinkingLineId.current = undefined;
       }
       return;
     }
     if (event.type === "tool.started") {
       finalizeLiveLine(assistantLineId.current);
+      finalizeLiveLine(thinkingLineId.current);
+      thinkingLineId.current = undefined;
       append(formatToolUse(event.toolUse));
       return;
     }
@@ -234,7 +258,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
       finalizeLiveLine(assistantLineId.current);
+      finalizeLiveLine(thinkingLineId.current);
       assistantLineId.current = undefined;
+      thinkingLineId.current = undefined;
       return;
     }
     if (event.type === "error") {
@@ -299,13 +325,17 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       }
     } catch (error) {
       finalizeLiveLine(assistantLineId.current);
+      finalizeLiveLine(thinkingLineId.current);
       assistantLineId.current = undefined;
+      thinkingLineId.current = undefined;
       append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
       finalizeLiveLine(assistantLineId.current);
+      finalizeLiveLine(thinkingLineId.current);
       assistantLineId.current = undefined;
+      thinkingLineId.current = undefined;
       setBusy(false);
       setStatus((current) => ({ ...current, phase: "ready", detail: undefined }));
     }
@@ -314,6 +344,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   useEffect(() => {
     setLines(initialLines(runtime));
     assistantLineId.current = undefined;
+    thinkingLineId.current = undefined;
     setStatus(initialStatus(runtime));
     setScrollOffset(0);
   }, [runtime]);
@@ -736,7 +767,10 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       else append({ kind, text: block.text });
       rendered = true;
     }
-    if (block.type === "thinking") continue;
+    if (block.type === "thinking") {
+      append({ kind: "thinking", title: "Think", text: block.text, previewStyle: "summary" });
+      rendered = true;
+    }
     if (block.type === "tool_result") {
       const formatted = formatToolResult(block.name, block.output, block.ok);
       append({
@@ -760,6 +794,14 @@ function assistantText(message: Message): string | undefined {
   return text.length > 0 ? text : undefined;
 }
 
+function thinkingText(message: Message): string | undefined {
+  const text = message.blocks
+    .filter((block) => block.type === "thinking")
+    .map((block) => block.text)
+    .join("");
+  return text.length > 0 ? text : undefined;
+}
+
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "state") {
     return {
@@ -774,6 +816,7 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics };
   if (event.type === "usage") return { ...status, usage: event.usage, activityTick: status.activityTick + 1 };
   if (event.type === "assistant.delta") return { ...status, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), activityTick: status.activityTick + 1 };
+  if (event.type === "thinking.delta") return { ...status, activityTick: status.activityTick + 1 };
   if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, activityTick: status.activityTick + 1 };
   if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "retrying" || event.type === "error") {
     return { ...status, activityTick: status.activityTick + 1 };
@@ -926,6 +969,7 @@ function formatResume(snapshot: SessionStoreSnapshot): string {
 function colorForKind(kind: UiLine["kind"]) {
   if (kind === "user") return "cyan";
   if (kind === "assistant") return "green";
+  if (kind === "thinking") return "gray";
   if (kind === "tool") return "#d4b04c";
   if (kind === "error") return "red";
   if (kind === "meta") return "gray";
@@ -935,6 +979,7 @@ function colorForKind(kind: UiLine["kind"]) {
 function prefixForKind(kind: UiLine["kind"]): string {
   if (kind === "user") return "user>";
   if (kind === "assistant") return "assistant>";
+  if (kind === "thinking") return "think>";
   if (kind === "tool") return "tool>";
   if (kind === "error") return "error>";
   return "system>";
@@ -950,6 +995,7 @@ function kindForRole(role: Message["role"]): UiLine["kind"] {
 }
 
 function titleForKind(kind: UiLine["kind"]): string {
+  if (kind === "thinking") return "Think";
   if (kind === "tool") return "Tool";
   if (kind === "error") return "Error";
   if (kind === "meta") return "Meta";

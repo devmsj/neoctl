@@ -25,6 +25,7 @@ export type AgentEvent =
   | { type: "state"; phase: string; detail?: string }
   | { type: "context.metrics"; metrics: ContextMetrics }
   | { type: "assistant.delta"; text: string }
+  | { type: "thinking.delta"; text: string }
   | { type: "message"; message: Message }
   | { type: "tool.started"; toolUse: ToolUseRequest }
   | { type: "tool.finished"; toolUse: ToolUseRequest; ok: boolean }

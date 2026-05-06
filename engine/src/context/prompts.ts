@@ -24,7 +24,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
       name: "Agent Scaffold",
       cacheStable: true,
       content: [
-        "You are an engineering agent running inside a TypeScript scaffold.",
+        "You are an engineering agent running inside a scaffold agent.",
         "Drive tasks through the shared query loop, tool system, context manager, and model gateway.",
       ].join("\n"),
     },
@@ -34,14 +34,18 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
       content: [
         "Keep work concrete and verifiable.",
         "Use tools for real workspace changes and report validation results precisely.",
+        "When following a concrete strategy, you may briefly state meaningful progress transitions, such as finishing code edits and preparing to run tests.",
       ].join("\n"),
     },
     {
       name: "Using Tools",
       cacheStable: true,
-      content: enabledTools.length
-        ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
-        : "Available tools are provided separately by the runtime.",
+      content: [
+        enabledTools.length
+          ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
+          : "Available tools are provided separately by the runtime.",
+        "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
+      ].join("\n"),
     },
     {
       name: "Tone And Output",

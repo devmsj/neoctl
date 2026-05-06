@@ -23,6 +23,8 @@ async function main(): Promise<void> {
   store.recordMessage({ ...messages[0], role: "progress" });
 
   const resumed = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
+  const latest = await SessionStore.open({ agentId: "main", rootDir: root, resume: true });
+  const listed = await SessionStore.list({ agentId: "main", rootDir: root });
   const resumedBudget = await resumed.toolResultMemory.applyBudget(resumed.getInitialMessages(), { maxSerializedLength: 180 });
   const afterReset = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
   afterReset.reset();
@@ -34,13 +36,17 @@ async function main(): Promise<void> {
     second.records.length === 0 &&
     JSON.stringify(first.messages) === JSON.stringify(second.messages) &&
     resumed.snapshot().resumedMessages === messages.length &&
+    latest.snapshot().sessionId === sessionId &&
+    latest.snapshot().resumedMessages === messages.length &&
+    listed.length === 1 &&
+    listed[0]?.sessionId === sessionId &&
     resumedBudget.records.length === 0 &&
     resumedBudget.messages.some((message) =>
       message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),
     ) &&
     resetResume.snapshot().resumedMessages === 0;
 
-  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, resumed: resumed.snapshot(), reset: resetResume.snapshot() }, null, 2));
+  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot() }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

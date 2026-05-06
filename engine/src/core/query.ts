@@ -9,7 +9,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { runTools } from "../tools/tool-orchestration.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
-import { createTextMessage, type Message, type ToolUseRequest } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type Message, type ToolUseRequest } from "../types/messages.js";
 import {
   appendSystemContext,
   applyToolResultBudget,
@@ -233,6 +233,7 @@ async function* callModelForTurn(
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
   const outputFilter = new AssistantOutputFilter();
+  const thinkingParts: string[] = [];
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
@@ -255,7 +256,7 @@ async function* callModelForTurn(
       cancellation: options.abortSignal,
     })) {
       if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
-      const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter);
+      const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
 
@@ -303,10 +304,17 @@ async function* handleModelEvent(
   assistantMessages: Message[],
   toolUses: ToolUseRequest[],
   outputFilter: AssistantOutputFilter,
+  thinkingParts: string[],
 ): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
   if (event.type === "assistant_delta") {
     const text = outputFilter.push(event.text);
     if (text) yield { type: "assistant.delta", text };
+    return {};
+  }
+
+  if (event.type === "thinking_delta") {
+    thinkingParts.push(event.text);
+    yield { type: "thinking.delta", text: event.text };
     return {};
   }
 
@@ -334,11 +342,15 @@ async function* handleModelEvent(
   }
 
   if (event.type === "response_completed") {
+    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     if (event.usage) yield { type: "usage", usage: event.usage };
     return { previousResponseId: event.responseId };
   }
 
   if (event.type === "response_incomplete") {
+    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     if (event.usage) yield { type: "usage", usage: event.usage };
     return { previousResponseId: event.responseId, incompleteReason: event.reason };
   }
@@ -349,6 +361,19 @@ async function* handleModelEvent(
   }
 
   return {};
+}
+
+function finalizeThinkingMessage(assistantMessages: Message[], thinkingParts: string[]): Message | undefined {
+  const text = thinkingParts.join("").trim();
+  if (!text) return undefined;
+  const alreadyIncluded = assistantMessages.some((message) =>
+    message.blocks.some((block) => block.type === "thinking" && (block.text === text || block.text.startsWith(text) || text.startsWith(block.text))),
+  );
+  thinkingParts.length = 0;
+  if (alreadyIncluded) return undefined;
+  const message = createThinkingMessage(text);
+  assistantMessages.push(message);
+  return message;
 }
 
 async function* executeToolsForTurn(

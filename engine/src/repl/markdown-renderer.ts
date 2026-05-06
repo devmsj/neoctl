@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text } from "ink";
 import { Lexer, type Token, type Tokens } from "marked";
 import { bundledLanguages, codeToTokens, type ThemedToken } from "shiki";
@@ -6,7 +6,7 @@ import { bundledLanguages, codeToTokens, type ThemedToken } from "shiki";
 const e = React.createElement;
 const SHIKI_THEME = "dark-plus";
 
-export type MarkdownLineKind = "system" | "user" | "assistant" | "tool" | "error" | "meta";
+export type MarkdownLineKind = "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
 
 interface Segment {
   text: string;
@@ -21,6 +21,11 @@ interface Segment {
 interface RenderedLine {
   segments: Segment[];
   color?: string;
+}
+
+interface AsyncRenderedLines {
+  key: string;
+  lines: RenderedLine[];
 }
 
 const tokenCache = new Map<string, Promise<Segment[][]>>();
@@ -38,14 +43,16 @@ export function MarkdownText({
   maxLines?: number;
   skipLines?: number;
 }) {
-  const [lines, setLines] = useState<RenderedLine[] | undefined>();
+  const renderKey = `${kind}\0${width}\0${text}`;
+  const fallbackLines = useMemo(() => renderMarkdownPreviewToLines(text, kind, width), [text, kind, width]);
+  const [asyncLines, setAsyncLines] = useState<AsyncRenderedLines | undefined>();
 
   useEffect(() => {
     let cancelled = false;
-    setLines(undefined);
+    setAsyncLines(undefined);
     const timer = setTimeout(() => {
       void renderMarkdownToLines(text, kind, width).then((rendered) => {
-        if (!cancelled) setLines(rendered);
+        if (!cancelled) setAsyncLines({ key: renderKey, lines: rendered });
       });
     }, 40);
 
@@ -53,9 +60,9 @@ export function MarkdownText({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [text, kind, width]);
+  }, [text, kind, width, renderKey]);
 
-  const renderedLines = clipRenderedLines(lines ?? renderPlainMarkdownPreview(text, kind, width), maxLines, skipLines);
+  const renderedLines = clipRenderedLines(asyncLines?.key === renderKey ? asyncLines.lines : fallbackLines, maxLines, skipLines);
 
   return e(
     Box,
@@ -85,7 +92,7 @@ export function MarkdownText({
 }
 
 export function estimateMarkdownLineCount(markdown: string, width: number): number {
-  return renderPlainMarkdownPreview(markdown, "assistant", width).length;
+  return renderMarkdownPreviewToLines(markdown, "assistant", width).length;
 }
 async function renderMarkdownToLines(markdown: string, kind: MarkdownLineKind, width: number): Promise<RenderedLine[]> {
   const normalized = normalizeIndentedFences(markdown.replace(/\r\n/g, "\n"));
@@ -156,6 +163,19 @@ async function appendToken(lines: RenderedLine[], token: Token, kind: MarkdownLi
   }
 }
 
+function renderMarkdownPreviewToLines(markdown: string, kind: MarkdownLineKind, width: number): RenderedLine[] {
+  try {
+    const normalized = normalizeIndentedFences(markdown.replace(/\r\n/g, "\n"));
+    const tokens = Lexer.lex(normalized, { gfm: true });
+    const lines: RenderedLine[] = [];
+    const usableWidth = Math.max(10, width);
+    for (const token of tokens) appendPreviewToken(lines, token, kind, usableWidth);
+    return lines.length ? lines : [{ segments: [{ text: "" }] }];
+  } catch {
+    return renderPlainMarkdownPreview(markdown, kind, width);
+  }
+}
+
 function renderPlainMarkdownPreview(markdown: string, kind: MarkdownLineKind, width: number): RenderedLine[] {
   const plainSegments = markdown
     .replace(/\r\n/g, "\n")
@@ -166,6 +186,62 @@ function renderPlainMarkdownPreview(markdown: string, kind: MarkdownLineKind, wi
     color: kind === "error" ? "red" : undefined,
   }));
   return rendered.length ? rendered : [{ segments: [{ text: "" }] }];
+}
+
+function appendPreviewToken(lines: RenderedLine[], token: Token, kind: MarkdownLineKind, width: number): void {
+  switch (token.type) {
+    case "space":
+      if (lines.length > 0) lines.push({ segments: [{ text: " " }] });
+      return;
+    case "heading": {
+      const heading = token as Tokens.Heading;
+      const prefix = `${"#".repeat(heading.depth)} `;
+      const segments = [
+        { text: prefix, color: heading.depth <= 2 ? "cyan" : "blue", bold: true },
+        ...inlineSegments(heading.tokens, { bold: true, color: heading.depth <= 2 ? "cyan" : "blue" }),
+      ];
+      lines.push(...wrapSegments(segments, width).map((wrapped) => ({ segments: wrapped })));
+      return;
+    }
+    case "paragraph": {
+      const paragraph = token as Tokens.Paragraph;
+      appendWrapped(lines, inlineSegments(paragraph.tokens, {}), width, kind);
+      return;
+    }
+    case "text": {
+      const textToken = token as Tokens.Text;
+      appendWrapped(lines, inlineSegments(textToken.tokens ?? [textToken], {}), width, kind);
+      return;
+    }
+    case "code": {
+      appendCodePreview(lines, token as Tokens.Code, width);
+      return;
+    }
+    case "list": {
+      appendListPreview(lines, token as Tokens.List, kind, width);
+      return;
+    }
+    case "blockquote": {
+      appendBlockquotePreview(lines, token as Tokens.Blockquote, kind, width);
+      return;
+    }
+    case "hr":
+      lines.push({ segments: [{ text: "-".repeat(Math.min(width, 80)), color: "gray" }] });
+      return;
+    case "table": {
+      appendTable(lines, token as Tokens.Table, width);
+      return;
+    }
+    case "html": {
+      const html = token as Tokens.HTML;
+      appendWrapped(lines, [{ text: html.text || html.raw, color: "gray" }], width, kind);
+      return;
+    }
+    default: {
+      const fallback = fallbackText(token);
+      if (fallback) appendWrapped(lines, [{ text: fallback }], width, kind);
+    }
+  }
 }
 
 function clipRenderedLines(lines: RenderedLine[], maxLines: number | undefined, skipLines = 0): RenderedLine[] {
@@ -192,6 +268,38 @@ async function appendCode(lines: RenderedLine[], token: Tokens.Code, width: numb
   }
 }
 async function appendList(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): Promise<void> {
+  appendListLike(lines, token, kind, width);
+}
+
+async function appendBlockquote(
+  lines: RenderedLine[],
+  token: Tokens.Blockquote,
+  kind: MarkdownLineKind,
+  width: number,
+): Promise<void> {
+  const nested: RenderedLine[] = [];
+  for (const child of token.tokens) {
+    await appendToken(nested, child, kind, Math.max(10, width - 2));
+  }
+  appendBlockquoteLines(lines, nested);
+}
+
+function appendCodePreview(lines: RenderedLine[], token: Tokens.Code, width: number): void {
+  const language = normalizeLanguage(token.lang ?? "");
+  const codeLines = token.text.split("\n");
+  for (const [index, line] of codeLines.entries()) {
+    const gutter = index === 0 && language !== "text" ? `${language} ` : "";
+    for (const wrapped of wrapSegments([{ text: `${gutter}${line || " "}`, color: "gray" }], width)) {
+      lines.push({ segments: wrapped.length ? wrapped : [{ text: " " }] });
+    }
+  }
+}
+
+function appendListPreview(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): void {
+  appendListLike(lines, token, kind, width);
+}
+
+function appendListLike(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): void {
   let number = typeof token.start === "number" ? token.start : 1;
   for (const item of token.items) {
     const marker = token.ordered ? `${number}. ` : "- ";
@@ -207,16 +315,13 @@ async function appendList(lines: RenderedLine[], token: Tokens.List, kind: Markd
   }
 }
 
-async function appendBlockquote(
-  lines: RenderedLine[],
-  token: Tokens.Blockquote,
-  kind: MarkdownLineKind,
-  width: number,
-): Promise<void> {
+function appendBlockquotePreview(lines: RenderedLine[], token: Tokens.Blockquote, kind: MarkdownLineKind, width: number): void {
   const nested: RenderedLine[] = [];
-  for (const child of token.tokens) {
-    await appendToken(nested, child, kind, Math.max(10, width - 2));
-  }
+  for (const child of token.tokens) appendPreviewToken(nested, child, kind, Math.max(10, width - 2));
+  appendBlockquoteLines(lines, nested);
+}
+
+function appendBlockquoteLines(lines: RenderedLine[], nested: RenderedLine[]): void {
   for (const line of nested) {
     lines.push({ segments: [{ text: "| ", color: "gray" }, ...line.segments] });
   }

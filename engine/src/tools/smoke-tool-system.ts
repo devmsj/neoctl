@@ -94,8 +94,15 @@ async function main(): Promise<void> {
     { id: "list", name: "list", input: { path: "src/tools/builtins", recursive: false, maxEntries: 20 } },
     context,
   );
+  const recursiveListRoot = path.join(tempDir, "recursive-list");
+  await fs.mkdir(path.join(recursiveListRoot, ".idea"), { recursive: true });
+  await fs.mkdir(path.join(recursiveListRoot, ".agent-tasks"), { recursive: true });
+  await fs.mkdir(path.join(recursiveListRoot, "visible"), { recursive: true });
+  await fs.writeFile(path.join(recursiveListRoot, ".idea", "workspace.xml"), "ignored", "utf8");
+  await fs.writeFile(path.join(recursiveListRoot, ".agent-tasks", "task.json"), "ignored", "utf8");
+  await fs.writeFile(path.join(recursiveListRoot, "visible", "keep.ts"), "export {};", "utf8");
   const recursiveList = await runToolUseToMessages(
-    { id: "list-recursive", name: "list", input: { path: ".", recursive: true, maxEntries: 20, includeHidden: true } },
+    { id: "list-recursive", name: "list", input: { path: recursiveListRoot, recursive: true, maxEntries: 20, includeHidden: true } },
     context,
   );
   const exec = await runToolUseToMessages(
@@ -116,6 +123,12 @@ async function main(): Promise<void> {
   );
   const editReplaceAll = await runToolUseToMessages(
     { id: "edit-all", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma", replaceAll: true } },
+    context,
+  );
+  const crlfPath = path.join(tempDir, "crlf.txt");
+  await fs.writeFile(crlfPath, "one\r\ntwo\r\nthree\r\n", "utf8");
+  const editCrlfWithLfOldString = await runToolUseToMessages(
+    { id: "edit-crlf-lf-old", name: "edit", input: { path: crlfPath, oldString: "one\ntwo\n", newString: "uno\ndos\n" } },
     context,
   );
   const write = await runToolUseToMessages(
@@ -159,6 +172,10 @@ async function main(): Promise<void> {
     operation?: string;
     replacements?: number;
     patch?: unknown[];
+  };
+  const editCrlfWithLfOldStringOutput = toolOutput(editCrlfWithLfOldString[editCrlfWithLfOldString.length - 1]) as {
+    operation?: string;
+    replacements?: number;
   };
   const writeOutput = toolOutput(write[write.length - 1]) as {
     operation?: string;
@@ -228,6 +245,11 @@ async function main(): Promise<void> {
       editReplaceAllOutput.operation === "edit" &&
       editReplaceAllOutput.replacements === 2 &&
       (await fs.readFile(path.join(tempDir, "sample.txt"), "utf8")).includes("gamma\nbeta\ngamma"),
+    editCrlfWithLfOldStringOk:
+      toolOk(editCrlfWithLfOldString[editCrlfWithLfOldString.length - 1]) &&
+      editCrlfWithLfOldStringOutput.operation === "edit" &&
+      editCrlfWithLfOldStringOutput.replacements === 1 &&
+      (await fs.readFile(crlfPath, "utf8")) === "uno\r\ndos\r\nthree\r\n",
     writeOk:
       toolOk(write[write.length - 1]) &&
       writeOutput.operation === "create" &&
@@ -238,7 +260,7 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, write: write.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

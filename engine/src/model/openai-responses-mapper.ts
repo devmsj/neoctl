@@ -1,4 +1,4 @@
-import { createTextMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage } from "../types/messages.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
@@ -45,6 +45,7 @@ export async function* normalizeResponsesStream(
   options: OpenAIResponsesMapperOptions,
 ): AsyncGenerator<ModelStreamEvent> {
   const textParts: string[] = [];
+  const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   let responseId: string | undefined;
 
@@ -64,6 +65,14 @@ export async function* normalizeResponsesStream(
       if (delta) {
         textParts.push(delta);
         yield { type: "assistant_delta", text: delta };
+      }
+    }
+
+    if (isReasoningDeltaEvent(type)) {
+      const delta = extractThinkingDelta(event);
+      if (delta) {
+        thinkingParts.push(delta);
+        yield { type: "thinking_delta", text: delta };
       }
     }
 
@@ -111,6 +120,8 @@ export async function* normalizeResponsesStream(
       responseId = asString(response?.id) ?? responseId;
       const text = textParts.join("");
       if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+      const thinking = collectThinkingFromResponse(response, thinkingParts);
+      if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
       const usage = normalizeUsage(response?.usage);
       if (usage) yield { type: "usage", usage };
       yield { type: "response_completed", responseId, stopReason: asString(response?.status) ?? "completed", usage };
@@ -139,9 +150,11 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
   if (responseId) yield { type: "response_started", responseId };
   const output = Array.isArray(body.output) ? body.output : [];
   const textParts: string[] = [];
+  const thinkingParts: string[] = [];
 
   for (const item of output as Record<string, unknown>[]) {
     if (item.type === "message") textParts.push(extractResponsesMessageText(item));
+    if (item.type === "reasoning") thinkingParts.push(extractReasoningText(item));
     if (item.type === "function_call") {
       yield {
         type: "tool_use",
@@ -156,6 +169,8 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
 
   const text = textParts.join("");
   if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+  const thinking = collectThinkingFromResponse(body, thinkingParts);
+  if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
   if (body.status === "incomplete") {
@@ -167,4 +182,59 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
 
 function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean {
   return Boolean(request.previousResponseId || toolCount > 0);
+}
+
+function isReasoningDeltaEvent(type: string | undefined): boolean {
+  return type === "response.reasoning_summary.delta" ||
+    type === "response.reasoning.delta" ||
+    type === "response.output_item.delta";
+}
+
+function extractThinkingDelta(event: Record<string, unknown>): string {
+  const delta = event.delta;
+  if (typeof delta === "string") return delta;
+  if (delta && typeof delta === "object") return extractReasoningText(delta as Record<string, unknown>);
+  return asString(event.text) ?? asString(event.summary_text) ?? "";
+}
+
+function collectThinkingFromResponse(response: Record<string, unknown> | undefined, streamedParts: string[]): string {
+  const streamed = streamedParts.join("");
+  const output = Array.isArray(response?.output) ? response.output : [];
+  const fromOutput = output
+    .map((item) => {
+      const record = item as Record<string, unknown>;
+      return record.type === "reasoning" ? extractReasoningText(record) : "";
+    })
+    .join("");
+  return dedupeThinkingText(streamed, fromOutput).trim();
+}
+
+function extractReasoningText(item: Record<string, unknown>): string {
+  const direct = asString(item.text) ?? asString(item.summary_text) ?? asString(item.content);
+  if (direct) return direct;
+
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const summaryText = summary.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    const record = part as Record<string, unknown>;
+    return asString(record.text) ?? asString(record.summary_text) ?? "";
+  }).join("");
+  if (summaryText) return summaryText;
+
+  const content = Array.isArray(item.content) ? item.content : [];
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    const record = part as Record<string, unknown>;
+    return asString(record.text) ?? asString(record.summary_text) ?? "";
+  }).join("");
+}
+
+function dedupeThinkingText(streamed: string, completed: string): string {
+  if (!streamed) return completed;
+  if (!completed || completed === streamed) return streamed;
+  if (completed.startsWith(streamed)) return completed;
+  if (streamed.startsWith(completed)) return streamed;
+  return `${streamed}\n${completed}`;
 }

@@ -9,7 +9,7 @@ import type { Message } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { query } from "./query.js";
 import type { TerminalReason } from "./state.js";
-import { SessionStore, type SessionStoreSnapshot } from "../session/session-store.js";
+import { SessionStore, type SessionStoreSnapshot, type SessionSummary } from "../session/session-store.js";
 
 export interface QueryEngineOptions {
   agentId?: string;
@@ -42,26 +42,39 @@ export class QueryEngine {
   private readonly history: Message[] = [];
   private lastTerminalReason?: TerminalReason;
   private sessionStore?: SessionStore;
+  private sessionInitialized = false;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
   }
 
   async initialize(): Promise<void> {
-    if (this.sessionStore || this.options.session?.enabled === false) return;
+    if (this.sessionInitialized) return;
+    this.sessionInitialized = true;
+    if (this.options.session?.enabled === false) return;
     if (!this.options.session) return;
-    this.sessionStore = await SessionStore.open({
+    await this.openSession({
+      sessionId: this.options.session.sessionId,
+      resume: this.options.session.resume,
+    });
+  }
+
+  async resumeSession(sessionId?: string): Promise<SessionStoreSnapshot> {
+    this.sessionInitialized = true;
+    await this.openSession({ sessionId, resume: true });
+    const snapshot = this.sessionStore?.snapshot();
+    if (!snapshot) throw new Error("session transcripts are disabled");
+    return snapshot;
+  }
+
+  async listSessions(limit = 10): Promise<SessionSummary[]> {
+    if (this.options.session?.enabled === false || !this.options.session) return [];
+    return SessionStore.list({
       agentId: this.agentId,
       cwd: process.cwd(),
-      sessionId: this.options.session.sessionId,
       rootDir: this.options.session.rootDir,
-      resume: this.options.session.resume,
-      toolResultThresholdChars: this.options.session.toolResultThresholdChars,
+      limit,
     });
-    if (this.options.session.resume) {
-      this.history.length = 0;
-      this.history.push(...this.sessionStore.getInitialMessages());
-    }
   }
 
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
@@ -133,5 +146,19 @@ export class QueryEngine {
 
   get toolResultMemory() {
     return this.sessionStore?.toolResultMemory;
+  }
+
+  private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {
+    if (this.options.session?.enabled === false || !this.options.session) return;
+    this.sessionStore = await SessionStore.open({
+      agentId: this.agentId,
+      cwd: process.cwd(),
+      sessionId: options.sessionId,
+      rootDir: this.options.session.rootDir,
+      resume: options.resume,
+      toolResultThresholdChars: this.options.session.toolResultThresholdChars,
+    });
+    this.history.length = 0;
+    if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
   }
 }

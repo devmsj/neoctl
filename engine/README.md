@@ -9,6 +9,7 @@ This directory is a TypeScript implementation scaffold for the parent README. Ch
 - `src/model`: provider-neutral model gateway/config/factory, provider adapters, OpenAI Responses/Chat mappers, HTTP transport, SSE decoder, retry, and normalized errors.
 - `src/tools`: lifecycle tool contracts, registry, schema validation, execution pipeline, batch orchestration, streaming executor, and built-in tools.
 - `src/context`: system prompt sections, runtime user/system context, deterministic compaction helpers, and model-driven compaction.
+- `src/session`: JSONL session transcripts, tool-result persistence, latest/specific session resume, and session listing.
 - `src/agents`: agent definitions, `AgentTool`, prompt rules, fork constraints, local task lifecycle, and agent smoke coverage.
 - `src/tasks`: background task store, task-control tools, named-agent message routing, and persisted task output files.
 - `src/skills`: inline workflow-as-tool injection and fork-skill boundary.
@@ -73,6 +74,25 @@ npm run dev
 - `query.ts` persists compact-boundary messages into the event stream and retries once after provider `context_length` errors
 
 `npm run smoke:context` verifies prompt boundary splitting, context injection, tool result budgeting, deterministic compaction, model-driven autocompact, and prompt-too-long recovery.
+
+## Session Resume
+
+The REPL writes JSONL transcripts under `.agent/sessions` by default. Use `/sessions [limit]` to list saved sessions and `/resume [session_id]` to replace the current in-memory history with a saved transcript. `/resume` without an id resumes the newest session for the current agent.
+
+Startup resume is available with environment variables:
+
+```bash
+set AGENT_SESSION_RESUME=1
+npm run dev
+
+set AGENT_SESSION_ID=<session_id>
+set AGENT_SESSION_RESUME=1
+npm run dev
+```
+
+Set `AGENT_SESSION_TRANSCRIPT=0` to disable transcript persistence, or `AGENT_SESSION_DIR=<absolute-or-relative-dir>` to store transcripts elsewhere. `/reset` clears the active history and records a reset marker so future resumes start after the reset.
+
+`npm run smoke:session` verifies transcript recording, latest-session lookup, specific-session resume, tool-result output persistence, and reset markers.
 
 ## Subagents And Tasks
 
