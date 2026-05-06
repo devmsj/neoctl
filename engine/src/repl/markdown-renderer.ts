@@ -114,9 +114,7 @@ async function appendToken(lines: RenderedLine[], token: Token, kind: MarkdownLi
       return;
     case "heading": {
       const heading = token as Tokens.Heading;
-      const prefix = `${"#".repeat(heading.depth)} `;
       const segments = [
-        { text: prefix, color: heading.depth <= 2 ? "cyan" : "blue", bold: true },
         ...inlineSegments(heading.tokens, { bold: true, color: heading.depth <= 2 ? "cyan" : "blue" }),
       ];
       lines.push(...wrapSegments(segments, width).map((wrapped) => ({ segments: wrapped })));
@@ -195,9 +193,7 @@ function appendPreviewToken(lines: RenderedLine[], token: Token, kind: MarkdownL
       return;
     case "heading": {
       const heading = token as Tokens.Heading;
-      const prefix = `${"#".repeat(heading.depth)} `;
       const segments = [
-        { text: prefix, color: heading.depth <= 2 ? "cyan" : "blue", bold: true },
         ...inlineSegments(heading.tokens, { bold: true, color: heading.depth <= 2 ? "cyan" : "blue" }),
       ];
       lines.push(...wrapSegments(segments, width).map((wrapped) => ({ segments: wrapped })));

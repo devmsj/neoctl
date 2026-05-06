@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Static, Text, render, useApp, useInput } from "ink";
+import { Box, Text, render, useApp, useInput } from "ink";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
@@ -401,10 +401,6 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const prompt = promptPrefix(busy);
   const promptHeight = promptTextView(input, cursor, width, prompt).length;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS);
-  const firstLiveLineIndex = lines.findIndex((line) => line.live);
-  const staticLines = firstLiveLineIndex === -1 ? lines : lines.slice(0, firstLiveLineIndex);
-  const dynamicLines = firstLiveLineIndex === -1 ? [] : lines.slice(firstLiveLineIndex);
-
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
       if (busyRef.current) {
@@ -481,8 +477,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
-    e(Static<UiLine>, { items: staticLines, children: (line) => e(MessageLine, { key: line.id, line, width }) }),
-    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines }),
+    e(MessageList, { lines, width, liveMaxLines: liveViewportLines }),
     e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
