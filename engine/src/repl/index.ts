@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stdout } from "node:process";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Static, Text, render, useApp, useInput } from "ink";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
@@ -23,7 +23,7 @@ import { createAgentTool } from "../agents/agent-tool.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import { parseReplCommand, helpText } from "./commands.js";
-import { estimateMarkdownLineCount, MarkdownText } from "./markdown-renderer.js";
+import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 
@@ -118,6 +118,7 @@ interface UiLine {
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
   live?: boolean;
+  renderedKey?: string;
 }
 
 interface UiStatus {
@@ -269,12 +270,25 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   const updateLine = (id: number, updater: (text: string) => string) => {
-    setLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
+    setLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text), renderedKey: undefined } : line));
   };
 
   const replaceLineText = (id: number, text: string) => {
-    setLines((current) => current.map((line) => line.id === id ? { ...line, text } : line));
+    setLines((current) => current.map((line) => line.id === id ? { ...line, text, renderedKey: undefined } : line));
   };
+
+  const markLineRendered = useCallback((id: number, renderKey: string) => {
+    setLines((current) => {
+      let changed = false;
+      const next = current.map((line) => {
+        if (line.id !== id) return line;
+        if (line.renderedKey === renderKey) return line;
+        changed = true;
+        return { ...line, renderedKey: renderKey };
+      });
+      return changed ? next : current;
+    });
+  }, []);
 
   const replaceLine = (id: number, patch: Partial<UiLine>) => {
     setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
@@ -396,7 +410,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "cost") {
-      append(systemLine(formatUsageTotals(runtime.usage.snapshot())));
+      append({ kind: "system", text: formatUsageTotals(runtime.usage.snapshot()) });
       return;
     }
     if (command.type === "reset") {
@@ -486,9 +500,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const prompt = promptPrefix(busy);
   const promptHeight = promptTextView(input, cursor, width, prompt).length;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS);
-  const firstLiveLineIndex = lines.findIndex((line) => line.live);
-  const staticLines = firstLiveLineIndex === -1 ? lines : lines.slice(0, firstLiveLineIndex);
-  const dynamicLines = firstLiveLineIndex === -1 ? [] : lines.slice(firstLiveLineIndex);
+  const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
+  const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
+  const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -567,15 +581,21 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     Box,
     { flexDirection: "column" },
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
-    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length }),
+    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
 const MessageList = React.memo(function MessageList(
-  { lines, width, liveMaxLines, lineIndexOffset = 0 }:
-  { lines: UiLine[]; width: number; liveMaxLines?: number; lineIndexOffset?: number },
+  { lines, width, liveMaxLines, lineIndexOffset = 0, onMarkdownRenderComplete }:
+  {
+    lines: UiLine[];
+    width: number;
+    liveMaxLines?: number;
+    lineIndexOffset?: number;
+    onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
+  },
 ) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
@@ -590,24 +610,40 @@ const MessageList = React.memo(function MessageList(
       contentWidth,
       toolWidth,
       liveMaxLines,
+      onMarkdownRenderComplete,
     })),
   );
 });
 
 function MessageBlock(
-  { line, width, blockIndex, contentWidth, toolWidth, liveMaxLines }:
-  { line: UiLine; width: number; blockIndex: number; contentWidth?: number; toolWidth?: number; liveMaxLines?: number },
+  { line, width, blockIndex, contentWidth, toolWidth, liveMaxLines, onMarkdownRenderComplete }:
+  {
+    line: UiLine;
+    width: number;
+    blockIndex: number;
+    contentWidth?: number;
+    toolWidth?: number;
+    liveMaxLines?: number;
+    onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
+  },
 ) {
   return e(
     Box,
     { flexDirection: "column", marginTop: blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0 },
-    e(MessageLine, { line, width, contentWidth, toolWidth, liveMaxLines }),
+    e(MessageLine, { line, width, contentWidth, toolWidth, liveMaxLines, onMarkdownRenderComplete }),
   );
 }
 
 function MessageLine(
-  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), liveMaxLines }:
-  { line: UiLine; width: number; contentWidth?: number; toolWidth?: number; liveMaxLines?: number },
+  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), liveMaxLines, onMarkdownRenderComplete }:
+  {
+    line: UiLine;
+    width: number;
+    contentWidth?: number;
+    toolWidth?: number;
+    liveMaxLines?: number;
+    onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
+  },
 ) {
   if (line.previewStyle === "summary") {
     const display = displayWindowForLine(line, toolWidth, line.live ? liveMaxLines : undefined);
@@ -624,7 +660,11 @@ function MessageLine(
   const display = displayWindowForLine(line, contentWidth, line.live ? liveMaxLines : undefined);
   return e(Box, { flexDirection: "row" },
     e(Text, { color: colorForKind(line.kind) }, messageRoleMarker()),
-    e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth, display.maxLines, display.skipTop)),
+    e(
+      Box,
+      { flexDirection: "column", width: contentWidth },
+      ...renderDisplayText(line, contentWidth, display.maxLines, display.skipTop, onMarkdownRenderComplete),
+    ),
   );
 }
 
@@ -644,10 +684,30 @@ function estimateRenderedLineCount(line: UiLine, width: number): number {
   return estimateMarkdownLineCount(line.text, width);
 }
 
-function renderDisplayText(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
+function lineNeedsDynamicRender(line: UiLine, width: number): boolean {
+  if (line.live) return true;
+  if (line.previewStyle === "summary" || line.format === "ansi") return false;
+  return line.renderedKey !== markdownRenderKey(line.text, line.kind, width);
+}
+
+function renderDisplayText(
+  line: UiLine,
+  width: number,
+  maxLines?: number,
+  skipTop = 0,
+  onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void,
+): React.ReactNode[] {
   if (line.previewStyle === "summary") return renderSummaryBlock(line, width, maxLines, skipTop);
   if (line.format === "ansi") return renderAnsiBlock(line.text, width, maxLines, skipTop);
-  return [e(MarkdownText, { key: `markdown-${line.id}`, text: line.text, kind: line.kind, width, maxLines, skipLines: skipTop })];
+  return [e(MarkdownText, {
+    key: `markdown-${line.id}`,
+    text: line.text,
+    kind: line.kind,
+    width,
+    maxLines,
+    skipLines: skipTop,
+    onRenderComplete: onMarkdownRenderComplete ? (renderKey: string) => onMarkdownRenderComplete(line.id, renderKey) : undefined,
+  })];
 }
 
 function renderSummaryLines(line: UiLine, width: number): string[] {

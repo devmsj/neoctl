@@ -29,6 +29,11 @@ interface AsyncRenderedLines {
 }
 
 const tokenCache = new Map<string, Promise<Segment[][]>>();
+const renderedLinesCache = new Map<string, RenderedLine[]>();
+
+export function markdownRenderKey(text: string, kind: MarkdownLineKind, width: number): string {
+  return `${kind}\0${width}\0${text}`;
+}
 
 export function MarkdownText({
   text,
@@ -36,31 +41,47 @@ export function MarkdownText({
   width,
   maxLines,
   skipLines = 0,
+  onRenderComplete,
 }: {
   text: string;
   kind: MarkdownLineKind;
   width: number;
   maxLines?: number;
   skipLines?: number;
+  onRenderComplete?: (renderKey: string) => void;
 }) {
-  const renderKey = `${kind}\0${width}\0${text}`;
-  const fallbackLines = useMemo(() => renderMarkdownPreviewToLines(text, kind, width), [text, kind, width]);
-  const [asyncLines, setAsyncLines] = useState<AsyncRenderedLines | undefined>();
+  const renderKey = markdownRenderKey(text, kind, width);
+  const cachedLines = renderedLinesCache.get(renderKey);
+  const fallbackLines = useMemo(() => cachedLines ?? renderMarkdownPreviewToLines(text, kind, width), [cachedLines, text, kind, width]);
+  const [asyncLines, setAsyncLines] = useState<AsyncRenderedLines | undefined>(() => cachedLines ? { key: renderKey, lines: cachedLines } : undefined);
 
   useEffect(() => {
+    const cached = renderedLinesCache.get(renderKey);
+    if (cached) {
+      setAsyncLines({ key: renderKey, lines: cached });
+      onRenderComplete?.(renderKey);
+      return undefined;
+    }
+
     let cancelled = false;
     setAsyncLines(undefined);
     const timer = setTimeout(() => {
-      void renderMarkdownToLines(text, kind, width).then((rendered) => {
-        if (!cancelled) setAsyncLines({ key: renderKey, lines: rendered });
-      });
+      void renderMarkdownToLines(text, kind, width)
+        .catch(() => renderPlainMarkdownPreview(text, kind, width))
+        .then((rendered) => {
+          rememberRenderedLines(renderKey, rendered);
+          if (!cancelled) {
+            setAsyncLines({ key: renderKey, lines: rendered });
+            onRenderComplete?.(renderKey);
+          }
+        });
     }, 40);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [text, kind, width, renderKey]);
+  }, [text, kind, width, renderKey, onRenderComplete]);
 
   const renderedLines = clipRenderedLines(asyncLines?.key === renderKey ? asyncLines.lines : fallbackLines, maxLines, skipLines);
 
@@ -94,6 +115,13 @@ export function MarkdownText({
 export function estimateMarkdownLineCount(markdown: string, width: number): number {
   return renderMarkdownPreviewToLines(markdown, "assistant", width).length;
 }
+
+function rememberRenderedLines(renderKey: string, lines: RenderedLine[]): void {
+  renderedLinesCache.set(renderKey, lines);
+  const firstKey = renderedLinesCache.keys().next().value;
+  if (renderedLinesCache.size > 200 && firstKey) renderedLinesCache.delete(firstKey);
+}
+
 async function renderMarkdownToLines(markdown: string, kind: MarkdownLineKind, width: number): Promise<RenderedLine[]> {
   const normalized = normalizeIndentedFences(markdown.replace(/\r\n/g, "\n"));
   const tokens = Lexer.lex(normalized, { gfm: true });
