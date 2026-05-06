@@ -186,6 +186,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
   };
 
+  const replaceLineText = (id: number, text: string) => {
+    setLines((current) => current.map((line) => line.id === id ? { ...line, text } : line));
+  };
+
   const finalizeLiveLine = (id: number | undefined) => {
     if (id === undefined) return;
     setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
@@ -202,6 +206,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (event.type === "message") {
+      if (event.message.role === "assistant" && assistantLineId.current !== undefined) {
+        const text = assistantText(event.message);
+        if (text !== undefined) {
+          replaceLineText(assistantLineId.current, text);
+          finalizeLiveLine(assistantLineId.current);
+          return;
+        }
+      }
       if (event.message.role !== "assistant") {
         finalizeLiveLine(assistantLineId.current);
         assistantLineId.current = undefined;
@@ -215,7 +227,6 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (event.type === "tool.started") {
       finalizeLiveLine(assistantLineId.current);
-      assistantLineId.current = undefined;
       append(formatToolUse(event.toolUse));
       return;
     }
@@ -739,6 +750,14 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
     }
   }
   return rendered;
+}
+
+function assistantText(message: Message): string | undefined {
+  const text = message.blocks
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+  return text.length > 0 ? text : undefined;
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
