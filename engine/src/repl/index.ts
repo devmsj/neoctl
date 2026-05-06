@@ -359,12 +359,18 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
   const promptHeight = estimatePromptHeight(input, cursor, width, prompt);
-  const messageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
-  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
+  const maxMessageViewportHeight = Math.max(1, terminalSize.rows - STATUS_BAR_ROWS - promptHeight - MESSAGE_VIEWPORT_PADDING_ROWS);
+  const messageContentHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
+  const reviewingHistory = scrollOffset > 0;
+  const messageViewportHeight = reviewingHistory
+    ? maxMessageViewportHeight
+    : Math.max(1, messageContentHeight);
+  const scrollViewportHeight = Math.min(maxMessageViewportHeight, Math.max(1, messageContentHeight));
+  const maxScrollOffset = maxScrollForLines(lines, scrollViewportHeight, contentWidth, toolWidth);
   const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
-  const scrollPage = Math.max(1, messageViewportHeight - 1);
+  const scrollPage = Math.max(1, scrollViewportHeight - 1);
 
   useEffect(() => {
     setScrollOffset((current) => Math.min(current, maxScrollOffset));
@@ -471,10 +477,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 function MessageList({ lines, height, scrollOffset, width }: { lines: UiLine[]; height: number; scrollOffset: number; width: number }) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
-  const visible = selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset);
+  const reviewingHistory = scrollOffset > 0;
+  const visible = reviewingHistory
+    ? selectVisibleLines(lines, height, contentWidth, toolWidth, scrollOffset)
+    : lines.map((line) => ({ line, maxLines: estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)), skipTop: 0 }));
   return e(
     Box,
-    { flexDirection: "column", height, overflow: "hidden" },
+    reviewingHistory ? { flexDirection: "column", height, overflow: "hidden" } : { flexDirection: "column" },
     ...visible.map((entry) => {
       const line = entry.line;
       if (line.previewStyle === "summary") {
@@ -727,7 +736,7 @@ function renderCompactStatusSegments(
   const outputPulseColor = tokenArrowColor(status.outputTokenUpdatedAt, now, "cyan");
   const outputPending = modelOutputPending(status, now);
   const tokenInputColor = retryPending ? "red" : tokenArrowColor(status.inputTokenUpdatedAt, now, "green");
-  const tokenOutputColor = outputPending ? "yellow" : outputPulseColor;
+  const tokenOutputColor = outputPulseColor;
   const outputArrow = outputPending && !slowBlinkVisible(animationTick) ? " " : "↓";
 
   const segments: StatusSegment[] = [
