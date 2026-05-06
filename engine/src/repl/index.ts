@@ -890,7 +890,7 @@ function renderCompactStatusSegments(
   const outputArrow = outputPending && !slowBlinkVisible(animationTick) ? " " : "↓";
 
   const segments: StatusSegment[] = [
-    { text: phaseText, color: phaseColor(phase), bold: true },
+    ...renderPhaseStatusSegments(phaseText, phase, animationTick),
     { text: STATUS_SEPARATOR },
     { text: model },
     { text: STATUS_SEPARATOR },
@@ -1419,6 +1419,17 @@ function phaseColor(phase: string): string {
   return "cyan";
 }
 
+function renderPhaseStatusSegments(text: string, phase: string, animationTick: number): StatusSegment[] {
+  const color = phaseColor(phase);
+  if (!isActivePhase(phase) || text.length <= 1) return [{ text, color, bold: true }];
+
+  const shimmerCenter = animationTick % (text.length + STATUS_SHIMMER_GAP_TICKS);
+  return [...text].map((char, index) => ({
+    text: char,
+    color: Math.abs(index - shimmerCenter) <= STATUS_SHIMMER_RADIUS ? STATUS_SHIMMER_COLOR : color,
+    bold: true,
+  }));
+}
 
 function compactNumber(value: number | undefined): string {
   if (value === undefined) return "?";
@@ -1606,6 +1617,9 @@ function isFullWidthCodePoint(codePoint: number): boolean {
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOKEN_PULSE_MS = 900;
 const STATUS_BLINK_TICKS = 2;
+const STATUS_SHIMMER_GAP_TICKS = 3;
+const STATUS_SHIMMER_RADIUS = 1;
+const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " ";
 const STATUS_BAR_RENDER_ROWS = 2;
 const MIN_LIVE_VIEWPORT_LINES = 4;
