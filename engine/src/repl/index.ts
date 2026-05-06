@@ -481,24 +481,44 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
-    e(Static<UiLine>, { items: staticLines, children: (line) => e(MessageLine, { key: line.id, line, width }) }),
-    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines }),
+    e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
+    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length }),
     e(StatusBar, { status, animationTick, width }),
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
 
 const MessageList = React.memo(function MessageList(
-  { lines, width, liveMaxLines }: { lines: UiLine[]; width: number; liveMaxLines?: number },
+  { lines, width, liveMaxLines, lineIndexOffset = 0 }:
+  { lines: UiLine[]; width: number; liveMaxLines?: number; lineIndexOffset?: number },
 ) {
   const contentWidth = messageContentWidth(width);
   const toolWidth = toolContentWidth(width);
   return e(
     Box,
     { flexDirection: "column" },
-    ...lines.map((line) => e(MessageLine, { key: line.id, line, width, contentWidth, toolWidth, liveMaxLines })),
+    ...lines.map((line, index) => e(MessageBlock, {
+      key: line.id,
+      line,
+      width,
+      blockIndex: lineIndexOffset + index,
+      contentWidth,
+      toolWidth,
+      liveMaxLines,
+    })),
   );
 });
+
+function MessageBlock(
+  { line, width, blockIndex, contentWidth, toolWidth, liveMaxLines }:
+  { line: UiLine; width: number; blockIndex: number; contentWidth?: number; toolWidth?: number; liveMaxLines?: number },
+) {
+  return e(
+    Box,
+    { flexDirection: "column", marginTop: blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0 },
+    e(MessageLine, { line, width, contentWidth, toolWidth, liveMaxLines }),
+  );
+}
 
 function MessageLine(
   { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), liveMaxLines }:
@@ -1426,6 +1446,7 @@ const STATUS_BLINK_TICKS = 2;
 const STATUS_SEPARATOR = " ";
 const STATUS_BAR_RENDER_ROWS = 2;
 const MIN_LIVE_VIEWPORT_LINES = 4;
+const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
