@@ -9,6 +9,7 @@ import figures from "figures";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
+import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
 import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env.js";
 import { readModelProviderConfig } from "../model/config.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
@@ -25,9 +26,9 @@ import { TaskStore } from "../tasks/task-store.js";
 import { parseReplCommand, helpText } from "./commands.js";
 import { renderEvent } from "./render.js";
 import { ReplStatusLine } from "./status-line.js";
-import { MarkdownText } from "./markdown-renderer.js";
+import { estimateMarkdownLineCount, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
-import type { Message } from "../types/messages.js";
+import type { Message, ToolUseRequest } from "../types/messages.js";
 
 const e = React.createElement;
 
@@ -40,8 +41,9 @@ interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "tool" | "error" | "meta";
   text: string;
+  title?: string;
   format?: "markdown" | "ansi";
-  previewStyle?: "tool";
+  previewStyle?: "summary";
 }
 
 interface UiStatus {
@@ -93,7 +95,7 @@ async function createRuntime(): Promise<ReplRuntime> {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: process.env.AGENT_SESSION_ID,
       rootDir: process.env.AGENT_SESSION_DIR,
-      resume: process.env.AGENT_SESSION_RESUME === "1",
+      resume: parseResumeFlag(process.env.AGENT_SESSION_RESUME),
       toolResultThresholdChars: process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS
         ? Number(process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS)
         : undefined,
@@ -101,6 +103,11 @@ async function createRuntime(): Promise<ReplRuntime> {
   });
   await engine.initialize();
   return { engine, communicationLogger };
+}
+
+function parseResumeFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "latest"].includes(value.toLowerCase());
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -116,10 +123,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>({ phase: "ready", streamedOutputTokens: 0, activityTick: 0 });
+  const [scrollOffset, setScrollOffset] = useState(0);
 
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
-    setLines((current) => [...current, { id, ...line }].slice(-120));
+    setLines((current) => [...current, { id, ...line }].slice(-MAX_UI_LINES));
     return id;
   };
 
@@ -141,7 +149,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       renderMessage(event.message, append, assistantLineId.current);
       return;
     }
-    if (event.type === "tool.started") return;
+    if (event.type === "tool.started") {
+      append(formatToolUse(event.toolUse));
+      return;
+    }
     if (event.type === "tool.finished") return;
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
@@ -160,6 +171,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setHistoryIndex(undefined);
     setInput("");
     setCursor(0);
+    setScrollOffset(0);
     await handleCommandOrPrompt(text);
   };
 
@@ -170,16 +182,24 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "help") {
-      append({ kind: "system", text: helpText });
+      append(systemLine(helpText));
       return;
     }
     if (command.type === "reset") {
       runtime.engine.reset();
-      append({ kind: "system", text: "transcript reset" });
+      append(systemLine("transcript reset"));
       return;
     }
     if (command.type === "state") {
-      append({ kind: "system", text: JSON.stringify({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, null, 2) });
+      append(systemLine(JSON.stringify({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, null, 2)));
+      return;
+    }
+    if (command.type === "sessions") {
+      await handleSessionsCommand(command.limit, runtime, (line) => append(line));
+      return;
+    }
+    if (command.type === "resume") {
+      await handleResumeCommand(command.sessionId, runtime, (line) => append(line));
       return;
     }
     if (command.type === "log") {
@@ -210,7 +230,20 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   useEffect(() => {
     setLines(initialLines(runtime));
+    setScrollOffset(0);
   }, [runtime]);
+
+  const width = terminalColumns();
+  const messageViewportHeight = Math.max(1, terminalRows() - UI_FIXED_ROWS);
+  const contentWidth = Math.max(40, width - 16);
+  const toolWidth = Math.max(40, width - 2);
+  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
+  const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
+  const scrollPage = Math.max(1, messageViewportHeight - 1);
+
+  useEffect(() => {
+    setScrollOffset((current) => Math.min(current, maxScrollOffset));
+  }, [maxScrollOffset]);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -219,12 +252,28 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         if (controller && !controller.signal.aborted && !interruptArmed.current) {
           interruptArmed.current = true;
           controller.abort("Interrupted by Ctrl+C");
-          append({ kind: "meta", text: "interrupt requested; press Ctrl+C again to exit" });
+          append(metaLine("interrupt requested; press Ctrl+C again to exit"));
           setStatus((current) => ({ ...current, phase: "stopped", detail: "interrupt requested" }));
           return;
         }
       }
       app.exit();
+      return;
+    }
+    if (key.pageUp || (key.ctrl && key.upArrow)) {
+      setScrollOffset((current) => Math.min(maxScrollOffset, current + scrollPage));
+      return;
+    }
+    if (key.pageDown || (key.ctrl && key.downArrow)) {
+      setScrollOffset((current) => Math.max(0, current - scrollPage));
+      return;
+    }
+    if (key.ctrl && key.home) {
+      setScrollOffset(maxScrollOffset);
+      return;
+    }
+    if (key.ctrl && key.end) {
+      setScrollOffset(0);
       return;
     }
     if (busy) return;
@@ -245,6 +294,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (key.rightArrow) {
       setCursor((current) => Math.min(input.length, current + 1));
+      return;
+    }
+    if (key.home) {
+      setCursor(0);
+      return;
+    }
+    if (key.end) {
+      setCursor(input.length);
       return;
     }
     if (key.upArrow) {
@@ -281,85 +338,150 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     Box,
     { flexDirection: "column" },
     e(Header, { runtime }),
-    e(MessageList, { lines }),
-    e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled }),
+    e(MessageList, { lines, height: scrollOffset > 0 ? messageViewportHeight : undefined, scrollOffset: effectiveScrollOffset }),
+    e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset }),
     e(PromptLine, { text: input, cursor, busy, activityTick: status.activityTick }),
   );
 }
 
 function Header({ runtime }: { runtime: ReplRuntime }) {
   const session = runtime.engine.snapshot().session;
+  const width = Math.max(1, terminalColumns() - 1);
+  const sessionText = session ? ` Session: ${truncateMiddle(session.transcriptPath, Math.max(10, width - 34))}` : "";
   return e(
     Box,
     { flexDirection: "column", marginBottom: 1 },
-    e(Text, { bold: true }, "Agent Scaffold REPL"),
-    e(Text, { color: "gray" }, `Type /help for commands.${session ? ` Session: ${session.transcriptPath}` : ""}`),
+    e(Text, { bold: true }, fitToWidth("Agent Scaffold REPL", width)),
+    e(Text, { color: "gray" }, fitToWidth(`Type /help for commands.${sessionText}`, width)),
   );
 }
 
-function MessageList({ lines }: { lines: UiLine[] }) {
-  const contentWidth = Math.max(40, (stdout.columns ?? 100) - 16);
+function MessageList({ lines, height, scrollOffset }: { lines: UiLine[]; height?: number; scrollOffset: number }) {
+  const width = terminalColumns();
+  const contentWidth = Math.max(40, width - 16);
+  const visible = height === undefined
+    ? lines.map((line) => ({ line, maxLines: undefined, skipTop: 0 }))
+    : selectVisibleLines(lines, height, contentWidth, Math.max(40, width - 2), scrollOffset);
   return e(
     Box,
-    { flexDirection: "column" },
-    ...lines.slice(-60).map((line) => {
-      if (line.kind === "tool") {
+    { flexDirection: "column", ...(height === undefined ? {} : { height, overflow: "hidden" }) },
+    ...visible.map((entry) => {
+      const line = entry.line;
+      if (line.previewStyle === "summary") {
+        const toolWidth = Math.max(40, width - 2);
         return e(
           Box,
           { key: line.id, flexDirection: "row" },
           e(
             Box,
-            { flexDirection: "column", width: Math.max(40, (stdout.columns ?? 100) - 2) },
-            ...renderDisplayText(line, Math.max(40, (stdout.columns ?? 100) - 2)),
+            { flexDirection: "column", width: toolWidth },
+            ...renderDisplayText(line, toolWidth, entry.maxLines, entry.skipTop),
           ),
         );
       }
       return e(Box, { key: line.id, flexDirection: "row" },
         e(Text, { color: colorForKind(line.kind) }, `${prefixForKind(line.kind)} `),
-        e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth)),
+        e(Box, { flexDirection: "column", width: contentWidth }, ...renderDisplayText(line, contentWidth, entry.maxLines, entry.skipTop)),
       );
     }),
   );
 }
 
-function renderDisplayText(line: UiLine, width: number): React.ReactNode[] {
-  if (line.previewStyle === "tool") return renderToolPreview(line, width);
-  if (line.kind === "tool") return renderToolPreview(line, width);
-  if (line.format === "ansi") return renderAnsiBlock(line.text, width);
-  return [e(MarkdownText, { key: `markdown-${line.id}`, text: line.text, kind: line.kind, width })];
+interface VisibleLine {
+  line: UiLine;
+  maxLines: number;
+  skipTop: number;
 }
 
-function renderToolPreview(line: UiLine, width: number): React.ReactNode[] {
+function selectVisibleLines(lines: UiLine[], maxHeight: number, contentWidth: number, toolWidth: number, scrollOffset: number): VisibleLine[] {
+  const selected: VisibleLine[] = [];
+  const viewportHeight = Math.max(1, maxHeight);
+  const totalHeight = totalUiLinesHeight(lines, contentWidth, toolWidth);
+  const viewportEnd = Math.max(0, totalHeight - Math.max(0, scrollOffset));
+  const viewportStart = Math.max(0, viewportEnd - viewportHeight);
+  let lineStart = 0;
+
+  for (const line of lines) {
+    const displayWidth = line.kind === "tool" ? toolWidth : contentWidth;
+    const lineHeight = estimateUiLineHeight(line, displayWidth);
+    const lineEnd = lineStart + lineHeight;
+    const visibleStart = Math.max(lineStart, viewportStart);
+    const visibleEnd = Math.min(lineEnd, viewportEnd);
+    if (visibleEnd > visibleStart) {
+      selected.push({ line, skipTop: visibleStart - lineStart, maxLines: visibleEnd - visibleStart });
+    }
+    lineStart = lineEnd;
+    if (lineStart >= viewportEnd) break;
+  }
+
+  return selected;
+}
+
+function maxScrollForLines(lines: UiLine[], maxHeight: number, contentWidth: number, toolWidth: number): number {
+  return Math.max(0, totalUiLinesHeight(lines, contentWidth, toolWidth) - Math.max(1, maxHeight));
+}
+
+function totalUiLinesHeight(lines: UiLine[], contentWidth: number, toolWidth: number): number {
+  return lines.reduce((total, line) => total + estimateUiLineHeight(line, line.kind === "tool" ? toolWidth : contentWidth), 0);
+}
+
+function estimateUiLineHeight(line: UiLine, width: number): number {
+  if (line.previewStyle === "summary") return renderSummaryLines(line, width).length;
+  if (line.format === "ansi") return wrapAnsi(line.text, Math.max(10, width), { hard: true, trim: false }).split("\n").length;
+  return estimateMarkdownLineCount(line.text, width);
+}
+function renderDisplayText(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
+  if (line.previewStyle === "summary") return renderSummaryBlock(line, width, maxLines, skipTop);
+  if (line.format === "ansi") return renderAnsiBlock(line.text, width, maxLines, skipTop);
+  return [e(MarkdownText, { key: `markdown-${line.id}`, text: line.text, kind: line.kind, width, maxLines, skipLines: skipTop })];
+}
+
+function renderSummaryLines(line: UiLine, width: number): string[] {
   const content = line.format === "ansi" ? stripAnsi(line.text) : line.text;
-  const detailWidth = Math.max(10, width - TOOL_PREVIEW.detailIndent.length);
+  const detailWidth = Math.max(10, width - SUMMARY_BLOCK.detailIndent.length);
+  const title = line.title ?? titleForKind(line.kind);
   const rawLines = content.replace(/\r\n/g, "\n").split("\n");
   const wrapped = rawLines.flatMap((rawLine, index) => {
-    const lineWidth = index === 0 ? width : detailWidth;
+    const lineWidth = index === 0 && !title ? width : detailWidth;
     return wrapAnsi(rawLine, Math.max(10, lineWidth), { hard: true, trim: false }).split("\n");
   });
-  const preview = wrapped.slice(0, TOOL_PREVIEW.maxLines);
-  if (wrapped.length > TOOL_PREVIEW.maxLines && preview.length > 0) {
+  const preview = [title, ...wrapped].filter((value) => value.length > 0).slice(0, SUMMARY_BLOCK.maxLines);
+  if (wrapped.length + (title ? 1 : 0) > SUMMARY_BLOCK.maxLines && preview.length > 0) {
     preview[preview.length - 1] = truncate(preview[preview.length - 1], Math.max(1, detailWidth - 1)) + "…";
   }
+  return preview.length ? preview : [""];
+}
+
+function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
+  const allPreviewLines = renderSummaryLines(line, width);
+  const preview = clipStrings(allPreviewLines, maxLines, skipTop);
   return preview.map((previewLine, index) => {
-    const detail = index > 0;
+    const sourceIndex = skipTop + index;
+    const detail = sourceIndex > 0;
     return e(
       Text,
       {
-        key: `tool-preview-${line.id}-${index}`,
-        color: detail ? toolPreviewDetailColor(index) : colorForKind("tool"),
+        key: `summary-${line.id}-${index}`,
+        color: detail ? "gray" : colorForKind(line.kind),
         dimColor: detail,
+        bold: !detail,
       },
-      detail ? `${TOOL_PREVIEW.detailIndent}${previewLine}` : previewLine,
+      detail ? `${SUMMARY_BLOCK.detailIndent}${previewLine}` : previewLine,
     );
   });
 }
 
-function renderAnsiBlock(text: string, width: number): React.ReactNode[] {
-  const lines = wrapAnsi(text, Math.max(10, width), { hard: true, trim: false }).split("\n");
+function renderAnsiBlock(text: string, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
+  const lines = clipStrings(wrapAnsi(text, Math.max(10, width), { hard: true, trim: false }).split("\n"), maxLines, skipTop);
   return lines.map((line, index) => e(Text, { key: `ansi-${index}` }, ...renderAnsiInline(line)));
 }
 
+function clipStrings(lines: string[], maxLines: number | undefined, skipTop = 0): string[] {
+  const start = Math.max(0, skipTop);
+  if (maxLines === undefined) return lines.slice(start);
+  if (maxLines <= 0) return [];
+  return lines.slice(start, start + maxLines);
+}
 function renderAnsiInline(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   const pattern = /\x1b\[([0-9;]*)m/g;
@@ -447,7 +569,7 @@ function hasAnsi(text: string): boolean {
   return /\x1b\[[0-9;]*m/.test(text);
 }
 
-function StatusBar({ status, logging }: { status: UiStatus; logging: boolean }) {
+function StatusBar({ status, logging, scrollOffset, maxScrollOffset }: { status: UiStatus; logging: boolean; scrollOffset: number; maxScrollOffset: number }) {
   const width = statusBarWidth();
   const model = fixed(truncateMiddle(status.metrics?.model ?? "model?", 20), 20, "left");
   const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
@@ -461,7 +583,8 @@ function StatusBar({ status, logging }: { status: UiStatus; logging: boolean }) 
   const log = logging ? "LOG:on " : "LOG:off";
   const fixedPrefix = `${indicator} ${phaseLabel} | MDL ${model} | IN ${up} | OUT ${down} | CTX ${ctx} | ${log}`;
   const detailWidth = Math.max(0, width - fixedPrefix.length - 3);
-  const detail = detailWidth > 0 ? ` | ${fixed(status.detail ?? "", detailWidth, "left")}` : "";
+  const scrollDetail = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : undefined;
+  const detail = detailWidth > 0 ? ` | ${fixed(scrollDetail ?? status.detail ?? "", detailWidth, "left")}` : "";
   const line = fitToWidth(`${fixedPrefix}${detail}`, width);
   return e(
     Box,
@@ -472,16 +595,15 @@ function StatusBar({ status, logging }: { status: UiStatus; logging: boolean }) 
 
 function PromptLine({ text, cursor, busy, activityTick }: { text: string; cursor: number; busy: boolean; activityTick: number }) {
   const frame = activityTick % WORKING_FRAMES.length;
-  const before = text.slice(0, cursor);
-  const selected = text[cursor] ?? " ";
-  const after = text.slice(cursor + 1);
+  const prompt = busy ? `working${WORKING_FRAMES[frame]}> ` : "agent> ";
+  const view = promptTextView(text, cursor, Math.max(1, terminalColumns() - prompt.length));
   return e(
     Box,
-    null,
-    e(Text, { color: busy ? "gray" : "cyan" }, busy ? `working${WORKING_FRAMES[frame]}> ` : "agent> "),
-    e(Text, null, before),
-    e(Text, { inverse: true }, selected),
-    e(Text, null, after),
+    { height: 1, overflow: "hidden" },
+    e(Text, { color: busy ? "gray" : "cyan" }, prompt),
+    e(Text, null, view.before),
+    e(Text, { inverse: true }, view.selected),
+    e(Text, null, view.after),
   );
 }
 
@@ -492,7 +614,7 @@ async function handleLogCommand(
 ) {
   if (command.off) {
     runtime.communicationLogger.setDirectory(undefined);
-    append({ kind: "system", text: "model communication logging disabled" });
+    append(systemLine("model communication logging disabled"));
     return;
   }
   if (!command.path || !path.isAbsolute(command.path)) {
@@ -501,20 +623,34 @@ async function handleLogCommand(
   }
   await fs.mkdir(command.path, { recursive: true });
   runtime.communicationLogger.setDirectory(command.path);
-  append({ kind: "system", text: `model communication logs: ${path.resolve(command.path)}` });
+  append(systemLine(`model communication logs: ${path.resolve(command.path)}`));
 }
 
 function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number) {
-  if (message.role === "progress" || message.isMeta) return;
+  if (message.metadata?.syntheticToolUse === true) return;
+  if (message.role === "progress" || message.isMeta) {
+    append(formatMetaMessage(message));
+    return;
+  }
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) {
     return;
   }
   for (const block of message.blocks) {
-    if (block.type === "text") append({ kind: kindForRole(message.role), text: block.text });
+    if (block.type === "text") {
+      const kind = kindForRole(message.role);
+      if (kind === "system" || kind === "meta") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
+      else append({ kind, text: block.text });
+    }
     if (block.type === "thinking") continue;
     if (block.type === "tool_result") {
       const formatted = formatToolResult(block.name, block.output, block.ok);
-      append({ kind: block.ok ? "tool" : "error", text: formatted.text, format: formatted.format, previewStyle: "tool" });
+      append({
+        kind: block.ok ? "tool" : "error",
+        title: `Tool result: ${block.name}`,
+        text: formatted.text,
+        format: formatted.format,
+        previewStyle: "summary",
+      });
     }
   }
 }
@@ -549,7 +685,10 @@ async function runLineRepl(runtime: ReplRuntime): Promise<void> {
   console.log("Agent Scaffold REPL");
   console.log("Type /help for commands.");
   const session = runtime.engine.snapshot().session;
-  if (session) console.log(`Session transcript: ${session.transcriptPath}`);
+  if (session) {
+    console.log(`Session transcript: ${session.transcriptPath}`);
+    if (session.resumedMessages > 0) console.log(`Resumed ${session.resumedMessages} messages from ${session.sessionId}.`);
+  }
 
   rl.on("SIGINT", () => {
     if (activeAbortController) {
@@ -574,6 +713,8 @@ async function runLineRepl(runtime: ReplRuntime): Promise<void> {
     if (command.type === "exit") break;
     if (command.type === "help") console.log(helpText);
     else if (command.type === "log") await handleLineLogCommand(command, runtime);
+    else if (command.type === "sessions") await handleLineSessionsCommand(command.limit, runtime);
+    else if (command.type === "resume") await handleLineResumeCommand(command.sessionId, runtime);
     else if (command.type === "reset") {
       runtime.engine.reset();
       console.log("transcript reset");
@@ -606,6 +747,34 @@ async function runLineRepl(runtime: ReplRuntime): Promise<void> {
   rl.close();
 }
 
+async function handleSessionsCommand(limit: number | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number) {
+  const sessions = await runtime.engine.listSessions(limit ?? 10);
+  append(systemLine(formatSessions(sessions)));
+}
+
+async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number) {
+  try {
+    const snapshot = await runtime.engine.resumeSession(sessionId);
+    append(systemLine(formatResume(snapshot)));
+  } catch (error) {
+    append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function handleLineSessionsCommand(limit: number | undefined, runtime: ReplRuntime) {
+  const sessions = await runtime.engine.listSessions(limit ?? 10);
+  console.log(formatSessions(sessions));
+}
+
+async function handleLineResumeCommand(sessionId: string | undefined, runtime: ReplRuntime) {
+  try {
+    const snapshot = await runtime.engine.resumeSession(sessionId);
+    console.log(formatResume(snapshot));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleLineLogCommand(command: Extract<ReturnType<typeof parseReplCommand>, { type: "log" }>, runtime: ReplRuntime) {
   if (command.off) {
     runtime.communicationLogger.setDirectory(undefined);
@@ -622,9 +791,29 @@ async function handleLineLogCommand(command: Extract<ReturnType<typeof parseRepl
 }
 
 function initialLines(runtime: ReplRuntime): UiLine[] {
+  const session = runtime.engine.snapshot().session;
+  const suffix = session
+    ? ` Session: ${session.sessionId}${session.resumedMessages > 0 ? ` (${session.resumedMessages} resumed messages)` : ""}.`
+    : "";
   return [
-    { id: 0, kind: "system", text: "Interactive UI enabled. Type /help for commands." },
+    { id: 0, kind: "system", title: "System", text: `Interactive UI enabled. Type /help for commands.${suffix}`, previewStyle: "summary" },
   ];
+}
+
+function formatSessions(sessions: readonly SessionSummary[]): string {
+  if (sessions.length === 0) return "No saved sessions found.";
+  return [
+    "Saved sessions:",
+    ...sessions.map((session, index) => {
+      const updated = session.updatedAt ? ` · ${session.updatedAt}` : "";
+      return `${index + 1}. ${session.sessionId}${updated} · ${session.messages} messages · ${session.transcriptPath}`;
+    }),
+    "Use /resume <session_id> to restore one.",
+  ].join("\n");
+}
+
+function formatResume(snapshot: SessionStoreSnapshot): string {
+  return `resumed session ${snapshot.sessionId}: ${snapshot.resumedMessages} messages from ${snapshot.transcriptPath}`;
 }
 
 function colorForKind(kind: UiLine["kind"]) {
@@ -651,6 +840,67 @@ function kindForRole(role: Message["role"]): UiLine["kind"] {
   if (role === "progress") return "meta";
   if (role === "system") return "meta";
   return "system";
+}
+
+function titleForKind(kind: UiLine["kind"]): string {
+  if (kind === "tool") return "Tool";
+  if (kind === "error") return "Error";
+  if (kind === "meta") return "Meta";
+  if (kind === "system") return "System";
+  if (kind === "user") return "User";
+  return "Assistant";
+}
+
+function titleForRole(role: Message["role"]): string {
+  if (role === "progress") return "Meta";
+  if (role === "system") return "System";
+  if (role === "tool_result") return "Tool result";
+  return titleForKind(kindForRole(role));
+}
+
+function formatMetaMessage(message: Message): Omit<UiLine, "id"> {
+  const text = message.blocks.map(formatMessageBlockSummary).filter(Boolean).join("\n") || titleForRole(message.role);
+  return {
+    kind: kindForRole(message.role),
+    title: message.metadata?.systemInit ? "System" : titleForRole(message.role),
+    text,
+    previewStyle: "summary",
+  };
+}
+
+function systemLine(text: string): Omit<UiLine, "id"> {
+  return {
+    kind: "system",
+    title: "System",
+    text,
+    previewStyle: "summary",
+  };
+}
+
+function metaLine(text: string): Omit<UiLine, "id"> {
+  return {
+    kind: "meta",
+    title: "Meta",
+    text,
+    previewStyle: "summary",
+  };
+}
+
+function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
+  return {
+    kind: "tool",
+    title: `Tool call: ${toolUse.name}`,
+    text: formatJson(toolUse.input, 1200),
+    previewStyle: "summary",
+  };
+}
+
+function formatMessageBlockSummary(block: Message["blocks"][number]): string {
+  if (block.type === "text") return block.text;
+  if (block.type === "thinking") return block.text;
+  if (block.type === "tool_use") return `Tool call: ${block.name}\n${formatJson(block.input, 1200)}`;
+  if (block.type === "tool_result") return `Tool result: ${block.name}\n${formatJson(block.output, 1200)}`;
+  return "";
 }
 
 function renderWrapped(text: string): string {
@@ -811,25 +1061,44 @@ function trimFixed(value: number): string {
 }
 
 function statusBarWidth(): number {
-  const columns = stdout.columns ?? 100;
-  return Math.max(72, Math.min(columns - 1, 160));
+  const columns = terminalColumns();
+  return Math.max(1, Math.min(columns - 1, 160));
 }
 
+function terminalRows(): number {
+  const rows = stdout.rows ?? 30;
+  return Math.max(8, rows - 1);
+}
+
+function terminalColumns(): number {
+  return stdout.columns ?? 100;
+}
+
+function promptTextView(text: string, cursor: number, width: number): { before: string; selected: string; after: string } {
+  const normalized = text.replace(/\r?\n/g, " ");
+  const safeCursor = Math.max(0, Math.min(cursor, normalized.length));
+  const viewWidth = Math.max(1, width);
+  if (viewWidth === 1) return { before: "", selected: normalized[safeCursor] ?? " ", after: "" };
+  const maxStart = Math.max(0, normalized.length - viewWidth);
+  const start = Math.max(0, Math.min(safeCursor - Math.floor(viewWidth / 2), maxStart));
+  const end = Math.min(normalized.length, start + viewWidth);
+  const visible = normalized.slice(start, end);
+  const visibleCursor = safeCursor - start;
+  let before = visible.slice(0, visibleCursor);
+  const selected = visible[visibleCursor] ?? " ";
+  let after = visible.slice(visibleCursor + 1);
+  if (start > 0 && before.length > 0) before = `…${before.slice(1)}`;
+  if (end < normalized.length && after.length > 0) after = `${after.slice(0, -1)}…`;
+  return { before, selected, after };
+}
+
+const UI_FIXED_ROWS = 6;
+const MAX_UI_LINES = 1000;
 const WORKING_FRAMES = [".  ", ".. ", "..."];
-const TOOL_PREVIEW = {
+const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
-  detailGrayStart: 170,
-  detailGrayEnd: 96,
 };
-
-function toolPreviewDetailColor(lineIndex: number): string {
-  const detailCount = Math.max(1, TOOL_PREVIEW.maxLines - 1);
-  const ratio = Math.min(1, Math.max(0, (lineIndex - 1) / (detailCount - 1 || 1)));
-  const channel = Math.round(TOOL_PREVIEW.detailGrayStart + (TOOL_PREVIEW.detailGrayEnd - TOOL_PREVIEW.detailGrayStart) * ratio);
-  const hex = channel.toString(16).padStart(2, "0");
-  return `#${hex}${hex}${hex}`;
-}
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
   const stripped = stripAnsi(value);
