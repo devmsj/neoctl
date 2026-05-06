@@ -4,7 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { stdin, stdout } from "node:process";
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Text, render, useApp, useInput } from "ink";
+import { Box, Static, Text, render, useApp, useInput } from "ink";
 import figures from "figures";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
@@ -12,6 +12,7 @@ import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
 import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env.js";
 import { readModelProviderConfig } from "../model/config.js";
+import { resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
 import type { ModelUsage } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -31,10 +32,15 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 
 const e = React.createElement;
+const StaticLines = Static as React.ComponentType<{
+  items: UiLine[];
+  children: (line: UiLine, index: number) => React.ReactNode;
+}>;
 
 interface ReplRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
+  initialMetrics: ContextMetrics;
 }
 
 interface UiLine {
@@ -102,12 +108,48 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
-  return { engine, communicationLogger };
+  return { engine, communicationLogger, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
   if (!value) return false;
   return ["1", "true", "yes", "latest"].includes(value.toLowerCase());
+}
+
+function initialContextMetrics(model: string | undefined, messageCount: number, toolCount: number): ContextMetrics {
+  const window = resolveContextWindowTokens(model);
+  return {
+    model,
+    estimatedInputTokens: 0,
+    estimatedChars: 0,
+    messageCount,
+    toolCount,
+    contextWindowTokens: window.tokens,
+    contextWindowSource: window.source,
+    contextUsageRatio: window.tokens ? 0 : undefined,
+    modelMetadata: window.model
+      ? {
+          id: window.model.id,
+          provider: window.model.provider,
+          maxOutputTokens: window.model.maxOutputTokens,
+          knowledgeCutoff: window.model.knowledgeCutoff,
+          reasoning: window.model.reasoning,
+          source: window.model.source,
+        }
+      : undefined,
+  };
+}
+
+function initialStatus(runtime: ReplRuntime): UiStatus {
+  return {
+    phase: "ready",
+    metrics: {
+      ...runtime.initialMetrics,
+      messageCount: runtime.engine.snapshot().messages,
+    },
+    streamedOutputTokens: 0,
+    activityTick: 0,
+  };
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -117,22 +159,45 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
-  const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
+  const [staticLines, setStaticLines] = useState<UiLine[]>(() => initialLines(runtime));
+  const [liveLines, setLiveLines] = useState<UiLine[]>([]);
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
   const [historyIndex, setHistoryIndex] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<UiStatus>({ phase: "ready", streamedOutputTokens: 0, activityTick: 0 });
+  const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [animationTick, setAnimationTick] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return undefined;
+    const interval = setInterval(() => setAnimationTick((current) => current + 1), 220);
+    return () => clearInterval(interval);
+  }, [busy]);
 
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
-    setLines((current) => [...current, { id, ...line }].slice(-MAX_UI_LINES));
+    const next = { id, ...line };
+    if (line.kind === "assistant" && line.text.length === 0) {
+      setLiveLines((current) => [...current, next]);
+    } else {
+      setStaticLines((current) => [...current, next]);
+    }
     return id;
   };
 
   const updateLine = (id: number, updater: (text: string) => string) => {
-    setLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
+    setLiveLines((current) => current.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line));
+  };
+
+  const finalizeLiveLine = (id: number | undefined) => {
+    if (id === undefined) return;
+    setLiveLines((current) => {
+      const finalized = current.find((line) => line.id === id);
+      if (!finalized) return current;
+      setStaticLines((existing) => [...existing, finalized]);
+      return current.filter((line) => line.id !== id);
+    });
   };
 
   const handleEvent = (event: AgentEvent) => {
@@ -156,6 +221,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "tool.finished") return;
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
+      finalizeLiveLine(assistantLineId.current);
       assistantLineId.current = undefined;
       return;
     }
@@ -187,6 +253,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (command.type === "reset") {
       runtime.engine.reset();
+      setStatus(initialStatus(runtime));
       append(systemLine("transcript reset"));
       return;
     }
@@ -199,7 +266,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "resume") {
-      await handleResumeCommand(command.sessionId, runtime, (line) => append(line));
+      const resumed = await handleResumeCommand(command.sessionId, runtime, (line) => append(line));
+      if (resumed) setStatus(initialStatus(runtime));
       return;
     }
     if (command.type === "log") {
@@ -229,7 +297,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   useEffect(() => {
-    setLines(initialLines(runtime));
+    setStaticLines(initialLines(runtime));
+    setLiveLines([]);
+    setStatus(initialStatus(runtime));
     setScrollOffset(0);
   }, [runtime]);
 
@@ -237,8 +307,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const messageViewportHeight = Math.max(1, terminalRows() - UI_FIXED_ROWS);
   const contentWidth = Math.max(40, width - 16);
   const toolWidth = Math.max(40, width - 2);
-  const maxScrollOffset = maxScrollForLines(lines, messageViewportHeight, contentWidth, toolWidth);
-  const effectiveScrollOffset = Math.min(scrollOffset, maxScrollOffset);
+  const liveContentHeight = totalUiLinesHeight(liveLines, contentWidth, toolWidth);
+  const liveOutputHeight = liveContentHeight > LIVE_OUTPUT_ROWS ? Math.min(messageViewportHeight, LIVE_OUTPUT_ROWS) : undefined;
+  const maxScrollOffset = 0;
+  const effectiveScrollOffset = 0;
   const scrollPage = Math.max(1, messageViewportHeight - 1);
 
   useEffect(() => {
@@ -337,10 +409,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   return e(
     Box,
     { flexDirection: "column" },
+    e(StaticLines, {
+      items: staticLines,
+      children: (line) => e(MessageList, { key: `static-${line.id}`, lines: [line], scrollOffset: 0 }),
+    }),
     e(Header, { runtime }),
-    e(MessageList, { lines, height: scrollOffset > 0 ? messageViewportHeight : undefined, scrollOffset: effectiveScrollOffset }),
-    e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset }),
-    e(PromptLine, { text: input, cursor, busy, activityTick: status.activityTick }),
+    e(MessageList, { lines: liveLines, height: liveOutputHeight, scrollOffset: effectiveScrollOffset }),
+    e(StatusBar, { status, logging: runtime.communicationLogger.snapshot().enabled, scrollOffset: effectiveScrollOffset, maxScrollOffset, animationTick }),
+    e(PromptLine, { text: input, cursor, busy, animationTick }),
   );
 }
 
@@ -402,7 +478,7 @@ function selectVisibleLines(lines: UiLine[], maxHeight: number, contentWidth: nu
   let lineStart = 0;
 
   for (const line of lines) {
-    const displayWidth = line.kind === "tool" ? toolWidth : contentWidth;
+    const displayWidth = displayWidthForLine(line, contentWidth, toolWidth);
     const lineHeight = estimateUiLineHeight(line, displayWidth);
     const lineEnd = lineStart + lineHeight;
     const visibleStart = Math.max(lineStart, viewportStart);
@@ -422,7 +498,11 @@ function maxScrollForLines(lines: UiLine[], maxHeight: number, contentWidth: num
 }
 
 function totalUiLinesHeight(lines: UiLine[], contentWidth: number, toolWidth: number): number {
-  return lines.reduce((total, line) => total + estimateUiLineHeight(line, line.kind === "tool" ? toolWidth : contentWidth), 0);
+  return lines.reduce((total, line) => total + estimateUiLineHeight(line, displayWidthForLine(line, contentWidth, toolWidth)), 0);
+}
+
+function displayWidthForLine(line: UiLine, contentWidth: number, toolWidth: number): number {
+  return line.previewStyle === "summary" || line.kind === "tool" ? toolWidth : contentWidth;
 }
 
 function estimateUiLineHeight(line: UiLine, width: number): number {
@@ -569,32 +649,40 @@ function hasAnsi(text: string): boolean {
   return /\x1b\[[0-9;]*m/.test(text);
 }
 
-function StatusBar({ status, logging, scrollOffset, maxScrollOffset }: { status: UiStatus; logging: boolean; scrollOffset: number; maxScrollOffset: number }) {
+function StatusBar(
+  { status, logging, scrollOffset, maxScrollOffset, animationTick }:
+  { status: UiStatus; logging: boolean; scrollOffset: number; maxScrollOffset: number; animationTick: number },
+) {
   const width = statusBarWidth();
-  const model = fixed(truncateMiddle(status.metrics?.model ?? "model?", 20), 20, "left");
+  const phase = status.phase;
+  const phaseWord = fixed(animatedPhaseLabel(phase, animationTick), 12, "left");
+  const modelWidth = width >= 120 ? 24 : 18;
+  const model = fixed(truncateMiddle(status.metrics?.model ?? "model?", modelWidth), modelWidth, "left");
   const inputTokens = status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
   const outputTokens = status.usage?.outputTokens ?? status.streamedOutputTokens;
-  const phase = status.phase;
-  const indicator = fixed(statusIndicator(phase), 3);
-  const phaseLabel = fixed(phaseLabelForStatus(phase), 10, "left");
   const up = fixed(compactNumber(inputTokens), 7, "left");
   const down = fixed(compactNumber(outputTokens), 7, "left");
   const ctx = fixed(renderContext(status.metrics), 20, "left");
-  const log = logging ? "LOG:on " : "LOG:off";
-  const fixedPrefix = `${indicator} ${phaseLabel} | MDL ${model} | IN ${up} | OUT ${down} | CTX ${ctx} | ${log}`;
+  const meter = contextMeter(status.metrics, 10);
+  const log = logging ? "log on " : "log off";
+  const fixedPrefix = `${phaseWord} ${meter}  model ${model}  in ${up} out ${down} ctx ${ctx}  ${log}`;
   const detailWidth = Math.max(0, width - fixedPrefix.length - 3);
   const scrollDetail = scrollOffset > 0 ? `scroll ${scrollOffset}/${maxScrollOffset} PgUp/PgDn Ctrl+End` : undefined;
-  const detail = detailWidth > 0 ? ` | ${fixed(scrollDetail ?? status.detail ?? "", detailWidth, "left")}` : "";
+  const detail = detailWidth > 0 ? ` - ${fixed(scrollDetail ?? status.detail ?? "", detailWidth, "left")}` : "";
   const line = fitToWidth(`${fixedPrefix}${detail}`, width);
+  const accentWidth = Math.min(line.length, phaseWord.length);
+  const accent = line.slice(0, accentWidth);
+  const rest = line.slice(accentWidth);
   return e(
     Box,
-    { marginTop: 1, width },
-    e(Text, { inverse: true }, line),
+    { marginTop: 1, width, height: 1, overflow: "hidden" },
+    e(Text, { bold: true, color: phaseColor(phase) }, accent),
+    e(Text, { color: "gray" }, rest),
   );
 }
 
-function PromptLine({ text, cursor, busy, activityTick }: { text: string; cursor: number; busy: boolean; activityTick: number }) {
-  const frame = activityTick % WORKING_FRAMES.length;
+function PromptLine({ text, cursor, busy, animationTick }: { text: string; cursor: number; busy: boolean; animationTick: number }) {
+  const frame = animationTick % WORKING_FRAMES.length;
   const prompt = busy ? `working${WORKING_FRAMES[frame]}> ` : "agent> ";
   const view = promptTextView(text, cursor, Math.max(1, terminalColumns() - prompt.length));
   return e(
@@ -752,12 +840,14 @@ async function handleSessionsCommand(limit: number | undefined, runtime: ReplRun
   append(systemLine(formatSessions(sessions)));
 }
 
-async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number) {
+async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<boolean> {
   try {
     const snapshot = await runtime.engine.resumeSession(sessionId);
     append(systemLine(formatResume(snapshot)));
+    return true;
   } catch (error) {
     append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    return false;
   }
 }
 
@@ -1027,17 +1117,10 @@ function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 }
 
-function statusIndicator(phase: string): string {
-  if (phase === "ready") return "[=]";
-  if (phase === "calling_model") return "[>]";
-  if (phase === "running_tools") return "[*]";
-  if (phase === "compacting") return "[#]";
-  if (phase === "preparing") return "[.]";
-  if (phase === "injecting_context") return "[+]";
-  if (phase === "stopped") return "[-]";
-  if (phase === "running") return "[*]";
-  if (phase === "failed") return "[x]";
-  return "[~]";
+function animatedPhaseLabel(phase: string, tick: number): string {
+  const label = phaseLabelForStatus(phase).toUpperCase();
+  if (!isActivePhase(phase)) return label;
+  return `${label}${STATUS_PULSE_FRAMES[tick % STATUS_PULSE_FRAMES.length]}`;
 }
 
 function phaseLabelForStatus(phase: string): string {
@@ -1045,6 +1128,31 @@ function phaseLabelForStatus(phase: string): string {
   if (phase === "running_tools") return "tools";
   if (phase === "injecting_context") return "context";
   return phase;
+}
+
+function isActivePhase(phase: string): boolean {
+  return phase === "running" ||
+    phase === "preparing" ||
+    phase === "calling_model" ||
+    phase === "running_tools" ||
+    phase === "compacting" ||
+    phase === "injecting_context";
+}
+
+function phaseColor(phase: string): string {
+  if (phase === "ready") return "green";
+  if (phase === "stopped") return "yellow";
+  if (phase === "failed") return "red";
+  if (phase === "running_tools") return "#d4b04c";
+  if (phase === "compacting" || phase === "injecting_context") return "magenta";
+  return "cyan";
+}
+
+function contextMeter(metrics: ContextMetrics | undefined, width: number): string {
+  if (!metrics || metrics.contextUsageRatio === undefined) return `[${"-".repeat(width)}]`;
+  const ratio = Math.max(0, Math.min(1, metrics.contextUsageRatio));
+  const filled = Math.min(width, Math.max(0, Math.round(ratio * width)));
+  return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
 }
 
 function compactNumber(value: number | undefined): string {
@@ -1093,8 +1201,9 @@ function promptTextView(text: string, cursor: number, width: number): { before: 
 }
 
 const UI_FIXED_ROWS = 6;
-const MAX_UI_LINES = 1000;
+const LIVE_OUTPUT_ROWS = 12;
 const WORKING_FRAMES = [".  ", ".. ", "..."];
+const STATUS_PULSE_FRAMES = ["", ".", "..", "..."];
 const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",

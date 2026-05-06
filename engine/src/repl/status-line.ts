@@ -10,6 +10,7 @@ export class ReplStatusLine {
   private lastUsage?: ModelUsage;
   private outputTokensStreamed = 0;
   private visible = false;
+  private pulseFrame = 0;
 
   constructor(private readonly output: Writable & { isTTY?: boolean }) {}
 
@@ -59,17 +60,19 @@ export class ReplStatusLine {
     const context = renderContext(this.metrics);
     const model = this.metrics?.model ?? "model?";
     const source = this.metrics?.contextWindowSource ?? "unknown";
-    const detail = this.lastDetail ? ` ${this.lastDetail}` : "";
+    const detail = this.lastDetail ? ` - ${this.lastDetail}` : "";
     const width = terminalWidth(this.output);
+    const label = animatedPhaseLabel(this.phase, this.pulseFrame);
+    if (isActivePhase(this.phase)) this.pulseFrame += 1;
     const fixedPrefix = [
-      statusIndicator(this.phase),
-      fixed(phaseLabel(this.phase), 10, "left"),
-      `MDL ${fixed(truncateMiddle(model, 20), 20, "left")}`,
-      `IN ${fixed(formatCompact(input), 7, "left")}`,
-      `OUT ${fixed(formatCompact(output), 7, "left")}`,
-      `CTX ${fixed(context, 20, "left")}`,
-      `SRC ${fixed(source, 7, "left")}`,
-    ].join(" | ");
+      fixed(label, 12, "left"),
+      contextMeter(this.metrics, 10),
+      `model ${fixed(truncateMiddle(model, 20), 20, "left")}`,
+      `in ${fixed(formatCompact(input), 7, "left")}`,
+      `out ${fixed(formatCompact(output), 7, "left")}`,
+      `ctx ${fixed(context, 20, "left")}`,
+      `src ${fixed(source, 7, "left")}`,
+    ].join("  ");
     return fitToWidth(`${fixedPrefix}${detail}`, width);
   }
 }
@@ -105,16 +108,10 @@ function terminalWidth(output: Writable & { columns?: number }): number {
   return Math.max(72, Math.min(output.columns ?? 100, 160)) - 1;
 }
 
-function statusIndicator(phase: string): string {
-  if (phase === "ready") return "[=]";
-  if (phase === "calling_model") return "[>]";
-  if (phase === "running_tools") return "[*]";
-  if (phase === "compacting") return "[#]";
-  if (phase === "preparing") return "[.]";
-  if (phase === "injecting_context") return "[+]";
-  if (phase === "stopped") return "[-]";
-  if (phase === "failed") return "[x]";
-  return "[~]";
+function animatedPhaseLabel(phase: string, tick: number): string {
+  const label = phaseLabel(phase).toUpperCase();
+  if (!isActivePhase(phase)) return label;
+  return `${label}${STATUS_PULSE_FRAMES[tick % STATUS_PULSE_FRAMES.length]}`;
 }
 
 function phaseLabel(phase: string): string {
@@ -122,6 +119,22 @@ function phaseLabel(phase: string): string {
   if (phase === "running_tools") return "tools";
   if (phase === "injecting_context") return "context";
   return phase;
+}
+
+function isActivePhase(phase: string): boolean {
+  return phase === "running" ||
+    phase === "preparing" ||
+    phase === "calling_model" ||
+    phase === "running_tools" ||
+    phase === "compacting" ||
+    phase === "injecting_context";
+}
+
+function contextMeter(metrics: ContextMetrics | undefined, width: number): string {
+  if (!metrics || metrics.contextUsageRatio === undefined) return `[${"-".repeat(width)}]`;
+  const ratio = Math.max(0, Math.min(1, metrics.contextUsageRatio));
+  const filled = Math.min(width, Math.max(0, Math.round(ratio * width)));
+  return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
 }
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
@@ -142,3 +155,5 @@ function truncateMiddle(value: string, maxLength: number): string {
   const right = Math.floor((maxLength - 3) / 2);
   return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
 }
+
+const STATUS_PULSE_FRAMES = ["", ".", "..", "..."];

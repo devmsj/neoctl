@@ -25,7 +25,19 @@ interface RenderedLine {
 
 const tokenCache = new Map<string, Promise<Segment[][]>>();
 
-export function MarkdownText({ text, kind, width }: { text: string; kind: MarkdownLineKind; width: number }) {
+export function MarkdownText({
+  text,
+  kind,
+  width,
+  maxLines,
+  skipLines = 0,
+}: {
+  text: string;
+  kind: MarkdownLineKind;
+  width: number;
+  maxLines?: number;
+  skipLines?: number;
+}) {
   const [lines, setLines] = useState<RenderedLine[] | undefined>();
 
   useEffect(() => {
@@ -43,14 +55,12 @@ export function MarkdownText({ text, kind, width }: { text: string; kind: Markdo
     };
   }, [text, kind, width]);
 
-  if (!lines) {
-    return e(Text, { color: kind === "meta" ? "gray" : undefined }, text || "");
-  }
+  const renderedLines = clipRenderedLines(lines ?? renderPlainMarkdownPreview(text, kind, width), maxLines, skipLines);
 
   return e(
     Box,
     { flexDirection: "column" },
-    ...lines.map((line, lineIndex) =>
+    ...renderedLines.map((line, lineIndex) =>
       e(
         Text,
         { key: `md-line-${lineIndex}`, color: line.color ?? (kind === "meta" ? "gray" : undefined) },
@@ -74,6 +84,9 @@ export function MarkdownText({ text, kind, width }: { text: string; kind: Markdo
   );
 }
 
+export function estimateMarkdownLineCount(markdown: string, width: number): number {
+  return renderPlainMarkdownPreview(markdown, "assistant", width).length;
+}
 async function renderMarkdownToLines(markdown: string, kind: MarkdownLineKind, width: number): Promise<RenderedLine[]> {
   const normalized = normalizeIndentedFences(markdown.replace(/\r\n/g, "\n"));
   const tokens = Lexer.lex(normalized, { gfm: true });
@@ -143,6 +156,25 @@ async function appendToken(lines: RenderedLine[], token: Token, kind: MarkdownLi
   }
 }
 
+function renderPlainMarkdownPreview(markdown: string, kind: MarkdownLineKind, width: number): RenderedLine[] {
+  const plainSegments = markdown
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .flatMap((line, index, all) => index === all.length - 1 ? [{ text: line }] : [{ text: line }, { text: "\n" }]);
+  const rendered = wrapSegments(plainSegments, Math.max(10, width)).map((segments) => ({
+    segments: segments.length ? segments : [{ text: "" }],
+    color: kind === "error" ? "red" : undefined,
+  }));
+  return rendered.length ? rendered : [{ segments: [{ text: "" }] }];
+}
+
+function clipRenderedLines(lines: RenderedLine[], maxLines: number | undefined, skipLines = 0): RenderedLine[] {
+  const start = Math.max(0, skipLines);
+  if (maxLines === undefined) return lines.slice(start);
+  if (maxLines <= 0) return [];
+  return lines.slice(start, start + maxLines);
+}
+
 function appendWrapped(lines: RenderedLine[], segments: Segment[], width: number, kind: MarkdownLineKind): void {
   const wrapped = wrapSegments(segments, width);
   for (const line of wrapped) {
@@ -154,12 +186,11 @@ async function appendCode(lines: RenderedLine[], token: Tokens.Code, width: numb
   const language = normalizeLanguage(token.lang ?? "");
   const highlighted = await highlightCode(token.text, language);
   for (const line of highlighted) {
-    lines.push({
-      segments: line.length ? line : [{ text: " " }],
-    });
+    for (const wrapped of wrapSegments(line.length ? line : [{ text: " " }], width)) {
+      lines.push({ segments: wrapped.length ? wrapped : [{ text: " " }] });
+    }
   }
 }
-
 async function appendList(lines: RenderedLine[], token: Tokens.List, kind: MarkdownLineKind, width: number): Promise<void> {
   let number = typeof token.start === "number" ? token.start : 1;
   for (const item of token.items) {
@@ -195,7 +226,7 @@ function appendTable(lines: RenderedLine[], token: Tokens.Table, width: number):
   const renderRow = (cells: Tokens.TableCell[]) => cells.map((cell) => plainFromInline(cell.tokens)).join("  |  ");
   const rows = [renderRow(token.header), ...token.rows.map(renderRow)];
   for (const row of rows) {
-    lines.push({ segments: [{ text: truncate(row, width), color: "gray" }] });
+    lines.push({ segments: [{ text: truncateDisplayWidth(row, width), color: "gray" }] });
   }
 }
 
@@ -273,7 +304,8 @@ function wrapSegments(segments: Segment[], width: number): Segment[][] {
         continue;
       }
       for (const char of [...part]) {
-        if (used >= max) {
+        const charWidth = displayWidth(char);
+        if (used > 0 && used + charWidth > max) {
           lines.push([]);
           used = 0;
         }
@@ -284,7 +316,7 @@ function wrapSegments(segments: Segment[], width: number): Segment[][] {
         } else {
           current.push({ ...segment, text: char });
         }
-        used += 1;
+        used += charWidth;
       }
     }
   }
@@ -401,6 +433,62 @@ function normalizeIndentedFences(markdown: string): string {
   return result.join("\n");
 }
 
-function truncate(value: string, maxLength: number): string {
-  return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+function truncateDisplayWidth(value: string, maxWidth: number): string {
+  if (stringDisplayWidth(value) <= maxWidth) return value;
+  const ellipsis = "...";
+  const limit = Math.max(0, maxWidth - stringDisplayWidth(ellipsis));
+  let used = 0;
+  let result = "";
+  for (const char of [...value]) {
+    const charWidth = displayWidth(char);
+    if (used + charWidth > limit) break;
+    result += char;
+    used += charWidth;
+  }
+  return `${result}${ellipsis}`;
+}
+
+function stringDisplayWidth(value: string): number {
+  let width = 0;
+  for (const char of [...value]) width += displayWidth(char);
+  return width;
+}
+
+function displayWidth(char: string): number {
+  const codePoint = char.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint === 0) return 0;
+  if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0;
+  if (isCombiningMark(codePoint)) return 0;
+  return isFullWidthCodePoint(codePoint) ? 2 : 1;
+}
+
+function isCombiningMark(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+    (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
+  );
+}
+
+function isFullWidthCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    )
+  );
 }
