@@ -117,6 +117,7 @@ interface UiLine {
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
   title?: string;
+  titleStatus?: "success" | "failure";
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
   summaryMaxLines?: number;
@@ -264,6 +265,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
   const toolLineIds = useRef(new Map<string, number>());
+  const pendingToolResultTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -334,13 +336,38 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, []);
 
   const replaceLine = (id: number, patch: Partial<UiLine>) => {
-    setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
+    setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch, renderedKey: undefined } : line));
   };
 
   const finalizeLiveLine = (id: number | undefined) => {
     if (id === undefined) return;
     setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
   };
+
+  const cancelPendingToolResultTimer = (toolUseId: string) => {
+    const timer = pendingToolResultTimers.current.get(toolUseId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    pendingToolResultTimers.current.delete(toolUseId);
+  };
+
+  const scheduleToolResultReplacement = (toolUseId: string, lineId: number, line: Omit<UiLine, "id">) => {
+    cancelPendingToolResultTimer(toolUseId);
+    const timer = setTimeout(() => {
+      pendingToolResultTimers.current.delete(toolUseId);
+      replaceLine(lineId, line);
+    }, TOOL_RESULT_REPLACEMENT_DELAY_MS);
+    pendingToolResultTimers.current.set(toolUseId, timer);
+  };
+
+  const clearPendingToolResultTimers = () => {
+    for (const timer of pendingToolResultTimers.current.values()) clearTimeout(timer);
+    pendingToolResultTimers.current.clear();
+  };
+
+  useEffect(() => {
+    return () => clearPendingToolResultTimers();
+  }, []);
 
   const finalizeActiveToolLines = () => {
     for (const id of toolLineIds.current.values()) finalizeLiveLine(id);
@@ -385,7 +412,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         }
       }
       if (event.message.role === "tool_result") {
-        renderToolResultMessage(event.message, append, replaceLine, toolLineIds.current);
+        renderToolResultMessage(event.message, append, replaceLine, toolLineIds.current, scheduleToolResultReplacement);
         return;
       }
       if (event.message.role !== "assistant") {
@@ -415,7 +442,6 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       const id = toolLineIds.current.get(event.toolUse.id);
       if (id !== undefined) {
         replaceLine(id, formatToolFinishedWithoutResult(event.toolUse, event.ok));
-        toolLineIds.current.delete(event.toolUse.id);
       }
       return;
     }
@@ -535,6 +561,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
     toolLineIds.current.clear();
+    clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
   }, [runtime]);
 
@@ -765,7 +792,7 @@ function renderDisplayText(
 function renderSummaryLines(line: UiLine, width: number): string[] {
   const content = line.text;
   const detailWidth = Math.max(10, width - SUMMARY_BLOCK.detailIndent.length);
-  const title = line.title ?? titleForKind(line.kind);
+  const title = summaryTitle(line);
   const rawLines = content.replace(/\r\n/g, "\n").split("\n");
   const wrapped = rawLines.flatMap((rawLine, index) => {
     const lineWidth = index === 0 && !title ? width : detailWidth;
@@ -779,6 +806,20 @@ function renderSummaryLines(line: UiLine, width: number): string[] {
   return preview.length ? preview : [""];
 }
 
+function summaryTitle(line: UiLine): string {
+  const title = line.title ?? titleForKind(line.kind);
+  if (!line.titleStatus) return title;
+  return `${title} ${titleStatusMarker(line.titleStatus)}`;
+}
+
+function titleStatusMarker(status: NonNullable<UiLine["titleStatus"]>): string {
+  return status === "success" ? "✓" : "✗";
+}
+
+function titleStatusColor(status: NonNullable<UiLine["titleStatus"]>): string {
+  return status === "success" ? "green" : "red";
+}
+
 function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
   const allPreviewLines = renderSummaryLines(line, width);
   const preview = clipStrings(allPreviewLines, maxLines, skipTop);
@@ -786,6 +827,21 @@ function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skip
     const sourceIndex = skipTop + index;
     const detail = sourceIndex > 0;
     const text = detail ? `${SUMMARY_BLOCK.detailIndent}${previewLine}` : previewLine;
+    if (!detail && line.titleStatus) {
+      const marker = titleStatusMarker(line.titleStatus);
+      const markerSuffix = ` ${marker}`;
+      const titleText = text.endsWith(markerSuffix) ? text.slice(0, -marker.length) : `${text} `;
+      return e(
+        Text,
+        {
+          key: `summary-${line.id}-${index}`,
+          color: colorForKind(line.kind),
+          bold: true,
+        },
+        titleText,
+        e(Text, { color: titleStatusColor(line.titleStatus), bold: true }, marker),
+      );
+    }
     if (line.format === "ansi") {
       const baseStyle: AnsiStyle = detail
         ? { color: "gray", dimColor: true }
@@ -1068,6 +1124,7 @@ function renderToolResultMessage(
   append: (line: Omit<UiLine, "id">) => number,
   replaceLine: (id: number, patch: Partial<UiLine>) => void,
   activeToolLineIds: Map<string, number>,
+  scheduleReplacement: (toolUseId: string, lineId: number, line: Omit<UiLine, "id">) => void,
 ): boolean {
   let rendered = false;
   for (const block of message.blocks) {
@@ -1077,8 +1134,14 @@ function renderToolResultMessage(
     if (id === undefined) {
       append(line);
     } else {
-      replaceLine(id, line);
+      replaceLine(id, {
+        kind: line.kind,
+        title: toolTitle(block.name, "finished"),
+        titleStatus: block.ok ? "success" : "failure",
+        live: false,
+      });
       activeToolLineIds.delete(block.toolUseId);
+      scheduleReplacement(block.toolUseId, id, line);
     }
     rendered = true;
   }
@@ -1299,6 +1362,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   const line: Omit<UiLine, "id"> = {
     kind: ok ? "tool" : "error",
     title: toolTitle(toolName, "finished"),
+    titleStatus: ok ? "success" : "failure",
     text: formatted.text,
     format: formatted.format,
     live: false,
@@ -1317,6 +1381,7 @@ function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): 
   return {
     kind: ok ? "tool" : "error",
     title: toolTitle(toolUse.name, "finished"),
+    titleStatus: ok ? "success" : "failure",
     text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed",
     previewStyle: "summary",
     live: false,
@@ -1923,6 +1988,7 @@ function isFullWidthCodePoint(codePoint: number): boolean {
 }
 
 const REPL_ANIMATION_INTERVAL_MS = 420;
+const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
 const TOKEN_PULSE_MS = 900;
 const STATUS_BLINK_TICKS = 2;
 const STATUS_SHIMMER_GAP_TICKS = 3;
