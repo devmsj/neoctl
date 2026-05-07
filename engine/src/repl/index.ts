@@ -24,7 +24,7 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
-import { parseReplCommand, helpText } from "./commands.js";
+import { parseReplCommand, helpText, replCommandDefinitions } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
@@ -280,6 +280,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const cursorRef = useRef(cursor);
   const busyRef = useRef(busy);
   const historyIndexRef = useRef<number | undefined>(undefined);
+  const slashCompletionIndexRef = useRef(0);
+  const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
 
   useEffect(() => {
     if (!busy && backgroundTaskCount === 0) return undefined;
@@ -293,10 +295,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     return runtime.taskStore.subscribe(updateBackgroundTaskCount);
   }, [runtime]);
 
-  const setPromptState = (text: string, nextCursor: number) => {
+  const setPromptState = (text: string, nextCursor: number, options?: { preserveSlashCompletionSelection?: boolean }) => {
     const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
     inputRef.current = text;
     cursorRef.current = safeCursor;
+    if (!options?.preserveSlashCompletionSelection) resetSlashCompletionSelection();
     setInput(text);
     setCursor(safeCursor);
   };
@@ -304,6 +307,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const setHistorySelection = (next: number | undefined) => {
     historyIndexRef.current = next;
   };
+
+  const setSlashCompletionSelection = (next: number) => {
+    const safeIndex = Math.max(0, next);
+    slashCompletionIndexRef.current = safeIndex;
+    setSlashCompletionIndex(safeIndex);
+  };
+
+  const resetSlashCompletionSelection = () => setSlashCompletionSelection(0);
 
   const setBusyState = (next: boolean) => {
     busyRef.current = next;
@@ -576,7 +587,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
-  const promptHeight = promptTextView(input, cursor, width, prompt).length;
+  const slashCompletions = slashCommandCompletions(input, cursor);
+  const visibleSlashCompletionCount = Math.min(slashCompletions.length, SLASH_COMPLETION_MAX_ROWS);
+  const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
+    ? 0
+    : Math.min(slashCompletionIndex, visibleSlashCompletionCount - 1);
+  if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
+    slashCompletionIndexRef.current = selectedSlashCompletionIndex;
+  }
+  const promptHeight = promptTextView(input, cursor, width, prompt).length + slashCompletionViewHeight(slashCompletions);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
@@ -632,6 +651,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (key.upArrow) {
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      if (completionCount > 0) {
+        setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - 1) % completionCount);
+        return;
+      }
       const next = Math.min(history.current.length - 1, (historyIndexRef.current ?? -1) + 1);
       if (next >= 0 && history.current[next] !== undefined) {
         setHistorySelection(next);
@@ -640,6 +664,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (key.downArrow) {
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      if (completionCount > 0) {
+        setSlashCompletionSelection((slashCompletionIndexRef.current + 1) % completionCount);
+        return;
+      }
       if (historyIndexRef.current === undefined) return;
       const next = historyIndexRef.current - 1;
       if (next < 0) {
@@ -652,7 +681,17 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       }
       return;
     }
-    if (key.tab) return;
+    if (key.tab) {
+      const currentText = inputRef.current;
+      const currentCursor = cursorRef.current;
+      const completions = slashCommandCompletions(currentText, currentCursor);
+      const completion = completions[Math.min(slashCompletionIndexRef.current, completions.length - 1)];
+      if (completion !== undefined) {
+        const nextText = `${completion.name}${currentText.slice(currentCursor)}`;
+        setPromptState(nextText, completion.name.length);
+      }
+      return;
+    }
     if (value && !key.ctrl && !key.meta) {
       const currentText = inputRef.current;
       const currentCursor = cursorRef.current;
@@ -667,7 +706,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     e(StatusBar, { status, animationTick, width }),
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
-    e(PromptLine, { text: input, cursor, busy, width, prompt }),
+    e(PromptLine, { text: input, cursor, busy, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
   );
 }
 
@@ -1061,9 +1100,37 @@ function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegm
   return fitted;
 }
 
+const SLASH_COMPLETION_MAX_ROWS = 8;
+
+interface SlashCommandCompletion {
+  name: string;
+  description: string;
+}
+
+function slashCommandCompletions(text: string, cursor: number): SlashCommandCompletion[] {
+  const safeCursor = Math.max(0, Math.min(cursor, text.length));
+  const prefix = text.slice(0, safeCursor);
+  if (!prefix.startsWith("/") || /\r|\n/.test(prefix)) return [];
+  if (/^\s/.test(prefix) || text.slice(0, 1) !== "/") return [];
+  if (prefix.length > 1 && !/^\/[\w-]*(?:\s[\w-]*)?$/.test(prefix)) return [];
+
+  const normalizedPrefix = prefix.toLowerCase();
+  return replCommandDefinitions
+    .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ name, description: command.description })))
+    .filter((command) => command.name.toLowerCase().startsWith(normalizedPrefix));
+}
+
+function slashCompletionViewHeight(completions: SlashCommandCompletion[]): number {
+  return Math.min(completions.length, SLASH_COMPLETION_MAX_ROWS);
+}
+
+function slashCompletionSelectableCount(text: string, cursor: number): number {
+  return Math.min(slashCommandCompletions(text, cursor).length, SLASH_COMPLETION_MAX_ROWS);
+}
+
 function PromptLine(
-  { text, cursor, busy, width, prompt }:
-  { text: string; cursor: number; busy: boolean; width: number; prompt: string },
+  { text, cursor, busy, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
+  { text: string; cursor: number; busy: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
 ) {
   const visualLines = promptTextView(text, cursor, width, prompt);
   return e(
@@ -1071,13 +1138,41 @@ function PromptLine(
     { flexDirection: "column" },
     ...visualLines.map((line, index) => e(
       Box,
-      { key: index, height: 1, overflow: "hidden" },
+      { key: `prompt-${index}`, height: 1, overflow: "hidden" },
       e(Text, { color: busy ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
       e(Text, null, line.before),
       e(Text, { inverse: true }, line.selected),
       e(Text, null, line.after),
     )),
+    ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
   );
+}
+
+function SlashCompletionLines(
+  { completions, width, prompt, selectedIndex }:
+  { completions: SlashCommandCompletion[]; width: number; prompt: string; selectedIndex: number },
+): React.ReactNode[] {
+  if (completions.length === 0) return [];
+  const visibleCompletions = completions.slice(0, SLASH_COMPLETION_MAX_ROWS);
+  const safeSelectedIndex = Math.max(0, Math.min(selectedIndex, visibleCompletions.length - 1));
+  const contentWidth = Math.max(10, width - prompt.length);
+  const nameWidth = Math.min(18, Math.max(...visibleCompletions.map((completion) => completion.name.length)));
+  return visibleCompletions.map((completion, index) => {
+    const selected = index === safeSelectedIndex;
+    const suffix = selected ? "  Tab to complete" : "";
+    const descriptionWidth = Math.max(0, contentWidth - nameWidth - 6 - suffix.length);
+    const description = fitToWidth(completion.description, descriptionWidth);
+    return e(
+      Box,
+      { key: `slash-completion-${completion.name}`, height: 1, overflow: "hidden" },
+      e(Text, { color: "gray" }, " ".repeat(prompt.length)),
+      e(Text, { color: selected ? "cyanBright" : "gray" }, selected ? "› " : "  "),
+      e(Text, { color: selected ? "cyanBright" : "cyan", inverse: selected }, completion.name.padEnd(nameWidth)),
+      e(Text, { color: "gray" }, "  "),
+      e(Text, { color: selected ? "white" : "gray" }, description),
+      suffix ? e(Text, { color: "gray" }, suffix) : null,
+    );
+  });
 }
 
 async function handleLogCommand(

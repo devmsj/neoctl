@@ -9,6 +9,25 @@ export type ReplCommand =
   | { type: "state" }
   | { type: "input"; text: string };
 
+export interface ReplCommandDefinition {
+  name: string;
+  usage: string;
+  description: string;
+  aliases?: string[];
+}
+
+export const replCommandDefinitions: ReplCommandDefinition[] = [
+  { name: "/help", usage: "/help", description: "Show commands" },
+  { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session" },
+  { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory" },
+  { name: "/log off", usage: "/log off", description: "Disable model communication logs" },
+  { name: "/sessions", usage: "/sessions [limit]", description: "List saved sessions, newest first" },
+  { name: "/resume", usage: "/resume [session_id]", description: "Resume a saved session (default/latest uses newest)" },
+  { name: "/state", usage: "/state", description: "Show query engine state" },
+  { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker" },
+  { name: "/exit", usage: "/exit", description: "Quit", aliases: ["/quit"] },
+];
+
 export function parseReplCommand(line: string): ReplCommand {
   const trimmed = line.trim();
   if (trimmed === "/help") return { type: "help" };
@@ -33,15 +52,9 @@ export function parseReplCommand(line: string): ReplCommand {
   return { type: "input", text: line };
 }
 
+const helpUsageWidth = Math.max(...replCommandDefinitions.map((command) => command.usage.length));
+
 export const helpText = [
   "Commands:",
-  "  /help                 Show commands",
-  "  /cost                 Show total token usage for this REPL session",
-  "  /log <dir>            Write model communication logs to an absolute directory",
-  "  /log off              Disable model communication logs",
-  "  /sessions [limit]     List saved sessions, newest first",
-  "  /resume [session_id]  Resume a saved session (default/latest uses newest)",
-  "  /state                Show query engine state",
-  "  /reset                Clear current transcript and add a reset marker",
-  "  /exit                 Quit",
+  ...replCommandDefinitions.map((command) => `  ${command.usage.padEnd(helpUsageWidth)}  ${command.description}`),
 ].join("\n");
