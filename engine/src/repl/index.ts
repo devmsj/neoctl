@@ -19,6 +19,7 @@ import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
+import { searchTool } from "../tools/builtins/search-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -177,6 +178,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(grepTool);
+  tools.register(searchTool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
@@ -1447,6 +1449,10 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: formatGrepToolResult(output, ok) };
   }
 
+  if (toolName === "search" && isRecord(output)) {
+    return { text: formatWebSearchToolResult(output, ok) };
+  }
+
   return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}` };
 }
 
@@ -1618,6 +1624,34 @@ function formatReadToolResult(output: Record<string, unknown>, ok: boolean): str
   }
   lines.push("content:");
   lines.push(content || "(empty range)");
+  return lines.join("\n");
+}
+
+function formatWebSearchToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
+
+  const provider = typeof output.provider === "string" ? output.provider : "unknown";
+  const query = typeof output.query === "string" ? output.query : "";
+  const returnedResults = typeof output.returnedResults === "number" ? output.returnedResults : undefined;
+  const results = Array.isArray(output.results) ? output.results : [];
+  const header = [`${returnedResults ?? results.length} web result(s) via ${provider}`];
+  if (query) header.push(`query: ${query}`);
+  if (output.truncated === true) header.push("truncated");
+  if (results.length === 0) return [...header, "no results"].join("\n");
+
+  const lines = [...header];
+  results.slice(0, 8).forEach((item, index) => {
+    if (!isRecord(item)) return;
+    const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : "Untitled";
+    const url = typeof item.url === "string" ? item.url : "";
+    const published = typeof item.published === "string" ? ` · ${item.published}` : "";
+    lines.push(`[${index + 1}] ${title}${published}`);
+    if (url) lines.push(url);
+    const highlights = Array.isArray(item.highlights) ? item.highlights.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    const snippet = highlights[0] ?? (typeof item.text === "string" ? item.text : undefined);
+    if (snippet) lines.push(truncate(snippet.replace(/\s+/gu, " "), 400));
+  });
   return lines.join("\n");
 }
 

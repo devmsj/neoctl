@@ -8,6 +8,8 @@ import { editTool, writeTool } from "./builtins/edit-tool.js";
 import { execTool } from "./builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
 import { grepTool } from "./builtins/grep-tool.js";
+import { createSearchTool } from "./builtins/search-tool.js";
+import type { SearchProvider } from "./builtins/search-providers.js";
 import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
 import { runTools } from "./tool-orchestration.js";
@@ -29,6 +31,25 @@ const delayTool: Tool<{ id: string; delayMs: number }> = {
   async call(input) {
     await new Promise((resolve) => setTimeout(resolve, input.delayMs));
     return { ok: true, output: input.id };
+  },
+};
+
+
+const mockSearchProvider: SearchProvider = {
+  name: "mock",
+  async search(input) {
+    return {
+      provider: "mock",
+      query: input.query,
+      results: [
+        {
+          title: `Mock result for ${input.query}`,
+          url: "https://example.com/mock",
+          published: "2026-05-07",
+          highlights: ["Mock provider result used by smoke tests."],
+        },
+      ],
+    };
   },
 };
 
@@ -59,6 +80,7 @@ async function main(): Promise<void> {
   registry.register(listDirectoryTool);
   registry.register(readFileTool);
   registry.register(grepTool);
+  registry.register(createSearchTool({ provider: mockSearchProvider }));
   registry.register(delayTool);
   registry.register(largeTool);
 
@@ -80,6 +102,10 @@ async function main(): Promise<void> {
   );
   const truncatedGrep = await runToolUseToMessages(
     { id: "grep-truncated", name: "grep", input: { query: "import", path: "src", maxResults: 1 } },
+    context,
+  );
+  const webSearch = await runToolUseToMessages(
+    { id: "web-search", name: "search", input: { query: "agent scaffold", numResults: 1 } },
     context,
   );
   const contextGrep = await runToolUseToMessages(
@@ -177,6 +203,11 @@ async function main(): Promise<void> {
     operation?: string;
     replacements?: number;
   };
+  const webSearchOutput = toolOutput(webSearch[webSearch.length - 1]) as {
+    provider?: string;
+    returnedResults?: number;
+    results?: Array<{ url?: string }>;
+  };
   const writeOutput = toolOutput(write[write.length - 1]) as {
     operation?: string;
     bytesAfter?: number;
@@ -202,6 +233,9 @@ async function main(): Promise<void> {
     grepKnownTotal: grepOutput.returnedMatches === grepOutput.totalMatchesKnown,
     grepNoLegacyRoot: !JSON.stringify(grep[grep.length - 1]).includes('"root"'),
     truncatedGrepOk: toolOk(truncatedGrep[truncatedGrep.length - 1]),
+    webSearchOk: toolOk(webSearch[webSearch.length - 1]),
+    webSearchUsesProvider: webSearchOutput.provider === "mock" && webSearchOutput.returnedResults === 1,
+    webSearchFindsUrl: webSearchOutput.results?.[0]?.url === "https://example.com/mock",
     truncatedGrepCounts:
       truncatedGrepOutput.returnedMatches === 1 &&
       truncatedGrepOutput.totalMatchesKnown === null &&
@@ -260,7 +294,7 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, webSearch: webSearch.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
