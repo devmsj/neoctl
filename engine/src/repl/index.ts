@@ -505,7 +505,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (event.type === "thinking.delta") {
-      const id = thinkingLineId.current ?? append({ kind: "thinking", title: "Think", text: "", previewStyle: "summary", live: true });
+      const id = thinkingLineId.current ?? append(thinkingLine("", true));
       thinkingLineId.current = id;
       updateLine(id, (text) => text + event.text);
       return;
@@ -972,7 +972,7 @@ function MessageLine(
     return e(
       Box,
       { flexDirection: "row" },
-      useRoleMarker ? e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker()) : null,
+      useRoleMarker ? e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker(line.kind)) : null,
       e(
         Box,
         { flexDirection: "column", width: summaryWidth },
@@ -983,7 +983,7 @@ function MessageLine(
   const clipPendingMarkdown = !line.live && onMarkdownRenderComplete !== undefined && lineNeedsDynamicRender(line, contentWidth);
   const display = displayWindowForLine(line, contentWidth, line.live || clipPendingMarkdown ? liveMaxLines : undefined);
   return e(Box, { flexDirection: "row" },
-    e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker()),
+    e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker(line.kind)),
     e(
       Box,
       { flexDirection: "column", width: contentWidth },
@@ -1567,7 +1567,7 @@ function renderMessage(
       rendered = true;
     }
     if (block.type === "thinking") {
-      append({ kind: "thinking", title: "Think", text: block.text, previewStyle: "summary" });
+      append(thinkingLine(block.text));
       rendered = true;
     }
     if (block.type === "tool_use" && options.includeToolUseBlocks) {
@@ -1897,7 +1897,7 @@ function formatUsageTotals(totals: UsageTotals): string {
 function colorForKind(kind: UiLine["kind"]) {
   if (kind === "user") return "cyan";
   if (kind === "assistant") return "green";
-  if (kind === "thinking") return "gray";
+  if (kind === "thinking") return THINKING_COLOR;
   if (kind === "tool") return "#d4b04c";
   if (kind === "error") return "red";
   if (kind === "meta") return "gray";
@@ -1905,11 +1905,12 @@ function colorForKind(kind: UiLine["kind"]) {
 }
 
 function markerColorForKind(kind: UiLine["kind"]) {
-  if (kind === "thinking") return "magenta";
+  if (kind === "thinking") return THINKING_COLOR;
   return colorForKind(kind);
 }
 
-function messageRoleMarker(): string {
+function messageRoleMarker(kind?: UiLine["kind"]): string {
+  if (kind === "thinking") return `${THINKING_MARKER} `;
   return "● ";
 }
 
@@ -1923,7 +1924,7 @@ function kindForRole(role: Message["role"]): UiLine["kind"] {
 }
 
 function titleForKind(kind: UiLine["kind"]): string {
-  if (kind === "thinking") return "Think";
+  if (kind === "thinking") return `${THINKING_MARKER} Think`;
   if (kind === "tool") return "Tool";
   if (kind === "error") return "Error";
   if (kind === "meta") return "Meta";
@@ -1946,6 +1947,17 @@ function systemLine(text: string, summaryMaxLines?: number): Omit<UiLine, "id"> 
     text,
     previewStyle: "summary",
     summaryMaxLines,
+  };
+}
+
+function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
+  return {
+    kind: "thinking",
+    title: titleForKind("thinking"),
+    text,
+    previewStyle: "summary",
+    summaryMaxLines: THINKING_SUMMARY_MAX_LINES,
+    live,
   };
 }
 
@@ -2733,6 +2745,9 @@ const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
 };
+const THINKING_COLOR = "#a855f7";
+const THINKING_MARKER = "◆";
+const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
 const EDIT_TOOL_SUMMARY_MAX_LINES = EXPANDED_SUMMARY_MAX_LINES;
 
