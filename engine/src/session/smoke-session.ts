@@ -20,7 +20,8 @@ async function main(): Promise<void> {
   const store = await SessionStore.open({ agentId: "main", rootDir: root, sessionId });
   for (const message of messages) store.recordMessage(message);
   store.recordContentReplacements(first.records);
-  store.recordTitle("Smoke Session Title");
+  store.recordTitle("Smoke Session Title", "initial");
+  store.recordTitle("Refined Smoke Session Title", "refinement");
   store.recordMessage({ ...messages[0], role: "progress" });
 
   const resumed = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
@@ -37,13 +38,17 @@ async function main(): Promise<void> {
     second.records.length === 0 &&
     JSON.stringify(first.messages) === JSON.stringify(second.messages) &&
     resumed.snapshot().resumedMessages === messages.length &&
-    resumed.snapshot().title === "Smoke Session Title" &&
+    resumed.snapshot().title === "Refined Smoke Session Title" &&
+    resumed.snapshot().titleKind === "refinement" &&
+    resumed.snapshot().hasInitialTitle &&
+    resumed.snapshot().hasTitleRefinement &&
     latest.snapshot().sessionId === sessionId &&
     latest.snapshot().resumedMessages === messages.length &&
-    latest.snapshot().title === "Smoke Session Title" &&
+    latest.snapshot().title === "Refined Smoke Session Title" &&
+    latest.snapshot().titleKind === "refinement" &&
     listed.length === 1 &&
     listed[0]?.sessionId === sessionId &&
-    listed[0]?.title === "Smoke Session Title" &&
+    listed[0]?.title === "Refined Smoke Session Title" &&
     resumedBudget.records.length === 0 &&
     resumedBudget.messages.some((message) =>
       message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),

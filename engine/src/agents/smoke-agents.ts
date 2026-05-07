@@ -26,9 +26,11 @@ class ParentAndSubagentGateway implements ModelGateway {
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n") ?? "";
-      const content = request.tools.length === 0 && lastPrompt.includes("short title")
-        ? "Delegate Once Smoke Title"
-        : `worker result: ${lastPrompt.slice(0, 24)}`;
+      const content = request.tools.length === 0 && lastPrompt.includes("Previous title:")
+        ? "Refined Delegate Smoke Title"
+        : request.tools.length === 0 && lastPrompt.includes("short title")
+          ? "Delegate Once Smoke Title"
+          : `worker result: ${lastPrompt.slice(0, 24)}`;
       yield { type: "assistant_message", message: createTextMessage("assistant", content) };
       yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
       return;
@@ -68,19 +70,30 @@ async function main(): Promise<void> {
     agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]),
   }));
 
+  process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
   const events: string[] = [];
   for await (const event of engine.sendUserText("delegate once")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
   }
+  await waitFor(async () => (await engine.listSessions(1))[0]?.title === "Delegate Once Smoke Title");
+  const afterInitialTitleCalls = gateway.subagentCalls;
 
-  const listedSessions = await engine.listSessions(1);
+  for await (const event of engine.sendUserText("tighten title")) {
+    events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+  }
+
+  const listedSessions = await waitFor(async () => {
+    const listed = await engine.listSessions(1);
+    return listed[0]?.title === "Refined Delegate Smoke Title" ? listed : undefined;
+  });
   const syncOk =
-    gateway.subagentCalls === 2 &&
+    afterInitialTitleCalls === 2 &&
+    gateway.subagentCalls === 4 &&
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
     events.includes("terminal:completed") &&
-    listedSessions[0]?.title === "Delegate Once Smoke Title";
+    listedSessions[0]?.title === "Refined Delegate Smoke Title";
 
   const context: ToolUseContext = {
     agentId: "main",
@@ -124,6 +137,17 @@ async function main(): Promise<void> {
   const ok = syncOk && asyncOk;
   console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
+}
+
+async function waitFor<T>(read: () => Promise<T | undefined>, timeoutMs = 1000): Promise<T> {
+  const startedAt = Date.now();
+  let value = await read();
+  while (value === undefined && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    value = await read();
+  }
+  if (value === undefined) throw new Error("Timed out waiting for condition");
+  return value;
 }
 
 main().catch((error) => {

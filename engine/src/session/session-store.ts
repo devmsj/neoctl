@@ -5,10 +5,12 @@ import path from "node:path";
 import type { Message } from "../types/messages.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
 
+export type SessionTitleKind = "initial" | "refinement";
+
 export type SessionTranscriptEntry =
   | { type: "message"; sessionId: string; agentId: string; message: Message }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
-  | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string }
+  | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
 export interface SessionStoreOptions {
@@ -43,8 +45,18 @@ export interface SessionStoreSnapshot {
   sessionDir: string;
   transcriptPath: string;
   title?: string;
+  titleKind?: SessionTitleKind;
+  hasInitialTitle: boolean;
+  hasTitleRefinement: boolean;
   resumedMessages: number;
   contentReplacements: number;
+}
+
+export interface SessionTitleState {
+  title?: string;
+  kind?: SessionTitleKind;
+  hasInitialTitle: boolean;
+  hasRefinement: boolean;
 }
 
 export class SessionStore {
@@ -56,6 +68,9 @@ export class SessionStore {
   private readonly resumedMessages: Message[];
   private readonly contentReplacements: ContentReplacementRecord[];
   private title?: string;
+  private titleKind?: SessionTitleKind;
+  private hasInitialTitle = false;
+  private hasTitleRefinement = false;
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
@@ -65,6 +80,9 @@ export class SessionStore {
     this.resumedMessages = loaded.messages;
     this.contentReplacements = loaded.replacements;
     this.title = loaded.title;
+    this.titleKind = loaded.titleKind;
+    this.hasInitialTitle = loaded.hasInitialTitle;
+    this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.toolResultMemory = new FileToolResultMemory(
       {
         sessionDir: this.sessionDir,
@@ -132,15 +150,30 @@ export class SessionStore {
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
-  recordTitle(title: string): void {
+  recordTitle(title: string, kind: SessionTitleKind = "initial"): void {
     const normalized = normalizeTitle(title);
-    if (!normalized || normalized === this.title) return;
+    if (!normalized || (normalized === this.title && kind === this.titleKind)) return;
     this.title = normalized;
-    this.appendEntry({ type: "title", sessionId: this.sessionId, agentId: this.agentId, title: normalized, createdAt: new Date().toISOString() });
+    this.titleKind = kind;
+    if (kind === "initial") this.hasInitialTitle = true;
+    if (kind === "refinement") {
+      this.hasInitialTitle = true;
+      this.hasTitleRefinement = true;
+    }
+    this.appendEntry({ type: "title", sessionId: this.sessionId, agentId: this.agentId, title: normalized, kind, createdAt: new Date().toISOString() });
   }
 
   getTitle(): string | undefined {
     return this.title;
+  }
+
+  getTitleState(): SessionTitleState {
+    return {
+      title: this.title,
+      kind: this.titleKind,
+      hasInitialTitle: this.hasInitialTitle,
+      hasRefinement: this.hasTitleRefinement,
+    };
   }
 
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
@@ -158,6 +191,9 @@ export class SessionStore {
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
     this.title = undefined;
+    this.titleKind = undefined;
+    this.hasInitialTitle = false;
+    this.hasTitleRefinement = false;
     this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
   }
 
@@ -167,6 +203,9 @@ export class SessionStore {
       sessionDir: this.sessionDir,
       transcriptPath: this.transcriptPath,
       title: this.title,
+      titleKind: this.titleKind,
+      hasInitialTitle: this.hasInitialTitle,
+      hasTitleRefinement: this.hasTitleRefinement,
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
     };
@@ -183,6 +222,9 @@ interface LoadedTranscript {
   replacements: ContentReplacementRecord[];
   entries: number;
   title?: string;
+  titleKind?: SessionTitleKind;
+  hasInitialTitle: boolean;
+  hasTitleRefinement: boolean;
 }
 
 interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
@@ -214,10 +256,25 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
         loaded.messages.length = 0;
         loaded.replacements.length = 0;
         loaded.title = undefined;
+        loaded.titleKind = undefined;
+        loaded.hasInitialTitle = false;
+        loaded.hasTitleRefinement = false;
       }
       if (entry.type === "message") loaded.messages.push(entry.message);
       if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
-      if (entry.type === "title") loaded.title = normalizeTitle(entry.title);
+      if (entry.type === "title") {
+        const normalizedTitle = normalizeTitle(entry.title);
+        if (normalizedTitle) {
+          const kind = entry.kind ?? "initial";
+          loaded.title = normalizedTitle;
+          loaded.titleKind = kind;
+          if (kind === "initial") loaded.hasInitialTitle = true;
+          if (kind === "refinement") {
+            loaded.hasInitialTitle = true;
+            loaded.hasTitleRefinement = true;
+          }
+        }
+      }
     } catch {
       // Skip malformed lines so a partial write does not make the session unusable.
     }
@@ -226,7 +283,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
 }
 
 function createEmptyLoadedTranscript(): LoadedTranscript {
-  return { messages: [], replacements: [], entries: 0 };
+  return { messages: [], replacements: [], entries: 0, hasInitialTitle: false, hasTitleRefinement: false };
 }
 
 function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {
