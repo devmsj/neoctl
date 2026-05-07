@@ -119,11 +119,14 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     const timeoutMs = request.timeoutMs ?? this.options.timeoutMs ?? 120000;
 
     if (request.stream !== false) {
+      const streamOptions = body.stream_options && typeof body.stream_options === "object"
+        ? body.stream_options as Record<string, unknown>
+        : {};
       const response = await this.transport.sendStream({
         method: "POST",
         url: `${this.baseUrl}/v1/chat/completions`,
         headers,
-        body: { ...body, stream: true },
+        body: { ...body, stream: true, stream_options: { include_usage: true, ...streamOptions } },
         timeoutMs,
         signal: request.cancellation,
       });

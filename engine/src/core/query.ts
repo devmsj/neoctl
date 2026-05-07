@@ -356,6 +356,16 @@ async function* handleModelEvent(
     return {};
   }
 
+  if (event.type === "tool_call_delta") {
+    yield {
+      type: "tool_call.delta",
+      callId: event.callId,
+      name: event.name,
+      argumentsDelta: event.argumentsDelta,
+    };
+    return {};
+  }
+
   if (event.type === "usage") {
     yield { type: "usage", usage: event.usage };
     return {};

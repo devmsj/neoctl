@@ -397,7 +397,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setStatus((current) => reduceStatus(current, event));
     if (event.type === "usage") runtime.usage.add(event.usage);
     if (event.type === "state") return;
-    if (event.type === "context.metrics" || event.type === "usage") return;
+    if (event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta") return;
     if (event.type === "assistant.delta") {
       finalizeLiveLine(thinkingLineId.current);
       thinkingLineId.current = undefined;
@@ -1026,12 +1026,62 @@ interface StatusSegment {
   bold?: boolean;
 }
 
+function useAnimatedNumber(target: number | undefined): number | undefined {
+  const [display, setDisplay] = useState<number | undefined>(target);
+  const displayRef = useRef<number | undefined>(target);
+
+  useEffect(() => {
+    if (target === undefined) {
+      displayRef.current = undefined;
+      setDisplay(undefined);
+      return undefined;
+    }
+
+    const current = displayRef.current;
+    if (current === undefined || current === target) {
+      displayRef.current = target;
+      setDisplay(target);
+      return undefined;
+    }
+
+    const from = current;
+    const delta = target - from;
+    const startedAt = Date.now();
+    const durationMs = animatedNumberDurationMs(Math.abs(delta));
+    const interval = setInterval(() => {
+      const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
+      const eased = easeOutCubic(progress);
+      const next = from + delta * eased;
+      displayRef.current = progress >= 1 ? target : next;
+      setDisplay(displayRef.current);
+      if (progress >= 1) clearInterval(interval);
+    }, ANIMATED_NUMBER_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [target]);
+
+  return display;
+}
+
+function animatedNumberDurationMs(delta: number): number {
+  if (!Number.isFinite(delta) || delta <= 0) return ANIMATED_NUMBER_MIN_DURATION_MS;
+  const scaled = ANIMATED_NUMBER_MIN_DURATION_MS + Math.log10(delta + 1) * ANIMATED_NUMBER_DURATION_SCALE_MS;
+  return Math.min(ANIMATED_NUMBER_MAX_DURATION_MS, Math.max(ANIMATED_NUMBER_MIN_DURATION_MS, scaled));
+}
+
+function easeOutCubic(progress: number): number {
+  const clamped = Math.max(0, Math.min(1, progress));
+  return 1 - Math.pow(1 - clamped, 3);
+}
+
 function StatusBar(
   { status, animationTick, width: terminalWidth }:
   { status: UiStatus; animationTick: number; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width), width);
+  const inputTokens = useAnimatedNumber(statusInputTokens(status));
+  const outputTokens = useAnimatedNumber(statusOutputTokens(status));
+  const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width, inputTokens, outputTokens), width);
   return e(
     Box,
     { marginTop: 1, width, height: 1, overflow: "hidden" },
@@ -1060,16 +1110,21 @@ function renderCompactStatusSegments(
   status: UiStatus,
   animationTick: number,
   width: number,
+  inputTokens: number | undefined,
+  outputTokens: number | undefined,
 ): StatusSegment[] {
   const phase = status.phase;
   const now = Date.now();
-  const inputTokens = statusInputTokens(status);
-  const outputTokens = statusOutputTokens(status);
   const phaseText = phaseLabelForStatus(phase);
-  const inputText = `↑${compactNumber(inputTokens)}`;
-  const outputText = `↓${compactNumber(outputTokens)}`;
-  const contextText = `ctx:${renderContext(status.metrics)}`;
-  const fixedText = [phaseText, inputText, outputText, contextText].join(STATUS_SEPARATOR);
+  const inputValue = compactNumber(inputTokens);
+  const outputValue = compactNumber(outputTokens);
+  const context = renderContextParts(status.metrics);
+  const fixedText = [
+    phaseText,
+    `↑ ${inputValue}`,
+    `↓ ${outputValue}`,
+    `ctx ${context.used} / ${context.limit} (${context.percent})`,
+  ].join(STATUS_SEPARATOR);
   const modelBudget = Math.max(4, width - fixedText.length - STATUS_SEPARATOR.length);
   const model = truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 26 : width >= 90 ? 20 : 14, modelBudget));
   const retryPending = retryCooldownActive(status, now);
@@ -1077,20 +1132,22 @@ function renderCompactStatusSegments(
   const outputPending = modelOutputPending(status, now);
   const tokenInputColor = retryPending ? "red" : tokenArrowColor(status.inputTokenUpdatedAt, now, "green");
   const tokenOutputColor = outputPulseColor;
-  const outputArrow = outputPending && !slowBlinkVisible(animationTick) ? " " : "↓";
+  const outputLabelColor = outputPending && !slowBlinkVisible(animationTick) ? "gray" : tokenOutputColor;
 
   const segments: StatusSegment[] = [
     ...renderPhaseStatusSegments(phaseText, phase, animationTick),
-    { text: STATUS_SEPARATOR },
+    statusDividerSegment(),
     { text: model },
-    { text: STATUS_SEPARATOR },
-    { text: "↑", color: tokenInputColor, bold: tokenInputColor !== "gray" },
-    { text: compactNumber(inputTokens) },
-    { text: STATUS_SEPARATOR },
-    { text: outputArrow, color: tokenOutputColor, bold: tokenOutputColor !== "gray" },
-    { text: compactNumber(outputTokens) },
-    { text: STATUS_SEPARATOR },
-    { text: contextText },
+    statusDividerSegment(),
+    statusLabelSegment("↑", tokenInputColor),
+    { text: ` ${inputValue}` },
+    statusDividerSegment(),
+    statusLabelSegment("↓", outputLabelColor),
+    { text: ` ${outputValue}` },
+    statusDividerSegment(),
+    statusLabelSegment("ctx"),
+    { text: ` ${context.used} / ${context.limit}` },
+    { text: ` (${context.percent})`, color: contextColor(status.metrics) },
   ];
 
   return segments;
@@ -1331,6 +1388,14 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
     };
   }
   if (event.type === "thinking.delta") return { ...status, activityTick: status.activityTick + 1 };
+  if (event.type === "tool_call.delta") {
+    return {
+      ...status,
+      streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta),
+      outputTokenUpdatedAt: Date.now(),
+      activityTick: status.activityTick + 1,
+    };
+  }
   if (event.type === "retrying") {
     return {
       ...status,
@@ -1929,11 +1994,26 @@ function formatGrepContextLine(line: GrepContextLineLike, marker: "-" | "+"): st
   return `  ${line.file}:${line.line}${marker} ${line.text}`;
 }
 
-function renderContext(metrics: ContextMetrics | undefined): string {
-  if (!metrics) return "unknown";
-  if (!metrics.contextWindowTokens) return `${compactNumber(metrics.estimatedInputTokens)}/?`;
+interface RenderedContextParts {
+  used: string;
+  limit: string;
+  percent: string;
+}
+
+function renderContextParts(metrics: ContextMetrics | undefined): RenderedContextParts {
+  if (!metrics) return { used: "?", limit: "?", percent: "?" };
+  const used = compactNumber(metrics.estimatedInputTokens);
+  const limit = metrics.contextWindowTokens ? compactNumber(metrics.contextWindowTokens) : "?";
   const percent = metrics.contextUsageRatio === undefined ? "?" : `${(metrics.contextUsageRatio * 100).toFixed(1)}%`;
-  return `${compactNumber(metrics.estimatedInputTokens)}/${compactNumber(metrics.contextWindowTokens)} ${percent}`;
+  return { used, limit, percent };
+}
+
+function contextColor(metrics: ContextMetrics | undefined): string {
+  const ratio = metrics?.contextUsageRatio;
+  if (ratio === undefined) return "gray";
+  if (ratio >= 0.9) return "red";
+  if (ratio >= 0.75) return "yellow";
+  return "gray";
 }
 
 function statusInputTokens(status: UiStatus): number | undefined {
@@ -2047,6 +2127,14 @@ function compactNumber(value: number | undefined): string {
   if (rounded >= 10_000) return `${Math.round(rounded / 1000)}k`;
   if (rounded >= 1000) return `${trimFixed(rounded / 1000)}k`;
   return String(rounded);
+}
+
+function statusDividerSegment(): StatusSegment {
+  return { text: STATUS_SEPARATOR, color: "gray" };
+}
+
+function statusLabelSegment(text: string, color = "gray"): StatusSegment {
+  return { text, color, bold: color !== "gray" };
 }
 
 function trimFixed(value: number): string {
@@ -2226,11 +2314,15 @@ function isFullWidthCodePoint(codePoint: number): boolean {
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
 const TOKEN_PULSE_MS = 900;
+const ANIMATED_NUMBER_INTERVAL_MS = 50;
+const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
+const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
+const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
 const STATUS_BLINK_TICKS = 2;
 const STATUS_SHIMMER_GAP_TICKS = 3;
 const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
-const STATUS_SEPARATOR = " ";
+const STATUS_SEPARATOR = " · ";
 const STATUS_BAR_RENDER_ROWS = 2;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const MIN_LIVE_VIEWPORT_LINES = 4;

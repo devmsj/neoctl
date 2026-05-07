@@ -40,6 +40,7 @@ export async function* normalizeChatStream(
   const textParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   let responseId: string | undefined;
+  let usage = undefined as ReturnType<typeof normalizeUsage>;
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
@@ -47,6 +48,11 @@ export async function* normalizeChatStream(
     yield { type: "provider_event", event };
     if (type === "error") throw normalizeOpenAIStreamError(event);
     responseId = asString(event.id) ?? responseId;
+    const chunkUsage = normalizeUsage(event.usage);
+    if (chunkUsage) {
+      usage = chunkUsage;
+      yield { type: "usage", usage };
+    }
     const choices = Array.isArray(event.choices) ? event.choices : [];
 
     for (const choice of choices as Record<string, unknown>[]) {
@@ -83,7 +89,7 @@ export async function* normalizeChatStream(
 
   const text = textParts.join("");
   if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
-  yield { type: "response_completed", responseId, stopReason: "completed" };
+  yield { type: "response_completed", responseId, stopReason: "completed", usage };
 }
 
 export function* normalizeChatObject(response: HttpJsonResponse<Record<string, unknown>>): Generator<ModelStreamEvent> {

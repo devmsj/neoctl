@@ -26,6 +26,7 @@ export type AgentEvent =
   | { type: "context.metrics"; metrics: ContextMetrics }
   | { type: "assistant.delta"; text: string }
   | { type: "thinking.delta"; text: string }
+  | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "message"; message: Message }
   | { type: "tool.started"; toolUse: ToolUseRequest }
   | { type: "tool.finished"; toolUse: ToolUseRequest; ok: boolean }
