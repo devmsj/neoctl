@@ -18,7 +18,7 @@ import { echoTool } from "../tools/builtins/echo-tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
-import { searchTool } from "../tools/builtins/search-tool.js";
+import { grepTool } from "../tools/builtins/grep-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -176,7 +176,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(createExecTool({ taskStore }));
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
-  tools.register(searchTool);
+  tools.register(grepTool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
@@ -1443,8 +1443,8 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: formatReadToolResult(output, ok) };
   }
 
-  if (toolName === "search" && isRecord(output)) {
-    return { text: formatSearchToolResult(output, ok) };
+  if (toolName === "grep" && isRecord(output)) {
+    return { text: formatGrepToolResult(output, ok) };
   }
 
   return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}` };
@@ -1621,25 +1621,25 @@ function formatReadToolResult(output: Record<string, unknown>, ok: boolean): str
   return lines.join("\n");
 }
 
-function formatSearchToolResult(output: Record<string, unknown>, ok: boolean): string {
+function formatGrepToolResult(output: Record<string, unknown>, ok: boolean): string {
   const error = typeof output.error === "string" ? output.error : undefined;
   if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
 
   const query = typeof output.query === "string" ? output.query : undefined;
-  const searchPath = typeof output.searchPath === "string" ? output.searchPath : undefined;
+  const grepPath = typeof output.grepPath === "string" ? output.grepPath : undefined;
   const returnedMatches = typeof output.returnedMatches === "number" ? output.returnedMatches : undefined;
   const totalMatchesKnown = typeof output.totalMatchesKnown === "number" ? output.totalMatchesKnown : undefined;
   const truncated = output.truncated === true;
-  const matches = Array.isArray(output.matches) ? output.matches.filter(isSearchMatchLike) : [];
+  const matches = Array.isArray(output.matches) ? output.matches.filter(isGrepMatchLike) : [];
   const errors = Array.isArray(output.errors)
     ? output.errors.filter((value): value is string => typeof value === "string")
     : [];
   const transportTruncation = isRecord(output.transportTruncation) ? output.transportTruncation : undefined;
   const omittedMatches = typeof transportTruncation?.omittedMatches === "number" ? transportTruncation.omittedMatches : undefined;
 
-  const lines = ["search result"];
+  const lines = ["grep result"];
   if (query !== undefined) lines.push(`query: ${query}`);
-  if (searchPath !== undefined) lines.push(`path: ${searchPath}`);
+  if (grepPath !== undefined) lines.push(`path: ${grepPath}`);
   const countParts = [
     `${returnedMatches ?? matches.length} shown`,
     totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined,
@@ -1662,32 +1662,32 @@ function formatSearchToolResult(output: Record<string, unknown>, ok: boolean): s
   lines.push("results:");
   for (const match of matches) {
     for (const context of match.contextBefore ?? []) {
-      lines.push(formatSearchContextLine(context, "-"));
+      lines.push(formatGrepContextLine(context, "-"));
     }
-    lines.push(formatSearchMatchLine(match));
+    lines.push(formatGrepMatchLine(match));
     for (const context of match.contextAfter ?? []) {
-      lines.push(formatSearchContextLine(context, "+"));
+      lines.push(formatGrepContextLine(context, "+"));
     }
   }
   return lines.join("\n");
 }
 
-interface SearchMatchLike {
+interface GrepMatchLike {
   file: string;
   line: number;
   column?: number;
   text: string;
-  contextBefore?: SearchContextLineLike[];
-  contextAfter?: SearchContextLineLike[];
+  contextBefore?: GrepContextLineLike[];
+  contextAfter?: GrepContextLineLike[];
 }
 
-interface SearchContextLineLike {
+interface GrepContextLineLike {
   file: string;
   line: number;
   text: string;
 }
 
-function isSearchMatchLike(value: unknown): value is SearchMatchLike {
+function isGrepMatchLike(value: unknown): value is GrepMatchLike {
   if (!isRecord(value)) return false;
   return (
     typeof value.file === "string" &&
@@ -1697,12 +1697,12 @@ function isSearchMatchLike(value: unknown): value is SearchMatchLike {
   );
 }
 
-function formatSearchMatchLine(match: SearchMatchLike): string {
+function formatGrepMatchLine(match: GrepMatchLike): string {
   const column = match.column !== undefined ? `:${match.column}` : "";
   return `  ${match.file}:${match.line}${column}: ${match.text}`;
 }
 
-function formatSearchContextLine(line: SearchContextLineLike, marker: "-" | "+"): string {
+function formatGrepContextLine(line: GrepContextLineLike, marker: "-" | "+"): string {
   return `  ${line.file}:${line.line}${marker} ${line.text}`;
 }
 

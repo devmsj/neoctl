@@ -26,7 +26,7 @@ export function resolveBundledRipgrepBinary(env: NodeJS.ProcessEnv = process.env
   }
 
   throw new Error(
-    `Bundled ripgrep binary not found for ${platformKey}. Run npm run vendor:rg before using the search tool.`,
+    `Bundled ripgrep binary not found for ${platformKey}. Run npm run vendor:rg before using the grep tool.`,
   );
 }
 

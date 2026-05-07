@@ -57,10 +57,10 @@ npm run dev
 - `runToolUse()` performs schema validation, custom validation, permission decision, progress emission, abort handling, result mapping, max-result truncation, new messages, and context modifier propagation
 - `runTools()` partitions tool calls into concurrency-safe batches and serial batches, applying context modifiers in tool-use order
 - `StreamingToolExecutor` can start tools as tool calls arrive and can synthesize discarded results on fallback/abort
-- `searchTool` calls the bundled ripgrep binary through `ripgrep-binary.ts`, supports smart/sensitive/insensitive case modes, glob filters, hidden-file opt-in, bounded context lines, and bounded total results
+- `grepTool` calls the bundled ripgrep binary through `ripgrep-binary.ts`, supports smart/sensitive/insensitive case modes, glob filters, hidden-file opt-in, bounded context lines, and bounded total results
 - `scripts/install-ripgrep.cjs` resolves the current OS/CPU, downloads the matching official ripgrep release asset, extracts `rg`, and writes a manifest beside the binary; runtime lookup does not depend on PATH
 
-`npm run smoke:tools` verifies aliases, schema/custom validation, unknown-tool errors, max result truncation, bundled-rg search, and concurrent batch execution.
+`npm run smoke:tools` verifies aliases, schema/custom validation, unknown-tool errors, max result truncation, bundled-rg grep, and concurrent batch execution.
 
 ## Context And Prompts
 

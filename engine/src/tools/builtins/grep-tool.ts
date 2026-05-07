@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import { resolveBundledRipgrepBinary } from "./ripgrep-binary.js";
 
-export interface SearchToolInput {
+export interface GrepToolInput {
   query: string;
   path?: string;
   glob?: string[];
@@ -16,7 +16,7 @@ export interface SearchToolInput {
   maxColumns: number;
 }
 
-export interface SearchMatch {
+export interface GrepMatch {
   file: string;
   line: number;
   column?: number;
@@ -26,11 +26,11 @@ export interface SearchMatch {
     maxChars: number;
   };
   submatches: Array<{ start: number; end: number; text: string }>;
-  contextBefore?: SearchContextLine[];
-  contextAfter?: SearchContextLine[];
+  contextBefore?: GrepContextLine[];
+  contextAfter?: GrepContextLine[];
 }
 
-export interface SearchContextLine {
+export interface GrepContextLine {
   file: string;
   line: number;
   text: string;
@@ -40,14 +40,14 @@ export interface SearchContextLine {
   };
 }
 
-export interface SearchToolOutput {
+export interface GrepToolOutput {
   query: string;
   cwd: string;
-  searchPath: string;
+  grepPath: string;
   returnedMatches: number;
   totalMatchesKnown: number | null;
   truncated: boolean;
-  matches: SearchMatch[];
+  matches: GrepMatch[];
   transportTruncation?: {
     reason: "resultSize";
     originalLength: number;
@@ -58,15 +58,15 @@ export interface SearchToolOutput {
   errors?: string[];
 }
 
-export const searchTool: Tool<SearchToolInput> = {
-  name: "search",
-  aliases: ["grep", "rg"],
-  description: "Search files with the bundled ripgrep binary. Accepts absolute paths and cwd-relative paths. It does not exclude heavy directories by default; pass explicit negated glob filters such as !node_modules/** when you want to skip them.",
+export const grepTool: Tool<GrepToolInput> = {
+  name: "grep",
+  aliases: ["rg"],
+  description: "Grep files with the bundled ripgrep binary. Accepts absolute paths and cwd-relative paths. It does not exclude heavy directories by default; pass explicit negated glob filters such as !node_modules/** when you want to skip them.",
   inputSchema: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Regex pattern or literal text to search for." },
-      path: { type: "string", description: "Absolute or cwd-relative file/directory to search. Defaults to the current working directory." },
+      query: { type: "string", description: "Regex pattern or literal text to look for." },
+      path: { type: "string", description: "Absolute or cwd-relative file/directory to grep. Defaults to the current working directory." },
       glob: {
         type: "array",
         items: { type: "string" },
@@ -87,13 +87,13 @@ export const searchTool: Tool<SearchToolInput> = {
     concurrent: true,
     visible: true,
     maxResultSizeChars: 24000,
-    searchHint: "search files with bundled ripgrep",
+    searchHint: "grep files with bundled ripgrep",
   },
   mapResult(result) {
-    return shrinkSearchOutputForTransport(result.output, 21000);
+    return shrinkGrepOutputForTransport(result.output, 21000);
   },
   validate(input) {
-    const record = input as Partial<SearchToolInput>;
+    const record = input as Partial<GrepToolInput>;
     return {
       query: record.query ?? "",
       path: record.path,
@@ -107,18 +107,18 @@ export const searchTool: Tool<SearchToolInput> = {
     };
   },
   validateInput(input) {
-    if (!input.query.trim()) return { ok: false, message: "search.query cannot be empty" };
-    if (input.path !== undefined && !input.path.trim()) return { ok: false, message: "search.path cannot be empty" };
+    if (!input.query.trim()) return { ok: false, message: "grep.query cannot be empty" };
+    if (input.path !== undefined && !input.path.trim()) return { ok: false, message: "grep.path cannot be empty" };
     if (!Number.isInteger(input.contextLines) || input.contextLines < 0 || input.contextLines > 5) {
-      return { ok: false, message: "search.contextLines must be between 0 and 5" };
+      return { ok: false, message: "grep.contextLines must be between 0 and 5" };
     }
     if (!Number.isInteger(input.maxResults) || input.maxResults < 1 || input.maxResults > 200) {
-      return { ok: false, message: "search.maxResults must be between 1 and 200" };
+      return { ok: false, message: "grep.maxResults must be between 1 and 200" };
     }
     if (!Number.isInteger(input.maxColumns) || input.maxColumns < 80 || input.maxColumns > 1000) {
-      return { ok: false, message: "search.maxColumns must be between 80 and 1000" };
+      return { ok: false, message: "grep.maxColumns must be between 80 and 1000" };
     }
-    if (input.glob?.some((glob) => !glob.trim())) return { ok: false, message: "search.glob entries cannot be empty" };
+    if (input.glob?.some((glob) => !glob.trim())) return { ok: false, message: "grep.glob entries cannot be empty" };
     return { ok: true, value: input };
   },
   isConcurrencySafe() {
@@ -130,9 +130,9 @@ export const searchTool: Tool<SearchToolInput> = {
     const target = path.resolve(root, input.path ?? ".");
 
     const stat = await fs.stat(target).catch(() => undefined);
-    if (!stat) return { ok: false, output: { error: `search.path does not exist: ${target}` } };
+    if (!stat) return { ok: false, output: { error: `grep.path does not exist: ${target}` } };
 
-    options.onProgress?.({ toolName: "search", message: `Searching with bundled rg (${platformKey})` });
+    options.onProgress?.({ toolName: "grep", message: `Searching with bundled rg (${platformKey})` });
     return runRipgrep(executablePath, root, target, input);
   },
 };
@@ -146,10 +146,10 @@ async function runRipgrep(
   executablePath: string,
   root: string,
   target: string,
-  input: SearchToolInput,
+  input: GrepToolInput,
 ): Promise<ToolResult> {
   const args = buildArgs(input, target);
-  const state: SearchParseState = {
+  const state: GrepParseState = {
     matches: [],
     errors: [],
     pendingContext: [],
@@ -173,7 +173,7 @@ async function runRipgrep(
       const line = stdoutBuffer.slice(0, newline).trim();
       stdoutBuffer = stdoutBuffer.slice(newline + 1);
       if (line) handleJsonLine(line, root, state);
-      if (shouldStopSearch(state)) {
+      if (shouldStopGrep(state)) {
         state.stopped = true;
         child.kill();
         break;
@@ -198,10 +198,10 @@ async function runRipgrep(
       const matches = state.matches.slice(0, input.maxResults);
       const truncated = state.truncated || state.matches.length > input.maxResults;
 
-      const output: SearchToolOutput = {
+      const output: GrepToolOutput = {
         query: input.query,
         cwd: root,
-        searchPath: target,
+        grepPath: target,
         returnedMatches: matches.length,
         totalMatchesKnown: truncated ? null : matches.length,
         truncated,
@@ -219,7 +219,7 @@ async function runRipgrep(
   });
 }
 
-function buildArgs(input: SearchToolInput, target: string): string[] {
+function buildArgs(input: GrepToolInput, target: string): string[] {
   const args = ["--json", "--color=never", "--line-number", "--column", "--with-filename", "--max-columns", String(input.maxColumns)];
   if (input.caseMode === "smart") args.push("--smart-case");
   if (input.caseMode === "insensitive") args.push("--ignore-case");
@@ -231,7 +231,7 @@ function buildArgs(input: SearchToolInput, target: string): string[] {
   return args;
 }
 
-function handleJsonLine(line: string, root: string, state: SearchParseState): void {
+function handleJsonLine(line: string, root: string, state: GrepParseState): void {
   try {
     const event = JSON.parse(line) as RipgrepJsonEvent;
     if (event.type === "match") {
@@ -265,7 +265,7 @@ function handleJsonLine(line: string, root: string, state: SearchParseState): vo
   }
 }
 
-function mapMatchEvent(event: RipgrepJsonEvent, root: string): SearchMatch {
+function mapMatchEvent(event: RipgrepJsonEvent, root: string): GrepMatch {
   const text = normalizeLine(event.data.lines.text);
   return {
     file: relativeEventPath(root, event),
@@ -280,7 +280,7 @@ function mapMatchEvent(event: RipgrepJsonEvent, root: string): SearchMatch {
   };
 }
 
-function mapContextEvent(event: RipgrepJsonEvent, root: string): SearchContextLine {
+function mapContextEvent(event: RipgrepJsonEvent, root: string): GrepContextLine {
   return {
     file: relativeEventPath(root, event),
     line: event.data.line_number,
@@ -296,7 +296,7 @@ function normalizeLine(text: string): string {
   return text.replace(/[\r\n]+$/, "");
 }
 
-function shouldStopSearch(state: SearchParseState): boolean {
+function shouldStopGrep(state: GrepParseState): boolean {
   if (!state.truncated) return false;
   if (state.overflowedMaxResults) return true;
   if (state.maxContextLines === 0) return true;
@@ -304,9 +304,9 @@ function shouldStopSearch(state: SearchParseState): boolean {
   return (lastMatch?.contextAfter?.length ?? 0) >= state.maxContextLines;
 }
 
-function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unknown {
-  if (!isSearchOutput(output)) return output;
-  const boundedOutput = boundLongSearchLines(output);
+function shrinkGrepOutputForTransport(output: unknown, maxChars: number): unknown {
+  if (!isGrepOutput(output)) return output;
+  const boundedOutput = boundLongGrepLines(output);
   const serialized = JSON.stringify(boundedOutput);
   if (serialized.length <= maxChars) return boundedOutput;
 
@@ -318,7 +318,7 @@ function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unkn
     omittedMatches: originalMatches.length,
     maxChars,
   };
-  const compacted: SearchToolOutput = {
+  const compacted: GrepToolOutput = {
     ...boundedOutput,
     returnedMatches: 0,
     matches: [],
@@ -344,11 +344,11 @@ function shrinkSearchOutputForTransport(output: unknown, maxChars: number): unkn
   return compacted;
 }
 
-function isSearchOutput(output: unknown): output is SearchToolOutput {
-  return typeof output === "object" && output !== null && Array.isArray((output as Partial<SearchToolOutput>).matches);
+function isGrepOutput(output: unknown): output is GrepToolOutput {
+  return typeof output === "object" && output !== null && Array.isArray((output as Partial<GrepToolOutput>).matches);
 }
 
-function boundLongSearchLines(output: SearchToolOutput): SearchToolOutput {
+function boundLongGrepLines(output: GrepToolOutput): GrepToolOutput {
   return {
     ...output,
     matches: output.matches.map((match) => ({
@@ -364,7 +364,7 @@ function boundLongSearchLines(output: SearchToolOutput): SearchToolOutput {
   };
 }
 
-function truncateContextLine(line: SearchContextLine): SearchContextLine {
+function truncateContextLine(line: GrepContextLine): GrepContextLine {
   return {
     ...line,
     ...truncateTextField(line.text, MAX_CONTEXT_TEXT_CHARS),
@@ -387,10 +387,10 @@ const MAX_MATCH_TEXT_CHARS = 4000;
 const MAX_CONTEXT_TEXT_CHARS = 2000;
 const MAX_SUBMATCH_TEXT_CHARS = 500;
 
-interface SearchParseState {
-  matches: SearchMatch[];
+interface GrepParseState {
+  matches: GrepMatch[];
   errors: string[];
-  pendingContext: SearchContextLine[];
+  pendingContext: GrepContextLine[];
   maxResults: number;
   maxContextLines: number;
   truncated: boolean;

@@ -281,7 +281,7 @@ function formatToolOutputPreview(output: unknown, fallback: string): string {
   if (typeof output === "string") return output;
   if (!isRecord(output)) return fallback;
   if (isReadOutputLike(output)) return formatReadOutputPreview(output);
-  if (isSearchOutputLike(output)) return formatSearchOutputPreview(output);
+  if (isGrepOutputLike(output)) return formatGrepOutputPreview(output);
   return fallback;
 }
 
@@ -302,12 +302,12 @@ function formatReadOutputPreview(output: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
-function isSearchOutputLike(output: Record<string, unknown>): boolean {
+function isGrepOutputLike(output: Record<string, unknown>): boolean {
   return typeof output.query === "string" && Array.isArray(output.matches);
 }
 
-function formatSearchOutputPreview(output: Record<string, unknown>): string {
-  const matches = Array.isArray(output.matches) ? output.matches.filter(isSearchMatchPreviewLike) : [];
+function formatGrepOutputPreview(output: Record<string, unknown>): string {
+  const matches = Array.isArray(output.matches) ? output.matches.filter(isGrepMatchPreviewLike) : [];
   const returnedMatches = typeof output.returnedMatches === "number" ? output.returnedMatches : matches.length;
   const totalMatchesKnown = typeof output.totalMatchesKnown === "number" ? output.totalMatchesKnown : undefined;
   const transportTruncation = isRecord(output.transportTruncation) ? output.transportTruncation : undefined;
@@ -320,10 +320,10 @@ function formatSearchOutputPreview(output: Record<string, unknown>): string {
   ].filter((value): value is string => Boolean(value));
 
   const lines = [
-    "search result",
+    "grep result",
     `query: ${output.query}`,
   ];
-  if (typeof output.searchPath === "string") lines.push(`path: ${output.searchPath}`);
+  if (typeof output.grepPath === "string") lines.push(`path: ${output.grepPath}`);
   lines.push(`matches: ${countParts.join(" · ")}`);
   if (matches.length === 0) {
     lines.push("no matches");
@@ -337,7 +337,7 @@ function formatSearchOutputPreview(output: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
-function isSearchMatchPreviewLike(value: unknown): value is { file: string; line: number; column?: number; text: string } {
+function isGrepMatchPreviewLike(value: unknown): value is { file: string; line: number; column?: number; text: string } {
   if (!isRecord(value)) return false;
   return (
     typeof value.file === "string" &&

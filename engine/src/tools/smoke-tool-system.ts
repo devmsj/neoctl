@@ -7,7 +7,7 @@ import { echoTool } from "./builtins/echo-tool.js";
 import { editTool, writeTool } from "./builtins/edit-tool.js";
 import { execTool } from "./builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
-import { searchTool } from "./builtins/search-tool.js";
+import { grepTool } from "./builtins/grep-tool.js";
 import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
 import { runTools } from "./tool-orchestration.js";
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   registry.register(execTool);
   registry.register(listDirectoryTool);
   registry.register(readFileTool);
-  registry.register(searchTool);
+  registry.register(grepTool);
   registry.register(delayTool);
   registry.register(largeTool);
 
@@ -74,16 +74,16 @@ async function main(): Promise<void> {
   const invalid = await runToolUseToMessages({ id: "echo2", name: "echo", input: { text: "" } }, context);
   const unknown = await runToolUseToMessages({ id: "missing", name: "missing", input: {} }, context);
   const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20 } }, context);
-  const search = await runToolUseToMessages(
-    { id: "search", name: "search", input: { query: "echoTool", path: "src/tools/builtins/echo-tool.ts", maxResults: 5 } },
+  const grep = await runToolUseToMessages(
+    { id: "grep", name: "grep", input: { query: "echoTool", path: "src/tools/builtins/echo-tool.ts", maxResults: 5 } },
     context,
   );
-  const truncatedSearch = await runToolUseToMessages(
-    { id: "search-truncated", name: "search", input: { query: "import", path: "src", maxResults: 1 } },
+  const truncatedGrep = await runToolUseToMessages(
+    { id: "grep-truncated", name: "grep", input: { query: "import", path: "src", maxResults: 1 } },
     context,
   );
-  const contextSearch = await runToolUseToMessages(
-    { id: "search-context", name: "search", input: { query: "description", path: "src/tools/builtins/echo-tool.ts", contextLines: 1, maxResults: 2 } },
+  const contextGrep = await runToolUseToMessages(
+    { id: "grep-context", name: "grep", input: { query: "description", path: "src/tools/builtins/echo-tool.ts", contextLines: 1, maxResults: 2 } },
     context,
   );
   const read = await runToolUseToMessages(
@@ -135,18 +135,18 @@ async function main(): Promise<void> {
     { id: "write", name: "write", input: { path: path.join(tempDir, "nested", "write.txt"), content: "full\ncontent\n" } },
     context,
   );
-  const searchOutput = toolOutput(search[search.length - 1]) as {
+  const grepOutput = toolOutput(grep[grep.length - 1]) as {
     cwd?: string;
-    searchPath?: string;
+    grepPath?: string;
     returnedMatches?: number;
     totalMatchesKnown?: number | null;
   };
-  const truncatedSearchOutput = toolOutput(truncatedSearch[truncatedSearch.length - 1]) as {
+  const truncatedGrepOutput = toolOutput(truncatedGrep[truncatedGrep.length - 1]) as {
     returnedMatches?: number;
     totalMatchesKnown?: number | null;
     truncated?: boolean;
   };
-  const contextSearchOutput = toolOutput(contextSearch[contextSearch.length - 1]) as {
+  const contextGrepOutput = toolOutput(contextGrep[contextGrep.length - 1]) as {
     matches?: Array<{ contextBefore?: unknown[]; contextAfter?: unknown[] }>;
   };
   const recursiveListOutput = toolOutput(recursiveList[recursiveList.length - 1]) as {
@@ -196,25 +196,25 @@ async function main(): Promise<void> {
     invalidRejected: !toolOk(invalid[invalid.length - 1]),
     unknownRejected: !toolOk(unknown[0]),
     transportTruncationLabel: JSON.stringify(large[large.length - 1]).includes("truncated"),
-    searchOk: toolOk(search[search.length - 1]),
-    searchFindsFile: JSON.stringify(search[search.length - 1]).includes("echo-tool.ts"),
-    searchFields: searchOutput.cwd !== undefined && searchOutput.searchPath !== undefined,
-    searchKnownTotal: searchOutput.returnedMatches === searchOutput.totalMatchesKnown,
-    searchNoLegacyRoot: !JSON.stringify(search[search.length - 1]).includes('"root"'),
-    truncatedSearchOk: toolOk(truncatedSearch[truncatedSearch.length - 1]),
-    truncatedSearchCounts:
-      truncatedSearchOutput.returnedMatches === 1 &&
-      truncatedSearchOutput.totalMatchesKnown === null &&
-      truncatedSearchOutput.truncated === true,
-    contextSearchOk: toolOk(contextSearch[contextSearch.length - 1]),
-    contextSearchLines:
-      (contextSearchOutput.matches?.some((match) => (match.contextBefore?.length ?? 0) > 0) ?? false) ||
-      (contextSearchOutput.matches?.some((match) => (match.contextAfter?.length ?? 0) > 0) ?? false),
+    grepOk: toolOk(grep[grep.length - 1]),
+    grepFindsFile: JSON.stringify(grep[grep.length - 1]).includes("echo-tool.ts"),
+    grepFields: grepOutput.cwd !== undefined && grepOutput.grepPath !== undefined,
+    grepKnownTotal: grepOutput.returnedMatches === grepOutput.totalMatchesKnown,
+    grepNoLegacyRoot: !JSON.stringify(grep[grep.length - 1]).includes('"root"'),
+    truncatedGrepOk: toolOk(truncatedGrep[truncatedGrep.length - 1]),
+    truncatedGrepCounts:
+      truncatedGrepOutput.returnedMatches === 1 &&
+      truncatedGrepOutput.totalMatchesKnown === null &&
+      truncatedGrepOutput.truncated === true,
+    contextGrepOk: toolOk(contextGrep[contextGrep.length - 1]),
+    contextGrepLines:
+      (contextGrepOutput.matches?.some((match) => (match.contextBefore?.length ?? 0) > 0) ?? false) ||
+      (contextGrepOutput.matches?.some((match) => (match.contextAfter?.length ?? 0) > 0) ?? false),
     readOk: toolOk(read[read.length - 1]),
     readLineMetadata: JSON.stringify(read[read.length - 1]).includes('"startLine":1'),
     readContent: JSON.stringify(read[read.length - 1]).includes("echoTool"),
     listOk: toolOk(list[list.length - 1]),
-    listFindsFile: JSON.stringify(list[list.length - 1]).includes("search-tool.ts"),
+    listFindsFile: JSON.stringify(list[list.length - 1]).includes("grep-tool.ts"),
     recursiveListOk: toolOk(recursiveList[recursiveList.length - 1]),
     recursiveListDefaultExcludes:
       recursiveListOutput.exclude?.includes(".git") === true &&
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, search: search.length, truncatedSearch: truncatedSearch.length, contextSearch: contextSearch.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

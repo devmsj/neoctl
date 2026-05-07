@@ -87,22 +87,22 @@ async function main(): Promise<void> {
     id: "assistant_old_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_old", name: "search", input: { query: "old" } }],
+    blocks: [{ type: "tool_use" as const, id: "call_old", name: "grep", input: { query: "old" } }],
   };
   const toolUseNew = {
     id: "assistant_new_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_new", name: "search", input: { query: "new" } }],
+    blocks: [{ type: "tool_use" as const, id: "call_new", name: "grep", input: { query: "new" } }],
   };
-  const oldResult = createToolResultMessage({ id: "call_old", name: "search", input: {} }, true, "old".repeat(1200));
-  const newResult = createToolResultMessage({ id: "call_new", name: "search", input: {} }, true, "new".repeat(1200));
+  const oldResult = createToolResultMessage({ id: "call_old", name: "grep", input: {} }, true, "old".repeat(1200));
+  const newResult = createToolResultMessage({ id: "call_new", name: "grep", input: {} }, true, "new".repeat(1200));
   const micro = microCompactIfNeeded([toolUseOld, oldResult, toolUseNew, newResult], { microCompactMaxChars: 100, keepRecentToolResults: 1 });
   const oldOutput = micro.messages[1]?.blocks[0]?.type === "tool_result" ? micro.messages[1].blocks[0].output : undefined;
   const newOutput = micro.messages[3]?.blocks[0]?.type === "tool_result" ? micro.messages[3].blocks[0].output : undefined;
   const microOk = micro.changed && oldOutput === CLEARED_TOOL_RESULT_CONTENT && typeof newOutput === "string" && newOutput.startsWith("new");
 
-  const orphanResult = createToolResultMessage({ id: "call_orphan", name: "search", input: {} }, true, "orphan");
+  const orphanResult = createToolResultMessage({ id: "call_orphan", name: "grep", input: {} }, true, "orphan");
   const paired = ensureToolResultPairing([toolUseOld, createTextMessage("assistant", "done"), orphanResult]);
   const pairedJson = JSON.stringify(paired);
   const pairingOk =
@@ -111,27 +111,27 @@ async function main(): Promise<void> {
     pairedJson.includes("synthetic failure result") &&
     !pairedJson.includes("call_orphan");
 
-  const bigSearchUse = {
-    id: "assistant_big_search",
+  const bigGrepUse = {
+    id: "assistant_big_grep",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_big_search", name: "search", input: { query: "^|\\S", root: ".." } }],
+    blocks: [{ type: "tool_use" as const, id: "call_big_grep", name: "grep", input: { query: "^|\\S", root: ".." } }],
   };
-  const bigSearchResult = createToolResultMessage(
-    { id: "call_big_search", name: "search", input: {} },
+  const bigGrepResult = createToolResultMessage(
+    { id: "call_big_grep", name: "grep", input: {} },
     true,
     JSON.stringify({ query: "^|\\S", root: "..", matches: Array.from({ length: 600 }, (_, index) => `match ${index}: ${"x".repeat(80)}`) }),
   );
-  const budgetedSearch = applyToolResultBudget([bigSearchUse, bigSearchResult], { maxSerializedLength: 1200 });
-  const microSearch = microCompactIfNeeded(budgetedSearch, { microCompactMaxChars: 100, keepRecentToolResults: 1 });
-  const repairedSearch = ensureToolResultPairing(microSearch.messages);
-  const searchOutput =
-    repairedSearch[1]?.blocks[0]?.type === "tool_result" ? String(repairedSearch[1].blocks[0].output) : "";
-  const searchRegressionOk =
-    hasValidToolResultPairing(repairedSearch) &&
-    searchOutput.startsWith("[Tool result truncated for context budget: original ") &&
-    !searchOutput.includes('"preview"') &&
-    !searchOutput.includes('"truncated"');
+  const budgetedGrep = applyToolResultBudget([bigGrepUse, bigGrepResult], { maxSerializedLength: 1200 });
+  const microGrep = microCompactIfNeeded(budgetedGrep, { microCompactMaxChars: 100, keepRecentToolResults: 1 });
+  const repairedGrep = ensureToolResultPairing(microGrep.messages);
+  const grepOutput =
+    repairedGrep[1]?.blocks[0]?.type === "tool_result" ? String(repairedGrep[1].blocks[0].output) : "";
+  const grepRegressionOk =
+    hasValidToolResultPairing(repairedGrep) &&
+    grepOutput.startsWith("[Tool result truncated for context budget: original ") &&
+    !grepOutput.includes('"preview"') &&
+    !grepOutput.includes('"truncated"');
 
   const summaryGateway = new SummaryGateway();
   const modelCompactor = new ModelDrivenCompactor(summaryGateway);
@@ -169,8 +169,8 @@ async function main(): Promise<void> {
     gateway.sawSystemContext &&
     events.includes("terminal:completed");
 
-  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && searchRegressionOk && modelCompactOk && reactiveOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, searchRegressionOk, modelCompactOk, reactiveOk, events, calls: gateway.calls }, null, 2));
+  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && reactiveOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, reactiveOk, events, calls: gateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

@@ -69,7 +69,7 @@ export const readFileTool: Tool<ReadFileToolInput> = {
 
     const buffer = await fs.readFile(target);
     if (looksBinary(buffer)) {
-      return { ok: false, output: { error: "read.path appears to be binary; use list/search metadata instead", path: target, size: stat.size } };
+      return { ok: false, output: { error: "read.path appears to be binary; use list/grep metadata instead", path: target, size: stat.size } };
     }
 
     const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
