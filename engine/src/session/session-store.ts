@@ -8,6 +8,7 @@ import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMem
 export type SessionTranscriptEntry =
   | { type: "message"; sessionId: string; agentId: string; message: Message }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
+  | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
 export interface SessionStoreOptions {
@@ -30,6 +31,7 @@ export interface SessionSummary {
   sessionId: string;
   sessionDir: string;
   transcriptPath: string;
+  title?: string;
   updatedAt?: string;
   entryCount: number;
   messages: number;
@@ -40,6 +42,7 @@ export interface SessionStoreSnapshot {
   sessionId: string;
   sessionDir: string;
   transcriptPath: string;
+  title?: string;
   resumedMessages: number;
   contentReplacements: number;
 }
@@ -52,14 +55,16 @@ export class SessionStore {
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
   private readonly contentReplacements: ContentReplacementRecord[];
+  private title?: string;
 
-  private constructor(options: SessionStoreOptions, sessionId: string, loaded: { messages: Message[]; replacements: ContentReplacementRecord[] }) {
+  private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
     this.sessionId = sessionId;
     this.sessionDir = path.join(resolveSessionRoot(options), sessionId);
     this.transcriptPath = path.join(this.sessionDir, "transcript.jsonl");
     this.resumedMessages = loaded.messages;
     this.contentReplacements = loaded.replacements;
+    this.title = loaded.title;
     this.toolResultMemory = new FileToolResultMemory(
       {
         sessionDir: this.sessionDir,
@@ -77,7 +82,7 @@ export class SessionStore {
         : requestedSessionId ?? createSessionId();
     const sessionDir = path.join(resolveSessionRoot(options), sessionId);
     const transcriptPath = path.join(sessionDir, "transcript.jsonl");
-    const loaded = options.resume ? await loadTranscript(transcriptPath, options.agentId) : { messages: [], replacements: [] };
+    const loaded = options.resume ? await loadTranscript(transcriptPath, options.agentId) : createEmptyLoadedTranscript();
     await fsp.mkdir(sessionDir, { recursive: true });
     return new SessionStore(options, sessionId, loaded);
   }
@@ -95,7 +100,7 @@ export class SessionStore {
           const stat = await fsp.stat(transcriptPath).catch(() => undefined);
           if (!stat) return undefined;
           const loaded = await loadTranscript(transcriptPath, options.agentId);
-          return {
+          const summary: SessionSummaryWithUpdatedAtMs = {
             sessionId,
             sessionDir,
             transcriptPath,
@@ -105,6 +110,8 @@ export class SessionStore {
             messages: loaded.messages.length,
             contentReplacements: loaded.replacements.length,
           };
+          if (loaded.title) summary.title = loaded.title;
+          return summary;
         }),
     );
 
@@ -125,6 +132,17 @@ export class SessionStore {
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
+  recordTitle(title: string): void {
+    const normalized = normalizeTitle(title);
+    if (!normalized || normalized === this.title) return;
+    this.title = normalized;
+    this.appendEntry({ type: "title", sessionId: this.sessionId, agentId: this.agentId, title: normalized, createdAt: new Date().toISOString() });
+  }
+
+  getTitle(): string | undefined {
+    return this.title;
+  }
+
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
     if (replacements.length === 0) return;
     this.contentReplacements.push(...replacements);
@@ -139,6 +157,7 @@ export class SessionStore {
   reset(): void {
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
+    this.title = undefined;
     this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
   }
 
@@ -147,6 +166,7 @@ export class SessionStore {
       sessionId: this.sessionId,
       sessionDir: this.sessionDir,
       transcriptPath: this.transcriptPath,
+      title: this.title,
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
     };
@@ -156,6 +176,13 @@ export class SessionStore {
     fs.mkdirSync(this.sessionDir, { recursive: true });
     fs.appendFileSync(this.transcriptPath, `${JSON.stringify(entry)}\n`, "utf8");
   }
+}
+
+interface LoadedTranscript {
+  messages: Message[];
+  replacements: ContentReplacementRecord[];
+  entries: number;
+  title?: string;
 }
 
 interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
@@ -172,30 +199,34 @@ async function findLatestSessionId(options: SessionStoreOptions): Promise<string
   return latest?.sessionId;
 }
 
-async function loadTranscript(transcriptPath: string, agentId?: string): Promise<{ messages: Message[]; replacements: ContentReplacementRecord[]; entries: number }> {
+async function loadTranscript(transcriptPath: string, agentId?: string): Promise<LoadedTranscript> {
   const text = await fsp.readFile(transcriptPath, "utf8").catch(() => "");
-  const messages: Message[] = [];
-  const replacements: ContentReplacementRecord[] = [];
-  let entries = 0;
-  if (!text.trim()) return { messages, replacements, entries };
+  const loaded = createEmptyLoadedTranscript();
+  if (!text.trim()) return loaded;
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as SessionTranscriptEntry;
       if (agentId && "agentId" in entry && entry.agentId !== agentId) continue;
-      entries += 1;
+      loaded.entries += 1;
       if (entry.type === "reset") {
-        messages.length = 0;
-        replacements.length = 0;
+        loaded.messages.length = 0;
+        loaded.replacements.length = 0;
+        loaded.title = undefined;
       }
-      if (entry.type === "message") messages.push(entry.message);
-      if (entry.type === "content-replacement") replacements.push(...entry.replacements);
+      if (entry.type === "message") loaded.messages.push(entry.message);
+      if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
+      if (entry.type === "title") loaded.title = normalizeTitle(entry.title);
     } catch {
       // Skip malformed lines so a partial write does not make the session unusable.
     }
   }
-  return { messages, replacements, entries };
+  return loaded;
+}
+
+function createEmptyLoadedTranscript(): LoadedTranscript {
+  return { messages: [], replacements: [], entries: 0 };
 }
 
 function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {
@@ -216,6 +247,11 @@ function shouldPersistMessage(message: Message): boolean {
   if (message.role === "progress") return false;
   if (message.metadata?.systemInit === true) return false;
   return true;
+}
+
+function normalizeTitle(title: string | undefined): string | undefined {
+  const normalized = title?.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 120) : undefined;
 }
 
 function normalizeRequestedSessionId(sessionId: string | undefined): string | undefined {

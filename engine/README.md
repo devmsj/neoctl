@@ -78,7 +78,7 @@ npm run dev
 
 ## Session Resume
 
-The REPL writes JSONL transcripts under `.agent/sessions` by default. Use `/sessions [limit]` to list saved sessions and `/resume [session_id]` to replace the current in-memory history with a saved transcript. `/resume` without an id resumes the newest session for the current agent.
+The REPL writes JSONL transcripts under `.agent/sessions` by default. After the first completed user turn, a title subagent summarizes the session title; `/sessions [limit]` shows that title alongside each saved session. Use `/resume [session_id]` to replace the current in-memory history with a saved transcript. `/resume` without an id resumes the newest session for the current agent.
 
 Startup resume is available with environment variables:
 

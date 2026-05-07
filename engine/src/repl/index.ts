@@ -1523,8 +1523,9 @@ function formatSessions(sessions: readonly SessionSummary[]): string {
   return [
     "Saved sessions:",
     ...sessions.map((session, index) => {
+      const title = session.title ? `${session.title} · ` : "";
       const updated = session.updatedAt ? ` · ${session.updatedAt}` : "";
-      return `${index + 1}. ${session.sessionId}${updated} · ${session.messages} messages · ${session.transcriptPath}`;
+      return `${index + 1}. ${title}${session.sessionId}${updated} · ${session.messages} messages · ${session.transcriptPath}`;
     }),
     "Use /resume <session_id> to restore one.",
   ].join("\n");

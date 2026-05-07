@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   const store = await SessionStore.open({ agentId: "main", rootDir: root, sessionId });
   for (const message of messages) store.recordMessage(message);
   store.recordContentReplacements(first.records);
+  store.recordTitle("Smoke Session Title");
   store.recordMessage({ ...messages[0], role: "progress" });
 
   const resumed = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
@@ -36,10 +37,13 @@ async function main(): Promise<void> {
     second.records.length === 0 &&
     JSON.stringify(first.messages) === JSON.stringify(second.messages) &&
     resumed.snapshot().resumedMessages === messages.length &&
+    resumed.snapshot().title === "Smoke Session Title" &&
     latest.snapshot().sessionId === sessionId &&
     latest.snapshot().resumedMessages === messages.length &&
+    latest.snapshot().title === "Smoke Session Title" &&
     listed.length === 1 &&
     listed[0]?.sessionId === sessionId &&
+    listed[0]?.title === "Smoke Session Title" &&
     resumedBudget.records.length === 0 &&
     resumedBudget.messages.some((message) =>
       message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),

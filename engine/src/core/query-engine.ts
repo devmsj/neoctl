@@ -1,13 +1,15 @@
 import type { ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway } from "../model/model-gateway.js";
-import type { ToolRegistry } from "../tools/registry.js";
+import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
 import type { AgentEvent } from "../types/events.js";
 import type { Message } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { query } from "./query.js";
+import { runAgent } from "./run-agent.js";
+import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
 import type { TerminalReason } from "./state.js";
 import { SessionStore, type SessionStoreSnapshot, type SessionSummary } from "../session/session-store.js";
 
@@ -44,6 +46,7 @@ export class QueryEngine {
   private lastTerminalReason?: TerminalReason;
   private sessionStore?: SessionStore;
   private sessionInitialized = false;
+  private userTurns = 0;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
@@ -81,6 +84,7 @@ export class QueryEngine {
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = createTextMessage("user", text);
+    this.userTurns += 1;
     this.history.push(userMessage);
     this.sessionStore?.recordMessage(userMessage);
 
@@ -126,6 +130,7 @@ export class QueryEngine {
       }
       if (event.type === "terminal") {
         this.lastTerminalReason = event.reason;
+        if (event.reason === "completed") await this.maybeGenerateSessionTitle();
       }
       yield event;
     }
@@ -133,6 +138,7 @@ export class QueryEngine {
 
   reset(): void {
     this.history.length = 0;
+    this.userTurns = 0;
     this.lastTerminalReason = undefined;
     this.sessionStore?.reset();
   }
@@ -166,7 +172,89 @@ export class QueryEngine {
     });
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
+    this.userTurns = countUserTurns(this.history);
   }
+
+  private async maybeGenerateSessionTitle(): Promise<void> {
+    const store = this.sessionStore;
+    if (!store || store.getTitle() || this.userTurns !== 1) return;
+    const title = await generateSessionTitle({
+      agentId: `${this.agentId}-session-title`,
+      modelGateway: this.options.modelGateway,
+      model: this.options.model,
+      fallbackModel: this.options.fallbackModel,
+      messages: this.history,
+    });
+    if (title) store.recordTitle(title);
+  }
+}
+
+async function generateSessionTitle(input: {
+  agentId: string;
+  modelGateway: ModelGateway;
+  model?: string;
+  fallbackModel?: string;
+  messages: readonly Message[];
+}): Promise<string | undefined> {
+  try {
+    const prompt = [
+      "Summarize this session as a short title for a session list.",
+      "Return only the title, without quotes or punctuation decoration.",
+      "Keep it under 8 words and use the user's language when possible.",
+      "",
+      serializeMessagesForTitle(input.messages),
+    ].join("\n");
+    const stream = runAgent({
+      agentId: input.agentId,
+      agent: {
+        ...GENERAL_PURPOSE_AGENT,
+        agentType: "session-title",
+        tools: [],
+        maxTurns: 1,
+        initialPrompt: "You generate concise conversation titles. Return only the title.",
+      },
+      prompt,
+      dependencies: { modelGateway: input.modelGateway, tools: new ToolRegistry() },
+      model: input.model,
+      fallbackModel: input.fallbackModel,
+      maxTurns: 1,
+    });
+
+    let completed = await stream.next();
+    while (!completed.done) completed = await stream.next();
+    return normalizeGeneratedTitle(completed.value.result.content);
+  } catch {
+    return undefined;
+  }
+}
+
+function serializeMessagesForTitle(messages: readonly Message[]): string {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => {
+      const text = message.blocks
+        .filter((block): block is { type: "text"; text: string } => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trim();
+      return text ? `${message.role}: ${text}` : undefined;
+    })
+    .filter((line): line is string => Boolean(line))
+    .join("\n")
+    .slice(0, 4000);
+}
+
+function normalizeGeneratedTitle(title: string): string | undefined {
+  const normalized = title
+    .replace(/[\r\n]+/g, " ")
+    .replace(/^\s*["'“”‘’`]+|["'“”‘’`]+\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized ? normalized.slice(0, 120) : undefined;
+}
+
+function countUserTurns(messages: readonly Message[]): number {
+  return messages.filter((message) => message.role === "user" && message.blocks.some((block) => block.type === "text")).length;
 }
 
 function cloneMessage(message: Message): Message {

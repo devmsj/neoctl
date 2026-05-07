@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
@@ -23,7 +26,10 @@ class ParentAndSubagentGateway implements ModelGateway {
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n") ?? "";
-      yield { type: "assistant_message", message: createTextMessage("assistant", `worker result: ${lastPrompt.slice(0, 24)}`) };
+      const content = request.tools.length === 0 && lastPrompt.includes("short title")
+        ? "Delegate Once Smoke Title"
+        : `worker result: ${lastPrompt.slice(0, 24)}`;
+      yield { type: "assistant_message", message: createTextMessage("assistant", content) };
       yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
       return;
     }
@@ -50,6 +56,7 @@ class ParentAndSubagentGateway implements ModelGateway {
 
 async function main(): Promise<void> {
   const gateway = new ParentAndSubagentGateway();
+  const sessionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-title-smoke-"));
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
   tools.register(echoTool);
@@ -61,17 +68,19 @@ async function main(): Promise<void> {
     agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]),
   }));
 
-  const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4 });
+  const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
   const events: string[] = [];
   for await (const event of engine.sendUserText("delegate once")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
   }
 
+  const listedSessions = await engine.listSessions(1);
   const syncOk =
-    gateway.subagentCalls === 1 &&
+    gateway.subagentCalls === 2 &&
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
-    events.includes("terminal:completed");
+    events.includes("terminal:completed") &&
+    listedSessions[0]?.title === "Delegate Once Smoke Title";
 
   const context: ToolUseContext = {
     agentId: "main",
@@ -113,7 +122,7 @@ async function main(): Promise<void> {
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
   const ok = syncOk && asyncOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
