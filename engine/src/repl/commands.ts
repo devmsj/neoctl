@@ -5,7 +5,7 @@ export type ReplCommand =
   | { type: "log"; path?: string; off?: boolean }
   | { type: "reset" }
   | { type: "resume"; sessionId?: string }
-  | { type: "sessions"; limit?: number }
+  | { type: "sessions"; pageSize?: number }
   | { type: "state" }
   | { type: "input"; text: string };
 
@@ -21,7 +21,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs" },
-  { name: "/sessions", usage: "/sessions [limit]", description: "List saved sessions, newest first" },
+  { name: "/sessions", usage: "/sessions [page_size]", description: "Browse saved sessions (↑/↓ select, ←/→ page, Enter resume)" },
   { name: "/resume", usage: "/resume [session_id]", description: "Resume a saved session (default/latest uses newest)" },
   { name: "/state", usage: "/state", description: "Show query engine state" },
   { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker" },
@@ -45,8 +45,8 @@ export function parseReplCommand(line: string): ReplCommand {
   }
   if (trimmed === "/sessions" || trimmed.startsWith("/sessions ")) {
     const argument = trimmed.slice("/sessions".length).trim();
-    const limit = argument ? Number(argument) : undefined;
-    return { type: "sessions", limit: Number.isFinite(limit) && limit !== undefined && limit > 0 ? Math.floor(limit) : undefined };
+    const pageSize = argument ? Number(argument) : undefined;
+    return { type: "sessions", pageSize: Number.isFinite(pageSize) && pageSize !== undefined && pageSize > 0 ? Math.floor(pageSize) : undefined };
   }
   if (trimmed === "/state") return { type: "state" };
   return { type: "input", text: line };
