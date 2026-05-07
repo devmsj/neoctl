@@ -313,6 +313,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const pendingToolResultTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime, lineId));
   const [input, setInput] = useState("");
+  const [queuedInput, setQueuedInput] = useState<string | undefined>(undefined);
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
@@ -323,6 +324,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
+  const queuedInputRef = useRef<string | undefined>(undefined);
   const cursorRef = useRef(cursor);
   const busyRef = useRef(busy);
   const terminalFocusedRef = useRef(true);
@@ -377,6 +379,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (!options?.preserveSlashCompletionSelection) resetSlashCompletionSelection();
     setInput(text);
     setCursor(safeCursor);
+  };
+
+  const setQueuedPromptState = (text: string | undefined) => {
+    queuedInputRef.current = text;
+    setQueuedInput(text);
   };
 
   const setHistorySelection = (next: number | undefined) => {
@@ -566,11 +573,32 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   const submitLine = async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || busyRef.current) return;
+    if (!trimmed) return;
+    if (busyRef.current) {
+      if (queuedInputRef.current !== undefined) return;
+      setQueuedPromptState(text);
+      setHistorySelection(undefined);
+      setPromptState("", 0);
+      return;
+    }
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
     setPromptState("", 0);
     await handleCommandOrPrompt(text);
+  };
+
+  const takeQueuedPromptState = () => {
+    const text = queuedInputRef.current;
+    if (text === undefined) return undefined;
+    setQueuedPromptState(undefined);
+    return text;
+  };
+
+  const restoreQueuedPromptToEditor = () => {
+    const text = takeQueuedPromptState();
+    if (text === undefined) return false;
+    setPromptState(text, text.length);
+    return true;
   };
 
   const handleCommandOrPrompt = async (text: string) => {
@@ -651,6 +679,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         retryCooldownUntil: undefined,
       }));
       if (!terminalFocusedRef.current) playReadySound();
+      const queuedText = takeQueuedPromptState();
+      if (queuedText !== undefined) {
+        void submitLine(queuedText);
+      }
     }
   };
 
@@ -662,12 +694,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
     setSessionsBrowser(undefined);
+    setQueuedPromptState(undefined);
+    setPromptState("", 0);
   }, [runtime]);
 
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;
+  const inputLockedByQueue = busy && queuedInput !== undefined;
   const prompt = promptPrefix(busy);
-  const slashCompletions = slashCommandCompletions(input, cursor);
+  const slashCompletions = inputLockedByQueue ? [] : slashCommandCompletions(input, cursor);
   const visibleSlashCompletionCount = Math.min(slashCompletions.length, SLASH_COMPLETION_MAX_ROWS);
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
@@ -675,7 +710,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
     slashCompletionIndexRef.current = selectedSlashCompletionIndex;
   }
-  const promptHeight = promptTextView(input, cursor, width, prompt).length + slashCompletionViewHeight(slashCompletions);
+  const promptHeight = promptTextView(input, cursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
@@ -710,7 +745,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       app.exit();
       return;
     }
-    if (busyRef.current) return;
+    if (busyRef.current && queuedInputRef.current !== undefined) {
+      if (key.escape) restoreQueuedPromptToEditor();
+      return;
+    }
     if (sessionsBrowser) {
       if (key.escape) {
         setSessionsBrowser(undefined);
@@ -836,7 +874,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
-    e(PromptLine, { text: input, cursor, busy, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
+    queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
+    e(PromptLine, { text: input, cursor, busy, locked: inputLockedByQueue, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
   );
 }
 
@@ -1378,23 +1417,36 @@ function slashCompletionSelectableCount(text: string, cursor: number): number {
 }
 
 function PromptLine(
-  { text, cursor, busy, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
-  { text: string; cursor: number; busy: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
+  { text, cursor, busy, locked, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
+  { text: string; cursor: number; busy: boolean; locked: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
 ) {
   const visualLines = promptTextView(text, cursor, width, prompt);
-  const inputColor = !busy && isValidReplCommandLine(text) ? "cyan" : undefined;
+  const inputColor = !locked && isValidReplCommandLine(text) ? "cyan" : undefined;
   return e(
     Box,
     { flexDirection: "column" },
     ...visualLines.map((line, index) => e(
       Box,
       { key: `prompt-${index}`, height: 1, overflow: "hidden" },
-      e(Text, { color: busy ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
+      e(Text, { color: locked ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
       e(Text, { color: inputColor }, line.before),
       e(Text, { inverse: true, color: inputColor }, line.selected),
       e(Text, { color: inputColor }, line.after),
     )),
     ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
+  );
+}
+
+function QueuedInputLine(
+  { text, width: terminalWidth }:
+  { text: string; width: number },
+) {
+  const width = statusBarWidth(terminalWidth);
+  const preview = fitToWidth(`queued next: ${text.replace(/\s+/g, " ").trim()}  (Esc to edit)`, width);
+  return e(
+    Box,
+    { width, height: 1, overflow: "hidden" },
+    e(Text, { color: "yellow" }, preview),
   );
 }
 
@@ -2638,6 +2690,7 @@ const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " · ";
 const STATUS_BAR_RENDER_ROWS = 2;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
+const QUEUED_INPUT_RENDER_ROWS = 1;
 const MIN_LIVE_VIEWPORT_LINES = 4;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
