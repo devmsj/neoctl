@@ -2,6 +2,7 @@ import type { ReasoningConfig } from "./model-gateway.js";
 
 export type ModelProviderName = "openai";
 export type ReasoningEffort = NonNullable<ReasoningConfig["effort"]>;
+export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
   provider: ModelProviderName;
@@ -39,12 +40,17 @@ export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): M
   }
 }
 
-export function parseReasoning(value: string | undefined): ReasoningConfig | undefined {
-  if (!value) return undefined;
-  if (value === "minimal" || value === "low" || value === "medium" || value === "high") {
-    return { effort: value };
-  }
-  return undefined;
+export function parseReasoning(
+  effortValue: string | undefined,
+  summaryValue?: string | undefined,
+): ReasoningConfig | undefined {
+  const effort = parseReasoningEffort(effortValue);
+  const summary = parseReasoningSummary(summaryValue);
+  if (!effort && !summary) return undefined;
+  return {
+    effort,
+    summary,
+  };
 }
 
 function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig | undefined {
@@ -63,9 +69,22 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
     streamIdleTimeoutMs: parseNumber(env.MODEL_STREAM_IDLE_TIMEOUT_MS ?? env.OPENAI_STREAM_IDLE_TIMEOUT_MS),
     maxRetries: parseNumber(env.MODEL_MAX_RETRIES ?? env.OPENAI_MAX_RETRIES),
     defaultMaxOutputTokens: parseNumber(env.MODEL_MAX_OUTPUT_TOKENS ?? env.OPENAI_MAX_OUTPUT_TOKENS) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    defaultReasoning: parseReasoning(env.MODEL_REASONING_EFFORT ?? env.OPENAI_REASONING_EFFORT),
+    defaultReasoning: parseReasoning(
+      env.MODEL_REASONING_EFFORT ?? env.OPENAI_REASONING_EFFORT,
+      env.MODEL_REASONING_SUMMARY ?? env.OPENAI_REASONING_SUMMARY,
+    ),
     openai: endpoint ? { endpoint } : undefined,
   };
+}
+
+function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high") return value;
+  return undefined;
+}
+
+function parseReasoningSummary(value: string | undefined): ReasoningSummary | undefined {
+  if (value === "auto" || value === "concise" || value === "detailed") return value;
+  return undefined;
 }
 
 function parseProvider(value: string): ModelProviderName {

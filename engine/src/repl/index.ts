@@ -24,7 +24,7 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
-import { isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions } from "./commands.js";
+import { isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
@@ -271,7 +271,7 @@ function setTerminalTitle(title: string, dotFilled = true): void {
   if (!stdout.isTTY) return;
   const safeTitle = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   const dotPrefix = dotFilled ? TERMINAL_TITLE_DOT_FILLED_PREFIX : TERMINAL_TITLE_DOT_BLANK_PREFIX;
-  const decoratedTitle = `${dotPrefix}${safeTitle || "agent-scaffold"}`.slice(0, 120);
+  const decoratedTitle = `${dotPrefix}${safeTitle || "neo"}`.slice(0, 120);
   stdout.write(`\u001b]0;${decoratedTitle}\u0007`);
 }
 
@@ -299,7 +299,7 @@ function isTerminalFocusOutSequence(value: string): boolean {
 }
 
 function sessionTerminalTitle(snapshot: SessionStoreSnapshot | undefined): string {
-  return snapshot?.title?.trim() || "agent-scaffold";
+  return snapshot?.title?.trim() || "neo";
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -640,6 +640,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
 
+    if (text.trimStart().startsWith("/")) {
+      append({ kind: "error", text: `Unknown or incomplete command: ${text.trim()}\nType /help for commands.` });
+      return;
+    }
+
     append({ kind: "user", text });
     const abortController = new AbortController();
     activeAbortController.current = abortController;
@@ -805,7 +810,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (key.return) {
-      void submitLine(inputRef.current);
+      const currentText = inputRef.current;
+      const currentCursor = cursorRef.current;
+      const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current);
+      if (completion !== undefined && completion.arguments !== "none") {
+        const nextText = `${completion.name} ${currentText.slice(currentCursor)}`;
+        setPromptState(nextText, completion.name.length + 1);
+        return;
+      }
+      void submitLine(completion?.name ?? currentText);
       return;
     }
     if (key.backspace || key.delete) {
@@ -1407,6 +1420,7 @@ const SLASH_COMPLETION_MAX_ROWS = 8;
 interface SlashCommandCompletion {
   name: string;
   description: string;
+  arguments: ReplCommandArgumentSpec;
 }
 
 function slashCommandCompletions(text: string, cursor: number): SlashCommandCompletion[] {
@@ -1418,7 +1432,7 @@ function slashCommandCompletions(text: string, cursor: number): SlashCommandComp
 
   const normalizedPrefix = prefix.toLowerCase();
   return replCommandDefinitions
-    .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ name, description: command.description })))
+    .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ name, description: command.description, arguments: command.arguments })))
     .filter((command) => command.name.toLowerCase().startsWith(normalizedPrefix));
 }
 
@@ -1429,6 +1443,12 @@ function slashCompletionViewHeight(completions: SlashCommandCompletion[]): numbe
 
 function slashCompletionSelectableCount(text: string, cursor: number): number {
   return Math.min(slashCommandCompletions(text, cursor).length, SLASH_COMPLETION_MAX_ROWS);
+}
+
+function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number): SlashCommandCompletion | undefined {
+  const completions = slashCommandCompletions(text, cursor).slice(0, SLASH_COMPLETION_MAX_ROWS);
+  if (completions.length === 0) return undefined;
+  return completions[Math.max(0, Math.min(selectedIndex, completions.length - 1))];
 }
 
 function PromptLine(

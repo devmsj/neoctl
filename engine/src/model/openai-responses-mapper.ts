@@ -187,6 +187,7 @@ function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean 
 
 function isReasoningDeltaEvent(type: string | undefined): boolean {
   return type === "response.reasoning_summary.delta" ||
+    type === "response.reasoning_summary_text.delta" ||
     type === "response.reasoning.delta" ||
     type === "response.output_item.delta";
 }
