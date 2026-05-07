@@ -269,7 +269,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const history = useRef<string[]>([]);
   const toolLineIds = useRef(new Map<string, number>());
   const pendingToolResultTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime));
+  const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime, lineId));
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -494,7 +494,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "help") {
-      append(systemLine(helpText));
+      append(systemLine(helpText, EXPANDED_SUMMARY_MAX_LINES));
       return;
     }
     if (command.type === "cost") {
@@ -509,7 +509,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "state") {
-      append(systemLine(JSON.stringify({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, null, 2)));
+      append(systemLine(formatReplData({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
       return;
     }
     if (command.type === "sessions") {
@@ -521,6 +521,12 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       if (resumed) {
         runtime.usage.reset();
         setStatus(initialStatus(runtime));
+        resetLinesToHistory(runtime, setLines, lineId);
+        assistantLineId.current = undefined;
+        thinkingLineId.current = undefined;
+        toolLineIds.current.clear();
+        clearPendingToolResultTimers();
+        append(systemLine(formatResume(resumed)));
       }
       return;
     }
@@ -576,7 +582,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   useEffect(() => {
-    setLines(initialLines(runtime));
+    setLines(initialLines(runtime, lineId));
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
     toolLineIds.current.clear();
@@ -769,14 +775,17 @@ function MessageLine(
   },
 ) {
   if (line.previewStyle === "summary") {
-    const display = displayWindowForLine(line, toolWidth, line.live ? liveMaxLines : undefined);
+    const useRoleMarker = summaryUsesRoleMarker(line);
+    const summaryWidth = useRoleMarker ? contentWidth : toolWidth;
+    const display = displayWindowForLine(line, summaryWidth, line.live ? liveMaxLines : undefined);
     return e(
       Box,
       { flexDirection: "row" },
+      useRoleMarker ? e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker()) : null,
       e(
         Box,
-        { flexDirection: "column", width: toolWidth },
-        ...renderDisplayText(line, toolWidth, display.maxLines, display.skipTop),
+        { flexDirection: "column", width: summaryWidth },
+        ...renderDisplayText(line, summaryWidth, display.maxLines, display.skipTop),
       ),
     );
   }
@@ -854,9 +863,14 @@ function renderSummaryLines(line: UiLine, width: number): string[] {
 }
 
 function summaryTitle(line: UiLine): string {
+  if (summaryUsesRoleMarker(line)) return "";
   const title = line.title ?? titleForKind(line.kind);
   if (!line.titleStatus) return title;
   return `${title} ${titleStatusMarker(line.titleStatus)}`;
+}
+
+function summaryUsesRoleMarker(line: UiLine): boolean {
+  return line.previewStyle === "summary" && (line.kind === "system" || line.kind === "meta");
 }
 
 function titleStatusMarker(status: NonNullable<UiLine["titleStatus"]>): string {
@@ -1194,7 +1208,12 @@ async function handleLogCommand(
   append(systemLine(`model communication logs: ${path.resolve(command.path)}`));
 }
 
-function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number): boolean {
+function renderMessage(
+  message: Message,
+  append: (line: Omit<UiLine, "id">) => number,
+  activeAssistantId?: number,
+  options: { includeToolUseBlocks?: boolean } = {},
+): boolean {
   if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) return false;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) {
@@ -1212,6 +1231,10 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
     }
     if (block.type === "thinking") {
       append({ kind: "thinking", title: "Think", text: block.text, previewStyle: "summary" });
+      rendered = true;
+    }
+    if (block.type === "tool_use" && options.includeToolUseBlocks) {
+      append({ ...formatToolUse(block), live: false });
       rendered = true;
     }
     if (block.type === "tool_result") {
@@ -1336,28 +1359,45 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
 
 async function handleSessionsCommand(limit: number | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number) {
   const sessions = await runtime.engine.listSessions(limit ?? 10);
-  append(systemLine(formatSessions(sessions)));
+  append(systemLine(formatSessions(sessions), EXPANDED_SUMMARY_MAX_LINES));
 }
 
-async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<boolean> {
+async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<SessionStoreSnapshot | undefined> {
   try {
-    const snapshot = await runtime.engine.resumeSession(sessionId);
-    append(systemLine(formatResume(snapshot)));
-    return true;
+    return await runtime.engine.resumeSession(sessionId);
   } catch (error) {
     append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    return false;
+    return undefined;
   }
 }
 
-function initialLines(runtime: ReplRuntime): UiLine[] {
+function initialLines(runtime: ReplRuntime, lineId: { current: number }): UiLine[] {
   const session = runtime.engine.snapshot().session;
   const suffix = session
     ? ` Session: ${session.sessionId}${session.resumedMessages > 0 ? ` (${session.resumedMessages} resumed messages)` : ""}.`
     : "";
-  return [
+  const lines: UiLine[] = [
     { id: 0, kind: "system", title: "System", text: `Interactive UI enabled. Type /help for commands.${suffix}`, previewStyle: "summary" },
   ];
+  lineId.current = 0;
+  for (const line of restoredHistoryLines(runtime)) lines.push({ id: ++lineId.current, ...line });
+  return lines;
+}
+
+function resetLinesToHistory(runtime: ReplRuntime, setLines: (lines: UiLine[]) => void, lineId: { current: number }): void {
+  setLines(initialLines(runtime, lineId));
+}
+
+function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
+  const lines: Omit<UiLine, "id">[] = [];
+  const append = (line: Omit<UiLine, "id">) => {
+    lines.push(line);
+    return lines.length;
+  };
+  for (const message of runtime.engine.getHistoryMessages()) {
+    renderMessage(message, append, undefined, { includeToolUseBlocks: true });
+  }
+  return lines;
 }
 
 function formatSessions(sessions: readonly SessionSummary[]): string {
@@ -1439,12 +1479,13 @@ function titleForRole(role: Message["role"]): string {
   return titleForKind(kindForRole(role));
 }
 
-function systemLine(text: string): Omit<UiLine, "id"> {
+function systemLine(text: string, summaryMaxLines?: number): Omit<UiLine, "id"> {
   return {
     kind: "system",
     title: "System",
     text,
     previewStyle: "summary",
+    summaryMaxLines,
   };
 }
 
@@ -1503,8 +1544,61 @@ function toolTitle(toolName: string, phase: "running" | "finished"): string {
 }
 
 function formatJson(value: unknown, maxLength: number): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  return truncate(text ?? "", maxLength);
+  return formatReplData(value, maxLength);
+}
+
+function formatReplData(value: unknown, maxLength: number): string {
+  return truncate(formatReplValue(value), maxLength);
+}
+
+function formatReplValue(value: unknown, indent = 0, seen = new WeakSet<object>()): string {
+  if (typeof value === "string") return value;
+  if (value === null || typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  if (value === undefined) return "undefined";
+  if (typeof value === "function") return `[Function${value.name ? `: ${value.name}` : ""}]`;
+  if (typeof value === "symbol") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Error) return formatReplObject({ name: value.name, message: value.message, stack: value.stack }, indent, seen);
+  if (Array.isArray(value)) return formatReplArray(value, indent, seen);
+  if (isRecord(value)) return formatReplObject(value, indent, seen);
+  return String(value);
+}
+
+function formatReplArray(value: unknown[], indent: number, seen: WeakSet<object>): string {
+  if (value.length === 0) return "[]";
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+  const pad = " ".repeat(indent);
+  const childIndent = indent + 2;
+  const lines = value.map((item) => {
+    if (isReplScalar(item)) return `${pad}- ${formatReplValue(item, childIndent, seen)}`;
+    const formatted = formatReplValue(item, childIndent, seen);
+    return `${pad}-\n${formatted}`;
+  });
+  seen.delete(value);
+  return lines.join("\n");
+}
+
+function formatReplObject(value: Record<string, unknown>, indent: number, seen: WeakSet<object>): string {
+  const entries = Object.entries(value).filter(([, entryValue]) => entryValue !== undefined);
+  if (entries.length === 0) return "{}";
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+  const pad = " ".repeat(indent);
+  const childIndent = indent + 2;
+  const lines = entries.map(([key, entryValue]) => {
+    const label = `${pad}${key}:`;
+    if (isReplScalar(entryValue)) return `${label} ${formatReplValue(entryValue, childIndent, seen)}`;
+    const formatted = formatReplValue(entryValue, childIndent, seen);
+    if (formatted === "[]" || formatted === "{}" || formatted === "[Circular]") return `${label} ${formatted}`;
+    return `${label}\n${formatted}`;
+  });
+  seen.delete(value);
+  return lines.join("\n");
+}
+
+function isReplScalar(value: unknown): boolean {
+  return value === null || value === undefined || typeof value !== "object" || value instanceof Date;
 }
 
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
@@ -1545,10 +1639,10 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (toolName === "search" && isRecord(output)) {
-    return { text: formatWebSearchToolResult(output, ok) };
+    return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   }
 
-  return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}` };
+  return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
 }
 
 interface EditToolOutputLike extends Record<string, unknown> {
@@ -2145,7 +2239,8 @@ const SUMMARY_BLOCK = {
   maxLines: 6,
   detailIndent: "    ",
 };
-const EDIT_TOOL_SUMMARY_MAX_LINES = 1000;
+const EXPANDED_SUMMARY_MAX_LINES = 1000;
+const EDIT_TOOL_SUMMARY_MAX_LINES = EXPANDED_SUMMARY_MAX_LINES;
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
   const stripped = stripAnsi(value);

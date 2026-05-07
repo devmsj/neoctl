@@ -146,6 +146,10 @@ export class QueryEngine {
     };
   }
 
+  getHistoryMessages(): Message[] {
+    return this.history.map(cloneMessage);
+  }
+
   get toolResultMemory() {
     return this.sessionStore?.toolResultMemory;
   }
@@ -163,4 +167,8 @@ export class QueryEngine {
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
   }
+}
+
+function cloneMessage(message: Message): Message {
+  return JSON.parse(JSON.stringify(message)) as Message;
 }
