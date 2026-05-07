@@ -5,6 +5,7 @@ export class TaskStore {
   private readonly tasks = new Map<string, LocalAgentTask>();
   private readonly agentNames = new Map<string, string>();
   private readonly waiters = new Set<() => void>();
+  private readonly subscribers = new Set<() => void>();
 
   upsert(task: LocalAgentTask): void {
     task.updatedAt = new Date().toISOString();
@@ -22,6 +23,15 @@ export class TaskStore {
 
   list(): LocalAgentTask[] {
     return [...this.tasks.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  activeCount(): number {
+    return this.list().filter((task) => !this.isTerminal(task)).length;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.subscribers.add(listener);
+    return () => this.subscribers.delete(listener);
   }
 
   registerName(name: string, agentId: string): void {
@@ -146,6 +156,7 @@ export class TaskStore {
 
   private notify(): void {
     for (const waiter of [...this.waiters]) waiter();
+    for (const subscriber of [...this.subscribers]) subscriber();
   }
 }
 

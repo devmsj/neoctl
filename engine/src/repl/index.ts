@@ -33,6 +33,7 @@ interface ReplRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
   usage: SessionUsageTracker;
+  taskStore: TaskStore;
   initialMetrics: ContextMetrics;
 }
 
@@ -210,7 +211,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
-  return { engine, communicationLogger, usage: new SessionUsageTracker(), initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
+  return { engine, communicationLogger, usage: new SessionUsageTracker(), taskStore, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -268,6 +269,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
+  const [backgroundTaskCount, setBackgroundTaskCount] = useState(() => runtime.taskStore.activeCount());
   const [animationTick, setAnimationTick] = useState(0);
   const inputRef = useRef(input);
   const cursorRef = useRef(cursor);
@@ -275,10 +277,16 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const historyIndexRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    if (!busy) return undefined;
+    if (!busy && backgroundTaskCount === 0) return undefined;
     const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [busy]);
+  }, [busy, backgroundTaskCount]);
+
+  useEffect(() => {
+    const updateBackgroundTaskCount = () => setBackgroundTaskCount(runtime.taskStore.activeCount());
+    updateBackgroundTaskCount();
+    return runtime.taskStore.subscribe(updateBackgroundTaskCount);
+  }, [runtime]);
 
   const setPromptState = (text: string, nextCursor: number) => {
     const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
@@ -541,7 +549,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const blockIndex = staticLines.length + i;
     return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
   }, 0);
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS - dynamicMarginOverhead - 1);
+  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (backgroundTaskCount > 0 ? BACKGROUND_TASK_STATUS_RENDER_ROWS : 0);
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - dynamicMarginOverhead - 1);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
@@ -622,6 +631,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
     e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     e(StatusBar, { status, animationTick, width }),
+    backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
     e(PromptLine, { text: input, cursor, busy, width, prompt }),
   );
 }
@@ -913,6 +923,19 @@ function StatusBar(
       { key: index, color: segment.color ?? "gray", bold: segment.bold ?? false },
       segment.text,
     )),
+  );
+}
+
+function BackgroundTaskStatusLine(
+  { count, width: terminalWidth }:
+  { count: number; width: number },
+) {
+  const width = statusBarWidth(terminalWidth);
+  const text = count <= 3 ? "◇".repeat(Math.max(0, count)) : `◇×${count}`;
+  return e(
+    Box,
+    { width, height: 1, overflow: "hidden" },
+    e(Text, { color: "yellow" }, fitToWidth(text, width)),
   );
 }
 
@@ -1907,6 +1930,7 @@ const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " ";
 const STATUS_BAR_RENDER_ROWS = 2;
+const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const MIN_LIVE_VIEWPORT_LINES = 4;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
