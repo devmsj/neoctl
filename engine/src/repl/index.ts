@@ -1674,15 +1674,25 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "assistant.delta") {
     return {
       ...status,
+      phase: "calling_model",
       streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text),
       outputTokenUpdatedAt: Date.now(),
       activityTick: status.activityTick + 1,
     };
   }
-  if (event.type === "thinking.delta") return { ...status, activityTick: status.activityTick + 1 };
+  if (event.type === "thinking.delta") {
+    return {
+      ...status,
+      phase: "thinking",
+      streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text),
+      outputTokenUpdatedAt: Date.now(),
+      activityTick: status.activityTick + 1,
+    };
+  }
   if (event.type === "tool_call.delta") {
     return {
       ...status,
+      phase: "calling_model",
       streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta),
       outputTokenUpdatedAt: Date.now(),
       activityTick: status.activityTick + 1,
@@ -2504,6 +2514,7 @@ function truncateAnsi(value: string, maxLength: number): string {
 
 function phaseLabelForStatus(phase: string): string {
   if (phase === "calling_model") return "model";
+  if (phase === "thinking") return "think";
   if (phase === "running_tools") return "tools";
   if (phase === "injecting_context") return "context";
   return phase;
@@ -2513,6 +2524,7 @@ function isActivePhase(phase: string): boolean {
   return phase === "running" ||
     phase === "preparing" ||
     phase === "calling_model" ||
+    phase === "thinking" ||
     phase === "running_tools" ||
     phase === "compacting" ||
     phase === "injecting_context";
@@ -2522,6 +2534,7 @@ function phaseColor(phase: string): string {
   if (phase === "ready") return "green";
   if (phase === "stopped") return "yellow";
   if (phase === "failed") return "red";
+  if (phase === "thinking") return THINKING_COLOR;
   if (phase === "running_tools") return "#d4b04c";
   if (phase === "compacting" || phase === "injecting_context") return "magenta";
   return "cyan";
