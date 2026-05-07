@@ -500,10 +500,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const width = terminalSize.columns;
   const prompt = promptPrefix(busy);
   const promptHeight = promptTextView(input, cursor, width, prompt).length;
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
+  const dynamicMarginOverhead = dynamicLines.reduce((sum, _, i) => {
+    const blockIndex = staticLines.length + i;
+    return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
+  }, 0);
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - STATUS_BAR_RENDER_ROWS - dynamicMarginOverhead - 1);
 
   useInput((value, key) => {
     if (key.ctrl && value === "c") {
