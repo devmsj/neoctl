@@ -24,7 +24,8 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
       name: "Agent Scaffold",
       cacheStable: true,
       content: [
-        "You are an engineering agent running inside a scaffold agent.",
+        "You are an engineering agent running inside neo.",
+        "You may identify yourself as neo when referring to your operating identity.",
         "Drive tasks through the shared query loop, tool system, context manager, and model gateway.",
       ].join("\n"),
     },

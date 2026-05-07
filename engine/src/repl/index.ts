@@ -315,6 +315,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [input, setInput] = useState("");
   const [queuedInput, setQueuedInput] = useState<string | undefined>(undefined);
   const [cursor, setCursor] = useState(0);
+  const [promptPlaceholder, setPromptPlaceholder] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
@@ -327,6 +328,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const queuedInputRef = useRef<string | undefined>(undefined);
   const cursorRef = useRef(cursor);
   const busyRef = useRef(busy);
+  const exitOnNextEmptyCtrlCRef = useRef(false);
   const terminalFocusedRef = useRef(true);
   const historyIndexRef = useRef<number | undefined>(undefined);
   const slashCompletionIndexRef = useRef(0);
@@ -376,6 +378,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
     inputRef.current = text;
     cursorRef.current = safeCursor;
+    exitOnNextEmptyCtrlCRef.current = false;
+    setPromptPlaceholder(undefined);
     if (!options?.preserveSlashCompletionSelection) resetSlashCompletionSelection();
     setInput(text);
     setCursor(safeCursor);
@@ -702,7 +706,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const width = terminalSize.columns;
   const inputLockedByQueue = busy && queuedInput !== undefined;
   const prompt = promptPrefix(busy);
-  const slashCompletions = inputLockedByQueue ? [] : slashCommandCompletions(input, cursor);
+  const promptDisplayText = input.length === 0 && promptPlaceholder ? promptPlaceholder : input;
+  const promptDisplayCursor = input.length === 0 && promptPlaceholder ? promptPlaceholder.length : cursor;
+  const slashCompletions = inputLockedByQueue || promptPlaceholder ? [] : slashCommandCompletions(input, cursor);
   const visibleSlashCompletionCount = Math.min(slashCompletions.length, SLASH_COMPLETION_MAX_ROWS);
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
@@ -710,7 +716,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
     slashCompletionIndexRef.current = selectedSlashCompletionIndex;
   }
-  const promptHeight = promptTextView(input, cursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0);
+  const promptHeight = promptTextView(promptDisplayText, promptDisplayCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
@@ -732,15 +738,23 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (key.ctrl && value === "c") {
-      if (busyRef.current) {
-        const controller = activeAbortController.current;
-        if (controller && !controller.signal.aborted && !interruptArmed.current) {
-          interruptArmed.current = true;
-          controller.abort("Interrupted by Ctrl+C");
-          append(metaLine("interrupt requested; press Ctrl+C again to exit"));
-          setStatus((current) => ({ ...current, phase: "stopped", detail: "interrupt requested" }));
-          return;
+      if (inputRef.current.length > 0) {
+        setPromptState("", 0);
+        return;
+      }
+      if (!exitOnNextEmptyCtrlCRef.current) {
+        exitOnNextEmptyCtrlCRef.current = true;
+        setPromptPlaceholder(EMPTY_CTRL_C_EXIT_PLACEHOLDER);
+        resetSlashCompletionSelection();
+        if (busyRef.current) {
+          const controller = activeAbortController.current;
+          if (controller && !controller.signal.aborted && !interruptArmed.current) {
+            interruptArmed.current = true;
+            controller.abort("Interrupted by Ctrl+C");
+            setStatus((current) => ({ ...current, phase: "stopped", detail: "interrupt requested" }));
+          }
         }
+        return;
       }
       app.exit();
       return;
@@ -875,7 +889,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     e(StatusBar, { status, animationTick, width }),
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
-    e(PromptLine, { text: input, cursor, busy, locked: inputLockedByQueue, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
+    e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
   );
 }
 
@@ -1417,11 +1431,11 @@ function slashCompletionSelectableCount(text: string, cursor: number): number {
 }
 
 function PromptLine(
-  { text, cursor, busy, locked, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
-  { text: string; cursor: number; busy: boolean; locked: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
+  { text, cursor, busy, locked, placeholder = false, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
+  { text: string; cursor: number; busy: boolean; locked: boolean; placeholder?: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
 ) {
   const visualLines = promptTextView(text, cursor, width, prompt);
-  const inputColor = !locked && isValidReplCommandLine(text) ? "cyan" : undefined;
+  const inputColor = placeholder ? "gray" : (!locked && isValidReplCommandLine(text) ? "cyan" : undefined);
   return e(
     Box,
     { flexDirection: "column" },
@@ -2691,6 +2705,7 @@ const STATUS_SEPARATOR = " · ";
 const STATUS_BAR_RENDER_ROWS = 2;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const QUEUED_INPUT_RENDER_ROWS = 1;
+const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";
 const MIN_LIVE_VIEWPORT_LINES = 4;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {

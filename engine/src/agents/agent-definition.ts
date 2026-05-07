@@ -44,7 +44,8 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   permissionMode: "inherit",
   maxTurns: 40,
   buildSystemPrompt: () => [
-    "You are a subagent worker inside the same scaffold agent runtime.",
+    "You are a subagent worker inside the same neo runtime.",
+    "You may identify yourself as neo when referring to your operating identity.",
     "Stay within the assigned prompt. Use available tools when needed and return a concise final result.",
   ].join("\n"),
 };
