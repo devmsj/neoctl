@@ -307,6 +307,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const lineId = useRef(0);
   const assistantLineId = useRef<number | undefined>(undefined);
   const thinkingLineId = useRef<number | undefined>(undefined);
+  const finalizedThinkingLineId = useRef<number | undefined>(undefined);
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
@@ -446,6 +447,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     resetLinesToHistory(runtime, setLines, lineId);
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
+    finalizedThinkingLineId.current = undefined;
     toolLineIds.current.clear();
     clearPendingToolResultTimers();
     append(systemLine(formatResume(snapshot)));
@@ -454,6 +456,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const finalizeLiveLine = (id: number | undefined) => {
     if (id === undefined) return;
     setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
+  };
+
+  const finalizeThinkingLine = () => {
+    const id = thinkingLineId.current;
+    if (id === undefined) return;
+    finalizeLiveLine(id);
+    finalizedThinkingLineId.current = id;
+    thinkingLineId.current = undefined;
   };
 
   const finalizeToolLine = (id: number | undefined) => {
@@ -497,60 +507,62 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "state") return;
     if (event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta") return;
     if (event.type === "assistant.delta") {
-      finalizeLiveLine(thinkingLineId.current);
-      thinkingLineId.current = undefined;
+      finalizeThinkingLine();
       const id = assistantLineId.current ?? append({ kind: "assistant", text: "", live: true });
       assistantLineId.current = id;
       updateLine(id, (text) => text + event.text);
       return;
     }
     if (event.type === "thinking.delta") {
-      const id = thinkingLineId.current ?? append(thinkingLine("", true));
+      const id = thinkingLineId.current ?? finalizedThinkingLineId.current ?? append(thinkingLine("", true));
       thinkingLineId.current = id;
+      finalizedThinkingLineId.current = undefined;
       updateLine(id, (text) => text + event.text);
       return;
     }
     if (event.type === "message") {
+      let replacedStreamingContent = false;
       if (event.message.role === "assistant" && assistantLineId.current !== undefined) {
         const text = assistantText(event.message);
         if (text !== undefined) {
           replaceLineText(assistantLineId.current, text);
           finalizeLiveLine(assistantLineId.current);
-          return;
+          assistantLineId.current = undefined;
+          replacedStreamingContent = true;
         }
       }
-      if (event.message.role === "assistant" && thinkingLineId.current !== undefined) {
+      const existingThinkingLineId = thinkingLineId.current ?? finalizedThinkingLineId.current;
+      if (event.message.role === "assistant" && existingThinkingLineId !== undefined) {
         const text = thinkingText(event.message);
         if (text !== undefined) {
-          replaceLineText(thinkingLineId.current, text);
-          finalizeLiveLine(thinkingLineId.current);
+          replaceLineText(existingThinkingLineId, text);
+          finalizeLiveLine(existingThinkingLineId);
           thinkingLineId.current = undefined;
-          return;
+          finalizedThinkingLineId.current = undefined;
+          replacedStreamingContent = true;
         }
       }
+      if (replacedStreamingContent) return;
       if (event.message.role === "tool_result") {
         renderToolResultMessage(event.message, append, replaceLine, toolLineIds.current, scheduleToolResultReplacement);
         return;
       }
       if (event.message.role !== "assistant") {
         finalizeLiveLine(assistantLineId.current);
-        finalizeLiveLine(thinkingLineId.current);
+        finalizeThinkingLine();
         assistantLineId.current = undefined;
-        thinkingLineId.current = undefined;
       }
       const rendered = renderMessage(event.message, append, assistantLineId.current);
       if (rendered && event.message.role === "assistant") {
         finalizeLiveLine(assistantLineId.current);
-        finalizeLiveLine(thinkingLineId.current);
+        finalizeThinkingLine();
         assistantLineId.current = undefined;
-        thinkingLineId.current = undefined;
       }
       return;
     }
     if (event.type === "tool.started") {
       finalizeLiveLine(assistantLineId.current);
-      finalizeLiveLine(thinkingLineId.current);
-      thinkingLineId.current = undefined;
+      finalizeThinkingLine();
       const id = append({ ...formatToolUse(event.toolUse), live: true });
       toolLineIds.current.set(event.toolUse.id, id);
       return;
@@ -565,10 +577,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
       finalizeLiveLine(assistantLineId.current);
-      finalizeLiveLine(thinkingLineId.current);
+      finalizeThinkingLine();
       finalizeActiveToolLines();
       assistantLineId.current = undefined;
-      thinkingLineId.current = undefined;
       return;
     }
     if (event.type === "error") {
@@ -666,19 +677,19 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       }
     } catch (error) {
       finalizeLiveLine(assistantLineId.current);
-      finalizeLiveLine(thinkingLineId.current);
+      finalizeThinkingLine();
       finalizeActiveToolLines();
       assistantLineId.current = undefined;
-      thinkingLineId.current = undefined;
+      finalizedThinkingLineId.current = undefined;
       append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
       finalizeLiveLine(assistantLineId.current);
-      finalizeLiveLine(thinkingLineId.current);
+      finalizeThinkingLine();
       finalizeActiveToolLines();
       assistantLineId.current = undefined;
-      thinkingLineId.current = undefined;
+      finalizedThinkingLineId.current = undefined;
       setBusyState(false);
       setStatus((current) => ({
         ...current,
@@ -700,6 +711,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines(initialLines(runtime, lineId));
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
+    finalizedThinkingLineId.current = undefined;
     toolLineIds.current.clear();
     clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
