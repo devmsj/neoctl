@@ -152,6 +152,7 @@ async function main(): Promise<void> {
     exitOnCtrlC: false,
   });
   await instance.waitUntilExit();
+  console.log("bye.");
 }
 
 function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
