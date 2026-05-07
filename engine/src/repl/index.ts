@@ -266,10 +266,12 @@ function initialStatus(runtime: ReplRuntime): UiStatus {
   };
 }
 
-function setTerminalTitle(title: string): void {
+function setTerminalTitle(title: string, dotFilled = true): void {
   if (!stdout.isTTY) return;
-  const safeTitle = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
-  stdout.write(`\u001b]0;${safeTitle || "agent-scaffold"}\u0007`);
+  const safeTitle = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const dotPrefix = dotFilled ? TERMINAL_TITLE_DOT_FILLED_PREFIX : TERMINAL_TITLE_DOT_BLANK_PREFIX;
+  const decoratedTitle = `${dotPrefix}${safeTitle || "agent-scaffold"}`.slice(0, 120);
+  stdout.write(`\u001b]0;${decoratedTitle}\u0007`);
 }
 
 function playReadySound(): void {
@@ -295,8 +297,8 @@ function isTerminalFocusOutSequence(value: string): boolean {
   return value === "\u001b[O";
 }
 
-function setTerminalTitleFromSession(snapshot: SessionStoreSnapshot | undefined): void {
-  setTerminalTitle(snapshot?.title?.trim() || "agent-scaffold");
+function sessionTerminalTitle(snapshot: SessionStoreSnapshot | undefined): string {
+  return snapshot?.title?.trim() || "agent-scaffold";
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -314,8 +316,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
+  const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTaskCount, setBackgroundTaskCount] = useState(() => runtime.taskStore.activeCount());
   const [animationTick, setAnimationTick] = useState(0);
+  const [terminalTitleDotVisible, setTerminalTitleDotVisible] = useState(true);
+  const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
   const cursorRef = useRef(cursor);
@@ -343,9 +348,27 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, [runtime]);
 
   useEffect(() => {
-    setTerminalTitleFromSession(runtime.engine.snapshot().session);
-    return runtime.engine.onSessionTitleChange(setTerminalTitleFromSession);
-  }, [runtime]);
+    if (!terminalTitleWorking) {
+      setTerminalTitleDotVisible(true);
+      return undefined;
+    }
+    setTerminalTitleDotVisible(true);
+    const interval = setInterval(() => setTerminalTitleDotVisible((visible) => !visible), TERMINAL_TITLE_BLINK_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [terminalTitleWorking]);
+
+  useEffect(() => {
+    const updateTitle = (snapshot: SessionStoreSnapshot | undefined) => {
+      sessionTitleRef.current = sessionTerminalTitle(snapshot);
+      setTerminalTitle(sessionTitleRef.current, terminalTitleDotVisible);
+    };
+    updateTitle(runtime.engine.snapshot().session);
+    return runtime.engine.onSessionTitleChange(updateTitle);
+  }, [runtime, terminalTitleDotVisible]);
+
+  useEffect(() => {
+    setTerminalTitle(sessionTitleRef.current, terminalTitleDotVisible);
+  }, [terminalTitleDotVisible]);
 
   const setPromptState = (text: string, nextCursor: number, options?: { preserveSlashCompletionSelection?: boolean }) => {
     const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
@@ -2597,6 +2620,9 @@ function isFullWidthCodePoint(codePoint: number): boolean {
 }
 
 const SESSIONS_DEFAULT_PAGE_SIZE = 10;
+const TERMINAL_TITLE_DOT_FILLED_PREFIX = "● ";
+const TERMINAL_TITLE_DOT_BLANK_PREFIX = "  ";
+const TERMINAL_TITLE_BLINK_INTERVAL_MS = 1000;
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
 const TOKEN_PULSE_MS = 900;
