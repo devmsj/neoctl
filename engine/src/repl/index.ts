@@ -266,6 +266,12 @@ function initialStatus(runtime: ReplRuntime): UiStatus {
   };
 }
 
+function setTerminalTitle(title: string): void {
+  if (!stdout.isTTY) return;
+  const safeTitle = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  stdout.write(`\u001b]0;${safeTitle || "agent-scaffold"}\u0007`);
+}
+
 function playReadySound(): void {
   if (!stdout.isTTY) return;
   stdout.write("\u0007");
@@ -287,6 +293,10 @@ function isTerminalFocusInSequence(value: string): boolean {
 
 function isTerminalFocusOutSequence(value: string): boolean {
   return value === "\u001b[O";
+}
+
+function setTerminalTitleFromSession(snapshot: SessionStoreSnapshot | undefined): void {
+  setTerminalTitle(snapshot?.title?.trim() || "agent-scaffold");
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -330,6 +340,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const updateBackgroundTaskCount = () => setBackgroundTaskCount(runtime.taskStore.activeCount());
     updateBackgroundTaskCount();
     return runtime.taskStore.subscribe(updateBackgroundTaskCount);
+  }, [runtime]);
+
+  useEffect(() => {
+    setTerminalTitleFromSession(runtime.engine.snapshot().session);
+    return runtime.engine.onSessionTitleChange(setTerminalTitleFromSession);
   }, [runtime]);
 
   const setPromptState = (text: string, nextCursor: number, options?: { preserveSlashCompletionSelection?: boolean }) => {

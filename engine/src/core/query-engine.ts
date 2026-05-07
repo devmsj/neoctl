@@ -52,9 +52,15 @@ export class QueryEngine {
   private userTurns = 0;
   private titleSchedulerVersion = 0;
   private titleAgentRun?: { version: number; controller: AbortController };
+  private readonly sessionTitleListeners = new Set<(snapshot: SessionStoreSnapshot | undefined) => void>();
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
+  }
+
+  onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
+    this.sessionTitleListeners.add(listener);
+    return () => this.sessionTitleListeners.delete(listener);
   }
 
   async initialize(): Promise<void> {
@@ -158,6 +164,7 @@ export class QueryEngine {
     this.lastTerminalReason = undefined;
     this.cancelPendingTitleWork();
     this.sessionStore?.reset();
+    this.notifySessionTitleChange(this.sessionStore?.snapshot());
   }
 
   snapshot(): { agentId: string; messages: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
@@ -191,6 +198,7 @@ export class QueryEngine {
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
     this.userTurns = countUserTurns(this.history);
+    this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 
   private scheduleSessionTitleCheck(): void {
@@ -233,9 +241,14 @@ export class QueryEngine {
       if (kind === "initial" && latest.hasInitialTitle) return;
       if (kind === "refinement" && latest.hasRefinement) return;
       store.recordTitle(title, kind);
+      this.notifySessionTitleChange(store.snapshot());
     } finally {
       if (this.titleAgentRun?.version === version) this.titleAgentRun = undefined;
     }
+  }
+
+  private notifySessionTitleChange(snapshot: SessionStoreSnapshot | undefined): void {
+    for (const listener of this.sessionTitleListeners) listener(snapshot);
   }
 
   private cancelPendingTitleWork(): void {
