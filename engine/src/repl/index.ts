@@ -122,6 +122,7 @@ interface UiLine {
   previewStyle?: "summary";
   summaryMaxLines?: number;
   live?: boolean;
+  pendingReplacement?: boolean;
   renderedKey?: string;
 }
 
@@ -344,6 +345,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, live: false } : line));
   };
 
+  const finalizeToolLine = (id: number | undefined) => {
+    if (id === undefined) return;
+    setLines((current) => current.map((line) => line.id === id ? { ...line, live: false, pendingReplacement: false } : line));
+  };
+
   const cancelPendingToolResultTimer = (toolUseId: string) => {
     const timer = pendingToolResultTimers.current.get(toolUseId);
     if (timer === undefined) return;
@@ -355,7 +361,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     cancelPendingToolResultTimer(toolUseId);
     const timer = setTimeout(() => {
       pendingToolResultTimers.current.delete(toolUseId);
-      replaceLine(lineId, line);
+      replaceLine(lineId, { ...line, pendingReplacement: false });
     }, TOOL_RESULT_REPLACEMENT_DELAY_MS);
     pendingToolResultTimers.current.set(toolUseId, timer);
   };
@@ -370,7 +376,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, []);
 
   const finalizeActiveToolLines = () => {
-    for (const id of toolLineIds.current.values()) finalizeLiveLine(id);
+    for (const id of toolLineIds.current.values()) finalizeToolLine(id);
     toolLineIds.current.clear();
   };
 
@@ -736,7 +742,7 @@ function MessageLine(
   const clipPendingMarkdown = !line.live && onMarkdownRenderComplete !== undefined && lineNeedsDynamicRender(line, contentWidth);
   const display = displayWindowForLine(line, contentWidth, line.live || clipPendingMarkdown ? liveMaxLines : undefined);
   return e(Box, { flexDirection: "row" },
-    e(Text, { color: colorForKind(line.kind) }, messageRoleMarker()),
+    e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker()),
     e(
       Box,
       { flexDirection: "column", width: contentWidth },
@@ -762,7 +768,7 @@ function estimateRenderedLineCount(line: UiLine, width: number): number {
 }
 
 function lineNeedsDynamicRender(line: UiLine, width: number): boolean {
-  if (line.live) return true;
+  if (line.live || line.pendingReplacement) return true;
   if (line.previewStyle === "summary" || line.format === "ansi") return false;
   return line.renderedKey !== markdownRenderKey(line.text, line.kind, width);
 }
@@ -1138,7 +1144,8 @@ function renderToolResultMessage(
         kind: line.kind,
         title: toolTitle(block.name, "finished"),
         titleStatus: block.ok ? "success" : "failure",
-        live: false,
+        live: true,
+        pendingReplacement: true,
       });
       activeToolLineIds.delete(block.toolUseId);
       scheduleReplacement(block.toolUseId, id, line);
@@ -1300,6 +1307,11 @@ function colorForKind(kind: UiLine["kind"]) {
   return "white";
 }
 
+function markerColorForKind(kind: UiLine["kind"]) {
+  if (kind === "thinking") return "magenta";
+  return colorForKind(kind);
+}
+
 function messageRoleMarker(): string {
   return "● ";
 }
@@ -1384,7 +1396,8 @@ function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): 
     titleStatus: ok ? "success" : "failure",
     text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed",
     previewStyle: "summary",
-    live: false,
+    live: true,
+    pendingReplacement: true,
   };
 }
 
