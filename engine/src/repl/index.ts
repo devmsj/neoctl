@@ -266,6 +266,29 @@ function initialStatus(runtime: ReplRuntime): UiStatus {
   };
 }
 
+function playReadySound(): void {
+  if (!stdout.isTTY) return;
+  stdout.write("\u0007");
+}
+
+function enableTerminalFocusReporting(): void {
+  if (!stdout.isTTY) return;
+  stdout.write("\u001b[?1004h");
+}
+
+function disableTerminalFocusReporting(): void {
+  if (!stdout.isTTY) return;
+  stdout.write("\u001b[?1004l");
+}
+
+function isTerminalFocusInSequence(value: string): boolean {
+  return value === "\u001b[I";
+}
+
+function isTerminalFocusOutSequence(value: string): boolean {
+  return value === "\u001b[O";
+}
+
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const app = useApp();
   const lineId = useRef(0);
@@ -287,9 +310,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const inputRef = useRef(input);
   const cursorRef = useRef(cursor);
   const busyRef = useRef(busy);
+  const terminalFocusedRef = useRef(true);
   const historyIndexRef = useRef<number | undefined>(undefined);
   const slashCompletionIndexRef = useRef(0);
   const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
+
+  useEffect(() => {
+    enableTerminalFocusReporting();
+    return disableTerminalFocusReporting;
+  }, []);
 
   useEffect(() => {
     if (!busy && backgroundTaskCount === 0) return undefined;
@@ -583,6 +612,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         outputTokenUpdatedAt: undefined,
         retryCooldownUntil: undefined,
       }));
+      if (!terminalFocusedRef.current) playReadySound();
     }
   };
 
@@ -620,6 +650,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - dynamicMarginOverhead - 1);
 
   useInput((value, key) => {
+    if (isTerminalFocusInSequence(value)) {
+      terminalFocusedRef.current = true;
+      return;
+    }
+    if (isTerminalFocusOutSequence(value)) {
+      terminalFocusedRef.current = false;
+      return;
+    }
     if (key.ctrl && value === "c") {
       if (busyRef.current) {
         const controller = activeAbortController.current;
