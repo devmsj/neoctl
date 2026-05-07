@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
+import { createLocalAgentTask } from "../../agents/local-agent-task.js";
+import { globalTaskStore, type TaskStore } from "../../tasks/task-store.js";
+import { createTextMessage } from "../../types/messages.js";
 
 export type ExecShell = "auto" | "powershell" | "cmd" | "bash" | "sh";
 
@@ -14,6 +17,7 @@ export interface ExecToolInput {
   shell: ExecShell;
   env: Record<string, string>;
   description?: string;
+  background?: boolean;
 }
 
 interface ExecOutput {
@@ -34,101 +38,183 @@ interface ExecOutput {
   };
 }
 
-export const execTool: Tool<ExecToolInput> = {
-  name: "exec",
-  aliases: ["shell", "bash", "powershell"],
-  description:
-    "Execute a shell command in the local workspace with full permissions. Use cwd to choose the working directory and timeoutMs/maxOutputChars to bound long commands.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      command: { type: "string", description: "Shell command to execute." },
-      cwd: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
-      timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1-600000. Defaults to 120000." },
-      maxOutputChars: { type: "integer", description: "Maximum stdout/stderr chars to keep each, 1000-200000. Defaults to 40000." },
-      shell: {
-        type: "string",
-        enum: ["auto", "powershell", "cmd", "bash", "sh"],
-        description: "Shell to use. Defaults to auto: PowerShell on Windows, bash/sh elsewhere.",
+export interface ExecToolRuntime {
+  taskStore?: TaskStore;
+}
+
+export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
+  return {
+    name: "exec",
+    aliases: ["shell", "bash", "powershell"],
+    description:
+      "Execute a shell command in the local workspace with full permissions. Use cwd to choose the working directory and timeoutMs/maxOutputChars to bound long commands. Set background=true to run long-lived commands asynchronously and receive a task_id for later polling.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Shell command to execute." },
+        cwd: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
+        timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1-600000. Defaults to 120000." },
+        maxOutputChars: { type: "integer", description: "Maximum stdout/stderr chars to keep each, 1000-200000. Defaults to 40000." },
+        shell: {
+          type: "string",
+          enum: ["auto", "powershell", "cmd", "bash", "sh"],
+          description: "Shell to use. Defaults to auto: PowerShell on Windows, bash/sh elsewhere.",
+        },
+        env: {
+          type: "object",
+          description: "Additional environment variables for the child process.",
+          additionalProperties: true,
+        },
+        description: { type: "string", description: "Short human-readable description of the command purpose." },
+        background: { type: "boolean", description: "If true, run the command in the background and return immediately with a task_id." },
       },
-      env: {
-        type: "object",
-        description: "Additional environment variables for the child process.",
-        additionalProperties: true,
-      },
-      description: { type: "string", description: "Short human-readable description of the command purpose." },
+      required: ["command"],
+      additionalProperties: false,
     },
-    required: ["command"],
-    additionalProperties: false,
-  },
-  metadata: {
-    readOnly: false,
-    concurrent: false,
-    visible: true,
-    requiresApproval: false,
-    destructive: true,
-    maxResultSizeChars: 50000,
-    searchHint: "run shell commands and inspect stdout/stderr",
-  },
-  validate(input) {
-    const record = input as Partial<ExecToolInput>;
-    return {
-      command: record.command ?? "",
-      cwd: record.cwd,
-      timeoutMs: record.timeoutMs ?? 120000,
-      maxOutputChars: record.maxOutputChars ?? 40000,
-      shell: record.shell ?? "auto",
-      env: normalizeEnv(record.env),
-      description: record.description,
-    };
-  },
-  validateInput(input) {
-    if (!input.command.trim()) return { ok: false, message: "exec.command cannot be empty" };
-    if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 600000) {
-      return { ok: false, message: "exec.timeoutMs must be between 1 and 600000" };
-    }
-    if (!Number.isInteger(input.maxOutputChars) || input.maxOutputChars < 1000 || input.maxOutputChars > 200000) {
-      return { ok: false, message: "exec.maxOutputChars must be between 1000 and 200000" };
-    }
-    if (!["auto", "powershell", "cmd", "bash", "sh"].includes(input.shell)) {
-      return { ok: false, message: "exec.shell must be one of auto, powershell, cmd, bash, sh" };
-    }
-    return { ok: true, value: input };
-  },
-  isConcurrencySafe() {
-    return false;
-  },
-  async call(input, context, options): Promise<ToolResult> {
-    const cwd = resolveCwd(input.cwd, context);
-    const cwdStat = await fs.stat(cwd).catch(() => undefined);
-    if (!cwdStat) return { ok: false, output: { error: `exec.cwd does not exist: ${cwd}` } };
-    if (!cwdStat.isDirectory()) return { ok: false, output: { error: `exec.cwd is not a directory: ${cwd}` } };
+    metadata: {
+      readOnly: false,
+      concurrent: false,
+      visible: true,
+      requiresApproval: false,
+      destructive: true,
+      maxResultSizeChars: 50000,
+      searchHint: "run shell commands and inspect stdout/stderr",
+    },
+    validate(input) {
+      const record = input as Partial<ExecToolInput>;
+      return {
+        command: record.command ?? "",
+        cwd: record.cwd,
+        timeoutMs: record.timeoutMs ?? 120000,
+        maxOutputChars: record.maxOutputChars ?? 40000,
+        shell: record.shell ?? "auto",
+        env: normalizeEnv(record.env),
+        description: record.description,
+        background: record.background ?? false,
+      };
+    },
+    validateInput(input) {
+      if (!input.command.trim()) return { ok: false, message: "exec.command cannot be empty" };
+      if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 600000) {
+        return { ok: false, message: "exec.timeoutMs must be between 1 and 600000" };
+      }
+      if (!Number.isInteger(input.maxOutputChars) || input.maxOutputChars < 1000 || input.maxOutputChars > 200000) {
+        return { ok: false, message: "exec.maxOutputChars must be between 1000 and 200000" };
+      }
+      if (!["auto", "powershell", "cmd", "bash", "sh"].includes(input.shell)) {
+        return { ok: false, message: "exec.shell must be one of auto, powershell, cmd, bash, sh" };
+      }
+      return { ok: true, value: input };
+    },
+    isConcurrencySafe(input) {
+      return Boolean(input.background);
+    },
+    async call(input, context, options): Promise<ToolResult> {
+      const cwd = resolveCwd(input.cwd, context);
+      const cwdStat = await fs.stat(cwd).catch(() => undefined);
+      if (!cwdStat) return { ok: false, output: { error: `exec.cwd does not exist: ${cwd}` } };
+      if (!cwdStat.isDirectory()) return { ok: false, output: { error: `exec.cwd is not a directory: ${cwd}` } };
 
-    const resolvedShell = resolveShell(input.shell);
-    options.onProgress?.({
-      toolName: execTool.name,
-      message: `Running command${input.description ? `: ${input.description}` : ""}`,
-      data: { cwd, shell: resolvedShell.displayName, command: input.command },
-    });
+      if (input.background) {
+        return launchBackgroundExec(input, cwd, runtime?.taskStore ?? globalTaskStore);
+      }
 
-    const output = await runCommand({
-      command: input.command,
-      cwd,
-      timeoutMs: input.timeoutMs,
-      maxOutputChars: input.maxOutputChars,
-      shell: resolvedShell,
-      env: input.env,
-      abortSignal: context.abortSignal,
-    });
+      const resolvedShell = resolveShell(input.shell);
+      options.onProgress?.({
+        toolName: "exec",
+        message: `Running command${input.description ? `: ${input.description}` : ""}`,
+        data: { cwd, shell: resolvedShell.displayName, command: input.command },
+      });
 
+      const output = await runCommand({
+        command: input.command,
+        cwd,
+        timeoutMs: input.timeoutMs,
+        maxOutputChars: input.maxOutputChars,
+        shell: resolvedShell,
+        env: input.env,
+        abortSignal: context.abortSignal,
+      });
+
+      const ok = output.exitCode === 0 && !output.timedOut;
+      return {
+        ok,
+        output,
+        summary: summarizeExecOutput(output),
+      };
+    },
+  };
+}
+
+export const execTool: Tool<ExecToolInput> = createExecTool();
+
+function launchBackgroundExec(
+  input: ExecToolInput,
+  cwd: string,
+  taskStore: TaskStore,
+): ToolResult {
+  const taskId = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `bg_exec_${Date.now().toString(36)}`;
+  const description = input.description ?? `exec: ${input.command.slice(0, 80)}`;
+  const abortController = new AbortController();
+
+  const task = createLocalAgentTask({
+    taskId,
+    agentId,
+    description,
+    prompt: input.command,
+    type: "exec",
+    abortController,
+  });
+  taskStore.upsert(task);
+  taskStore.markRunning(taskId);
+
+  const resolvedShell = resolveShell(input.shell);
+
+  void runCommand({
+    command: input.command,
+    cwd,
+    timeoutMs: input.timeoutMs,
+    maxOutputChars: input.maxOutputChars,
+    shell: resolvedShell,
+    env: input.env,
+    abortSignal: abortController.signal,
+  }).then((output) => {
     const ok = output.exitCode === 0 && !output.timedOut;
-    return {
-      ok,
-      output,
-      summary: summarizeExecOutput(output),
-    };
-  },
-};
+    taskStore.complete(taskId, {
+      agent_id: agentId,
+      agent_type: "exec",
+      content: summarizeExecOutput(output),
+      total_duration_ms: output.durationMs,
+      total_tool_use_count: 0,
+    });
+    const finished = taskStore.get(taskId);
+    if (finished) {
+      finished.messages.push(
+        createTextMessage("user",
+          `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(output)}\nstdout: ${output.stdout.slice(0, 2000)}\nstderr: ${output.stderr.slice(0, 2000)}\n</task-notification>`,
+        ),
+      );
+      finished.notified = false;
+      taskStore.upsert(finished);
+    }
+  }).catch((error) => {
+    taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+  });
+
+  return {
+    ok: true,
+    output: {
+      status: "async_launched",
+      task_id: taskId,
+      agent_id: agentId,
+      description,
+      command: input.command,
+      output_file: task.outputFile,
+      message: "Command launched in background. Use TaskOutput or TaskGet to check status.",
+    },
+  };
+}
 
 interface ResolvedShell {
   requested: ExecShell;

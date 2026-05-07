@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 export interface ModelMetadata {
   id: string;
   provider: string;
-  match: string[];
+  modelIds: string[];
   contextWindowTokens?: number;
   maxOutputTokens?: number;
   knowledgeCutoff?: string;
@@ -49,7 +49,8 @@ export function resolveContextWindowTokens(model: string | undefined, env: NodeJ
 }
 
 export function findModelMetadata(model: string, catalog: ModelCatalog = loadModelCatalog()): ModelMetadata | undefined {
-  return catalog.models.find((entry) => entry.match.some((pattern) => new RegExp(pattern, "i").test(model)));
+  const requestedModel = normalizeModelId(model);
+  return catalog.models.find((entry) => entry.modelIds.some((modelId) => normalizeModelId(modelId) === requestedModel));
 }
 
 export function loadModelCatalog(): ModelCatalog {
@@ -76,4 +77,8 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
   return parsed;
+}
+
+function normalizeModelId(model: string): string {
+  return model.trim().toLowerCase();
 }

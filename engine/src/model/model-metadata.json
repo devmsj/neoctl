@@ -1,35 +1,79 @@
 {
-  "updatedAt": "2026-05-05",
+  "updatedAt": "2026-05-07",
   "notes": [
     "Static model metadata used for local REPL telemetry. Values are best-effort and should be refreshed when providers update model cards.",
-    "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime."
+    "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
+    "modelIds are exact official model IDs/aliases from provider documentation; matching is direct and does not use regex."
   ],
   "sources": {
-    "openai-gpt-5.5-launch": "https://openai.com/index/introducing-gpt-5-5/",
-    "openai-api": "https://openai.com/api/",
     "openai-models": "https://platform.openai.com/docs/models",
-    "openai-pricing": "https://platform.openai.com/docs/pricing",
     "anthropic-models": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
     "anthropic-context-windows": "https://docs.anthropic.com/en/docs/build-with-claude/context-windows",
-    "gemini-models": "https://ai.google.dev/gemini-api/docs/models/gemini-v2",
+    "gemini-models": "https://ai.google.dev/gemini-api/docs/models",
     "deepseek-pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "deepseek-models": "https://api-docs.deepseek.com/quick_start/parameter_settings/",
     "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations"
   },
   "models": [
     {
       "id": "gpt-5.5",
       "provider": "openai",
-      "match": ["^gpt-5\\.5(?:[-.]|$)", "^gpt5\\.5(?:[-.]|$)", "^gpt-5\\.5-pro(?:[-.]|$)", "^gpt5\\.5-pro(?:[-.]|$)"],
+      "modelIds": ["gpt-5.5"],
       "contextWindowTokens": 1050000,
       "maxOutputTokens": 128000,
       "reasoning": true,
-      "source": "openai-api",
-      "notes": "OpenAI API overview lists gpt-5.5 with 1.05M context length; the launch page describes the same family as 1M context."
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "provider": "openai",
+      "modelIds": ["gpt-5.5-pro"],
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.4",
+      "provider": "openai",
+      "modelIds": ["gpt-5.4"],
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "provider": "openai",
+      "modelIds": ["gpt-5.4-mini"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "provider": "openai",
+      "modelIds": ["gpt-5.4-nano"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
     },
     {
       "id": "gpt-5.2",
       "provider": "openai",
-      "match": ["^gpt-5\\.2(?:[-.]|$)", "^gpt5\\.2(?:[-.]|$)", "^gpt-5\\.2-codex(?:[-.]|$)", "^gpt5\\.2-codex(?:[-.]|$)"],
+      "modelIds": ["gpt-5.2"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2025-08-31",
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.2-codex",
+      "provider": "openai",
+      "modelIds": ["gpt-5.2-codex"],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2025-08-31",
@@ -39,16 +83,46 @@
     {
       "id": "gpt-5.2-pro",
       "provider": "openai",
-      "match": ["^gpt-5\\.2-pro(?:[-.]|$)", "^gpt5\\.2-pro(?:[-.]|$)"],
+      "modelIds": ["gpt-5.2-pro"],
       "contextWindowTokens": 400000,
-      "maxOutputTokens": 272000,
+      "maxOutputTokens": 128000,
       "reasoning": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.1",
       "provider": "openai",
-      "match": ["^gpt-5\\.1(?:[-.]|$)", "^gpt5\\.1(?:[-.]|$)", "^gpt-5\\.1-codex(?:[-.]|$)", "^gpt5\\.1-codex(?:[-.]|$)", "^gpt-5\\.1-codex-max(?:[-.]|$)", "^gpt5\\.1-codex-max(?:[-.]|$)", "^gpt-5\\.1-codex-mini(?:[-.]|$)", "^gpt5\\.1-codex-mini(?:[-.]|$)"],
+      "modelIds": ["gpt-5.1"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2024-09-30",
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.1-codex",
+      "provider": "openai",
+      "modelIds": ["gpt-5.1-codex"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2024-09-30",
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.1-codex-max",
+      "provider": "openai",
+      "modelIds": ["gpt-5.1-codex-max"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2024-09-30",
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5.1-codex-mini",
+      "provider": "openai",
+      "modelIds": ["gpt-5.1-codex-mini"],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2024-09-30",
@@ -58,7 +132,34 @@
     {
       "id": "gpt-5",
       "provider": "openai",
-      "match": ["^gpt-5(?:[-.]|$)", "^gpt5(?:[-.]|$)", "^gpt-5-codex(?:[-.]|$)", "^gpt5-codex(?:[-.]|$)", "^gpt-5-mini(?:[-.]|$)", "^gpt5-mini(?:[-.]|$)", "^gpt-5-nano(?:[-.]|$)", "^gpt5-nano(?:[-.]|$)"],
+      "modelIds": ["gpt-5"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5-codex",
+      "provider": "openai",
+      "modelIds": ["gpt-5-codex"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5-mini",
+      "provider": "openai",
+      "modelIds": ["gpt-5-mini"],
+      "contextWindowTokens": 400000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-5-nano",
+      "provider": "openai",
+      "modelIds": ["gpt-5-nano"],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
@@ -67,7 +168,7 @@
     {
       "id": "gpt-5-pro",
       "provider": "openai",
-      "match": ["^gpt-5-pro(?:[-.]|$)", "^gpt5-pro(?:[-.]|$)"],
+      "modelIds": ["gpt-5-pro"],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 272000,
       "reasoning": true,
@@ -76,7 +177,25 @@
     {
       "id": "gpt-4.1",
       "provider": "openai",
-      "match": ["^gpt-4\\.1(?:[-.]|$)", "^gpt-4\\.1-mini(?:[-.]|$)", "^gpt-4\\.1-nano(?:[-.]|$)"],
+      "modelIds": ["gpt-4.1"],
+      "contextWindowTokens": 1047576,
+      "maxOutputTokens": 32768,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-4.1-mini",
+      "provider": "openai",
+      "modelIds": ["gpt-4.1-mini"],
+      "contextWindowTokens": 1047576,
+      "maxOutputTokens": 32768,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-4.1-nano",
+      "provider": "openai",
+      "modelIds": ["gpt-4.1-nano"],
       "contextWindowTokens": 1047576,
       "maxOutputTokens": 32768,
       "reasoning": false,
@@ -85,7 +204,43 @@
     {
       "id": "gpt-4o",
       "provider": "openai",
-      "match": ["^gpt-4o(?:[-.]|$)", "^gpt-4o-mini(?:[-.]|$)", "^chatgpt-4o-latest$", "^gpt-4o(?:-mini)?-search-preview(?:[-.]|$)"],
+      "modelIds": ["gpt-4o"],
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 16384,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-4o-mini",
+      "provider": "openai",
+      "modelIds": ["gpt-4o-mini"],
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 16384,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "chatgpt-4o-latest",
+      "provider": "openai",
+      "modelIds": ["chatgpt-4o-latest"],
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 16384,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-4o-search-preview",
+      "provider": "openai",
+      "modelIds": ["gpt-4o-search-preview"],
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 16384,
+      "reasoning": false,
+      "source": "openai-models"
+    },
+    {
+      "id": "gpt-4o-mini-search-preview",
+      "provider": "openai",
+      "modelIds": ["gpt-4o-mini-search-preview"],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
@@ -94,7 +249,16 @@
     {
       "id": "o4-mini",
       "provider": "openai",
-      "match": ["^o4-mini(?:[-.]|$)", "^o4-mini-deep-research(?:[-.]|$)"],
+      "modelIds": ["o4-mini"],
+      "contextWindowTokens": 200000,
+      "maxOutputTokens": 100000,
+      "reasoning": true,
+      "source": "openai-models"
+    },
+    {
+      "id": "o4-mini-deep-research",
+      "provider": "openai",
+      "modelIds": ["o4-mini-deep-research"],
       "contextWindowTokens": 200000,
       "maxOutputTokens": 100000,
       "reasoning": true,
@@ -103,26 +267,79 @@
     {
       "id": "gpt-4",
       "provider": "openai",
-      "match": ["^gpt-4$"],
+      "modelIds": ["gpt-4"],
       "contextWindowTokens": 8192,
       "maxOutputTokens": 8192,
       "reasoning": false,
       "source": "openai-models"
     },
     {
-      "id": "claude-4",
+      "id": "claude-opus-4-7",
       "provider": "anthropic",
-      "match": ["^claude-(?:opus|sonnet)-4", "^claude-sonnet-4"],
+      "modelIds": ["claude-opus-4-7"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "reasoning": true,
+      "source": "anthropic-models"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "provider": "anthropic",
+      "modelIds": ["claude-sonnet-4-6"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 64000,
+      "reasoning": true,
+      "source": "anthropic-models"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "modelIds": ["claude-haiku-4-5", "claude-haiku-4-5-20251001"],
       "contextWindowTokens": 200000,
       "maxOutputTokens": 64000,
       "reasoning": true,
-      "source": "anthropic-models",
-      "notes": "Claude Sonnet 4 also has a 1M context beta in Anthropic documentation."
+      "source": "anthropic-models"
     },
     {
-      "id": "gemini-2.5",
+      "id": "gemini-3.1-pro-preview",
       "provider": "google",
-      "match": ["^gemini-2\\.5-(?:pro|flash|flash-lite)(?:[-.]|$)"],
+      "modelIds": ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"],
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "reasoning": true,
+      "source": "gemini-models"
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "provider": "google",
+      "modelIds": ["gemini-3-flash-preview"],
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "reasoning": true,
+      "source": "gemini-models"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider": "google",
+      "modelIds": ["gemini-2.5-pro"],
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "reasoning": true,
+      "source": "gemini-models"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "google",
+      "modelIds": ["gemini-2.5-flash"],
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "reasoning": true,
+      "source": "gemini-models"
+    },
+    {
+      "id": "gemini-2.5-flash-lite",
+      "provider": "google",
+      "modelIds": ["gemini-2.5-flash-lite"],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
@@ -131,34 +348,62 @@
     {
       "id": "gemini-2.0-flash",
       "provider": "google",
-      "match": ["^gemini-2\\.0-flash(?:[-.]|$)"],
+      "modelIds": ["gemini-2.0-flash"],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 8192,
       "reasoning": true,
       "source": "gemini-models"
     },
     {
-      "id": "deepseek-v3.2",
+      "id": "deepseek-v4-pro",
       "provider": "deepseek",
-      "match": ["^deepseek-chat$", "^deepseek-reasoner$"],
-      "contextWindowTokens": 128000,
-      "maxOutputTokens": 64000,
+      "modelIds": ["deepseek-v4-pro"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
       "reasoning": true,
-      "source": "deepseek-pricing",
-      "notes": "deepseek-chat default max output is 4K and max is 8K; deepseek-reasoner max output is 64K."
+      "source": "deepseek-pricing"
     },
     {
-      "id": "mistral-large",
+      "id": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "modelIds": ["deepseek-v4-flash"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "reasoning": true,
+      "source": "deepseek-pricing"
+    },
+    {
+      "id": "deepseek-chat",
+      "provider": "deepseek",
+      "modelIds": ["deepseek-chat"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "reasoning": false,
+      "source": "deepseek-pricing",
+      "notes": "Compatibility alias for non-thinking mode of deepseek-v4-flash."
+    },
+    {
+      "id": "deepseek-reasoner",
+      "provider": "deepseek",
+      "modelIds": ["deepseek-reasoner"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "reasoning": true,
+      "source": "deepseek-pricing",
+      "notes": "Compatibility alias for thinking mode of deepseek-v4-flash."
+    },
+    {
+      "id": "mistral-large-latest",
       "provider": "mistral",
-      "match": ["^mistral-large", "^mistral-large-latest$"],
+      "modelIds": ["mistral-large-latest"],
       "contextWindowTokens": 131072,
       "reasoning": false,
       "source": "mistral-known-limitations"
     },
     {
-      "id": "mistral-small",
+      "id": "mistral-small-latest",
       "provider": "mistral",
-      "match": ["^mistral-small"],
+      "modelIds": ["mistral-small-latest"],
       "contextWindowTokens": 32768,
       "reasoning": false,
       "source": "mistral-known-limitations"

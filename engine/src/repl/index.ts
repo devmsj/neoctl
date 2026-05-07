@@ -16,12 +16,13 @@ import type { ModelUsage } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { echoTool } from "../tools/builtins/echo-tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
-import { execTool } from "../tools/builtins/exec-tool.js";
+import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
-import { createAgentTool } from "../agents/agent-tool.js";
-import { createTaskTools } from "../tasks/task-tools.js";
+import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
+import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
+import type { TaskNotificationSource } from "../core/query.js";
 import { parseReplCommand, helpText } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
@@ -142,6 +143,23 @@ async function main(): Promise<void> {
   await instance.waitUntilExit();
 }
 
+function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
+  return {
+    collectUnnotifiedCompletions() {
+      return taskStore.collectUnnotifiedCompletions().map((task) => ({
+        taskId: task.taskId,
+        agentId: task.agentId,
+        status: task.status,
+        type: task.type,
+        content: task.result?.content ?? task.error ?? "",
+      }));
+    },
+    markNotified(taskId: string) {
+      taskStore.markNotified(taskId);
+    },
+  };
+}
+
 async function createRuntime(): Promise<ReplRuntime> {
   loadDotEnvIfPresent(undefined, { override: true });
   const modelConfig = readModelProviderConfig(process.env);
@@ -152,12 +170,27 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(echoTool);
   tools.register(editTool);
   tools.register(writeTool);
-  tools.register(execTool);
+  tools.register(createExecTool({ taskStore }));
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(searchTool);
-  for (const tool of createTaskTools(taskStore)) tools.register(tool);
-  tools.register(createAgentTool({ modelGateway, tools, taskStore }));
+
+  const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
+  tools.register(createAgentTool(agentRuntime));
+
+  const resumeHandler: TaskResumeHandler = async (taskId, directive) => {
+    const dummyContext = {
+      agentId: "main",
+      tools,
+      appState: new (await import("../app/app-state.js")).InMemoryAppState("main"),
+      emit: () => undefined,
+    };
+    return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
+  };
+
+  for (const tool of createTaskTools(taskStore, resumeHandler)) tools.register(tool);
+
+  const taskNotificationSource = createTaskNotificationSource(taskStore);
 
   const engine = new QueryEngine({
     agentId: "main",
@@ -165,6 +198,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     fallbackModel: modelConfig?.fallbackModel,
     modelGateway,
     tools,
+    taskNotificationSource,
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: process.env.AGENT_SESSION_ID,

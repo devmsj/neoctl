@@ -222,6 +222,8 @@ async function runAsyncAgentLifecycle(input: {
   taskId: string;
   taskStore: TaskStore;
   abortController: AbortController;
+  isResume?: boolean;
+  existingMessages?: Message[];
 }): Promise<void> {
   input.taskStore.markRunning(input.taskId);
   const task = input.taskStore.get(input.taskId);
@@ -236,6 +238,7 @@ async function runAsyncAgentLifecycle(input: {
     maxTurns: input.agent.maxTurns,
     abortSignal: input.abortController.signal,
     fork: input.fork,
+    existingMessages: input.existingMessages,
   });
 
   let completed = await stream.next();
@@ -248,7 +251,37 @@ async function runAsyncAgentLifecycle(input: {
       updateProgressFromMessage(current, event.message);
       input.taskStore.upsert(current);
     }
+
+    if (event.type === "terminal" || (completed.done)) break;
+
+    const pending = input.taskStore.drainPendingMessages(input.taskId);
+    if (pending.length > 0) {
+      const currentTask = input.taskStore.get(input.taskId);
+      if (currentTask) {
+        for (const msg of pending) {
+          currentTask.messages.push(msg);
+        }
+        input.taskStore.upsert(currentTask);
+      }
+    }
+
     completed = await stream.next();
+  }
+
+  if (!completed.done) {
+    let remaining = await stream.next();
+    while (!remaining.done) {
+      const event = remaining.value;
+      const current = input.taskStore.get(input.taskId);
+      if (!current || current.status === "killed") return;
+      if (event.type === "message") {
+        current.messages.push(event.message);
+        updateProgressFromMessage(current, event.message);
+        input.taskStore.upsert(current);
+      }
+      remaining = await stream.next();
+    }
+    completed = remaining;
   }
 
   input.taskStore.complete(input.taskId, completed.value.result);
@@ -258,6 +291,48 @@ async function runAsyncAgentLifecycle(input: {
     input.taskStore.upsert(finished);
   }
   if (task) task.notified = false;
+}
+
+export function resumeAgentTask(
+  taskId: string,
+  directive: string | undefined,
+  runtime: AgentToolRuntime,
+  taskStore: TaskStore,
+  parentContext: ToolUseContext,
+): Promise<{ ok: boolean; error?: string }> {
+  const task = taskStore.get(taskId);
+  if (!task) return Promise.resolve({ ok: false, error: `Unknown task: ${taskId}` });
+  if (task.type !== "agent") return Promise.resolve({ ok: false, error: `Only agent tasks can be resumed` });
+
+  const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]);
+  const agent = catalog.resolve(undefined);
+  const abortController = new AbortController();
+
+  task.status = "pending";
+  task.abortController = abortController;
+  task.error = undefined;
+  task.completedAt = undefined;
+  task.notified = false;
+  taskStore.upsert(task);
+
+  void runAsyncAgentLifecycle({
+    input: { prompt: directive ?? "Continue where you left off." },
+    context: parentContext,
+    runtime,
+    agent,
+    fork: false,
+    agentId: task.agentId,
+    description: task.description,
+    taskId: task.taskId,
+    taskStore,
+    abortController,
+    isResume: true,
+    existingMessages: [...task.messages],
+  }).catch((error) => {
+    taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+  });
+
+  return Promise.resolve({ ok: true });
 }
 
 function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependencies {

@@ -48,6 +48,20 @@ export class TaskStore {
     return { ok: true, task };
   }
 
+  drainPendingMessages(taskId: string): Message[] {
+    const task = this.get(taskId);
+    if (!task || task.pendingMessages.length === 0) return [];
+    const drained = task.pendingMessages.splice(0);
+    this.upsert(task);
+    return drained;
+  }
+
+  collectUnnotifiedCompletions(): LocalAgentTask[] {
+    return [...this.tasks.values()].filter(
+      (task) => this.isTerminal(task) && !task.notified,
+    );
+  }
+
   markRunning(taskId: string): void {
     this.patch(taskId, { status: "running" });
   }

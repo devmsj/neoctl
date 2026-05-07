@@ -4,6 +4,8 @@ import type { Message } from "../types/messages.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
+export type LocalAgentTaskType = "agent" | "exec";
+
 export interface AgentProgressSnapshot {
   totalEvents: number;
   totalToolUseCount: number;
@@ -15,7 +17,7 @@ export interface LocalAgentTask {
   id: string;
   taskId: string;
   agentId: string;
-  type: "agent";
+  type: LocalAgentTaskType;
   status: LocalAgentTaskStatus;
   description: string;
   prompt: string;
@@ -48,6 +50,7 @@ export function createLocalAgentTask(input: {
   agentId: string;
   description: string;
   prompt: string;
+  type?: LocalAgentTaskType;
   outputFile?: string;
   abortController?: AbortController;
   retain?: boolean;
@@ -57,7 +60,7 @@ export function createLocalAgentTask(input: {
     id: input.taskId,
     taskId: input.taskId,
     agentId: input.agentId,
-    type: "agent",
+    type: input.type ?? "agent",
     status: "pending",
     description: input.description,
     prompt: input.prompt,

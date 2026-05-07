@@ -3,7 +3,7 @@ import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway } from "../model/model-gateway.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool } from "../tools/tool.js";
-import type { QueryOptions } from "./query.js";
+import type { QueryOptions, TaskNotificationSource } from "./query.js";
 import type { AgentEvent } from "../types/events.js";
 import type { Message } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
@@ -24,6 +24,7 @@ export interface QueryEngineOptions {
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
+  taskNotificationSource?: TaskNotificationSource;
   commands?: readonly string[];
   agents?: readonly string[];
   skills?: readonly string[];
@@ -112,6 +113,7 @@ export class QueryEngine {
       this.history,
       {
         ...this.options,
+        taskNotificationSource: this.options.taskNotificationSource,
         toolResultMemory: this.sessionStore?.toolResultMemory,
         recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
       },

@@ -2,7 +2,7 @@ import type { Tool, ToolResult } from "../tools/tool.js";
 import type { LocalAgentTask } from "../agents/local-agent-task.js";
 import { globalTaskStore, isTerminalStatus, type TaskStore } from "./task-store.js";
 
-export type TaskToolName = "TaskOutput" | "TaskList" | "TaskGet" | "TaskStop" | "SendMessage";
+export type TaskToolName = "TaskOutput" | "TaskList" | "TaskGet" | "TaskStop" | "SendMessage" | "TaskResume";
 
 export interface TaskOutputInput {
   task_id: string;
@@ -19,13 +19,21 @@ export interface SendMessageInput {
   message: string;
 }
 
-export function createTaskTools(taskStore: TaskStore = globalTaskStore): Tool<any>[] {
+export interface TaskResumeInput {
+  task_id: string;
+  directive?: string;
+}
+
+export type TaskResumeHandler = (taskId: string, directive?: string) => Promise<{ ok: boolean; error?: string }>;
+
+export function createTaskTools(taskStore: TaskStore = globalTaskStore, resumeHandler?: TaskResumeHandler): Tool<any>[] {
   return [
     createTaskOutputTool(taskStore),
     createTaskListTool(taskStore),
     createTaskGetTool(taskStore),
     createTaskStopTool(taskStore),
     createSendMessageTool(taskStore),
+    createTaskResumeTool(taskStore, resumeHandler),
   ];
 }
 
@@ -162,6 +170,51 @@ export function createSendMessageTool(taskStore: TaskStore = globalTaskStore): T
           agent_id: queued.task.agentId,
           task_id: queued.task.taskId,
           pending_messages: queued.task.pendingMessages.length,
+        },
+      };
+    },
+  };
+}
+
+export function createTaskResumeTool(taskStore: TaskStore = globalTaskStore, resumeHandler?: TaskResumeHandler): Tool<TaskResumeInput> {
+  return {
+    name: "TaskResume",
+    aliases: ["task_resume"],
+    description: "Resume a completed, failed, or killed background agent task with an optional new directive. The agent re-launches with its prior conversation context intact.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "Task ID to resume." },
+        directive: { type: "string", description: "Optional new instructions for the resumed agent." },
+      },
+      required: ["task_id"],
+      additionalProperties: false,
+    },
+    metadata: { readOnly: false, concurrent: false, visible: true, searchHint: "resume stopped agent task" },
+    validate(input) {
+      return input as TaskResumeInput;
+    },
+    async call(input) {
+      const task = taskStore.get(input.task_id);
+      if (!task) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
+      if (task.type !== "agent") return { ok: false, output: { error: `Only agent tasks can be resumed, got type: ${task.type}` } };
+      if (!isTerminalStatus(task.status)) {
+        return { ok: false, output: { error: `Task ${input.task_id} is still ${task.status}; stop it first or wait for completion.` } };
+      }
+      if (!resumeHandler) {
+        return { ok: false, output: { error: "TaskResume handler is not configured in this runtime." } };
+      }
+
+      const result = await resumeHandler(input.task_id, input.directive);
+      if (!result.ok) return { ok: false, output: { error: result.error ?? "Resume failed" } };
+
+      return {
+        ok: true,
+        output: {
+          status: "resumed",
+          task_id: task.taskId,
+          agent_id: task.agentId,
+          directive: input.directive ?? "(continue)",
         },
       };
     },

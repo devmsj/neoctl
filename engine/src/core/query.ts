@@ -48,6 +48,12 @@ export interface QueryDependencies {
   maxToolResultSerializedLength?: number;
   toolResultMemory?: ToolUseContext["toolResultMemory"];
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
+  taskNotificationSource?: TaskNotificationSource;
+}
+
+export interface TaskNotificationSource {
+  collectUnnotifiedCompletions(): { taskId: string; agentId: string; status: string; type: string; content: string }[];
+  markNotified(taskId: string): void;
 }
 
 interface ModelTurnOutput {
@@ -157,9 +163,14 @@ async function* queryLoop(
     if (toolResult.terminal) return toolResult.terminal;
     toolContext = toolResult.context;
 
+    const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource);
+    for (const notification of taskNotifications) {
+      yield { type: "message", message: notification };
+    }
+
     state = buildNextTurnState(state, {
       assistantMessages,
-      toolResults: toolResult.messages,
+      toolResults: [...toolResult.messages, ...taskNotifications],
       previousResponseId,
     });
   }
@@ -271,7 +282,18 @@ async function* callModelForTurn(
     if (isContextLengthError(error) && !state.hasAttemptedReactiveCompact) {
       const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
       const normalized = error instanceof Error ? error : new Error(String(error));
-      const compacted = await (compactor.reactiveCompact?.(state.messages, normalized, dependencies.contextBudget) ?? compactor.compact(state.messages, dependencies.contextBudget));
+      const reactiveMetrics = buildContextMetrics({
+        model: activeModel,
+        messages: state.messages,
+        systemPrompt: telemetry.systemPrompt,
+        tools: telemetry.toolDefinitions,
+      });
+      const reactiveBudget: ContextBudgetOptions = {
+        ...dependencies.contextBudget,
+        estimatedInputTokens: reactiveMetrics.estimatedInputTokens,
+        contextWindowTokens: reactiveMetrics.contextWindowTokens,
+      };
+      const compacted = await (compactor.reactiveCompact?.(state.messages, normalized, reactiveBudget) ?? compactor.compact(state.messages, reactiveBudget));
       yield { type: "state", phase: "compacting", detail: "reactive compact retry after prompt-too-long" };
       for (const message of compacted.messages.filter((message) => message.metadata?.compactBoundary === true)) {
         yield { type: "message", message };
@@ -498,4 +520,16 @@ function terminalForModelError(error: unknown): TerminalReason {
 
 function isContextLengthError(error: unknown): boolean {
   return error instanceof ModelAPIError && error.category === "context_length";
+}
+
+function collectTaskNotifications(source?: TaskNotificationSource): Message[] {
+  if (!source) return [];
+  const completed = source.collectUnnotifiedCompletions();
+  return completed.map((task) => {
+    source.markNotified(task.taskId);
+    return createTextMessage(
+      "user",
+      `<task-notification task_id="${task.taskId}" agent_id="${task.agentId}" status="${task.status}" type="${task.type}">\n${task.content}\n</task-notification>`,
+    );
+  });
 }

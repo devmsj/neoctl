@@ -45,10 +45,18 @@ export function estimateTextTokens(text: string): number {
   let asciiRun = 0;
 
   for (const char of text) {
-    if (/[\u4e00-\u9fff]/.test(char)) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x4e00 && code <= 0x9fff) {
       tokens += Math.ceil(asciiRun / 4);
       asciiRun = 0;
-      tokens += 1;
+      tokens += 2;
+      continue;
+    }
+    if (code >= 0x3000 && code <= 0x303f || code >= 0xff00 && code <= 0xffef ||
+        code >= 0xac00 && code <= 0xd7af || code >= 0x3400 && code <= 0x4dbf) {
+      tokens += Math.ceil(asciiRun / 4);
+      asciiRun = 0;
+      tokens += 2;
       continue;
     }
     if (/\s/.test(char)) {

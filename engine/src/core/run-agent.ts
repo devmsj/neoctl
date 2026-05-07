@@ -32,6 +32,7 @@ export interface RunAgentOptions {
   maxTurns?: number;
   abortSignal?: AbortSignal;
   fork?: boolean;
+  existingMessages?: Message[];
 }
 
 export interface RunAgentCompleted {
@@ -42,7 +43,9 @@ export interface RunAgentCompleted {
 
 export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent, RunAgentCompleted, void> {
   const startedAt = Date.now();
-  const messages = buildInitialAgentMessages(options);
+  const messages = options.existingMessages?.length
+    ? [...options.existingMessages, ...buildResumeMessages(options)]
+    : buildInitialAgentMessages(options);
   const agentMessages: Message[] = [];
   let terminalReason: string | undefined;
   let lastUsage: ModelUsage | undefined;
@@ -125,6 +128,10 @@ function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
   if (options.agent.initialPrompt) messages.push(createTextMessage("user", options.agent.initialPrompt));
   messages.push(createTextMessage("user", prompt));
   return messages;
+}
+
+function buildResumeMessages(options: RunAgentOptions): Message[] {
+  return [createTextMessage("user", `[Resumed] ${options.prompt}`)];
 }
 
 function createAgentContextManager(options: RunAgentOptions): ContextManager {
