@@ -21,7 +21,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs" },
-  { name: "/sessions", usage: "/sessions [page_size]", description: "Browse saved sessions (↑/↓ select, ←/→ page, Enter resume)" },
+  { name: "/sessions", usage: "/sessions [page_size]", description: "Browse saved sessions" },
   { name: "/resume", usage: "/resume [session_id]", description: "Resume a saved session (default/latest uses newest)" },
   { name: "/state", usage: "/state", description: "Show query engine state" },
   { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker" },
