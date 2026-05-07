@@ -36,6 +36,8 @@ export interface QueryOptions {
   skipCacheWrite?: boolean;
   taskBudget?: { total: number };
   abortSignal?: AbortSignal;
+  /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
+  workspaceCwd?: string;
 }
 
 export interface QueryDependencies {
@@ -93,7 +95,7 @@ async function* queryLoop(
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
   const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
-  const appState = new InMemoryAppState(options.agentId);
+  const appState = new InMemoryAppState(options.agentId, options.workspaceCwd);
   const maxTurns = options.maxTurns;
   let state = initialState;
   let toolContext: ToolUseContext = {
@@ -117,6 +119,7 @@ async function* queryLoop(
     const context = await contextManager.build({
       agentId: options.agentId,
       messages: state.messages,
+      cwd: options.workspaceCwd,
       enabledTools: dependencies.tools.definitions(toolContext).map((tool) => tool.name),
       toolUseContext: toolContext,
     });

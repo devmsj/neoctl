@@ -17,6 +17,7 @@ import {
   type AgentPermissionMode,
 } from "./agent-definition.js";
 import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
+import path from "node:path";
 
 export const AGENT_TOOL_NAME = "agent";
 
@@ -24,6 +25,8 @@ export const AGENT_TOOL_PROMPT_RULES = [
   "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
   "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
   "Background agents return an output file and task notification; do not fabricate results before the task completes.",
+  "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
+  "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
   "Launch independent agents in the same model turn when parallel work is useful.",
   "Avoid vague delegation; give each worker a concrete scope and say whether edits are allowed.",
 ].join("\n");
@@ -34,10 +37,13 @@ export interface AgentToolInput {
   subagent_type?: string;
   model?: string;
   run_in_background?: boolean;
+  /** When true with sync mode, allow concurrent execution with other parallel-safe agent calls in the same turn (multiple model streams). */
+  parallel?: boolean;
   name?: string;
   team_name?: string;
   mode?: AgentPermissionMode | "sync" | "background" | "fork";
   isolation?: AgentIsolation;
+  /** Working directory for this subagent's tools (resolved against parent cwd when relative). */
   cwd?: string;
 }
 
@@ -57,6 +63,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
     searchHint: "delegate work to a subagent",
     description: [
       "Delegate a scoped task to a subagent.",
+      "Use parallel=true when issuing multiple agent calls in one turn so they run concurrently; otherwise they execute sequentially.",
       AGENT_TOOL_PROMPT_RULES,
     ].join("\n"),
     inputSchema: {
@@ -71,7 +78,8 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         team_name: { type: "string" },
         mode: { type: "string" },
         isolation: { type: "string", enum: ["shared", "worktree", "remote"] },
-        cwd: { type: "string" },
+        cwd: { type: "string", description: "Working directory for child tools (list/read/exec); resolved against parent cwd if relative." },
+        parallel: { type: "boolean", description: "Set true when launching multiple independent agents in the same turn so they run concurrently." },
       },
       required: ["prompt"],
       additionalProperties: false,
@@ -90,7 +98,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       return value;
     },
     isConcurrencySafe(input) {
-      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork");
+      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.parallel === true);
     },
     async call(input, context, options) {
       if (!runtime) {
@@ -140,34 +148,46 @@ async function runSyncAgent(input: {
   description: string;
 }): Promise<ToolResult> {
   const agentMessages: Message[] = [];
-  const stream = runAgent({
-    agentId: input.agentId,
-    agent: input.agent,
-    prompt: input.input.prompt,
-    parentContext: input.context,
-    parentMessages: input.fork ? input.context.messages : undefined,
-    dependencies: buildRunAgentDependencies(input.runtime),
-    model: input.input.model,
-    maxTurns: input.agent.maxTurns,
-    abortSignal: input.context.abortSignal,
-    fork: input.fork,
-  });
+  const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  const wall = mergeAbortWithWallClock(input.context.abortSignal, resolveSubagentWallTimeoutMs());
+  try {
+    const stream = runAgent({
+      agentId: input.agentId,
+      agent: input.agent,
+      prompt: input.input.prompt,
+      parentContext: input.context,
+      parentMessages: input.fork ? input.context.messages : undefined,
+      dependencies: buildRunAgentDependencies(input.runtime),
+      model: input.input.model,
+      abortSignal: wall?.signal ?? input.context.abortSignal,
+      fork: input.fork,
+      workspaceCwd,
+    });
 
-  let completed = await stream.next();
-  while (!completed.done) {
-    if (completed.value.type === "message") agentMessages.push(completed.value.message);
-    completed = await stream.next();
+    let completed = await stream.next();
+    while (!completed.done) {
+      if (completed.value.type === "message") agentMessages.push(completed.value.message);
+      completed = await stream.next();
+    }
+
+    return {
+      ok: true,
+      output: {
+        status: "completed",
+        description: input.description,
+        ...completed.value.result,
+      },
+      newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      output: { error: message, description: input.description },
+    };
+  } finally {
+    wall?.dispose();
   }
-
-  return {
-    ok: true,
-    output: {
-      status: "completed",
-      description: input.description,
-      ...completed.value.result,
-    },
-    newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
-  };
 }
 
 function launchAsyncAgent(input: {
@@ -227,51 +247,26 @@ async function runAsyncAgentLifecycle(input: {
 }): Promise<void> {
   input.taskStore.markRunning(input.taskId);
   const task = input.taskStore.get(input.taskId);
-  const stream = runAgent({
-    agentId: input.agentId,
-    agent: input.agent,
-    prompt: input.input.prompt,
-    parentContext: input.context,
-    parentMessages: input.fork ? input.context.messages : undefined,
-    dependencies: buildRunAgentDependencies(input.runtime),
-    model: input.input.model,
-    maxTurns: input.agent.maxTurns,
-    abortSignal: input.abortController.signal,
-    fork: input.fork,
-    existingMessages: input.existingMessages,
-  });
+  const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  const wall = mergeAbortWithWallClock(input.abortController.signal, resolveSubagentWallTimeoutMs());
+  try {
+    const stream = runAgent({
+      agentId: input.agentId,
+      agent: input.agent,
+      prompt: input.input.prompt,
+      parentContext: input.context,
+      parentMessages: input.fork ? input.context.messages : undefined,
+      dependencies: buildRunAgentDependencies(input.runtime),
+      model: input.input.model,
+      abortSignal: wall?.signal ?? input.abortController.signal,
+      fork: input.fork,
+      existingMessages: input.existingMessages,
+      workspaceCwd,
+    });
 
-  let completed = await stream.next();
-  while (!completed.done) {
-    const event = completed.value;
-    const current = input.taskStore.get(input.taskId);
-    if (!current || current.status === "killed") return;
-    if (event.type === "message") {
-      current.messages.push(event.message);
-      updateProgressFromMessage(current, event.message);
-      input.taskStore.upsert(current);
-    }
-
-    if (event.type === "terminal" || (completed.done)) break;
-
-    const pending = input.taskStore.drainPendingMessages(input.taskId);
-    if (pending.length > 0) {
-      const currentTask = input.taskStore.get(input.taskId);
-      if (currentTask) {
-        for (const msg of pending) {
-          currentTask.messages.push(msg);
-        }
-        input.taskStore.upsert(currentTask);
-      }
-    }
-
-    completed = await stream.next();
-  }
-
-  if (!completed.done) {
-    let remaining = await stream.next();
-    while (!remaining.done) {
-      const event = remaining.value;
+    let completed = await stream.next();
+    while (!completed.done) {
+      const event = completed.value;
       const current = input.taskStore.get(input.taskId);
       if (!current || current.status === "killed") return;
       if (event.type === "message") {
@@ -279,18 +274,51 @@ async function runAsyncAgentLifecycle(input: {
         updateProgressFromMessage(current, event.message);
         input.taskStore.upsert(current);
       }
-      remaining = await stream.next();
-    }
-    completed = remaining;
-  }
 
-  input.taskStore.complete(input.taskId, completed.value.result);
-  const finished = input.taskStore.get(input.taskId);
-  if (finished) {
-    finished.messages.push(createTaskNotification(finished.agentId, finished.taskId, finished.status, completed.value.result.content));
-    input.taskStore.upsert(finished);
+      if (event.type === "terminal" || completed.done) break;
+
+      const pending = input.taskStore.drainPendingMessages(input.taskId);
+      if (pending.length > 0) {
+        const currentTask = input.taskStore.get(input.taskId);
+        if (currentTask) {
+          for (const msg of pending) {
+            currentTask.messages.push(msg);
+          }
+          input.taskStore.upsert(currentTask);
+        }
+      }
+
+      completed = await stream.next();
+    }
+
+    if (!completed.done) {
+      let remaining = await stream.next();
+      while (!remaining.done) {
+        const event = remaining.value;
+        const current = input.taskStore.get(input.taskId);
+        if (!current || current.status === "killed") return;
+        if (event.type === "message") {
+          current.messages.push(event.message);
+          updateProgressFromMessage(current, event.message);
+          input.taskStore.upsert(current);
+        }
+        remaining = await stream.next();
+      }
+      completed = remaining;
+    }
+
+    input.taskStore.complete(input.taskId, completed.value.result);
+    const finished = input.taskStore.get(input.taskId);
+    if (finished) {
+      finished.messages.push(createTaskNotification(finished.agentId, finished.taskId, finished.status, completed.value.result.content));
+      input.taskStore.upsert(finished);
+    }
+    if (task) task.notified = false;
+  } catch (error) {
+    input.taskStore.fail(input.taskId, error instanceof Error ? error.message : String(error));
+  } finally {
+    wall?.dispose();
   }
-  if (task) task.notified = false;
 }
 
 export function resumeAgentTask(
@@ -355,6 +383,45 @@ function makeAgentId(prefix: string): string {
 
 function makeTaskId(): string {
   return `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function resolveAgentWorkspaceCwd(inputCwd: string | undefined, parentContext: ToolUseContext): string | undefined {
+  if (!inputCwd?.trim()) return undefined;
+  const root = path.resolve(parentContext.appState.snapshot().cwd ?? process.cwd());
+  const trimmed = inputCwd.trim();
+  return path.isAbsolute(trimmed) ? path.normalize(trimmed) : path.resolve(root, trimmed);
+}
+
+/** Wall-clock limit for a single subagent run. Default 10 minutes; set AGENT_SUBAGENT_WALL_TIMEOUT_MS=0 to disable. */
+function resolveSubagentWallTimeoutMs(): number {
+  const raw = process.env.AGENT_SUBAGENT_WALL_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return 600000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 600000;
+  return n === 0 ? 0 : Math.floor(n);
+}
+
+function mergeAbortWithWallClock(
+  parent: AbortSignal | undefined,
+  wallMs: number,
+): { signal: AbortSignal; dispose: () => void } | undefined {
+  if (wallMs <= 0) return undefined;
+  const controller = new AbortController();
+  const tid = setTimeout(() => {
+    controller.abort(new Error(`Subagent wall-clock timeout after ${wallMs}ms (set AGENT_SUBAGENT_WALL_TIMEOUT_MS=0 to disable)`));
+  }, wallMs);
+  const onParentAbort = () => {
+    clearTimeout(tid);
+    if (!controller.signal.aborted) controller.abort(parent?.reason ?? new Error("Aborted"));
+  };
+  parent?.addEventListener("abort", onParentAbort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(tid);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+  };
 }
 
 function slug(value: string): string {

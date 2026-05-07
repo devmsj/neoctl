@@ -33,6 +33,8 @@ export interface RunAgentOptions {
   abortSignal?: AbortSignal;
   fork?: boolean;
   existingMessages?: Message[];
+  /** Resolved absolute cwd for file/exec tools in this subagent session. */
+  workspaceCwd?: string;
 }
 
 export interface RunAgentCompleted {
@@ -64,9 +66,10 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     agentId: options.agentId,
     model: resolveAgentModel(options.agent, options.model),
     fallbackModel: options.fallbackModel,
-    maxTurns: options.maxTurns ?? options.agent.maxTurns,
+    maxTurns: resolveSubagentMaxTurns(options),
     queryOrigin: "subagent",
     abortSignal: options.abortSignal,
+    workspaceCwd: options.workspaceCwd,
   })) {
     if (event.type === "message") agentMessages.push(event.message);
     if (event.type === "usage") lastUsage = event.usage;
@@ -136,12 +139,14 @@ function buildResumeMessages(options: RunAgentOptions): Message[] {
 
 function createAgentContextManager(options: RunAgentOptions): ContextManager {
   const parent = options.dependencies.contextManager;
-  if (!parent) return new DefaultContextManager({ cwd: options.parentContext?.appState.snapshot().cwd });
+  const inheritedCwd = options.workspaceCwd ?? options.parentContext?.appState.snapshot().cwd;
+  if (!parent) return new DefaultContextManager({ cwd: inheritedCwd });
 
   return {
     async build(input) {
       const runtime = await parent.build({
         ...input,
+        cwd: options.workspaceCwd ?? input.cwd,
         omitProjectMemory: options.agent.omitProjectMemory ?? input.omitProjectMemory,
         agentPrompt: options.agent.buildSystemPrompt?.(options.parentContext),
         agentPromptMode: options.agent.agentType === FORK_AGENT.agentType ? "proactive_append" : "replace",
@@ -149,6 +154,16 @@ function createAgentContextManager(options: RunAgentOptions): ContextManager {
       return runtime;
     },
   };
+}
+
+function resolveSubagentMaxTurns(options: RunAgentOptions): number | undefined {
+  if (options.maxTurns !== undefined) return options.maxTurns;
+  const raw = process.env.AGENT_SUBAGENT_MAX_TURNS;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 1) return Math.floor(n);
+  }
+  return options.agent.maxTurns;
 }
 
 function resolveAgentModel(agent: AgentDefinition, override?: string): string | undefined {
