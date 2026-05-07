@@ -1063,6 +1063,57 @@ function useAnimatedNumber(target: number | undefined): number | undefined {
   return display;
 }
 
+function useMinimumDisplayValue<T>(target: T, minDurationMs: number): T {
+  const [display, setDisplay] = useState<T>(target);
+  const displayRef = useRef<T>(target);
+  const displayedAtRef = useRef(Date.now());
+  const pendingRef = useRef<T | undefined>(undefined);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+    }
+
+    if (Object.is(target, displayRef.current)) {
+      pendingRef.current = undefined;
+      return undefined;
+    }
+
+    const applyPending = () => {
+      const next = pendingRef.current;
+      if (next === undefined || Object.is(next, displayRef.current)) {
+        pendingRef.current = undefined;
+        return;
+      }
+      displayRef.current = next;
+      displayedAtRef.current = Date.now();
+      pendingRef.current = undefined;
+      timerRef.current = undefined;
+      setDisplay(next);
+    };
+
+    pendingRef.current = target;
+    const elapsedMs = Date.now() - displayedAtRef.current;
+    const remainingMs = minDurationMs - elapsedMs;
+    if (remainingMs <= 0) {
+      applyPending();
+      return undefined;
+    }
+
+    timerRef.current = setTimeout(applyPending, remainingMs);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = undefined;
+      }
+    };
+  }, [target, minDurationMs]);
+
+  return display;
+}
+
 function animatedNumberDurationMs(delta: number): number {
   if (!Number.isFinite(delta) || delta <= 0) return ANIMATED_NUMBER_MIN_DURATION_MS;
   const scaled = ANIMATED_NUMBER_MIN_DURATION_MS + Math.log10(delta + 1) * ANIMATED_NUMBER_DURATION_SCALE_MS;
@@ -1081,7 +1132,8 @@ function StatusBar(
   const width = statusBarWidth(terminalWidth);
   const inputTokens = useAnimatedNumber(statusInputTokens(status));
   const outputTokens = useAnimatedNumber(statusOutputTokens(status));
-  const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width, inputTokens, outputTokens), width);
+  const displayPhase = useMinimumDisplayValue(status.phase, STATUS_PHASE_MIN_DISPLAY_MS);
+  const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width, inputTokens, outputTokens, displayPhase), width);
   return e(
     Box,
     { marginTop: 1, width, height: 1, overflow: "hidden" },
@@ -1112,8 +1164,9 @@ function renderCompactStatusSegments(
   width: number,
   inputTokens: number | undefined,
   outputTokens: number | undefined,
+  displayPhase = status.phase,
 ): StatusSegment[] {
-  const phase = status.phase;
+  const phase = displayPhase;
   const now = Date.now();
   const phaseText = phaseLabelForStatus(phase);
   const inputValue = compactNumber(inputTokens);
@@ -1121,9 +1174,9 @@ function renderCompactStatusSegments(
   const context = renderContextParts(status.metrics);
   const fixedText = [
     phaseText,
+    `ctx ${context.used} / ${context.limit} (${context.percent})`,
     `↑ ${inputValue}`,
     `↓ ${outputValue}`,
-    `ctx ${context.used} / ${context.limit} (${context.percent})`,
   ].join(STATUS_SEPARATOR);
   const modelBudget = Math.max(4, width - fixedText.length - STATUS_SEPARATOR.length);
   const model = truncateMiddle(status.metrics?.model ?? "model?", Math.min(width >= 120 ? 26 : width >= 90 ? 20 : 14, modelBudget));
@@ -1139,15 +1192,15 @@ function renderCompactStatusSegments(
     statusDividerSegment(),
     { text: model },
     statusDividerSegment(),
+    statusLabelSegment("ctx"),
+    { text: ` ${context.used} / ${context.limit}` },
+    { text: ` (${context.percent})`, color: contextColor(status.metrics) },
+    statusDividerSegment(),
     statusLabelSegment("↑", tokenInputColor),
     { text: ` ${inputValue}` },
     statusDividerSegment(),
     statusLabelSegment("↓", outputLabelColor),
     { text: ` ${outputValue}` },
-    statusDividerSegment(),
-    statusLabelSegment("ctx"),
-    { text: ` ${context.used} / ${context.limit}` },
-    { text: ` (${context.percent})`, color: contextColor(status.metrics) },
   ];
 
   return segments;
@@ -2319,6 +2372,7 @@ const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
 const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
 const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
 const STATUS_BLINK_TICKS = 2;
+const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
 const STATUS_SHIMMER_GAP_TICKS = 3;
 const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
