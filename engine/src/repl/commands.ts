@@ -4,52 +4,71 @@ export type ReplCommand =
   | { type: "exit" }
   | { type: "log"; path?: string; off?: boolean }
   | { type: "reset" }
-  | { type: "resume"; sessionId?: string }
-  | { type: "sessions"; pageSize?: number }
+  | { type: "sessions" }
   | { type: "state" }
   | { type: "input"; text: string };
+
+export type ReplCommandArgumentSpec = "none" | "required" | "log";
 
 export interface ReplCommandDefinition {
   name: string;
   usage: string;
   description: string;
+  arguments: ReplCommandArgumentSpec;
   aliases?: string[];
 }
 
 export const replCommandDefinitions: ReplCommandDefinition[] = [
-  { name: "/help", usage: "/help", description: "Show commands" },
-  { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session" },
-  { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory" },
-  { name: "/log off", usage: "/log off", description: "Disable model communication logs" },
-  { name: "/sessions", usage: "/sessions [page_size]", description: "Browse saved sessions" },
-  { name: "/resume", usage: "/resume [session_id]", description: "Resume a saved session (default/latest uses newest)" },
-  { name: "/state", usage: "/state", description: "Show query engine state" },
-  { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker" },
-  { name: "/exit", usage: "/exit", description: "Quit", aliases: ["/quit"] },
+  { name: "/help", usage: "/help", description: "Show commands", arguments: "none" },
+  { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session", arguments: "none" },
+  { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
+  { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
+  { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
+  { name: "/state", usage: "/state", description: "Show query engine state", arguments: "none" },
+  { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker", arguments: "none" },
+  { name: "/exit", usage: "/exit", description: "Quit", arguments: "none", aliases: ["/quit"] },
 ];
 
 export function parseReplCommand(line: string): ReplCommand {
-  const trimmed = line.trim();
-  if (trimmed === "/help") return { type: "help" };
-  if (trimmed === "/cost") return { type: "cost" };
-  if (trimmed === "/exit" || trimmed === "/quit") return { type: "exit" };
-  if (trimmed === "/log" || trimmed.startsWith("/log ")) {
-    const argument = trimmed.slice("/log".length).trim();
+  const parsed = parseSlashCommandLine(line);
+  if (!parsed.valid) return { type: "input", text: line };
+
+  const { name, argument } = parsed;
+  if (name === "/help") return { type: "help" };
+  if (name === "/cost") return { type: "cost" };
+  if (name === "/exit" || name === "/quit") return { type: "exit" };
+  if (name === "/log") {
     if (argument.toLowerCase() === "off") return { type: "log", off: true };
-    return { type: "log", path: argument || undefined };
+    return { type: "log", path: argument };
   }
-  if (trimmed === "/reset") return { type: "reset" };
-  if (trimmed === "/resume" || trimmed.startsWith("/resume ")) {
-    const argument = trimmed.slice("/resume".length).trim();
-    return { type: "resume", sessionId: argument || undefined };
-  }
-  if (trimmed === "/sessions" || trimmed.startsWith("/sessions ")) {
-    const argument = trimmed.slice("/sessions".length).trim();
-    const pageSize = argument ? Number(argument) : undefined;
-    return { type: "sessions", pageSize: Number.isFinite(pageSize) && pageSize !== undefined && pageSize > 0 ? Math.floor(pageSize) : undefined };
-  }
-  if (trimmed === "/state") return { type: "state" };
+  if (name === "/reset") return { type: "reset" };
+  if (name === "/sessions") return { type: "sessions" };
+  if (name === "/state") return { type: "state" };
   return { type: "input", text: line };
+}
+
+export function isValidReplCommandLine(line: string): boolean {
+  return parseSlashCommandLine(line).valid;
+}
+
+function parseSlashCommandLine(line: string): { valid: true; name: string; argument: string } | { valid: false } {
+  if (!line.startsWith("/")) return { valid: false };
+  const trimmed = line.trimEnd();
+  const match = /^(\/\S+)(?:\s+(.*))?$/.exec(trimmed);
+  if (!match) return { valid: false };
+
+  const typedName = match[1].toLowerCase();
+  const argument = match[2]?.trim() ?? "";
+  const definition = replCommandDefinitions.find((command) =>
+    command.name.toLowerCase() === typedName || command.aliases?.some((alias) => alias.toLowerCase() === typedName)
+  );
+  if (!definition) return { valid: false };
+
+  if (definition.arguments === "none" && argument.length > 0) return { valid: false };
+  if (definition.arguments === "required" && argument.length === 0) return { valid: false };
+  if (definition.arguments === "log" && argument.length === 0) return { valid: false };
+
+  return { valid: true, name: typedName, argument };
 }
 
 const helpUsageWidth = Math.max(...replCommandDefinitions.map((command) => command.usage.length));

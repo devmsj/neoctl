@@ -29,6 +29,12 @@ export interface SessionListOptions {
   limit?: number;
 }
 
+export interface SessionDeleteOptions {
+  cwd?: string;
+  sessionId: string;
+  rootDir?: string;
+}
+
 export interface SessionSummary {
   sessionId: string;
   sessionDir: string;
@@ -139,6 +145,20 @@ export class SessionStore {
       .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
       .slice(0, Math.max(0, options.limit ?? Number.POSITIVE_INFINITY))
       .map(({ updatedAtMs: _updatedAtMs, ...summary }) => summary);
+  }
+
+  static async delete(options: SessionDeleteOptions): Promise<boolean> {
+    const sessionId = normalizeRequestedSessionId(options.sessionId);
+    if (!sessionId || sessionId === "latest") throw new Error("a concrete session id is required");
+    if (path.basename(sessionId) !== sessionId || sessionId.includes("/") || sessionId.includes("\\")) {
+      throw new Error(`invalid session id: ${options.sessionId}`);
+    }
+    const sessionDir = path.join(resolveSessionRoot(options), sessionId);
+    const stat = await fsp.stat(sessionDir).catch(() => undefined);
+    if (!stat) return false;
+    if (!stat.isDirectory()) throw new Error(`session path is not a directory: ${sessionDir}`);
+    await fsp.rm(sessionDir, { recursive: true, force: true });
+    return true;
   }
 
   getInitialMessages(): Message[] {

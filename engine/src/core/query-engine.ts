@@ -86,6 +86,19 @@ export class QueryEngine {
     });
   }
 
+  async deleteSession(sessionId: string): Promise<boolean> {
+    if (this.options.session?.enabled === false || !this.options.session) throw new Error("session transcripts are disabled");
+    const activeSessionId = this.sessionStore?.sessionId;
+    if (activeSessionId && activeSessionId === sessionId) {
+      throw new Error("cannot delete the active session");
+    }
+    return SessionStore.delete({
+      cwd: process.cwd(),
+      sessionId,
+      rootDir: this.options.session.rootDir,
+    });
+  }
+
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = createTextMessage("user", text);

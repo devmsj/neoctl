@@ -24,7 +24,7 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
-import { parseReplCommand, helpText, replCommandDefinitions } from "./commands.js";
+import { isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
@@ -532,12 +532,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "sessions") {
-      await handleSessionsCommand(command.pageSize, runtime, setSessionsBrowser, (line) => append(line));
-      return;
-    }
-    if (command.type === "resume") {
-      const resumed = await handleResumeCommand(command.sessionId, runtime, (line) => append(line));
-      if (resumed) resumeSnapshot(resumed);
+      await handleSessionsCommand(runtime, setSessionsBrowser, (line) => append(line));
       return;
     }
     if (command.type === "log") {
@@ -668,6 +663,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
           void handleResumeCommand(selected.sessionId, runtime, (line) => append(line)).then((resumed) => {
             if (resumed) resumeSnapshot(resumed);
           });
+        }
+        return;
+      }
+      if (key.delete || key.backspace || value.toLowerCase() === "d") {
+        const selected = sessionsBrowser.sessions[sessionAbsoluteIndex(sessionsBrowser)];
+        if (selected) {
+          void handleDeleteSessionCommand(selected.sessionId, sessionsBrowser, runtime, setSessionsBrowser, (line) => append(line));
         }
         return;
       }
@@ -1291,7 +1293,8 @@ function slashCommandCompletions(text: string, cursor: number): SlashCommandComp
 }
 
 function slashCompletionViewHeight(completions: SlashCommandCompletion[]): number {
-  return Math.min(completions.length, SLASH_COMPLETION_MAX_ROWS);
+  if (completions.length === 0) return 0;
+  return Math.min(completions.length, SLASH_COMPLETION_MAX_ROWS) + 2;
 }
 
 function slashCompletionSelectableCount(text: string, cursor: number): number {
@@ -1303,6 +1306,7 @@ function PromptLine(
   { text: string; cursor: number; busy: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
 ) {
   const visualLines = promptTextView(text, cursor, width, prompt);
+  const inputColor = !busy && isValidReplCommandLine(text) ? "cyan" : undefined;
   return e(
     Box,
     { flexDirection: "column" },
@@ -1310,9 +1314,9 @@ function PromptLine(
       Box,
       { key: `prompt-${index}`, height: 1, overflow: "hidden" },
       e(Text, { color: busy ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
-      e(Text, null, line.before),
-      e(Text, { inverse: true }, line.selected),
-      e(Text, null, line.after),
+      e(Text, { color: inputColor }, line.before),
+      e(Text, { inverse: true, color: inputColor }, line.selected),
+      e(Text, { color: inputColor }, line.after),
     )),
     ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
   );
@@ -1325,24 +1329,38 @@ function SlashCompletionLines(
   if (completions.length === 0) return [];
   const visibleCompletions = completions.slice(0, SLASH_COMPLETION_MAX_ROWS);
   const safeSelectedIndex = Math.max(0, Math.min(selectedIndex, visibleCompletions.length - 1));
-  const contentWidth = Math.max(10, width - prompt.length);
+  const contentWidth = Math.max(20, width - prompt.length);
   const nameWidth = Math.min(18, Math.max(...visibleCompletions.map((completion) => completion.name.length)));
-  return visibleCompletions.map((completion, index) => {
+  const footer = "↑/↓ select · Tab complete";
+  const rows = visibleCompletions.map((completion, index) => {
     const selected = index === safeSelectedIndex;
-    const suffix = selected ? "  Tab to complete" : "";
-    const descriptionWidth = Math.max(0, contentWidth - nameWidth - 6 - suffix.length);
+    const numberPrefix = `${index + 1}.`.padStart(3);
+    const descriptionWidth = Math.max(0, contentWidth - numberPrefix.length - nameWidth - 4);
     const description = fitToWidth(completion.description, descriptionWidth);
     return e(
-      Box,
-      { key: `slash-completion-${completion.name}`, height: 1, overflow: "hidden" },
-      e(Text, { color: "gray" }, " ".repeat(prompt.length)),
-      e(Text, { color: selected ? "cyanBright" : "gray" }, selected ? "› " : "  "),
-      e(Text, { color: selected ? "cyanBright" : "cyan", inverse: selected }, completion.name.padEnd(nameWidth)),
+      Text,
+      { key: `slash-completion-${completion.name}`, color: "white" },
+      e(Text, {
+        color: selected ? "black" : "white",
+        backgroundColor: selected ? "cyan" : undefined,
+      }, numberPrefix),
+      e(Text, { color: "gray" }, " "),
+      e(Text, { color: "cyan" }, completion.name.padEnd(nameWidth)),
       e(Text, { color: "gray" }, "  "),
       e(Text, { color: selected ? "white" : "gray" }, description),
-      suffix ? e(Text, { color: "gray" }, suffix) : null,
     );
   });
+
+  return [
+    e(Text, { key: "slash-completion-header", color: "cyan", bold: true }, fitToWidth(`Slash commands (${completions.length})`, contentWidth)),
+    ...rows,
+    e(Text, { key: "slash-completion-footer", color: "gray" }, fitToWidth(footer, contentWidth)),
+  ].map((line, index) => e(
+    Box,
+    { key: `slash-completion-line-${index}`, height: 1, overflow: "hidden" },
+    e(Text, { color: "gray" }, " ".repeat(prompt.length)),
+    line,
+  ));
 }
 
 async function handleLogCommand(
@@ -1522,19 +1540,17 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
 }
 
 async function handleSessionsCommand(
-  pageSize: number | undefined,
   runtime: ReplRuntime,
   setBrowser: (state: SessionsBrowserState | undefined) => void,
   append: (line: Omit<UiLine, "id">) => number,
 ) {
-  const resolvedPageSize = resolveSessionsPageSize(pageSize);
   const sessions = await runtime.engine.listSessions(Number.POSITIVE_INFINITY);
   if (sessions.length === 0) {
     setBrowser(undefined);
     append(systemLine("No saved sessions found."));
     return;
   }
-  setBrowser({ sessions, pageSize: resolvedPageSize, pageIndex: 0, selectedIndex: 0 });
+  setBrowser({ sessions, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
 }
 
 async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<SessionStoreSnapshot | undefined> {
@@ -1543,6 +1559,39 @@ async function handleResumeCommand(sessionId: string | undefined, runtime: ReplR
   } catch (error) {
     append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     return undefined;
+  }
+}
+
+async function handleDeleteSessionCommand(
+  sessionId: string,
+  current: SessionsBrowserState,
+  runtime: ReplRuntime,
+  setBrowser: (state: SessionsBrowserState | undefined) => void,
+  append: (line: Omit<UiLine, "id">) => number,
+): Promise<void> {
+  try {
+    const deleted = await runtime.engine.deleteSession(sessionId);
+    if (!deleted) {
+      append({ kind: "error", text: `session not found: ${sessionId}` });
+      return;
+    }
+    const nextSessions = current.sessions.filter((session) => session.sessionId !== sessionId);
+    if (nextSessions.length === 0) {
+      setBrowser(undefined);
+    } else {
+      const pageCount = Math.max(1, Math.ceil(nextSessions.length / current.pageSize));
+      const pageIndex = Math.min(current.pageIndex, pageCount - 1);
+      const pageLength = nextSessions.slice(pageIndex * current.pageSize, pageIndex * current.pageSize + current.pageSize).length;
+      setBrowser({
+        ...current,
+        sessions: nextSessions,
+        pageIndex,
+        selectedIndex: Math.min(current.selectedIndex, Math.max(0, pageLength - 1)),
+      });
+    }
+    append(systemLine(`deleted session ${sessionId}`));
+  } catch (error) {
+    append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -1573,11 +1622,6 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
     renderMessage(message, append, undefined, { includeToolUseBlocks: true });
   }
   return lines;
-}
-
-function resolveSessionsPageSize(pageSize: number | undefined): number {
-  if (pageSize === undefined || !Number.isFinite(pageSize) || pageSize <= 0) return SESSIONS_DEFAULT_PAGE_SIZE;
-  return Math.max(1, Math.floor(pageSize));
 }
 
 function sessionsPageCount(state: SessionsBrowserState): number {
@@ -1621,8 +1665,8 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
     ? `Saved sessions (${state.sessions.length}) · page ${state.pageIndex + 1}/${pageCount}`
     : `Saved sessions (${state.sessions.length})`;
   const footer = showPagination
-    ? "↑/↓ select · ←/→ page · Enter resume · Esc close"
-    : "↑/↓ select · Enter resume · Esc close";
+    ? "↑/↓ select · ←/→ page · Enter resume · d/Delete remove · Esc close"
+    : "↑/↓ select · Enter resume · d/Delete remove · Esc close";
 
   return e(
     Box,
@@ -1630,21 +1674,23 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
     e(Text, { color: "cyan", bold: true }, fitToWidth(header, contentWidth)),
     ...pageItems.map((session, index) => {
       const selected = index === state.selectedIndex;
+      const absoluteIndex = state.pageIndex * state.pageSize + index;
+      const row = formatSessionBrowserRow(session, absoluteIndex, contentWidth);
       return e(
         Text,
-        {
-          key: session.sessionId,
+        { key: session.sessionId, color: "white" },
+        e(Text, {
           color: selected ? "black" : "white",
           backgroundColor: selected ? "cyan" : undefined,
-        },
-        formatSessionBrowserRow(session, state.pageIndex * state.pageSize + index, contentWidth),
+        }, row.numberPrefix),
+        row.rest,
       );
     }),
     e(Text, { color: "gray" }, fitToWidth(footer, contentWidth)),
   );
 }
 
-function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number): string {
+function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number): { numberPrefix: string; rest: string } {
   const numberPrefix = `${absoluteIndex + 1}.`.padStart(4);
   const title = session.title?.trim() || "(untitled)";
   const updated = session.updatedAt ? ` · ${formatSessionTimestamp(session.updatedAt)}` : "";
@@ -1653,7 +1699,8 @@ function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number,
   const idBudget = Math.max(12, Math.min(32, Math.floor(width * 0.28)));
   const id = truncateMiddle(session.sessionId, idBudget);
   const titleBudget = Math.max(8, width - fixedParts.length - id.length - 5);
-  return fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)} · ${id}${updated}${messages}`, width);
+  const row = fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)} · ${id}${updated}${messages}`, width);
+  return { numberPrefix, rest: row.slice(numberPrefix.length) };
 }
 
 function formatSessionTimestamp(value: string): string {

@@ -78,7 +78,7 @@ npm run dev
 
 ## Session Resume
 
-The REPL writes JSONL transcripts under `.agent/sessions` by default. After each user message, a background title subagent check is scheduled after 5s: it creates one initial title, then performs one later refinement with the conversation and previous title if the prior title agent has finished. `/sessions [page_size]` opens an interactive browser (default 10 per page): use ↑/↓ to select a session, ←/→ to switch pages when more than one page exists, Enter to resume the selected session, and Esc to close. Use `/resume [session_id]` to replace the current in-memory history with a saved transcript. `/resume` without an id resumes the newest session for the current agent.
+The REPL writes JSONL transcripts under `.agent/sessions` by default. After each user message, a background title subagent check is scheduled after 5s: it creates one initial title, then performs one later refinement with the conversation and previous title if the prior title agent has finished. `/sessions` opens an interactive browser (default 10 per page): use ↑/↓ to select a session, ←/→ to switch pages when more than one page exists, Enter to resume the selected session, and Esc to close.
 
 Startup resume is available with environment variables:
 

@@ -31,6 +31,8 @@ async function main(): Promise<void> {
   const afterReset = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
   afterReset.reset();
   const resetResume = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
+  const deleted = await SessionStore.delete({ rootDir: root, sessionId });
+  const listedAfterDelete = await SessionStore.list({ agentId: "main", rootDir: root });
 
   const ok =
     first.records.length === 1 &&
@@ -53,9 +55,11 @@ async function main(): Promise<void> {
     resumedBudget.messages.some((message) =>
       message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),
     ) &&
-    resetResume.snapshot().resumedMessages === 0;
+    resetResume.snapshot().resumedMessages === 0 &&
+    deleted &&
+    listedAfterDelete.length === 0;
 
-  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot() }, null, 2));
+  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot(), deleted, listedAfterDelete }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
