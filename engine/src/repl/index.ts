@@ -297,7 +297,10 @@ function enableTerminalFocusReporting(): void {
 
 function enableTerminalMouseReporting(): void {
   if (!stdout.isTTY || !stdin.isTTY) return;
-  stdout.write("\u001b[?1000h\u001b[?1006h");
+  // Only enable SGR extended coordinates; no tracking mode (?1000h etc.)
+  // is activated so the terminal keeps handling scroll-wheel natively.
+  // Right-click paste is handled via Ctrl+V / Cmd+V instead.
+  stdout.write("\u001b[?1006h");
 }
 
 function disableTerminalFocusReporting(): void {
@@ -307,7 +310,7 @@ function disableTerminalFocusReporting(): void {
 
 function disableTerminalMouseReporting(): void {
   if (!stdout.isTTY) return;
-  stdout.write("\u001b[?1000l\u001b[?1006l");
+  stdout.write("\u001b[?1006l");
 }
 
 function isTerminalFocusInSequence(value: string): boolean {
@@ -331,6 +334,15 @@ function isRightClickPasteSequence(value: string): boolean {
   if (!match) return false;
   const button = Number(match[1]);
   return button % 4 === 2;
+}
+
+function mouseScrollDirection(value: string): "up" | "down" | undefined {
+  const match = /^\u001b\[<(\d+);\d+;\d+[Mm]$/u.exec(value);
+  if (!match) return undefined;
+  const button = Number(match[1]);
+  if (button === 64) return "up";
+  if (button === 65) return "down";
+  return undefined;
 }
 
 function shouldFoldClipboardText(text: string): boolean {
@@ -935,6 +947,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (isRightClickPasteSequence(value)) {
       void handleClipboardPaste();
+      return;
+    }
+    if (mouseScrollDirection(value) !== undefined) {
       return;
     }
     if (isPasteShortcut(value, key)) {
