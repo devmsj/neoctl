@@ -123,15 +123,20 @@ Set `AGENT_SESSION_TRANSCRIPT=0` to disable transcript persistence, or `AGENT_SE
 
 ## Model Providers
 
-The REPL calls `createModelGatewayFromEnv()`, which loads `.env`, reads `MODEL_*` settings into a small discriminated provider config, and constructs a provider through `provider-factory.ts`. Provider-specific switches stay inside provider-owned config (`OpenAIProviderConfig.openai.endpoint` today), while `OPENAI_*` variables remain supported as compatibility aliases.
+The REPL loads environment files, reads `MODEL_*` settings into a small discriminated provider config, and constructs a provider through `provider-factory.ts`. It loads the current directory `.env` first, then overrides it with the user-level config at `%APPDATA%\\neo\\.env` on Windows or `~/.config/neo/.env` on other platforms. If the user-level config file is missing, `neo` creates a commented template there and prints a startup notice telling the user to fill `MODEL_API_KEY`. Set `NEO_ENV_FILE` to point at a custom env file; that file has the highest priority. Provider-specific switches stay inside provider-owned config (`OpenAIProviderConfig.openai.endpoint` today), while `OPENAI_*` variables remain supported as compatibility aliases.
 
 ```bash
-set MODEL_PROVIDER=openai
-set MODEL_API_KEY=your-api-key
-set MODEL_BASE_URL=https://api.openai.com
-set MODEL_ID=gpt-5.5
-set MODEL_REASONING_EFFORT=high
-set MODEL_ENDPOINT=auto
+mkdir "%APPDATA%\\neo"
+notepad "%APPDATA%\\neo\\.env"
+
+# In the env file:
+MODEL_PROVIDER=openai
+MODEL_API_KEY=your-api-key
+MODEL_BASE_URL=https://api.openai.com
+MODEL_ID=gpt-5.5
+MODEL_REASONING_EFFORT=high
+MODEL_ENDPOINT=auto
+
 npm run smoke:openai -- "Say pong"
 npm run dev
 ```

@@ -1,10 +1,10 @@
 import { createTextMessage } from "../types/messages.js";
 import { readModelProviderConfig } from "./config.js";
-import { loadDotEnvIfPresent } from "./env.js";
+import { loadDefaultDotEnvFiles } from "./env.js";
 import { createModelGatewayFromConfig } from "./provider-factory.js";
 
 async function main(): Promise<void> {
-  loadDotEnvIfPresent(undefined, { override: true });
+  loadDefaultDotEnvFiles({ override: true });
   const config = readModelProviderConfig(process.env);
   if (!config) throw new Error("MODEL_API_KEY or OPENAI_API_KEY is required");
 

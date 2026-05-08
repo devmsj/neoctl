@@ -8,10 +8,11 @@ import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
-import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env.js";
+import { loadDefaultDotEnvFiles } from "../model/env.js";
 import { readModelProviderConfig } from "../model/config.js";
 import { loadModelCatalog, reasoningEffortsForModel, resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
+import { createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { echoTool } from "../tools/builtins/echo-tool.js";
@@ -38,6 +39,7 @@ interface ReplRuntime {
   taskStore: TaskStore;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig;
+  envNotice?: string;
 }
 
 interface UsageTotals {
@@ -183,10 +185,10 @@ function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSou
 }
 
 async function createRuntime(): Promise<ReplRuntime> {
-  loadDotEnvIfPresent(undefined, { override: true });
+  const envLoad = loadDefaultDotEnvFiles({ override: true });
   const modelConfig = readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = new LoggingModelGateway(createModelGatewayFromEnv(), communicationLogger);
+  const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
   tools.register(echoTool);
@@ -234,7 +236,19 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
-  return { engine, communicationLogger, usage: new SessionUsageTracker(), taskStore, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length), defaultReasoning: modelConfig?.defaultReasoning };
+  return {
+    engine,
+    communicationLogger,
+    usage: new SessionUsageTracker(),
+    taskStore,
+    initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length),
+    defaultReasoning: modelConfig?.defaultReasoning,
+    envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
+  };
+}
+
+function formatCreatedEnvNotice(path: string): string {
+  return `Created default config file: ${path}\nFill MODEL_API_KEY in that file, then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -2217,6 +2231,7 @@ function initialLines(runtime: ReplRuntime, lineId: { current: number }): UiLine
     { id: 0, kind: "system", title: "System", text: `Interactive UI enabled. Type /help for commands.${suffix}`, previewStyle: "summary" },
   ];
   lineId.current = 0;
+  if (runtime.envNotice) lines.push({ id: ++lineId.current, kind: "system", title: "Config", text: runtime.envNotice, previewStyle: "summary" });
   for (const line of restoredHistoryLines(runtime)) lines.push({ id: ++lineId.current, ...line });
   return lines;
 }

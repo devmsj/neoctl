@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import type { ModelGateway } from "./model-gateway.js";
 import { createModelGatewayFromProcessEnv } from "./provider-factory.js";
 import { parseReasoning } from "./config.js";
@@ -8,9 +9,47 @@ export interface DotEnvLoadOptions {
   override?: boolean;
 }
 
+export interface DefaultDotEnvLoadResult {
+  userDotEnvPath: string;
+  createdUserDotEnv: boolean;
+}
+
+const USER_DOT_ENV_TEMPLATE = `# Neo CLI model configuration
+# Uncomment and fill these values, then run: neo
+
+# MODEL_PROVIDER=openai
+# MODEL_API_KEY=your-api-key
+# MODEL_BASE_URL=https://api.openai.com
+# MODEL_ID=gpt-4.1
+# MODEL_ENDPOINT=auto
+
+# Optional
+# MODEL_FALLBACK_ID=
+# MODEL_REASONING_EFFORT=
+# MODEL_MAX_OUTPUT_TOKENS=
+`;
+
 export function createModelGatewayFromEnv(): ModelGateway {
-  loadDotEnvIfPresent(undefined, { override: true });
+  loadDefaultDotEnvFiles({ override: true });
   return createModelGatewayFromProcessEnv(process.env);
+}
+
+export function loadDefaultDotEnvFiles(options: DotEnvLoadOptions = {}): DefaultDotEnvLoadResult {
+  loadDotEnvIfPresent(resolve(process.cwd(), ".env"), options);
+
+  const userDotEnvPath = getUserDotEnvPath();
+  const createdUserDotEnv = ensureUserDotEnvFile(userDotEnvPath);
+  loadDotEnvIfPresent(userDotEnvPath, { ...options, override: true });
+
+  const explicitPath = process.env.NEO_ENV_FILE?.trim();
+  if (explicitPath) loadDotEnvIfPresent(resolve(explicitPath), { ...options, override: true });
+
+  return { userDotEnvPath, createdUserDotEnv };
+}
+
+export function getUserDotEnvPath(): string {
+  const baseDir = process.env.APPDATA || resolve(homedir(), ".config");
+  return resolve(baseDir, "neo", ".env");
 }
 
 export function loadDotEnvIfPresent(
@@ -33,6 +72,13 @@ export function loadDotEnvIfPresent(
 }
 
 export { parseReasoning };
+
+function ensureUserDotEnvFile(path: string): boolean {
+  if (existsSync(path)) return false;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, USER_DOT_ENV_TEMPLATE, { encoding: "utf8", flag: "wx" });
+  return true;
+}
 
 function stripQuotes(value: string): string {
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
