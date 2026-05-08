@@ -10,6 +10,7 @@ export interface ModelMetadata {
   maxOutputTokens?: number;
   knowledgeCutoff?: string;
   reasoning?: boolean;
+  imageInput?: boolean;
   source?: string;
   notes?: string;
 }
@@ -51,6 +52,11 @@ export function resolveContextWindowTokens(model: string | undefined, env: NodeJ
 export function findModelMetadata(model: string, catalog: ModelCatalog = loadModelCatalog()): ModelMetadata | undefined {
   const requestedModel = normalizeModelId(model);
   return catalog.models.find((entry) => entry.modelIds.some((modelId) => normalizeModelId(modelId) === requestedModel));
+}
+
+export function supportsImageInput(model: string | undefined, catalog: ModelCatalog = loadModelCatalog()): boolean | undefined {
+  if (!model) return undefined;
+  return findModelMetadata(model, catalog)?.imageInput;
 }
 
 export function loadModelCatalog(): ModelCatalog {

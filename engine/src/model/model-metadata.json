@@ -1,9 +1,10 @@
 {
-  "updatedAt": "2026-05-07",
+  "updatedAt": "2026-05-08",
   "notes": [
     "Static model metadata used for local REPL telemetry. Values are best-effort and should be refreshed when providers update model cards.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
-    "modelIds are exact official model IDs/aliases from provider documentation; matching is direct and does not use regex."
+    "modelIds are exact official model IDs/aliases from provider documentation; matching is direct and does not use regex.",
+    "imageInput indicates whether provider documentation lists image input / vision support for the model."
   ],
   "sources": {
     "openai-models": "https://platform.openai.com/docs/models",
@@ -12,400 +13,533 @@
     "gemini-models": "https://ai.google.dev/gemini-api/docs/models",
     "deepseek-pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
     "deepseek-models": "https://api-docs.deepseek.com/quick_start/parameter_settings/",
-    "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations"
+    "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations",
+    "anthropic-vision": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
+    "mistral-vision": "https://docs.mistral.ai/capabilities/vision"
   },
   "models": [
     {
       "id": "gpt-5.5",
       "provider": "openai",
-      "modelIds": ["gpt-5.5"],
+      "modelIds": [
+        "gpt-5.5"
+      ],
       "contextWindowTokens": 1050000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.5-pro",
       "provider": "openai",
-      "modelIds": ["gpt-5.5-pro"],
+      "modelIds": [
+        "gpt-5.5-pro"
+      ],
       "contextWindowTokens": 1050000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.4",
       "provider": "openai",
-      "modelIds": ["gpt-5.4"],
+      "modelIds": [
+        "gpt-5.4"
+      ],
       "contextWindowTokens": 1050000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.4-mini",
       "provider": "openai",
-      "modelIds": ["gpt-5.4-mini"],
+      "modelIds": [
+        "gpt-5.4-mini"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.4-nano",
       "provider": "openai",
-      "modelIds": ["gpt-5.4-nano"],
+      "modelIds": [
+        "gpt-5.4-nano"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.2",
       "provider": "openai",
-      "modelIds": ["gpt-5.2"],
+      "modelIds": [
+        "gpt-5.2"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2025-08-31",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.2-codex",
       "provider": "openai",
-      "modelIds": ["gpt-5.2-codex"],
+      "modelIds": [
+        "gpt-5.2-codex"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2025-08-31",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.2-pro",
       "provider": "openai",
-      "modelIds": ["gpt-5.2-pro"],
+      "modelIds": [
+        "gpt-5.2-pro"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.1",
       "provider": "openai",
-      "modelIds": ["gpt-5.1"],
+      "modelIds": [
+        "gpt-5.1"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.1-codex",
       "provider": "openai",
-      "modelIds": ["gpt-5.1-codex"],
+      "modelIds": [
+        "gpt-5.1-codex"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.1-codex-max",
       "provider": "openai",
-      "modelIds": ["gpt-5.1-codex-max"],
+      "modelIds": [
+        "gpt-5.1-codex-max"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5.1-codex-mini",
       "provider": "openai",
-      "modelIds": ["gpt-5.1-codex-mini"],
+      "modelIds": [
+        "gpt-5.1-codex-mini"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5",
       "provider": "openai",
-      "modelIds": ["gpt-5"],
+      "modelIds": [
+        "gpt-5"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5-codex",
       "provider": "openai",
-      "modelIds": ["gpt-5-codex"],
+      "modelIds": [
+        "gpt-5-codex"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5-mini",
       "provider": "openai",
-      "modelIds": ["gpt-5-mini"],
+      "modelIds": [
+        "gpt-5-mini"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5-nano",
       "provider": "openai",
-      "modelIds": ["gpt-5-nano"],
+      "modelIds": [
+        "gpt-5-nano"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-5-pro",
       "provider": "openai",
-      "modelIds": ["gpt-5-pro"],
+      "modelIds": [
+        "gpt-5-pro"
+      ],
       "contextWindowTokens": 400000,
       "maxOutputTokens": 272000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4.1",
       "provider": "openai",
-      "modelIds": ["gpt-4.1"],
+      "modelIds": [
+        "gpt-4.1"
+      ],
       "contextWindowTokens": 1047576,
       "maxOutputTokens": 32768,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4.1-mini",
       "provider": "openai",
-      "modelIds": ["gpt-4.1-mini"],
+      "modelIds": [
+        "gpt-4.1-mini"
+      ],
       "contextWindowTokens": 1047576,
       "maxOutputTokens": 32768,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4.1-nano",
       "provider": "openai",
-      "modelIds": ["gpt-4.1-nano"],
+      "modelIds": [
+        "gpt-4.1-nano"
+      ],
       "contextWindowTokens": 1047576,
       "maxOutputTokens": 32768,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4o",
       "provider": "openai",
-      "modelIds": ["gpt-4o"],
+      "modelIds": [
+        "gpt-4o"
+      ],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4o-mini",
       "provider": "openai",
-      "modelIds": ["gpt-4o-mini"],
+      "modelIds": [
+        "gpt-4o-mini"
+      ],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "chatgpt-4o-latest",
       "provider": "openai",
-      "modelIds": ["chatgpt-4o-latest"],
+      "modelIds": [
+        "chatgpt-4o-latest"
+      ],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4o-search-preview",
       "provider": "openai",
-      "modelIds": ["gpt-4o-search-preview"],
+      "modelIds": [
+        "gpt-4o-search-preview"
+      ],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4o-mini-search-preview",
       "provider": "openai",
-      "modelIds": ["gpt-4o-mini-search-preview"],
+      "modelIds": [
+        "gpt-4o-mini-search-preview"
+      ],
       "contextWindowTokens": 128000,
       "maxOutputTokens": 16384,
       "reasoning": false,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "o4-mini",
       "provider": "openai",
-      "modelIds": ["o4-mini"],
+      "modelIds": [
+        "o4-mini"
+      ],
       "contextWindowTokens": 200000,
       "maxOutputTokens": 100000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "o4-mini-deep-research",
       "provider": "openai",
-      "modelIds": ["o4-mini-deep-research"],
+      "modelIds": [
+        "o4-mini-deep-research"
+      ],
       "contextWindowTokens": 200000,
       "maxOutputTokens": 100000,
       "reasoning": true,
+      "imageInput": true,
       "source": "openai-models"
     },
     {
       "id": "gpt-4",
       "provider": "openai",
-      "modelIds": ["gpt-4"],
+      "modelIds": [
+        "gpt-4"
+      ],
       "contextWindowTokens": 8192,
       "maxOutputTokens": 8192,
       "reasoning": false,
+      "imageInput": false,
       "source": "openai-models"
     },
     {
       "id": "claude-opus-4-7",
       "provider": "anthropic",
-      "modelIds": ["claude-opus-4-7"],
+      "modelIds": [
+        "claude-opus-4-7"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 128000,
       "reasoning": true,
+      "imageInput": true,
       "source": "anthropic-models"
     },
     {
       "id": "claude-sonnet-4-6",
       "provider": "anthropic",
-      "modelIds": ["claude-sonnet-4-6"],
+      "modelIds": [
+        "claude-sonnet-4-6"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 64000,
       "reasoning": true,
+      "imageInput": true,
       "source": "anthropic-models"
     },
     {
       "id": "claude-haiku-4-5",
       "provider": "anthropic",
-      "modelIds": ["claude-haiku-4-5", "claude-haiku-4-5-20251001"],
+      "modelIds": [
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
       "contextWindowTokens": 200000,
       "maxOutputTokens": 64000,
       "reasoning": true,
+      "imageInput": true,
       "source": "anthropic-models"
     },
     {
       "id": "gemini-3.1-pro-preview",
       "provider": "google",
-      "modelIds": ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"],
+      "modelIds": [
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview-customtools"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "gemini-3-flash-preview",
       "provider": "google",
-      "modelIds": ["gemini-3-flash-preview"],
+      "modelIds": [
+        "gemini-3-flash-preview"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "gemini-2.5-pro",
       "provider": "google",
-      "modelIds": ["gemini-2.5-pro"],
+      "modelIds": [
+        "gemini-2.5-pro"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "gemini-2.5-flash",
       "provider": "google",
-      "modelIds": ["gemini-2.5-flash"],
+      "modelIds": [
+        "gemini-2.5-flash"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "gemini-2.5-flash-lite",
       "provider": "google",
-      "modelIds": ["gemini-2.5-flash-lite"],
+      "modelIds": [
+        "gemini-2.5-flash-lite"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "gemini-2.0-flash",
       "provider": "google",
-      "modelIds": ["gemini-2.0-flash"],
+      "modelIds": [
+        "gemini-2.0-flash"
+      ],
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 8192,
       "reasoning": true,
+      "imageInput": true,
       "source": "gemini-models"
     },
     {
       "id": "deepseek-v4-pro",
       "provider": "deepseek",
-      "modelIds": ["deepseek-v4-pro"],
+      "modelIds": [
+        "deepseek-v4-pro"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
       "reasoning": true,
+      "imageInput": false,
       "source": "deepseek-pricing"
     },
     {
       "id": "deepseek-v4-flash",
       "provider": "deepseek",
-      "modelIds": ["deepseek-v4-flash"],
+      "modelIds": [
+        "deepseek-v4-flash"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
       "reasoning": true,
+      "imageInput": false,
       "source": "deepseek-pricing"
     },
     {
       "id": "deepseek-chat",
       "provider": "deepseek",
-      "modelIds": ["deepseek-chat"],
+      "modelIds": [
+        "deepseek-chat"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
       "reasoning": false,
+      "imageInput": false,
       "source": "deepseek-pricing",
       "notes": "Compatibility alias for non-thinking mode of deepseek-v4-flash."
     },
     {
       "id": "deepseek-reasoner",
       "provider": "deepseek",
-      "modelIds": ["deepseek-reasoner"],
+      "modelIds": [
+        "deepseek-reasoner"
+      ],
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
       "reasoning": true,
+      "imageInput": false,
       "source": "deepseek-pricing",
       "notes": "Compatibility alias for thinking mode of deepseek-v4-flash."
     },
     {
       "id": "mistral-large-latest",
       "provider": "mistral",
-      "modelIds": ["mistral-large-latest"],
+      "modelIds": [
+        "mistral-large-latest"
+      ],
       "contextWindowTokens": 131072,
       "reasoning": false,
+      "imageInput": true,
       "source": "mistral-known-limitations"
     },
     {
       "id": "mistral-small-latest",
       "provider": "mistral",
-      "modelIds": ["mistral-small-latest"],
+      "modelIds": [
+        "mistral-small-latest"
+      ],
       "contextWindowTokens": 32768,
       "reasoning": false,
+      "imageInput": true,
       "source": "mistral-known-limitations"
     }
   ]

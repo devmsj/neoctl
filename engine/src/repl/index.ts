@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { stdout } from "node:process";
+import { stdin, stdout } from "node:process";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Static, Text, render, useApp, useInput } from "ink";
 import stripAnsi from "strip-ansi";
@@ -27,7 +27,8 @@ import type { TaskNotificationSource } from "../core/query.js";
 import { isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
-import type { Message, ToolUseRequest } from "../types/messages.js";
+import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
+import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
 
 const e = React.createElement;
 interface ReplRuntime {
@@ -146,6 +147,14 @@ interface SessionsBrowserState {
   selectedIndex: number;
 }
 
+interface ClipboardAttachment {
+  id: number;
+  kind: "image" | "text";
+  label: string;
+  text?: string;
+  image?: ClipboardImagePayload;
+}
+
 async function main(): Promise<void> {
   const runtime = await createRuntime();
   const instance = render(e(InkRepl, { runtime }), {
@@ -249,6 +258,7 @@ function initialContextMetrics(model: string | undefined, messageCount: number, 
           maxOutputTokens: window.model.maxOutputTokens,
           knowledgeCutoff: window.model.knowledgeCutoff,
           reasoning: window.model.reasoning,
+          imageInput: window.model.imageInput,
           source: window.model.source,
         }
       : undefined,
@@ -285,9 +295,19 @@ function enableTerminalFocusReporting(): void {
   stdout.write("\u001b[?1004h");
 }
 
+function enableTerminalMouseReporting(): void {
+  if (!stdout.isTTY || !stdin.isTTY) return;
+  stdout.write("\u001b[?1000h\u001b[?1006h");
+}
+
 function disableTerminalFocusReporting(): void {
   if (!stdout.isTTY) return;
   stdout.write("\u001b[?1004l");
+}
+
+function disableTerminalMouseReporting(): void {
+  if (!stdout.isTTY) return;
+  stdout.write("\u001b[?1000l\u001b[?1006l");
 }
 
 function isTerminalFocusInSequence(value: string): boolean {
@@ -300,6 +320,80 @@ function isTerminalFocusOutSequence(value: string): boolean {
 
 function sessionTerminalTitle(snapshot: SessionStoreSnapshot | undefined): string {
   return snapshot?.title?.trim() || "neo";
+}
+
+function isPasteShortcut(value: string, key: { ctrl?: boolean; meta?: boolean }): boolean {
+  return (key.ctrl === true && value === "v") || (key.meta === true && value === "v") || value === "\u0016" || value === "\u001bv";
+}
+
+function isRightClickPasteSequence(value: string): boolean {
+  const match = /^\u001b\[<(\d+);\d+;\d+M$/u.exec(value);
+  if (!match) return false;
+  const button = Number(match[1]);
+  return button % 4 === 2;
+}
+
+function shouldFoldClipboardText(text: string): boolean {
+  return text.length >= LONG_CLIPBOARD_TEXT_THRESHOLD;
+}
+
+function attachmentsForText(text: string, attachments: readonly ClipboardAttachment[]): ClipboardAttachment[] {
+  return attachments.filter((attachment) => text.includes(attachment.label));
+}
+
+function buildPromptPayload(displayText: string, attachments: readonly ClipboardAttachment[]): { text: string; blocks?: MessageBlock[] } {
+  const activeAttachments = attachmentsForText(displayText, attachments);
+  if (activeAttachments.length === 0) return { text: displayText };
+
+  const blocks: MessageBlock[] = [];
+  let cursor = 0;
+  while (cursor < displayText.length) {
+    const next = nextAttachmentOccurrence(displayText, activeAttachments, cursor);
+    if (!next) {
+      pushTextBlock(blocks, displayText.slice(cursor));
+      break;
+    }
+    pushTextBlock(blocks, displayText.slice(cursor, next.index));
+    if (next.attachment.kind === "text" && next.attachment.text !== undefined) {
+      pushTextBlock(blocks, next.attachment.text);
+    } else if (next.attachment.kind === "image" && next.attachment.image) {
+      blocks.push({ type: "image", mimeType: next.attachment.image.mimeType, data: next.attachment.image.data, label: next.attachment.label });
+    }
+    cursor = next.index + next.attachment.label.length;
+  }
+
+  const text = blocks
+    .map((block) => {
+      if (block.type === "text") return block.text;
+      if (block.type === "image") return block.label ?? "[image]";
+      return "";
+    })
+    .join("");
+  return { text, blocks };
+}
+
+function nextAttachmentOccurrence(text: string, attachments: readonly ClipboardAttachment[], start: number): { index: number; attachment: ClipboardAttachment } | undefined {
+  let best: { index: number; attachment: ClipboardAttachment } | undefined;
+  for (const attachment of attachments) {
+    const index = text.indexOf(attachment.label, start);
+    if (index === -1) continue;
+    if (!best || index < best.index) best = { index, attachment };
+  }
+  return best;
+}
+
+function pushTextBlock(blocks: MessageBlock[], text: string): void {
+  if (!text) return;
+  const previous = blocks[blocks.length - 1];
+  if (previous?.type === "text") {
+    previous.text += text;
+    return;
+  }
+  blocks.push({ type: "text", text });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function InkRepl({ runtime }: { runtime: ReplRuntime }) {
@@ -316,6 +410,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime, lineId));
   const [input, setInput] = useState("");
   const [queuedInput, setQueuedInput] = useState<string | undefined>(undefined);
+  const queuedAttachmentsRef = useRef<ClipboardAttachment[] | undefined>(undefined);
   const [cursor, setCursor] = useState(0);
   const [promptPlaceholder, setPromptPlaceholder] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -334,11 +429,21 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const terminalFocusedRef = useRef(true);
   const historyIndexRef = useRef<number | undefined>(undefined);
   const slashCompletionIndexRef = useRef(0);
+  const imageAttachmentCounterRef = useRef(0);
+  const textAttachmentCounterRef = useRef(0);
+  const attachmentsRef = useRef<ClipboardAttachment[]>([]);
+  const [attachments, setAttachments] = useState<ClipboardAttachment[]>([]);
+  const [pasteStatus, setPasteStatus] = useState<string | undefined>(undefined);
+  const pasteStatusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
 
   useEffect(() => {
     enableTerminalFocusReporting();
-    return disableTerminalFocusReporting;
+    enableTerminalMouseReporting();
+    return () => {
+      disableTerminalMouseReporting();
+      disableTerminalFocusReporting();
+    };
   }, []);
 
   useEffect(() => {
@@ -382,13 +487,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     cursorRef.current = safeCursor;
     exitOnNextEmptyCtrlCRef.current = false;
     setPromptPlaceholder(undefined);
+    syncAttachmentsForText(text);
     if (!options?.preserveSlashCompletionSelection) resetSlashCompletionSelection();
     setInput(text);
     setCursor(safeCursor);
   };
 
-  const setQueuedPromptState = (text: string | undefined) => {
+  const setQueuedPromptState = (text: string | undefined, queuedAttachments?: ClipboardAttachment[]) => {
     queuedInputRef.current = text;
+    queuedAttachmentsRef.current = text === undefined ? undefined : (queuedAttachments ?? attachmentsForText(text, attachmentsRef.current));
     setQueuedInput(text);
   };
 
@@ -403,6 +510,68 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   const resetSlashCompletionSelection = () => setSlashCompletionSelection(0);
+
+  const syncAttachmentsForText = (text: string) => {
+    const next = attachmentsRef.current.filter((attachment) => text.includes(attachment.label));
+    if (next.length === attachmentsRef.current.length) return;
+    attachmentsRef.current = next;
+    setAttachments(next);
+  };
+
+  const clearAttachments = () => {
+    if (attachmentsRef.current.length === 0) return;
+    attachmentsRef.current = [];
+    setAttachments([]);
+  };
+
+  const setPasteStatusMessage = (message: string | undefined) => {
+    if (pasteStatusTimerRef.current) clearTimeout(pasteStatusTimerRef.current);
+    setPasteStatus(message);
+    if (!message) return;
+    const timer = setTimeout(() => {
+      if (pasteStatusTimerRef.current === timer) pasteStatusTimerRef.current = undefined;
+      setPasteStatus(undefined);
+    }, PASTE_STATUS_DISPLAY_MS);
+    pasteStatusTimerRef.current = timer;
+  };
+
+  const insertAtCursor = (value: string) => {
+    const currentText = inputRef.current;
+    const currentCursor = cursorRef.current;
+    setPromptState(`${currentText.slice(0, currentCursor)}${value}${currentText.slice(currentCursor)}`, currentCursor + value.length);
+  };
+
+  const insertAttachmentLabel = (attachment: ClipboardAttachment) => {
+    attachmentsRef.current = [...attachmentsRef.current, attachment];
+    setAttachments(attachmentsRef.current);
+    insertAtCursor(attachment.label);
+  };
+
+  const handleClipboardPaste = async () => {
+    try {
+      const payload = await readClipboard();
+      if (payload.type === "empty") {
+        setPasteStatusMessage("clipboard is empty");
+        return;
+      }
+      if (payload.type === "image") {
+        const id = ++imageAttachmentCounterRef.current;
+        insertAttachmentLabel({ id, kind: "image", label: `[img#${id}]`, image: payload.image });
+        setPasteStatusMessage(undefined);
+        return;
+      }
+      const text = payload.text;
+      if (shouldFoldClipboardText(text)) {
+        const id = ++textAttachmentCounterRef.current;
+        insertAttachmentLabel({ id, kind: "text", label: `[text_${text.length}#${id}]`, text });
+      } else {
+        insertAtCursor(text);
+      }
+      setPasteStatusMessage(undefined);
+    } catch (error) {
+      setPasteStatusMessage(`paste failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   const setBusyState = (next: boolean) => {
     busyRef.current = next;
@@ -493,7 +662,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   useEffect(() => {
-    return () => clearPendingToolResultTimers();
+    return () => {
+      clearPendingToolResultTimers();
+      if (pasteStatusTimerRef.current) clearTimeout(pasteStatusTimerRef.current);
+    };
   }, []);
 
   const finalizeActiveToolLines = () => {
@@ -587,37 +759,42 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
   };
 
-  const submitLine = async (text: string) => {
+  const submitLine = async (text: string, submitAttachments = attachmentsForText(text, attachmentsRef.current)) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (busyRef.current) {
       if (queuedInputRef.current !== undefined) return;
-      setQueuedPromptState(text);
+      setQueuedPromptState(text, submitAttachments);
       setHistorySelection(undefined);
       setPromptState("", 0);
+      clearAttachments();
       return;
     }
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
     setPromptState("", 0);
-    await handleCommandOrPrompt(text);
+    clearAttachments();
+    await handleCommandOrPrompt(text, submitAttachments);
   };
 
   const takeQueuedPromptState = () => {
     const text = queuedInputRef.current;
     if (text === undefined) return undefined;
+    const queuedAttachments = queuedAttachmentsRef.current ?? [];
     setQueuedPromptState(undefined);
-    return text;
+    return { text, attachments: queuedAttachments };
   };
 
   const restoreQueuedPromptToEditor = () => {
-    const text = takeQueuedPromptState();
-    if (text === undefined) return false;
-    setPromptState(text, text.length);
+    const queued = takeQueuedPromptState();
+    if (queued === undefined) return false;
+    attachmentsRef.current = attachmentsForText(queued.text, queued.attachments);
+    setAttachments(attachmentsRef.current);
+    setPromptState(queued.text, queued.text.length);
     return true;
   };
 
-  const handleCommandOrPrompt = async (text: string) => {
+  const handleCommandOrPrompt = async (text: string, submitAttachments: ClipboardAttachment[] = []) => {
     const command = parseReplCommand(text);
     if (command.type === "exit") {
       app.exit();
@@ -656,6 +833,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
 
+    const promptPayload = buildPromptPayload(command.text, submitAttachments);
     append({ kind: "user", text });
     const abortController = new AbortController();
     activeAbortController.current = abortController;
@@ -672,7 +850,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       retryCooldownUntil: undefined,
     }));
     try {
-      for await (const event of runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
+      for await (const event of runtime.engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: text })) {
         handleEvent(event);
       }
     } catch (error) {
@@ -700,9 +878,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         retryCooldownUntil: undefined,
       }));
       if (!terminalFocusedRef.current) playReadySound();
-      const queuedText = takeQueuedPromptState();
-      if (queuedText !== undefined) {
-        void submitLine(queuedText);
+      const queued = takeQueuedPromptState();
+      if (queued !== undefined) {
+        void submitLine(queued.text, queued.attachments);
       }
     }
   };
@@ -734,7 +912,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
     slashCompletionIndexRef.current = selectedSlashCompletionIndex;
   }
-  const promptHeight = promptTextView(promptDisplayText, promptDisplayCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0);
+  const promptHeight = promptTextView(promptDisplayText, promptDisplayCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0) + (pasteStatus ? 1 : 0);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
@@ -753,6 +931,14 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (isTerminalFocusOutSequence(value)) {
       terminalFocusedRef.current = false;
+      return;
+    }
+    if (isRightClickPasteSequence(value)) {
+      void handleClipboardPaste();
+      return;
+    }
+    if (isPasteShortcut(value, key)) {
+      void handleClipboardPaste();
       return;
     }
     if (key.ctrl && value === "c") {
@@ -900,9 +1086,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (value && !key.ctrl && !key.meta) {
-      const currentText = inputRef.current;
-      const currentCursor = cursorRef.current;
-      setPromptState(`${currentText.slice(0, currentCursor)}${value}${currentText.slice(currentCursor)}`, currentCursor + value.length);
+      insertAtCursor(value);
     }
   });
 
@@ -914,8 +1098,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
+    pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
-    e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, width, prompt, slashCompletions, selectedSlashCompletionIndex }),
+    e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
   );
 }
 
@@ -1464,8 +1649,8 @@ function selectedSlashCommandCompletion(text: string, cursor: number, selectedIn
 }
 
 function PromptLine(
-  { text, cursor, busy, locked, placeholder = false, width, prompt, slashCompletions, selectedSlashCompletionIndex }:
-  { text: string; cursor: number; busy: boolean; locked: boolean; placeholder?: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number },
+  { text, cursor, busy, locked, placeholder = false, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }:
+  { text: string; cursor: number; busy: boolean; locked: boolean; placeholder?: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number; attachments: ClipboardAttachment[] },
 ) {
   const visualLines = promptTextView(text, cursor, width, prompt);
   const inputColor = placeholder ? "gray" : (!locked && isValidReplCommandLine(text) ? "cyan" : undefined);
@@ -1476,11 +1661,23 @@ function PromptLine(
       Box,
       { key: `prompt-${index}`, height: 1, overflow: "hidden" },
       e(Text, { color: locked ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
-      e(Text, { color: inputColor }, line.before),
+      ...renderPromptPart(line.before, inputColor, attachments),
       e(Text, { inverse: true, color: inputColor }, line.selected),
-      e(Text, { color: inputColor }, line.after),
+      ...renderPromptPart(line.after, inputColor, attachments),
     )),
     ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
+  );
+}
+
+function PasteStatusLine(
+  { text, width: terminalWidth }:
+  { text: string; width: number },
+) {
+  const width = statusBarWidth(terminalWidth);
+  return e(
+    Box,
+    { width, height: 1, overflow: "hidden" },
+    e(Text, { color: "yellow" }, fitToWidth(text, width)),
   );
 }
 
@@ -1495,6 +1692,23 @@ function QueuedInputLine(
     { width, height: 1, overflow: "hidden" },
     e(Text, { color: "yellow" }, preview),
   );
+}
+
+function renderPromptPart(text: string, color: string | undefined, attachments: ClipboardAttachment[]): React.ReactNode[] {
+  if (!text) return [];
+  const activeLabels = attachments.map((attachment) => attachment.label).filter((label) => text.includes(label));
+  if (activeLabels.length === 0) return [e(Text, { key: "plain", color }, text)];
+  const pattern = new RegExp(activeLabels.map(escapeRegExp).join("|"), "g");
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(e(Text, { key: `plain-${nodes.length}`, color }, text.slice(lastIndex, match.index)));
+    nodes.push(e(Text, { key: `tag-${nodes.length}`, color: "black", backgroundColor: "cyan", bold: true }, match[0]));
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) nodes.push(e(Text, { key: `plain-${nodes.length}`, color }, text.slice(lastIndex)));
+  return nodes;
 }
 
 function SlashCompletionLines(
@@ -1576,6 +1790,12 @@ function renderMessage(
       if (kind === "meta") continue;
       if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
       else append({ kind, text: block.text });
+      rendered = true;
+    }
+    if (block.type === "image") {
+      const kind = kindForRole(message.role);
+      if (kind === "meta") continue;
+      append({ kind, text: block.label ?? `[image ${block.mimeType}]` });
       rendered = true;
     }
     if (block.type === "thinking") {
@@ -2764,6 +2984,8 @@ const STATUS_BAR_RENDER_ROWS = 2;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const QUEUED_INPUT_RENDER_ROWS = 1;
 const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";
+const LONG_CLIPBOARD_TEXT_THRESHOLD = 200;
+const PASTE_STATUS_DISPLAY_MS = 2500;
 const MIN_LIVE_VIEWPORT_LINES = 4;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {

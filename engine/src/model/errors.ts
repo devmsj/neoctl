@@ -8,6 +8,7 @@ export type ModelAPIErrorCategory =
   | "permission_denied"
   | "context_length"
   | "max_output_tokens"
+  | "unsupported_image_input"
   | "server_error"
   | "provider_bug"
   | "user_abort";

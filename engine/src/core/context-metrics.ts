@@ -33,6 +33,7 @@ export function buildContextMetrics(input: {
           maxOutputTokens: window.model.maxOutputTokens,
           knowledgeCutoff: window.model.knowledgeCutoff,
           reasoning: window.model.reasoning,
+          imageInput: window.model.imageInput,
           source: window.model.source,
         }
       : undefined,
@@ -77,6 +78,7 @@ function serializeMessageForMetrics(message: Message): string {
 
 function serializeBlockForMetrics(block: MessageBlock): string {
   if (block.type === "text") return block.text;
+  if (block.type === "image") return `[image ${block.mimeType} ${block.data.length} base64 chars]`;
   if (block.type === "thinking") return block.text;
   if (block.type === "tool_use") return `tool_use ${block.name} ${JSON.stringify(block.input)}`;
   return `tool_result ${block.name} ${JSON.stringify(block.output)}`;

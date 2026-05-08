@@ -31,11 +31,12 @@ export function buildResponsesInput(messages: readonly Message[]): unknown[] {
       }
     }
 
-    if (!text) continue;
+    const content = responsesInputContentFromBlocks(message.blocks);
+    if (content.length === 0) continue;
     if (message.role === "system") {
-      input.push({ role: "developer", content: [{ type: "input_text", text }] });
+      input.push({ role: "developer", content });
     } else if (message.role !== "tool_result") {
-      input.push({ role: "user", content: [{ type: "input_text", text }] });
+      input.push({ role: "user", content });
     }
   }
   return input;
@@ -55,7 +56,10 @@ export function buildChatMessages(request: ModelRequest): unknown[] {
     );
 
     if (message.role === "system" && text) messages.push({ role: "system", content: text });
-    if (message.role === "user" && text) messages.push({ role: "user", content: text });
+    if (message.role === "user") {
+      const content = chatInputContentFromBlocks(message.blocks);
+      if (Array.isArray(content) ? content.length > 0 : content) messages.push({ role: "user", content });
+    }
     if (message.role === "assistant") {
       if (toolUses.length) {
         messages.push({
@@ -198,6 +202,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function textFromBlocks(blocks: readonly MessageBlock[]): string {
   return blocks.filter((block): block is { type: "text"; text: string } => block.type === "text").map((block) => block.text).join("\n");
+}
+
+function responsesInputContentFromBlocks(blocks: readonly MessageBlock[]): Record<string, unknown>[] {
+  const content: Record<string, unknown>[] = [];
+  for (const block of blocks) {
+    if (block.type === "text" && block.text) content.push({ type: "input_text", text: block.text });
+    if (block.type === "image") content.push({ type: "input_image", image_url: imageDataUrl(block) });
+  }
+  return content;
+}
+
+function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | Record<string, unknown>[] {
+  const content: Record<string, unknown>[] = [];
+  for (const block of blocks) {
+    if (block.type === "text" && block.text) content.push({ type: "text", text: block.text });
+    if (block.type === "image") content.push({ type: "image_url", image_url: { url: imageDataUrl(block) } });
+  }
+  if (content.every((part) => part.type === "text")) return content.map((part) => String(part.text ?? "")).join("\n");
+  return content;
+}
+
+function imageDataUrl(block: { mimeType: string; data: string }): string {
+  if (block.data.startsWith("data:")) return block.data;
+  return `data:${block.mimeType};base64,${block.data}`;
 }
 
 function toResponsesFunctionCall(block: { type: "tool_use"; id: string; name: string; input: unknown }): Record<string, unknown> {

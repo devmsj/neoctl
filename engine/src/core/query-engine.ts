@@ -5,7 +5,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
 import type { AgentEvent } from "../types/events.js";
-import type { Message } from "../types/messages.js";
+import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
@@ -105,9 +105,11 @@ export class QueryEngine {
     });
   }
 
-  async *sendUserText(text: string, options: { abortSignal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
+  async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
-    const userMessage = createTextMessage("user", text);
+    const userMessage = options.blocks
+      ? { ...createTextMessage("user", options.displayText ?? text), blocks: options.blocks }
+      : createTextMessage("user", text);
     this.userTurns += 1;
     this.history.push(userMessage);
     this.sessionStore?.recordMessage(userMessage);

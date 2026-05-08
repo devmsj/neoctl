@@ -17,6 +17,7 @@ export interface ContextMetrics {
     maxOutputTokens?: number;
     knowledgeCutoff?: string;
     reasoning?: boolean;
+    imageInput?: boolean;
     source?: string;
   };
 }

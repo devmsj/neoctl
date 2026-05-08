@@ -4,6 +4,7 @@ export type MessageRole = "system" | "user" | "assistant" | "tool_result" | "pro
 
 export type MessageBlock =
   | { type: "text"; text: string }
+  | { type: "image"; mimeType: string; data: string; label?: string }
   | { type: "thinking"; text: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; name: string; ok: boolean; output: unknown };

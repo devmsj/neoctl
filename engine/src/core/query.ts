@@ -526,6 +526,7 @@ function terminalForModelError(error: unknown): TerminalReason {
   if (error instanceof ModelAPIError) {
     if (error.category === "context_length") return "prompt_too_long";
     if (error.category === "user_abort") return "aborted_streaming";
+    if (error.category === "unsupported_image_input") return "image_error";
     if (error.category === "max_output_tokens") return "model_error";
   }
   return "model_error";

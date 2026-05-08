@@ -350,9 +350,11 @@ function serializeMessageForSummary(message: Message): string {
 
 function serializeBlock(block: MessageBlock): string {
   if (block.type === "text") return block.text;
+  if (block.type === "image") return block.label ?? `[image ${block.mimeType}]`;
   if (block.type === "thinking") return `thinking: ${block.text}`;
   if (block.type === "tool_use") return `tool_use ${block.name}: ${JSON.stringify(block.input)}`;
-  return `tool_result ${block.name}: ${serializeToolOutput(block.output)}`;
+  if (block.type === "tool_result") return `tool_result ${block.name}: ${serializeToolOutput(block.output)}`;
+  return "";
 }
 
 function serializeToolOutput(output: unknown): string {

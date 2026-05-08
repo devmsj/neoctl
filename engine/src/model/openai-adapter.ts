@@ -3,6 +3,7 @@ import { EnvCredentialProvider, StaticCredentialProvider } from "./credentials.j
 import type { OpenAIEndpointPreference } from "./config.js";
 import { ModelAPIError, normalizeUnknownError } from "./errors.js";
 import { HttpTransport } from "./http-transport.js";
+import { supportsImageInput } from "./context-window.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
 import { streamWithRetry } from "./retry-runner.js";
@@ -34,7 +35,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     parallelToolCalls: true,
     structuredOutput: true,
     previousResponseId: true,
-    imageInput: false,
+    imageInput: true,
     fileInput: false,
     reasoningConfig: true,
     builtInTools: false,
@@ -52,6 +53,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.assertRequestCapabilities(request);
     const endpoint = this.options.endpoint ?? "auto";
     yield* streamWithRetry((attempt) => this.streamAttempt(request, endpoint, attempt), {
       provider: this.name,
@@ -145,6 +147,19 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     yield* normalizeChatObject(response);
   }
 
+  private assertRequestCapabilities(request: ModelRequest): void {
+    const model = request.model ?? this.options.model;
+    const supported = supportsImageInput(model);
+    if (supported === false && hasImageInput(request)) {
+      throw new ModelAPIError({
+        category: "unsupported_image_input",
+        provider: this.name,
+        message: `Model ${model} does not support image input according to static model metadata`,
+        retryable: false,
+      });
+    }
+  }
+
   private async authHeaders(): Promise<Record<string, string>> {
     const credential = await this.credentialProvider.getCredential();
     if (!credential) {
@@ -157,6 +172,15 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     }
     return { Authorization: `Bearer ${credential}` };
   }
+}
+
+function hasImageInput(request: ModelRequest): boolean {
+  return request.messages.some((message) =>
+    message.blocks.some((block) => {
+      const type = (block as { type: string }).type;
+      return type === "image" || type === "input_image" || (block.type === "text" && /!\[[^\]]*\]\([^\)]+\)/.test(block.text));
+    }),
+  );
 }
 
 function shouldFallbackToChat(error: ModelAPIError): boolean {
