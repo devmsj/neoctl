@@ -1,4 +1,4 @@
-export type ModelReasoningArgument = "minimal" | "low" | "medium" | "high" | "default" | "off";
+export type ModelReasoningArgument = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | "off";
 
 export type ReplCommand =
   | { type: "help" }
@@ -24,7 +24,7 @@ export interface ReplCommandDefinition {
 export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/help", usage: "/help", description: "Show commands", arguments: "none" },
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session", arguments: "none" },
-  { name: "/model", usage: "/model [model-id] [minimal|low|medium|high|default|off]", description: "Show or switch model and reasoning effort", arguments: "optional" },
+  { name: "/model", usage: "/model [model-id] [effort|default|off]", description: "Show or switch model and supported reasoning effort", arguments: "optional" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
   { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
@@ -57,7 +57,7 @@ export function isValidReplCommandLine(line: string): boolean {
 }
 
 export function isModelReasoningArgument(value: string): value is ModelReasoningArgument {
-  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "default" || value === "off";
+  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "default" || value === "off";
 }
 
 function parseModelCommand(argument: string): Extract<ReplCommand, { type: "model" }> | undefined {

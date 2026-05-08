@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ReasoningEffort } from "./model-gateway.js";
 
 export interface ModelMetadata {
   id: string;
@@ -10,6 +11,7 @@ export interface ModelMetadata {
   maxOutputTokens?: number;
   knowledgeCutoff?: string;
   reasoning?: boolean;
+  reasoningEfforts?: ReasoningEffort[];
   imageInput?: boolean;
   source?: string;
   notes?: string;
@@ -57,6 +59,19 @@ export function findModelMetadata(model: string, catalog: ModelCatalog = loadMod
 export function supportsImageInput(model: string | undefined, catalog: ModelCatalog = loadModelCatalog()): boolean | undefined {
   if (!model) return undefined;
   return findModelMetadata(model, catalog)?.imageInput;
+}
+
+export function reasoningEffortsForModel(model: string | undefined, catalog: ModelCatalog = loadModelCatalog()): ReasoningEffort[] | undefined {
+  if (!model) return undefined;
+  const metadata = findModelMetadata(model, catalog);
+  if (!metadata) return undefined;
+  return metadata.reasoningEfforts ?? (metadata.reasoning ? [] : undefined);
+}
+
+export function supportsReasoningEffort(model: string | undefined, effort: ReasoningEffort, catalog: ModelCatalog = loadModelCatalog()): boolean | undefined {
+  const efforts = reasoningEffortsForModel(model, catalog);
+  if (!efforts) return undefined;
+  return efforts.includes(effort);
 }
 
 export function loadModelCatalog(): ModelCatalog {

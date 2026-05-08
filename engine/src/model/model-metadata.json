@@ -4,7 +4,8 @@
     "Static model metadata used for local REPL telemetry. Values are best-effort and should be refreshed when providers update model cards.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
     "modelIds are exact official model IDs/aliases from provider documentation; matching is direct and does not use regex.",
-    "imageInput indicates whether provider documentation lists image input / vision support for the model."
+    "imageInput indicates whether provider documentation lists image input / vision support for the model.",
+    "reasoningEfforts lists the exact reasoning.effort values the /model command may set; omitted/empty means no supported effort enum is configured for that model."
   ],
   "sources": {
     "openai-models": "https://platform.openai.com/docs/models",
@@ -15,7 +16,9 @@
     "deepseek-models": "https://api-docs.deepseek.com/quick_start/parameter_settings/",
     "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations",
     "anthropic-vision": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
-    "mistral-vision": "https://docs.mistral.ai/capabilities/vision"
+    "mistral-vision": "https://docs.mistral.ai/capabilities/vision",
+    "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
+    "deepseek-thinking-mode": "https://api-docs.deepseek.com/guides/thinking_mode"
   },
   "models": [
     {
@@ -28,7 +31,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.5-pro",
@@ -40,7 +50,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.4",
@@ -52,7 +69,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.4-mini",
@@ -64,7 +88,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.4-nano",
@@ -76,7 +107,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.2",
@@ -89,7 +127,14 @@
       "knowledgeCutoff": "2025-08-31",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.2-codex",
@@ -102,7 +147,13 @@
       "knowledgeCutoff": "2025-08-31",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.2-pro",
@@ -114,7 +165,14 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
     },
     {
       "id": "gpt-5.1",
@@ -127,7 +185,13 @@
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5.1-codex",
@@ -140,7 +204,12 @@
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5.1-codex-max",
@@ -153,7 +222,12 @@
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5.1-codex-mini",
@@ -166,7 +240,12 @@
       "knowledgeCutoff": "2024-09-30",
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5",
@@ -178,7 +257,13 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5-codex",
@@ -190,7 +275,13 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5-mini",
@@ -202,7 +293,13 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5-nano",
@@ -214,7 +311,13 @@
       "maxOutputTokens": 128000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-5-pro",
@@ -226,7 +329,13 @@
       "maxOutputTokens": 272000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-4.1",
@@ -334,7 +443,12 @@
       "maxOutputTokens": 100000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "o4-mini-deep-research",
@@ -346,7 +460,12 @@
       "maxOutputTokens": 100000,
       "reasoning": true,
       "imageInput": true,
-      "source": "openai-models"
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
     },
     {
       "id": "gpt-4",
@@ -480,7 +599,11 @@
       "maxOutputTokens": 384000,
       "reasoning": true,
       "imageInput": false,
-      "source": "deepseek-pricing"
+      "source": "deepseek-pricing",
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ]
     },
     {
       "id": "deepseek-v4-flash",
@@ -492,7 +615,11 @@
       "maxOutputTokens": 384000,
       "reasoning": true,
       "imageInput": false,
-      "source": "deepseek-pricing"
+      "source": "deepseek-pricing",
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ]
     },
     {
       "id": "deepseek-chat",
@@ -518,7 +645,11 @@
       "reasoning": true,
       "imageInput": false,
       "source": "deepseek-pricing",
-      "notes": "Compatibility alias for thinking mode of deepseek-v4-flash."
+      "notes": "Compatibility alias for thinking mode of deepseek-v4-flash.",
+      "reasoningEfforts": [
+        "high",
+        "max"
+      ]
     },
     {
       "id": "mistral-large-latest",

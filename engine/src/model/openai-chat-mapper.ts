@@ -1,6 +1,7 @@
 import { createTextMessage } from "../types/messages.js";
 import type { HttpJsonResponse } from "./http-transport.js";
-import type { ModelRequest, ModelStreamEvent } from "./model-gateway.js";
+import { findModelMetadata } from "./context-window.js";
+import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import {
   asNumber,
@@ -18,19 +19,32 @@ export interface OpenAIChatMapperOptions {
   model: string;
   defaultMaxOutputTokens?: number;
   streamIdleTimeoutMs?: number;
+  defaultReasoning?: ReasoningConfig;
 }
 
 export function buildChatRequest(request: ModelRequest, options: OpenAIChatMapperOptions): Record<string, unknown> {
   const tools = buildChatTools(request.tools);
+  const reasoningDisabled = request.reasoning === null;
+  const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning);
   return dropUndefined({
     model: request.model ?? options.model,
     messages: buildChatMessages(request),
     tools: tools.length ? tools : undefined,
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     max_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
+    reasoning_effort: reasoning?.effort,
+    thinking: chatThinkingOption(request.model ?? options.model, reasoning, reasoningDisabled),
     metadata: request.metadata,
     ...((request.providerOptions?.chat as Record<string, unknown> | undefined) ?? {}),
   });
+}
+
+function chatThinkingOption(model: string, reasoning: ReasoningConfig | undefined, reasoningDisabled: boolean): Record<string, string> | undefined {
+  const metadata = findModelMetadata(model);
+  if (metadata?.provider !== "deepseek") return undefined;
+  if (reasoningDisabled) return { type: "disabled" };
+  if (!reasoning?.effort) return undefined;
+  return { type: reasoning.effort === "none" ? "disabled" : "enabled" };
 }
 
 export async function* normalizeChatStream(

@@ -11,8 +11,10 @@ export interface ModelUsage {
   raw?: unknown;
 }
 
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ReasoningConfig {
-  effort?: "minimal" | "low" | "medium" | "high";
+  effort?: ReasoningEffort;
   summary?: "auto" | "concise" | "detailed";
 }
 

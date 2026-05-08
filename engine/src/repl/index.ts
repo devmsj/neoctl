@@ -9,10 +9,10 @@ import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
 import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env.js";
-import { readModelProviderConfig, type ReasoningEffort } from "../model/config.js";
-import { loadModelCatalog, resolveContextWindowTokens } from "../model/context-window.js";
+import { readModelProviderConfig } from "../model/config.js";
+import { loadModelCatalog, reasoningEffortsForModel, resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
-import type { ModelUsage, ReasoningConfig } from "../model/model-gateway.js";
+import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { echoTool } from "../tools/builtins/echo-tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
@@ -1650,7 +1650,8 @@ function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegm
 }
 
 const SLASH_COMPLETION_PAGE_SIZE = 10;
-const MODEL_REASONING_CHOICES: ModelReasoningArgument[] = ["minimal", "low", "medium", "high", "default", "off"];
+const MODEL_REASONING_EFFORTS: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const MODEL_REASONING_CONTROL_CHOICES: ModelReasoningArgument[] = ["default", "off"];
 
 interface SlashCommandCompletion {
   value: string;
@@ -1699,7 +1700,7 @@ function modelCommandCompletions(prefix: string): SlashCommandCompletion[] {
   const modelCompletions = availableModelIds()
     .filter((modelId) => modelId.toLowerCase().includes(current.toLowerCase()))
     .map((modelId) => modelCompletion(modelId));
-  const reasoning = MODEL_REASONING_CHOICES
+  const reasoning = reasoningChoicesForModel(undefined)
     .filter((choice) => choice.startsWith(current.toLowerCase()))
     .map((choice) => reasoningCompletion("", choice));
   return [...modelCompletions, ...reasoning];
@@ -1708,9 +1709,10 @@ function modelCommandCompletions(prefix: string): SlashCommandCompletion[] {
 function modelCompletion(modelId: string): SlashCommandCompletion {
   const window = resolveContextWindowTokens(modelId);
   const metadata = window.model;
+  const efforts = reasoningEffortsForModel(modelId);
   const details = [
     metadata?.provider,
-    metadata?.reasoning ? "reasoning" : undefined,
+    metadata?.reasoning ? (efforts?.length ? `reasoning: ${efforts.join("/")}` : "reasoning") : undefined,
     metadata?.imageInput ? "vision" : undefined,
     window.tokens ? `${formatCompactNumber(window.tokens)} ctx` : undefined,
   ].filter(Boolean).join(" · ");
@@ -1724,11 +1726,16 @@ function modelCompletion(modelId: string): SlashCommandCompletion {
 }
 
 function reasoningCompletions(modelId: string, current: string): SlashCommandCompletion[] {
-  const supportsReasoning = !modelId || resolveContextWindowTokens(modelId).model?.reasoning === true;
-  if (!supportsReasoning) return [];
-  return MODEL_REASONING_CHOICES
+  return reasoningChoicesForModel(modelId || undefined)
     .filter((choice) => choice.startsWith(current.toLowerCase()))
     .map((choice) => reasoningCompletion(modelId, choice));
+}
+
+function reasoningChoicesForModel(modelId: string | undefined): ModelReasoningArgument[] {
+  if (!modelId) return [...MODEL_REASONING_EFFORTS, ...MODEL_REASONING_CONTROL_CHOICES];
+  const efforts = reasoningEffortsForModel(modelId);
+  if (!efforts) return MODEL_REASONING_CONTROL_CHOICES;
+  return [...efforts, ...MODEL_REASONING_CONTROL_CHOICES];
 }
 
 function reasoningCompletion(modelId: string, choice: ModelReasoningArgument): SlashCommandCompletion {
@@ -1889,22 +1896,38 @@ function handleModelCommand(
 ): Omit<UiLine, "id"> {
   const current = runtime.engine.getModelSettings();
   const nextModel = command.model ?? current.model;
-  const nextReasoning = resolveReasoningForModelCommand(command.reasoning, current.reasoning, runtime.defaultReasoning);
+  const validationError = validateModelReasoningArgument(nextModel, command.reasoning);
+  if (validationError) return { kind: "error", text: validationError };
+
+  const reasoningUpdate = resolveModelReasoningUpdate(command.reasoning, current.reasoning, nextModel, command.model !== undefined);
   if (command.model !== undefined || command.reasoning !== undefined) {
-    runtime.engine.setModel(nextModel, nextReasoning);
+    runtime.engine.setModel(nextModel, reasoningUpdate.reasoning, reasoningUpdate.update);
   }
   return systemLine(formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning));
 }
 
-function resolveReasoningForModelCommand(
+function resolveModelReasoningUpdate(
   value: ModelReasoningArgument | undefined,
   current: ReasoningConfig | null | undefined,
-  defaultReasoning: ReasoningConfig | undefined,
-): ReasoningConfig | null | undefined {
-  if (value === undefined) return current;
-  if (value === "off") return null;
-  if (value === "default") return defaultReasoning ?? null;
-  return { effort: value as ReasoningEffort };
+  modelId: string | undefined,
+  modelChanged: boolean,
+): { reasoning: ReasoningConfig | null | undefined; update: boolean } {
+  if (value === "off") return { reasoning: null, update: true };
+  if (value === "default") return { reasoning: undefined, update: true };
+  if (value !== undefined) return { reasoning: { effort: value as ReasoningEffort }, update: true };
+  if (modelChanged && current?.effort && !reasoningEffortsForModel(modelId)?.includes(current.effort)) {
+    return { reasoning: undefined, update: true };
+  }
+  return { reasoning: current, update: false };
+}
+
+function validateModelReasoningArgument(modelId: string | undefined, reasoning: ModelReasoningArgument | undefined): string | undefined {
+  if (!reasoning || reasoning === "default" || reasoning === "off") return undefined;
+  if (!modelId) return `Cannot set reasoning effort '${reasoning}' without a configured model. Choose a model first.`;
+  const efforts = reasoningEffortsForModel(modelId);
+  if (!efforts?.length) return `Model ${modelId} has no configured reasoning effort support; not setting '${reasoning}'.`;
+  if (!efforts.includes(reasoning as ReasoningEffort)) return `Model ${modelId} supports reasoning efforts: ${efforts.join(", ")}; not '${reasoning}'.`;
+  return undefined;
 }
 
 function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | undefined): string {
@@ -1914,14 +1937,21 @@ function formatModelSettings(settings: { model?: string; fallbackModel?: string;
     `  Model: ${settings.model ?? "<provider default>"}`,
   ];
   if (settings.fallbackModel) lines.push(`  Fallback: ${settings.fallbackModel}`);
-  lines.push(`  Reasoning effort: ${settings.reasoning?.effort ?? "off"}`);
+  lines.push(`  Reasoning effort: ${formatReasoningSetting(settings.reasoning)}`);
   if (defaultReasoning?.effort) lines.push(`  Env default reasoning: ${defaultReasoning.effort}`);
   if (window.model) {
+    const efforts = reasoningEffortsForModel(settings.model);
     lines.push(`  Context window: ${window.tokens ? formatNumber(window.tokens) : "?"} tokens`);
     lines.push(`  Supports reasoning: ${window.model.reasoning ? "yes" : "no"}`);
+    lines.push(`  Reasoning efforts: ${efforts?.length ? efforts.join(", ") : "<not configurable>"}`);
     lines.push(`  Image input: ${window.model.imageInput ? "yes" : "no"}`);
   }
   return lines.join("\n");
+}
+
+function formatReasoningSetting(reasoning: ReasoningConfig | null | undefined): string {
+  if (reasoning === null) return "off";
+  return reasoning?.effort ?? "default";
 }
 
 function reasoningDescription(choice: ModelReasoningArgument): string {

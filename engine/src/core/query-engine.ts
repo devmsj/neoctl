@@ -166,9 +166,9 @@ export class QueryEngine {
     }
   }
 
-  setModel(model: string | undefined, reasoning?: ReasoningConfig | null): void {
+  setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
     this.currentModel = model?.trim() || undefined;
-    if (reasoning !== undefined) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
+    if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 
   getModelSettings(): { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null } {

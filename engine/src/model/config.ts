@@ -1,7 +1,6 @@
-import type { ReasoningConfig } from "./model-gateway.js";
+import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
 
 export type ModelProviderName = "openai";
-export type ReasoningEffort = NonNullable<ReasoningConfig["effort"]>;
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
@@ -78,7 +77,7 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
-  if (value === "minimal" || value === "low" || value === "medium" || value === "high") return value;
+  if (value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") return value;
   return undefined;
 }
 
