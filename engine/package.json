@@ -1,7 +1,6 @@
 {
-  "name": "agent-scaffold",
+  "name": "neoctl",
   "version": "0.1.0",
-  "private": true,
   "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
   "type": "module",
   "engines": {
@@ -38,5 +37,13 @@
     "shiki": "^4.0.2",
     "strip-ansi": "^7.2.0",
     "wrap-ansi": "^10.0.0"
-  }
+  },
+  "bin": {
+    "neo": "dist/repl/index.js"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ]
 }
