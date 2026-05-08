@@ -9,10 +9,10 @@ import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
 import { createModelGatewayFromEnv, loadDotEnvIfPresent } from "../model/env.js";
-import { readModelProviderConfig } from "../model/config.js";
-import { resolveContextWindowTokens } from "../model/context-window.js";
+import { readModelProviderConfig, type ReasoningEffort } from "../model/config.js";
+import { loadModelCatalog, resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
-import type { ModelUsage } from "../model/model-gateway.js";
+import type { ModelUsage, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { echoTool } from "../tools/builtins/echo-tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
@@ -24,7 +24,7 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
-import { isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ReplCommandArgumentSpec } from "./commands.js";
+import { isModelReasoningArgument, isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
@@ -37,6 +37,7 @@ interface ReplRuntime {
   usage: SessionUsageTracker;
   taskStore: TaskStore;
   initialMetrics: ContextMetrics;
+  defaultReasoning?: ReasoningConfig;
 }
 
 interface UsageTotals {
@@ -218,6 +219,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     agentId: "main",
     model: modelConfig?.model,
     fallbackModel: modelConfig?.fallbackModel,
+    reasoning: modelConfig?.defaultReasoning,
     modelGateway,
     tools,
     taskNotificationSource,
@@ -232,7 +234,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
-  return { engine, communicationLogger, usage: new SessionUsageTracker(), taskStore, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length) };
+  return { engine, communicationLogger, usage: new SessionUsageTracker(), taskStore, initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length), defaultReasoning: modelConfig?.defaultReasoning };
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -839,6 +841,12 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       await handleLogCommand(command, runtime, append);
       return;
     }
+    if (command.type === "model") {
+      const line = handleModelCommand(command, runtime);
+      setStatus((current) => ({ ...current, metrics: { ...initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages } }));
+      append(line);
+      return;
+    }
 
     if (text.trimStart().startsWith("/")) {
       append({ kind: "error", text: `Unknown or incomplete command: ${text.trim()}\nType /help for commands.` });
@@ -917,7 +925,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const promptDisplayText = input.length === 0 && promptPlaceholder ? promptPlaceholder : input;
   const promptDisplayCursor = input.length === 0 && promptPlaceholder ? promptPlaceholder.length : cursor;
   const slashCompletions = inputLockedByQueue || promptPlaceholder ? [] : slashCommandCompletions(input, cursor);
-  const visibleSlashCompletionCount = Math.min(slashCompletions.length, SLASH_COMPLETION_MAX_ROWS);
+  const visibleSlashCompletionCount = slashCompletions.length;
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
     : Math.min(slashCompletionIndex, visibleSlashCompletionCount - 1);
@@ -1026,12 +1034,16 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       const currentText = inputRef.current;
       const currentCursor = cursorRef.current;
       const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current);
-      if (completion !== undefined && completion.arguments !== "none") {
-        const nextText = `${completion.name} ${currentText.slice(currentCursor)}`;
-        setPromptState(nextText, completion.name.length + 1);
+      if (completion !== undefined && completion.kind === "command" && completion.arguments !== "none") {
+        const nextText = `${completion.insertText} ${currentText.slice(currentCursor)}`;
+        setPromptState(nextText, completion.insertText.length + 1);
         return;
       }
-      void submitLine(completion?.name ?? currentText);
+      if (currentText.trimEnd() === "/model" && completion?.kind !== "command") {
+        void submitLine(currentText);
+        return;
+      }
+      void submitLine(completion?.insertText ?? currentText);
       return;
     }
     if (key.backspace || key.delete) {
@@ -1043,10 +1055,20 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (key.leftArrow) {
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
+        setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - SLASH_COMPLETION_PAGE_SIZE) % completionCount);
+        return;
+      }
       setPromptState(inputRef.current, cursorRef.current - 1);
       return;
     }
     if (key.rightArrow) {
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
+        setSlashCompletionSelection((slashCompletionIndexRef.current + SLASH_COMPLETION_PAGE_SIZE) % completionCount);
+        return;
+      }
       setPromptState(inputRef.current, cursorRef.current + 1);
       return;
     }
@@ -1095,8 +1117,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       const completions = slashCommandCompletions(currentText, currentCursor);
       const completion = completions[Math.min(slashCompletionIndexRef.current, completions.length - 1)];
       if (completion !== undefined) {
-        const nextText = `${completion.name}${currentText.slice(currentCursor)}`;
-        setPromptState(nextText, completion.name.length);
+        const nextText = `${completion.insertText}${currentText.slice(currentCursor)}`;
+        setPromptState(nextText, completion.insertText.length);
       }
       return;
     }
@@ -1627,12 +1649,15 @@ function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegm
   return fitted;
 }
 
-const SLASH_COMPLETION_MAX_ROWS = 8;
+const SLASH_COMPLETION_PAGE_SIZE = 10;
+const MODEL_REASONING_CHOICES: ModelReasoningArgument[] = ["minimal", "low", "medium", "high", "default", "off"];
 
 interface SlashCommandCompletion {
-  name: string;
+  value: string;
+  insertText: string;
   description: string;
   arguments: ReplCommandArgumentSpec;
+  kind: "command" | "model" | "reasoning";
 }
 
 function slashCommandCompletions(text: string, cursor: number): SlashCommandCompletion[] {
@@ -1640,25 +1665,112 @@ function slashCommandCompletions(text: string, cursor: number): SlashCommandComp
   const prefix = text.slice(0, safeCursor);
   if (!prefix.startsWith("/") || /\r|\n/.test(prefix)) return [];
   if (/^\s/.test(prefix) || text.slice(0, 1) !== "/") return [];
-  if (prefix.length > 1 && !/^\/[\w-]*(?:\s[\w-]*)?$/.test(prefix)) return [];
+
+  const suffix = text.slice(safeCursor);
+  if (/\S/.test(suffix)) return [];
+  if (prefix.startsWith("/model") && (prefix.length === "/model".length || prefix["/model".length] === " ")) {
+    return modelCommandCompletions(prefix);
+  }
+  if (prefix.length > 1 && !/^\/[\w-]*$/.test(prefix)) return [];
 
   const normalizedPrefix = prefix.toLowerCase();
   return replCommandDefinitions
-    .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ name, description: command.description, arguments: command.arguments })))
-    .filter((command) => command.name.toLowerCase().startsWith(normalizedPrefix));
+    .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ value: name, insertText: name, description: command.description, arguments: command.arguments, kind: "command" as const })))
+    .filter((command) => command.value.toLowerCase().startsWith(normalizedPrefix));
+}
+
+function modelCommandCompletions(prefix: string): SlashCommandCompletion[] {
+  const hasTrailingSpace = /\s$/.test(prefix);
+  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  const argumentTokens = tokens.slice(1);
+  if (!hasTrailingSpace && argumentTokens.length === 0 && !"/model".startsWith(prefix.toLowerCase())) return [];
+  if (argumentTokens.length >= 2 && !hasTrailingSpace) {
+    const current = argumentTokens[1] ?? "";
+    return reasoningCompletions(argumentTokens[0] ?? "", current);
+  }
+  if (argumentTokens.length >= 2) return [];
+
+  if (argumentTokens.length === 1 && hasTrailingSpace) {
+    const first = argumentTokens[0] ?? "";
+    return isModelReasoningArgument(first) ? [] : reasoningCompletions(first, "");
+  }
+
+  const current = argumentTokens[0] ?? "";
+  const modelCompletions = availableModelIds()
+    .filter((modelId) => modelId.toLowerCase().includes(current.toLowerCase()))
+    .map((modelId) => modelCompletion(modelId));
+  const reasoning = MODEL_REASONING_CHOICES
+    .filter((choice) => choice.startsWith(current.toLowerCase()))
+    .map((choice) => reasoningCompletion("", choice));
+  return [...modelCompletions, ...reasoning];
+}
+
+function modelCompletion(modelId: string): SlashCommandCompletion {
+  const window = resolveContextWindowTokens(modelId);
+  const metadata = window.model;
+  const details = [
+    metadata?.provider,
+    metadata?.reasoning ? "reasoning" : undefined,
+    metadata?.imageInput ? "vision" : undefined,
+    window.tokens ? `${formatCompactNumber(window.tokens)} ctx` : undefined,
+  ].filter(Boolean).join(" · ");
+  return {
+    value: modelId,
+    insertText: `/model ${modelId}`,
+    description: details || "model id",
+    arguments: "optional",
+    kind: "model",
+  };
+}
+
+function reasoningCompletions(modelId: string, current: string): SlashCommandCompletion[] {
+  const supportsReasoning = !modelId || resolveContextWindowTokens(modelId).model?.reasoning === true;
+  if (!supportsReasoning) return [];
+  return MODEL_REASONING_CHOICES
+    .filter((choice) => choice.startsWith(current.toLowerCase()))
+    .map((choice) => reasoningCompletion(modelId, choice));
+}
+
+function reasoningCompletion(modelId: string, choice: ModelReasoningArgument): SlashCommandCompletion {
+  return {
+    value: choice,
+    insertText: modelId ? `/model ${modelId} ${choice}` : `/model ${choice}`,
+    description: reasoningDescription(choice),
+    arguments: "optional",
+    kind: "reasoning",
+  };
+}
+
+function availableModelIds(): string[] {
+  const ids = loadModelCatalog().models.flatMap((model) => model.modelIds.length ? model.modelIds : [model.id]);
+  return [...new Set(ids)].sort((left, right) => left.localeCompare(right));
+}
+
+function slashCompletionPageCount(completions: SlashCommandCompletion[]): number {
+  return Math.max(1, Math.ceil(completions.length / SLASH_COMPLETION_PAGE_SIZE));
+}
+
+function slashCompletionPageStart(selectedIndex: number, completions: SlashCommandCompletion[]): number {
+  const page = Math.floor(Math.max(0, selectedIndex) / SLASH_COMPLETION_PAGE_SIZE);
+  return Math.min(page * SLASH_COMPLETION_PAGE_SIZE, Math.max(0, (slashCompletionPageCount(completions) - 1) * SLASH_COMPLETION_PAGE_SIZE));
+}
+
+function visibleSlashCompletions(completions: SlashCommandCompletion[], selectedIndex: number): SlashCommandCompletion[] {
+  const start = slashCompletionPageStart(selectedIndex, completions);
+  return completions.slice(start, start + SLASH_COMPLETION_PAGE_SIZE);
 }
 
 function slashCompletionViewHeight(completions: SlashCommandCompletion[]): number {
   if (completions.length === 0) return 0;
-  return Math.min(completions.length, SLASH_COMPLETION_MAX_ROWS) + 2;
+  return Math.min(completions.length, SLASH_COMPLETION_PAGE_SIZE) + 2;
 }
 
 function slashCompletionSelectableCount(text: string, cursor: number): number {
-  return Math.min(slashCommandCompletions(text, cursor).length, SLASH_COMPLETION_MAX_ROWS);
+  return slashCommandCompletions(text, cursor).length;
 }
 
 function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number): SlashCommandCompletion | undefined {
-  const completions = slashCommandCompletions(text, cursor).slice(0, SLASH_COMPLETION_MAX_ROWS);
+  const completions = slashCommandCompletions(text, cursor);
   if (completions.length === 0) return undefined;
   return completions[Math.max(0, Math.min(selectedIndex, completions.length - 1))];
 }
@@ -1731,32 +1843,36 @@ function SlashCompletionLines(
   { completions: SlashCommandCompletion[]; width: number; prompt: string; selectedIndex: number },
 ): React.ReactNode[] {
   if (completions.length === 0) return [];
-  const visibleCompletions = completions.slice(0, SLASH_COMPLETION_MAX_ROWS);
-  const safeSelectedIndex = Math.max(0, Math.min(selectedIndex, visibleCompletions.length - 1));
+  const pageStart = slashCompletionPageStart(selectedIndex, completions);
+  const visibleCompletions = visibleSlashCompletions(completions, selectedIndex);
+  const safeSelectedIndex = Math.max(0, Math.min(selectedIndex - pageStart, visibleCompletions.length - 1));
   const contentWidth = Math.max(20, width - prompt.length);
-  const nameWidth = Math.min(18, Math.max(...visibleCompletions.map((completion) => completion.name.length)));
-  const footer = "↑/↓ select · Tab complete";
+  const nameWidth = Math.min(32, Math.max(...visibleCompletions.map((completion) => completion.value.length)));
+  const pageCount = slashCompletionPageCount(completions);
+  const pageIndex = Math.floor(pageStart / SLASH_COMPLETION_PAGE_SIZE) + 1;
+  const footer = pageCount > 1 ? "↑/↓ select · ←/→ page · Tab complete" : "↑/↓ select · Tab complete";
   const rows = visibleCompletions.map((completion, index) => {
     const selected = index === safeSelectedIndex;
-    const numberPrefix = `${index + 1}.`.padStart(3);
+    const numberPrefix = `${pageStart + index + 1}.`.padStart(String(completions.length).length + 1);
     const descriptionWidth = Math.max(0, contentWidth - numberPrefix.length - nameWidth - 4);
     const description = fitToWidth(completion.description, descriptionWidth);
     return e(
       Text,
-      { key: `slash-completion-${completion.name}`, color: "white" },
+      { key: `slash-completion-${completion.kind}-${completion.insertText}`, color: "white" },
       e(Text, {
         color: selected ? "black" : "white",
         backgroundColor: selected ? "cyan" : undefined,
       }, numberPrefix),
       e(Text, { color: "gray" }, " "),
-      e(Text, { color: "cyan" }, completion.name.padEnd(nameWidth)),
+      e(Text, { color: completion.kind === "reasoning" ? "magenta" : "cyan" }, completion.value.padEnd(nameWidth)),
       e(Text, { color: "gray" }, "  "),
       e(Text, { color: selected ? "white" : "gray" }, description),
     );
   });
 
+  const title = pageCount > 1 ? `Completions (${completions.length}) page ${pageIndex}/${pageCount}` : `Completions (${completions.length})`;
   return [
-    e(Text, { key: "slash-completion-header", color: "cyan", bold: true }, fitToWidth(`Slash commands (${completions.length})`, contentWidth)),
+    e(Text, { key: "slash-completion-header", color: "cyan", bold: true }, fitToWidth(title, contentWidth)),
     ...rows,
     e(Text, { key: "slash-completion-footer", color: "gray" }, fitToWidth(footer, contentWidth)),
   ].map((line, index) => e(
@@ -1765,6 +1881,53 @@ function SlashCompletionLines(
     e(Text, { color: "gray" }, " ".repeat(prompt.length)),
     line,
   ));
+}
+
+function handleModelCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "model" }>,
+  runtime: ReplRuntime,
+): Omit<UiLine, "id"> {
+  const current = runtime.engine.getModelSettings();
+  const nextModel = command.model ?? current.model;
+  const nextReasoning = resolveReasoningForModelCommand(command.reasoning, current.reasoning, runtime.defaultReasoning);
+  if (command.model !== undefined || command.reasoning !== undefined) {
+    runtime.engine.setModel(nextModel, nextReasoning);
+  }
+  return systemLine(formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning));
+}
+
+function resolveReasoningForModelCommand(
+  value: ModelReasoningArgument | undefined,
+  current: ReasoningConfig | null | undefined,
+  defaultReasoning: ReasoningConfig | undefined,
+): ReasoningConfig | null | undefined {
+  if (value === undefined) return current;
+  if (value === "off") return null;
+  if (value === "default") return defaultReasoning ?? null;
+  return { effort: value as ReasoningEffort };
+}
+
+function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | undefined): string {
+  const window = resolveContextWindowTokens(settings.model);
+  const lines = [
+    "Model settings:",
+    `  Model: ${settings.model ?? "<provider default>"}`,
+  ];
+  if (settings.fallbackModel) lines.push(`  Fallback: ${settings.fallbackModel}`);
+  lines.push(`  Reasoning effort: ${settings.reasoning?.effort ?? "off"}`);
+  if (defaultReasoning?.effort) lines.push(`  Env default reasoning: ${defaultReasoning.effort}`);
+  if (window.model) {
+    lines.push(`  Context window: ${window.tokens ? formatNumber(window.tokens) : "?"} tokens`);
+    lines.push(`  Supports reasoning: ${window.model.reasoning ? "yes" : "no"}`);
+    lines.push(`  Image input: ${window.model.imageInput ? "yes" : "no"}`);
+  }
+  return lines.join("\n");
+}
+
+function reasoningDescription(choice: ModelReasoningArgument): string {
+  if (choice === "default") return "use MODEL_REASONING_EFFORT / provider default";
+  if (choice === "off") return "send no reasoning config";
+  return `reasoning effort: ${choice}`;
 }
 
 async function handleLogCommand(
@@ -2712,6 +2875,13 @@ function estimateTokens(text: string): number {
 
 function formatNumber(value: number | undefined): string {
   return value === undefined ? "?" : new Intl.NumberFormat("en-US").format(Math.round(value));
+}
+
+function formatCompactNumber(value: number | undefined): string {
+  if (value === undefined) return "?";
+  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
+  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}K`;
+  return String(Math.round(value));
 }
 
 function truncate(value: string, maxLength: number): string {

@@ -1,6 +1,6 @@
 import type { ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
-import type { ModelGateway } from "../model/model-gateway.js";
+import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
@@ -19,6 +19,7 @@ export interface QueryEngineOptions {
   agentId?: string;
   model?: string;
   fallbackModel?: string;
+  reasoning?: ReasoningConfig;
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
   maxTurns?: number;
@@ -48,6 +49,8 @@ export class QueryEngine {
   private readonly titleTimers = new Set<ReturnType<typeof setTimeout>>();
   private lastTerminalReason?: TerminalReason;
   private sessionStore?: SessionStore;
+  private currentModel?: string;
+  private currentReasoning?: ReasoningConfig | null;
   private sessionInitialized = false;
   private userTurns = 0;
   private titleSchedulerVersion = 0;
@@ -56,6 +59,8 @@ export class QueryEngine {
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
+    this.currentModel = options.model;
+    this.currentReasoning = cloneReasoningConfig(options.reasoning);
   }
 
   onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
@@ -118,7 +123,7 @@ export class QueryEngine {
     const initMessage = createSystemInitMessage({
       agentId: this.agentId,
       tools: this.options.tools.names(),
-      model: this.options.model,
+      model: this.currentModel,
       commands: [...(this.options.commands ?? [])],
       agents: [...(this.options.agents ?? [])],
       skills: [...(this.options.skills ?? [])],
@@ -132,8 +137,9 @@ export class QueryEngine {
 
     const queryOptions: QueryOptions = {
       agentId: this.agentId,
-      model: this.options.model,
+      model: this.currentModel,
       fallbackModel: this.options.fallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
       queryOrigin: this.options.queryOrigin ?? "repl",
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
       maxTurns: this.options.maxTurns,
@@ -160,6 +166,19 @@ export class QueryEngine {
     }
   }
 
+  setModel(model: string | undefined, reasoning?: ReasoningConfig | null): void {
+    this.currentModel = model?.trim() || undefined;
+    if (reasoning !== undefined) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
+  }
+
+  getModelSettings(): { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null } {
+    return {
+      model: this.currentModel,
+      fallbackModel: this.options.fallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
+    };
+  }
+
   reset(): void {
     this.history.length = 0;
     this.userTurns = 0;
@@ -169,10 +188,13 @@ export class QueryEngine {
     this.notifySessionTitleChange(this.sessionStore?.snapshot());
   }
 
-  snapshot(): { agentId: string; messages: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
+  snapshot(): { agentId: string; messages: number; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
+      model: this.currentModel,
+      fallbackModel: this.options.fallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
       lastTerminalReason: this.lastTerminalReason,
       session: this.sessionStore?.snapshot(),
     };
@@ -231,7 +253,7 @@ export class QueryEngine {
       const title = await generateSessionTitle({
         agentId: `${this.agentId}-session-title`,
         modelGateway: this.options.modelGateway,
-        model: this.options.model,
+        model: this.currentModel,
         fallbackModel: this.options.fallbackModel,
         kind,
         previousTitle: state.title,
@@ -356,6 +378,12 @@ function resolveSessionTitleDelayMs(): number {
 
 function countUserTurns(messages: readonly Message[]): number {
   return messages.filter((message) => message.role === "user" && message.blocks.some((block) => block.type === "text")).length;
+}
+
+function cloneReasoningConfig(reasoning: ReasoningConfig | null | undefined): ReasoningConfig | null | undefined {
+  if (reasoning === null) return null;
+  if (!reasoning) return undefined;
+  return { ...reasoning };
 }
 
 function cloneMessage(message: Message): Message {

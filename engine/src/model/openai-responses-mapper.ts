@@ -33,7 +33,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     previous_response_id: request.previousResponseId,
     max_output_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
-    reasoning: request.reasoning ?? options.defaultReasoning,
+    reasoning: request.reasoning === null ? undefined : (request.reasoning ?? options.defaultReasoning),
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
     store: shouldStoreResponse(request, tools.length),

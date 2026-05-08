@@ -3,7 +3,7 @@ import type { Compactor, ContextBudgetOptions, CompactionResult } from "../conte
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
 import { DefaultContextManager } from "../context/context-manager.js";
-import type { ModelGateway, ModelStreamEvent } from "../model/model-gateway.js";
+import type { ModelGateway, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runTools } from "../tools/tool-orchestration.js";
@@ -30,6 +30,7 @@ export interface QueryOptions {
   agentId: string;
   model?: string;
   fallbackModel?: string;
+  reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
   maxTurns?: number;
@@ -265,6 +266,7 @@ async function* callModelForTurn(
       tools: telemetry.toolDefinitions,
       stream: true,
       maxOutputTokens: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
+      reasoning: options.reasoning,
       previousResponseId: state.previousResponseId,
       queryOrigin: options.queryOrigin,
       cancellation: options.abortSignal,

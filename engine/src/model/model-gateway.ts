@@ -32,7 +32,7 @@ export interface ModelRequest {
   tools: readonly ToolDefinition[];
   toolChoice?: "auto" | "none" | "required" | { type: "function"; name: string };
   maxOutputTokens?: number;
-  reasoning?: ReasoningConfig;
+  reasoning?: ReasoningConfig | null;
   textFormat?: TextFormat;
   metadata?: Record<string, string>;
   previousResponseId?: string;

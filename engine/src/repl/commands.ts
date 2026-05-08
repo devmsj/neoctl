@@ -1,14 +1,17 @@
+export type ModelReasoningArgument = "minimal" | "low" | "medium" | "high" | "default" | "off";
+
 export type ReplCommand =
   | { type: "help" }
   | { type: "cost" }
   | { type: "exit" }
   | { type: "log"; path?: string; off?: boolean }
+  | { type: "model"; model?: string; reasoning?: ModelReasoningArgument }
   | { type: "reset" }
   | { type: "sessions" }
   | { type: "state" }
   | { type: "input"; text: string };
 
-export type ReplCommandArgumentSpec = "none" | "required" | "log";
+export type ReplCommandArgumentSpec = "none" | "required" | "optional" | "log";
 
 export interface ReplCommandDefinition {
   name: string;
@@ -21,6 +24,7 @@ export interface ReplCommandDefinition {
 export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/help", usage: "/help", description: "Show commands", arguments: "none" },
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session", arguments: "none" },
+  { name: "/model", usage: "/model [model-id] [minimal|low|medium|high|default|off]", description: "Show or switch model and reasoning effort", arguments: "optional" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
   { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
@@ -37,6 +41,7 @@ export function parseReplCommand(line: string): ReplCommand {
   if (name === "/help") return { type: "help" };
   if (name === "/cost") return { type: "cost" };
   if (name === "/exit" || name === "/quit") return { type: "exit" };
+  if (name === "/model") return parseModelCommand(argument) ?? { type: "input", text: line };
   if (name === "/log") {
     if (argument.toLowerCase() === "off") return { type: "log", off: true };
     return { type: "log", path: argument };
@@ -48,7 +53,28 @@ export function parseReplCommand(line: string): ReplCommand {
 }
 
 export function isValidReplCommandLine(line: string): boolean {
-  return parseSlashCommandLine(line).valid;
+  return parseSlashCommandLine(line).valid && parseReplCommand(line).type !== "input";
+}
+
+export function isModelReasoningArgument(value: string): value is ModelReasoningArgument {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "default" || value === "off";
+}
+
+function parseModelCommand(argument: string): Extract<ReplCommand, { type: "model" }> | undefined {
+  const tokens = argument.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { type: "model" };
+  if (tokens.length > 2) return undefined;
+
+  if (tokens.length === 1) {
+    const [single] = tokens;
+    return isModelReasoningArgument(single)
+      ? { type: "model", reasoning: single }
+      : { type: "model", model: single };
+  }
+
+  const [model, reasoning] = tokens;
+  if (!isModelReasoningArgument(reasoning)) return undefined;
+  return { type: "model", model, reasoning };
 }
 
 function parseSlashCommandLine(line: string): { valid: true; name: string; argument: string } | { valid: false } {
