@@ -1809,9 +1809,9 @@ function PromptLine(
       Box,
       { key: `prompt-${index}`, height: 1, overflow: "hidden" },
       e(Text, { color: locked ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
-      ...renderPromptPart(line.before, inputColor, attachments),
-      e(Text, { inverse: true, color: inputColor }, line.selected),
-      ...renderPromptPart(line.after, inputColor, attachments),
+      ...renderPromptPart(line.before, inputColor, attachments, `prompt-${index}-before`),
+      e(Text, { key: `prompt-${index}-cursor`, inverse: true, color: inputColor }, line.selected),
+      ...renderPromptPart(line.after, inputColor, attachments, `prompt-${index}-after`),
     )),
     ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
   );
@@ -1842,20 +1842,20 @@ function QueuedInputLine(
   );
 }
 
-function renderPromptPart(text: string, color: string | undefined, attachments: ClipboardAttachment[]): React.ReactNode[] {
+function renderPromptPart(text: string, color: string | undefined, attachments: ClipboardAttachment[], keyPrefix: string): React.ReactNode[] {
   if (!text) return [];
   const activeLabels = attachments.map((attachment) => attachment.label).filter((label) => text.includes(label));
-  if (activeLabels.length === 0) return [e(Text, { key: "plain", color }, text)];
+  if (activeLabels.length === 0) return [e(Text, { key: `${keyPrefix}-plain`, color }, text)];
   const pattern = new RegExp(activeLabels.map(escapeRegExp).join("|"), "g");
   const nodes: React.ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) nodes.push(e(Text, { key: `plain-${nodes.length}`, color }, text.slice(lastIndex, match.index)));
-    nodes.push(e(Text, { key: `tag-${nodes.length}`, color: "black", backgroundColor: "cyan", bold: true }, match[0]));
+    if (match.index > lastIndex) nodes.push(e(Text, { key: `${keyPrefix}-plain-${nodes.length}`, color }, text.slice(lastIndex, match.index)));
+    nodes.push(e(Text, { key: `${keyPrefix}-tag-${nodes.length}`, color: "black", backgroundColor: "cyan", bold: true }, match[0]));
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < text.length) nodes.push(e(Text, { key: `plain-${nodes.length}`, color }, text.slice(lastIndex)));
+  if (lastIndex < text.length) nodes.push(e(Text, { key: `${keyPrefix}-plain-${nodes.length}`, color }, text.slice(lastIndex)));
   return nodes;
 }
 
