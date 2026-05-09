@@ -15,6 +15,7 @@ interface Segment {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strikethrough?: boolean;
   dimColor?: boolean;
 }
 
@@ -110,6 +111,7 @@ export function MarkdownText({
               bold: segment.bold,
               italic: segment.italic,
               underline: segment.underline,
+              strikethrough: segment.strikethrough,
               dimColor: segment.dimColor,
             },
             segment.text,
@@ -402,7 +404,7 @@ function inlineSegments(tokens: Token[], base: Omit<Segment, "text">): Segment[]
         segments.push(...inlineSegments((token as Tokens.Link).tokens, { ...base, color: "cyan", underline: true }));
         break;
       case "del":
-        segments.push(...inlineSegments((token as Tokens.Del).tokens, { ...base, dimColor: true }));
+        segments.push(...inlineSegments((token as Tokens.Del).tokens, { ...base, dimColor: true, strikethrough: true }));
         break;
       case "br":
         segments.push({ ...base, text: "\n" });
@@ -480,6 +482,7 @@ function sameStyle(left: Segment, right: Segment): boolean {
     left.bold === right.bold &&
     left.italic === right.italic &&
     left.underline === right.underline &&
+    left.strikethrough === right.strikethrough &&
     left.dimColor === right.dimColor
   );
 }

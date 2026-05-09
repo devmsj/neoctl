@@ -10,6 +10,7 @@ import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js"
 import { grepTool } from "./builtins/grep-tool.js";
 import { createSearchTool } from "./builtins/search-tool.js";
 import type { SearchProvider } from "./builtins/search-providers.js";
+import { planTool } from "./builtins/plan-tool.js";
 import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
 import { runTools } from "./tool-orchestration.js";
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
   registry.register(readFileTool);
   registry.register(grepTool);
   registry.register(createSearchTool({ provider: mockSearchProvider }));
+  registry.register(planTool);
   registry.register(delayTool);
   registry.register(largeTool);
 
@@ -106,6 +108,21 @@ async function main(): Promise<void> {
   );
   const webSearch = await runToolUseToMessages(
     { id: "web-search", name: "search", input: { query: "agent scaffold", numResults: 1 } },
+    context,
+  );
+  const plan = await runToolUseToMessages(
+    {
+      id: "plan",
+      name: "plan",
+      input: {
+        title: "Smoke plan",
+        items: [
+          { description: "Register plan tool", status: "completed" },
+          { description: "Render plan", status: "in_progress" },
+          { description: "Validate smoke", status: "pending" },
+        ],
+      },
+    },
     context,
   );
   const contextGrep = await runToolUseToMessages(
@@ -208,6 +225,13 @@ async function main(): Promise<void> {
     returnedResults?: number;
     results?: Array<{ url?: string }>;
   };
+  const planOutput = toolOutput(plan[plan.length - 1]) as {
+    summary?: string;
+    completed?: number;
+    inProgress?: number;
+    pending?: number;
+    items?: Array<{ status?: string }>;
+  };
   const writeOutput = toolOutput(write[write.length - 1]) as {
     operation?: string;
     bytesAfter?: number;
@@ -236,6 +260,13 @@ async function main(): Promise<void> {
     webSearchOk: toolOk(webSearch[webSearch.length - 1]),
     webSearchUsesProvider: webSearchOutput.provider === "mock" && webSearchOutput.returnedResults === 1,
     webSearchFindsUrl: webSearchOutput.results?.[0]?.url === "https://example.com/mock",
+    planOk:
+      toolOk(plan[plan.length - 1]) &&
+      planOutput.summary === "1/3 completed" &&
+      planOutput.completed === 1 &&
+      planOutput.inProgress === 1 &&
+      planOutput.pending === 1 &&
+      planOutput.items?.[0]?.status === "completed",
     truncatedGrepCounts:
       truncatedGrepOutput.returnedMatches === 1 &&
       truncatedGrepOutput.totalMatchesKnown === null &&
@@ -294,7 +325,7 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, webSearch: webSearch.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, webSearch: webSearch.length, plan: plan.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

@@ -21,6 +21,7 @@ import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
+import { planTool } from "../tools/builtins/plan-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -200,6 +201,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
+  tools.register(planTool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
@@ -2467,6 +2469,14 @@ function metaLine(text: string): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
+  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) {
+    return {
+      kind: "tool",
+      title: toolTitle(toolUse.name, "running"),
+      text: formatPlanToolPayload(toolUse.input),
+    };
+  }
+
   return {
     kind: "tool",
     title: toolTitle(toolUse.name, "running"),
@@ -2508,7 +2518,51 @@ function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): 
 }
 
 function toolTitle(toolName: string, phase: "running" | "finished"): string {
+  if (toolName === "plan") return `${phase === "running" ? "◇" : "◆"} plan`;
   return `${phase === "running" ? "◇" : "◆"} ${toolName}`;
+}
+
+interface PlanToolPayloadLike extends Record<string, unknown> {
+  title?: string;
+  note?: string;
+  summary?: string;
+  items: PlanItemLike[];
+}
+
+interface PlanItemLike {
+  description: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+function isPlanToolPayload(value: unknown): value is PlanToolPayloadLike {
+  if (!isRecord(value) || !Array.isArray(value.items)) return false;
+  return value.items.every((item) => {
+    if (!isRecord(item)) return false;
+    return (
+      typeof item.description === "string" &&
+      (item.status === "pending" || item.status === "in_progress" || item.status === "completed")
+    );
+  });
+}
+
+function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
+  const sections: string[] = [];
+  if (payload.title?.trim()) sections.push(`**${payload.title.trim()}**`);
+  if (payload.summary?.trim()) sections.push(payload.summary.trim());
+  if (payload.note?.trim()) sections.push(payload.note.trim());
+  sections.push(payload.items.map(formatPlanItem).join("\n"));
+  return sections.filter(Boolean).join("\n");
+}
+
+function formatPlanItem(item: PlanItemLike): string {
+  const text = escapePlanMarkdown(item.description.trim());
+  if (item.status === "completed") return `- [x] ~~${text}~~`;
+  if (item.status === "in_progress") return `- [ ] ▶ ${text}`;
+  return `- [ ] ${text}`;
+}
+
+function escapePlanMarkdown(text: string): string {
+  return text.replace(/([\\`*_{}[\]()#+.!|>~-])/g, "\\$1");
 }
 
 function formatJson(value: unknown, maxLength: number): string {
@@ -2608,6 +2662,10 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
 
   if (toolName === "search" && isRecord(output)) {
     return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+  }
+
+  if (toolName === "plan" && isPlanToolPayload(output)) {
+    return { text: formatPlanToolPayload(output), full: true };
   }
 
   return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
