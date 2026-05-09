@@ -198,7 +198,7 @@ REPL 当前注册的内置工具：
 | `write` | 创建或覆盖文本文件 |
 | `edit` / `replace` | 基于唯一字符串替换修改文件，容忍 LF/CRLF 和直/弯引号差异 |
 | `exec` / `shell` / `bash` / `powershell` | 执行命令，支持 cwd、超时、输出截断和后台模式 |
-| `search` | 通过可插拔 provider 搜索 Web，默认 Exa MCP |
+| `search` | 通过可插拔 provider 搜索 Web；OpenAI 模型提供者默认走 GPT web search，否则默认 Exa MCP；可显式切换 provider |
 | `plan` | 输出和更新当前任务计划 |
 | `agent` | 启动同步/后台/fork 子代理 |
 | `TaskOutput` | 读取后台任务输出，可阻塞等待完成 |
@@ -213,7 +213,7 @@ REPL 当前注册的内置工具：
 - `read` 对大文件使用 offset/limit 分段读取，避免一次性塞满上下文。
 - `list` 默认跳过 `.git`、`node_modules`、`dist`、`build`、`coverage` 等重目录。
 - `grep` 不依赖系统 PATH，会调用 `vendor/ripgrep` 中的平台二进制；支持 glob、大小写模式、fixed strings、隐藏文件、上下文行、结果数和列宽限制。
-- `search` 默认走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`，可通过 `SEARCH_PROVIDER`、`EXA_MCP_URL`、`EXA_MCP_TOOL_NAME`、`SEARCH_TIMEOUT_MS` 配置。
+- `search` 默认优先使用显式 `SEARCH_PROVIDER` / `WEB_SEARCH_PROVIDER`；未显式配置且当前模型提供者为 OpenAI（`MODEL_PROVIDER=openai` 或存在 `MODEL_API_KEY`/`OPENAI_API_KEY`）时走 OpenAI Responses API 的 GPT web search，否则走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。模型也可以在单次工具调用里通过 `provider` 字段切换后端，但工具提示会要求：除非用户明确要求特定 provider，或默认/当前搜索 provider 在重试后持续不可用，否则不要显式指定 `provider`，让系统默认选择生效。
 
 ### 命令执行
 

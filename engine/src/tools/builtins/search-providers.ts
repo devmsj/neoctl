@@ -1,4 +1,4 @@
-export type SearchProviderName = "exa" | (string & {});
+export type SearchProviderName = "exa" | "openai" | "gpt" | (string & {});
 
 export interface SearchToolInput {
   query: string;
@@ -35,6 +35,7 @@ export interface SearchProvider {
 export interface SearchProviderConfig {
   provider?: string;
   exa?: ExaSearchProviderConfig;
+  openai?: OpenAISearchProviderConfig;
 }
 
 export interface ExaSearchProviderConfig {
@@ -43,9 +44,22 @@ export interface ExaSearchProviderConfig {
   timeoutMs?: number;
 }
 
+export interface OpenAISearchProviderConfig {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+  toolType?: string;
+  searchContextSize?: "low" | "medium" | "high";
+  maxOutputTokens?: number;
+}
+
 export const DEFAULT_SEARCH_PROVIDER = "exa";
 export const DEFAULT_EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const DEFAULT_EXA_MCP_TOOL_NAME = "web_search_exa";
+export const DEFAULT_OPENAI_SEARCH_MODEL = "gpt-4.1-mini";
+export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
+export const DEFAULT_OPENAI_WEB_SEARCH_TOOL_TYPE = "web_search_preview";
 export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
 
 export class SearchProviderError extends Error {
@@ -59,14 +73,35 @@ export class SearchProviderError extends Error {
   }
 }
 
+function resolveSearchProviderName(config: SearchProviderConfig, env: NodeJS.ProcessEnv): string {
+  const explicit = config.provider ?? env.SEARCH_PROVIDER ?? env.WEB_SEARCH_PROVIDER;
+  if (explicit?.trim()) return explicit.trim().toLowerCase();
+
+  const modelProvider = env.MODEL_PROVIDER ?? env.OPENAI_PROVIDER;
+  if (modelProvider?.trim().toLowerCase() === "openai") return "openai";
+  if ((env.MODEL_API_KEY ?? env.OPENAI_API_KEY)?.trim()) return "openai";
+  return DEFAULT_SEARCH_PROVIDER;
+}
+
 export function createSearchProvider(config: SearchProviderConfig = {}, env: NodeJS.ProcessEnv = process.env): SearchProvider {
-  const provider = (config.provider ?? env.SEARCH_PROVIDER ?? env.WEB_SEARCH_PROVIDER ?? DEFAULT_SEARCH_PROVIDER).trim().toLowerCase();
+  const provider = resolveSearchProviderName(config, env);
   switch (provider) {
     case "exa":
       return createExaSearchProvider({
         mcpUrl: config.exa?.mcpUrl ?? env.EXA_MCP_URL ?? env.WEB_SEARCH_EXA_MCP_URL,
         toolName: config.exa?.toolName ?? env.EXA_MCP_TOOL_NAME ?? env.WEB_SEARCH_EXA_TOOL_NAME,
         timeoutMs: config.exa?.timeoutMs ?? parseOptionalInteger(env.SEARCH_TIMEOUT_MS ?? env.WEB_SEARCH_TIMEOUT_MS),
+      });
+    case "openai":
+    case "gpt":
+      return createOpenAISearchProvider({
+        apiKey: config.openai?.apiKey ?? env.OPENAI_SEARCH_API_KEY ?? env.WEB_SEARCH_OPENAI_API_KEY ?? env.MODEL_API_KEY ?? env.OPENAI_API_KEY,
+        baseUrl: config.openai?.baseUrl ?? env.OPENAI_SEARCH_BASE_URL ?? env.WEB_SEARCH_OPENAI_BASE_URL ?? env.MODEL_BASE_URL ?? env.OPENAI_BASE_URL,
+        model: config.openai?.model ?? env.OPENAI_SEARCH_MODEL ?? env.WEB_SEARCH_OPENAI_MODEL ?? env.MODEL_ID ?? env.OPENAI_MODEL,
+        toolType: config.openai?.toolType ?? env.OPENAI_SEARCH_TOOL_TYPE ?? env.WEB_SEARCH_OPENAI_TOOL_TYPE,
+        searchContextSize: config.openai?.searchContextSize ?? parseOpenAISearchContextSize(env.OPENAI_SEARCH_CONTEXT_SIZE ?? env.WEB_SEARCH_OPENAI_CONTEXT_SIZE),
+        maxOutputTokens: config.openai?.maxOutputTokens ?? parseOptionalInteger(env.OPENAI_SEARCH_MAX_OUTPUT_TOKENS ?? env.WEB_SEARCH_OPENAI_MAX_OUTPUT_TOKENS),
+        timeoutMs: config.openai?.timeoutMs ?? parseOptionalInteger(env.SEARCH_TIMEOUT_MS ?? env.WEB_SEARCH_TIMEOUT_MS ?? env.OPENAI_SEARCH_TIMEOUT_MS ?? env.WEB_SEARCH_OPENAI_TIMEOUT_MS),
       });
     default:
       throw new SearchProviderError(
@@ -89,6 +124,40 @@ export function createExaSearchProvider(config: ExaSearchProviderConfig = {}): S
         provider: "exa",
         query: input.query,
         results: extractExaResults(response),
+        raw: response,
+      };
+    },
+  };
+}
+
+export function createOpenAISearchProvider(config: OpenAISearchProviderConfig = {}): SearchProvider {
+  const apiKey = config.apiKey?.trim();
+  const baseUrl = stripTrailingSlash(config.baseUrl?.trim() || DEFAULT_OPENAI_BASE_URL);
+  const model = config.model?.trim() || DEFAULT_OPENAI_SEARCH_MODEL;
+  const toolType = config.toolType?.trim() || DEFAULT_OPENAI_WEB_SEARCH_TOOL_TYPE;
+  const timeoutMs = config.timeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS;
+  const searchContextSize = config.searchContextSize;
+  const maxOutputTokens = config.maxOutputTokens ?? 1200;
+
+  return {
+    name: "openai",
+    async search(input, signal) {
+      if (!apiKey) throw new SearchProviderError("OpenAI search requires OPENAI_SEARCH_API_KEY, MODEL_API_KEY, or OPENAI_API_KEY", "openai");
+      const response = await callOpenAIWebSearch({
+        apiKey,
+        baseUrl,
+        model,
+        toolType,
+        searchContextSize,
+        maxOutputTokens,
+        timeoutMs,
+        input,
+        signal,
+      });
+      return {
+        provider: "openai",
+        query: input.query,
+        results: extractOpenAIResults(response).slice(0, input.numResults),
         raw: response,
       };
     },
@@ -139,6 +208,131 @@ async function callExaMcpTool(
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);
   }
+}
+
+interface OpenAIWebSearchRequestOptions {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  toolType: string;
+  searchContextSize?: "low" | "medium" | "high";
+  maxOutputTokens: number;
+  timeoutMs: number;
+  input: SearchToolInput;
+  signal?: AbortSignal;
+}
+
+async function callOpenAIWebSearch(options: OpenAIWebSearchRequestOptions): Promise<Record<string, unknown>> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(options.signal?.reason);
+  const timeout = setTimeout(() => controller.abort(new Error(`Search request timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
+  options.signal?.addEventListener("abort", abort, { once: true });
+
+  try {
+    const response = await fetch(`${options.baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${options.apiKey}`,
+      },
+      body: JSON.stringify(buildOpenAIWebSearchBody(options)),
+      signal: controller.signal,
+    });
+
+    const text = await response.text();
+    const body = text ? parseJsonObject(text, "openai") : {};
+    if (!response.ok) {
+      throw new SearchProviderError(`OpenAI search HTTP ${response.status}: ${openAIErrorMessage(body) ?? text.slice(0, 1000)}`, "openai");
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof SearchProviderError) throw error;
+    throw new SearchProviderError(error instanceof Error ? error.message : String(error), "openai", error);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
+  }
+}
+
+function buildOpenAIWebSearchBody(options: OpenAIWebSearchRequestOptions): Record<string, unknown> {
+  const tool = dropUndefined({
+    type: options.toolType,
+    search_context_size: options.searchContextSize,
+  });
+  return dropUndefined({
+    model: options.model,
+    input: buildOpenAIWebSearchPrompt(options.input),
+    tools: [tool],
+    tool_choice: "auto",
+    max_output_tokens: options.maxOutputTokens,
+    store: false,
+  });
+}
+
+function buildOpenAIWebSearchPrompt(input: SearchToolInput): string {
+  const constraints: string[] = [`Return up to ${input.numResults} highly relevant web results.`];
+  if (input.includeDomains?.length) constraints.push(`Only include these domains when possible: ${input.includeDomains.join(", ")}.`);
+  if (input.excludeDomains?.length) constraints.push(`Exclude these domains: ${input.excludeDomains.join(", ")}.`);
+  if (input.startPublishedDate) constraints.push(`Prefer sources published on or after ${input.startPublishedDate}.`);
+  if (input.endPublishedDate) constraints.push(`Prefer sources published on or before ${input.endPublishedDate}.`);
+  constraints.push("For each result, cite the source URL and include a concise snippet.");
+  return `Search the web for: ${input.query}\n\n${constraints.join("\n")}`;
+}
+
+function extractOpenAIResults(response: Record<string, unknown>): WebSearchResult[] {
+  const output = Array.isArray(response.output) ? response.output : [];
+  const results = new Map<string, WebSearchResult>();
+
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== "message") continue;
+    const messageText = extractOpenAIMessageText(item);
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      const annotations = Array.isArray(part.annotations) ? part.annotations : [];
+      for (const annotation of annotations) {
+        const citation = mapOpenAICitation(annotation, messageText);
+        if (citation && !results.has(citation.url)) results.set(citation.url, citation);
+      }
+    }
+  }
+
+  if (results.size > 0) return [...results.values()];
+
+  const text = output.map((item) => (isRecord(item) && item.type === "message" ? extractOpenAIMessageText(item) : "")).filter(Boolean).join("\n\n").trim();
+  return text ? [{ title: "OpenAI web search summary", url: "https://openai.com/search", text, highlights: [text] }] : [];
+}
+
+function extractOpenAIMessageText(message: Record<string, unknown>): string {
+  const content = Array.isArray(message.content) ? message.content : [];
+  return content
+    .map((part) => (isRecord(part) ? stringFrom(part.text) ?? stringFrom(part.output_text) ?? "" : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function mapOpenAICitation(annotation: unknown, messageText: string): WebSearchResult | undefined {
+  if (!isRecord(annotation)) return undefined;
+  const url = stringFrom(annotation.url);
+  if (!url) return undefined;
+  const title = stringFrom(annotation.title) ?? url;
+  const start = typeof annotation.start_index === "number" ? annotation.start_index : undefined;
+  const end = typeof annotation.end_index === "number" ? annotation.end_index : undefined;
+  const snippet = start !== undefined && end !== undefined ? messageText.slice(Math.max(0, start), Math.max(start, end)).trim() : "";
+  return {
+    title,
+    url,
+    highlights: snippet ? [snippet] : undefined,
+    text: snippet || messageText || undefined,
+    raw: annotation,
+  };
+}
+
+function openAIErrorMessage(body: Record<string, unknown>): string | undefined {
+  const error = isRecord(body.error) ? body.error : undefined;
+  return stringFrom(error?.message);
 }
 
 function buildExaArguments(input: SearchToolInput): Record<string, unknown> {
@@ -292,6 +486,29 @@ function parseOptionalInteger(value: string | undefined): number | undefined {
   if (!value?.trim()) return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseOpenAISearchContextSize(value: string | undefined): "low" | "medium" | "high" | undefined {
+  if (value === "low" || value === "medium" || value === "high") return value;
+  return undefined;
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function dropUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function parseJsonObject(text: string, provider: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (isRecord(parsed)) return parsed;
+    throw new Error("JSON response was not an object");
+  } catch (error) {
+    throw new SearchProviderError(`Invalid JSON response: ${error instanceof Error ? error.message : String(error)}`, provider, error);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

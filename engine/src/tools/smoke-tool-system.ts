@@ -10,6 +10,7 @@ import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js"
 import { grepTool } from "./builtins/grep-tool.js";
 import { createSearchTool } from "./builtins/search-tool.js";
 import type { SearchProvider } from "./builtins/search-providers.js";
+import { createSearchProvider } from "./builtins/search-providers.js";
 import { planTool } from "./builtins/plan-tool.js";
 import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
@@ -225,6 +226,11 @@ async function main(): Promise<void> {
     returnedResults?: number;
     results?: Array<{ url?: string }>;
   };
+  const defaultOpenAISearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", MODEL_API_KEY: "test-key" } as NodeJS.ProcessEnv);
+  const explicitExaSearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", SEARCH_PROVIDER: "exa" } as NodeJS.ProcessEnv);
+  const fallbackSearchProvider = createSearchProvider({}, {} as NodeJS.ProcessEnv);
+  const searchToolDefinition = registry.get("search");
+  const searchToolPrompt = JSON.stringify({ description: searchToolDefinition?.description, schema: searchToolDefinition?.inputSchema });
   const planOutput = toolOutput(plan[plan.length - 1]) as {
     summary?: string;
     completed?: number;
@@ -260,6 +266,11 @@ async function main(): Promise<void> {
     webSearchOk: toolOk(webSearch[webSearch.length - 1]),
     webSearchUsesProvider: webSearchOutput.provider === "mock" && webSearchOutput.returnedResults === 1,
     webSearchFindsUrl: webSearchOutput.results?.[0]?.url === "https://example.com/mock",
+    webSearchDefaultsToOpenAI: defaultOpenAISearchProvider.name === "openai",
+    webSearchExplicitExaOverride: explicitExaSearchProvider.name === "exa",
+    webSearchFallbackWithoutOpenAIConfig: fallbackSearchProvider.name === "exa",
+    webSearchPromptAllowsProviderSwitch: searchToolPrompt.includes("switch providers") && searchToolPrompt.includes("provider field"),
+    webSearchPromptDiscouragesExplicitProvider: searchToolPrompt.includes("do not explicitly set provider") && searchToolPrompt.includes("user requests") && searchToolPrompt.includes("persistently unavailable"),
     planOk:
       toolOk(plan[plan.length - 1]) &&
       planOutput.summary === "1/3 completed" &&
