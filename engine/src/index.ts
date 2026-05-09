@@ -30,7 +30,6 @@ export * from "./tools/run-tool-use.js";
 export * from "./tools/tool-orchestration.js";
 export * from "./tools/streaming-tool-executor.js";
 export * from "./tools/schema.js";
-export * from "./tools/builtins/echo-tool.js";
 export * from "./tools/builtins/edit-tool.js";
 export * from "./tools/builtins/exec-tool.js";
 export * from "./tools/builtins/filesystem-tools.js";

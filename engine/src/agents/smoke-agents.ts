@@ -7,13 +7,30 @@ import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/mode
 import { QueryEngine } from "../core/query-engine.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { runToolUse } from "../tools/run-tool-use.js";
-import type { ToolUseContext } from "../tools/tool.js";
+import type { Tool, ToolUseContext } from "../tools/tool.js";
 import { createTextMessage } from "../types/messages.js";
-import { echoTool } from "../tools/builtins/echo-tool.js";
 import { createAgentTool } from "./agent-tool.js";
 import { StaticAgentCatalog, GENERAL_PURPOSE_AGENT } from "./agent-definition.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
+
+const smokePassthroughTool: Tool<{ text: string }> = {
+  name: "smoke_passthrough",
+  description: "Smoke test passthrough tool.",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string" } },
+    required: ["text"],
+    additionalProperties: false,
+  },
+  metadata: { readOnly: true, concurrent: true, visible: true },
+  validate(input) {
+    return input as { text: string };
+  },
+  async call(input) {
+    return { ok: true, output: input.text };
+  },
+};
 
 class ParentAndSubagentGateway implements ModelGateway {
   parentCalls = 0;
@@ -61,7 +78,7 @@ async function main(): Promise<void> {
   const sessionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-title-smoke-"));
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
-  tools.register(echoTool);
+  tools.register(smokePassthroughTool);
   for (const tool of createTaskTools(taskStore)) tools.register(tool);
   tools.register(createAgentTool({
     modelGateway: gateway,
@@ -87,9 +104,10 @@ async function main(): Promise<void> {
     const listed = await engine.listSessions(1);
     return listed[0]?.title === "Refined Delegate Smoke Title" ? listed : undefined;
   });
+  const afterRefinementTitleCalls = gateway.subagentCalls;
   const syncOk =
     afterInitialTitleCalls === 2 &&
-    gateway.subagentCalls === 4 &&
+    afterRefinementTitleCalls === afterInitialTitleCalls + 1 &&
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
     events.includes("terminal:completed") &&
@@ -135,7 +153,7 @@ async function main(): Promise<void> {
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
   const ok = syncOk && asyncOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

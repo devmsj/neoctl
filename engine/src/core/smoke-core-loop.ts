@@ -1,9 +1,27 @@
 import { QueryEngine } from "./query-engine.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { echoTool } from "../tools/builtins/echo-tool.js";
+import type { Tool } from "../tools/tool.js";
 import { createTextMessage } from "../types/messages.js";
 import { stripLeakedReasoningText } from "./assistant-output-filter.js";
+
+const smokePassthroughTool: Tool<{ text: string }> = {
+  name: "smoke_passthrough",
+  description: "Smoke test passthrough tool.",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string" } },
+    required: ["text"],
+    additionalProperties: false,
+  },
+  metadata: { readOnly: true, concurrent: true, visible: true },
+  validate(input) {
+    return input as { text: string };
+  },
+  async call(input) {
+    return { ok: true, output: input.text };
+  },
+};
 
 class FakeToolCallingGateway implements ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
@@ -12,7 +30,7 @@ class FakeToolCallingGateway implements ModelGateway {
     );
 
     if (!hasToolResult) {
-      yield { type: "tool_use", toolUse: { id: "call_echo", name: "echo", input: { text: "pong" } } };
+      yield { type: "tool_use", toolUse: { id: "call_smoke_passthrough", name: "smoke_passthrough", input: { text: "pong" } } };
       yield { type: "response_completed", responseId: "resp_1", stopReason: "tool_calls" };
       return;
     }
@@ -25,7 +43,7 @@ class FakeToolCallingGateway implements ModelGateway {
 
 async function main(): Promise<void> {
   const tools = new ToolRegistry();
-  tools.register(echoTool);
+  tools.register(smokePassthroughTool);
   const engine = new QueryEngine({ modelGateway: new FakeToolCallingGateway(), tools, maxTurns: 4 });
 
   const events: string[] = [];

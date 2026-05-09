@@ -16,7 +16,6 @@ import { CommunicationLogger, LoggingModelGateway } from "../model/communication
 import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { echoTool } from "../tools/builtins/echo-tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
@@ -224,7 +223,6 @@ async function createRuntime(): Promise<ReplRuntime> {
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
-  tools.register(echoTool);
   tools.register(editTool);
   tools.register(writeTool);
   tools.register(createExecTool({ taskStore }));

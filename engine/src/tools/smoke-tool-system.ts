@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Message } from "../types/messages.js";
-import { echoTool } from "./builtins/echo-tool.js";
 import { editTool, writeTool } from "./builtins/edit-tool.js";
 import { execTool } from "./builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
@@ -16,6 +15,31 @@ import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
 import { runTools } from "./tool-orchestration.js";
 import type { Tool, ToolUseContext } from "./tool.js";
+
+const smokePassthroughTool: Tool<{ text: string }> = {
+  name: "smoke_passthrough",
+  aliases: ["smoke_pass"],
+  description: "Return provided text for smoke tests.",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string", description: "Text to return." } },
+    required: ["text"],
+    additionalProperties: false,
+  },
+  metadata: { readOnly: true, concurrent: true, visible: true, maxResultSizeChars: 4096, searchHint: "smoke passthrough text" },
+  validate(input: unknown): { text: string } {
+    return { text: (input as { text: string }).text };
+  },
+  validateInput(input) {
+    return input.text.length > 0 ? { ok: true, value: input } : { ok: false, message: "smoke_passthrough.text cannot be empty" };
+  },
+  isConcurrencySafe() {
+    return true;
+  },
+  async call(input) {
+    return { ok: true, output: input.text };
+  },
+};
 
 const delayTool: Tool<{ id: string; delayMs: number }> = {
   name: "delay",
@@ -75,7 +99,7 @@ const largeTool: Tool<{ size: number }> = {
 
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
-  registry.register(echoTool);
+  registry.register(smokePassthroughTool);
   registry.register(editTool);
   registry.register(writeTool);
   registry.register(execTool);
@@ -95,12 +119,12 @@ async function main(): Promise<void> {
   };
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-tools-smoke-"));
 
-  const valid = await runToolUseToMessages({ id: "echo1", name: "say", input: { text: "ok" } }, context);
-  const invalid = await runToolUseToMessages({ id: "echo2", name: "echo", input: { text: "" } }, context);
+  const valid = await runToolUseToMessages({ id: "smoke_passthrough1", name: "smoke_pass", input: { text: "ok" } }, context);
+  const invalid = await runToolUseToMessages({ id: "smoke_passthrough2", name: "smoke_passthrough", input: { text: "" } }, context);
   const unknown = await runToolUseToMessages({ id: "missing", name: "missing", input: {} }, context);
   const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20 } }, context);
   const grep = await runToolUseToMessages(
-    { id: "grep", name: "grep", input: { query: "echoTool", path: "src/tools/builtins/echo-tool.ts", maxResults: 5 } },
+    { id: "grep", name: "grep", input: { query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 5 } },
     context,
   );
   const truncatedGrep = await runToolUseToMessages(
@@ -127,11 +151,11 @@ async function main(): Promise<void> {
     context,
   );
   const contextGrep = await runToolUseToMessages(
-    { id: "grep-context", name: "grep", input: { query: "description", path: "src/tools/builtins/echo-tool.ts", contextLines: 1, maxResults: 2 } },
+    { id: "grep-context", name: "grep", input: { query: "description", path: "src/tools/builtins/grep-tool.ts", contextLines: 1, maxResults: 2 } },
     context,
   );
   const read = await runToolUseToMessages(
-    { id: "read", name: "read", input: { path: "src/tools/builtins/echo-tool.ts", offset: 1, limit: 5 } },
+    { id: "read", name: "read", input: { path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 5 } },
     context,
   );
   const list = await runToolUseToMessages(
@@ -258,7 +282,7 @@ async function main(): Promise<void> {
     unknownRejected: !toolOk(unknown[0]),
     transportTruncationLabel: JSON.stringify(large[large.length - 1]).includes("truncated"),
     grepOk: toolOk(grep[grep.length - 1]),
-    grepFindsFile: JSON.stringify(grep[grep.length - 1]).includes("echo-tool.ts"),
+    grepFindsFile: JSON.stringify(grep[grep.length - 1]).includes("grep-tool.ts"),
     grepFields: grepOutput.cwd !== undefined && grepOutput.grepPath !== undefined,
     grepKnownTotal: grepOutput.returnedMatches === grepOutput.totalMatchesKnown,
     grepNoLegacyRoot: !JSON.stringify(grep[grep.length - 1]).includes('"root"'),
@@ -288,7 +312,7 @@ async function main(): Promise<void> {
       (contextGrepOutput.matches?.some((match) => (match.contextAfter?.length ?? 0) > 0) ?? false),
     readOk: toolOk(read[read.length - 1]),
     readLineMetadata: JSON.stringify(read[read.length - 1]).includes('"startLine":1'),
-    readContent: JSON.stringify(read[read.length - 1]).includes("echoTool"),
+    readContent: JSON.stringify(read[read.length - 1]).includes("spawn"),
     listOk: toolOk(list[list.length - 1]),
     listFindsFile: JSON.stringify(list[list.length - 1]).includes("grep-tool.ts"),
     recursiveListOk: toolOk(recursiveList[recursiveList.length - 1]),

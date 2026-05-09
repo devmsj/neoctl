@@ -4,8 +4,8 @@ import { buildChatRequest } from "./openai-chat-mapper.js";
 import { buildResponsesRequest } from "./openai-responses-mapper.js";
 
 const tool: ToolDefinition = {
-  name: "echo",
-  description: "Echo text.",
+  name: "smoke_tool",
+  description: "Smoke test tool.",
   inputSchema: {
     type: "object",
     properties: { text: { type: "string" } },
@@ -18,16 +18,16 @@ const assistantToolUse: Message = {
   id: "assistant_tool_use",
   role: "assistant",
   createdAt: new Date().toISOString(),
-  blocks: [{ type: "tool_use", id: "call_1", name: "echo", input: { text: "ok" } }],
+  blocks: [{ type: "tool_use", id: "call_1", name: "smoke_tool", input: { text: "ok" } }],
 };
-const toolResult = createToolResultMessage({ id: "call_1", name: "echo", input: { text: "ok" } }, true, "ok");
+const toolResult = createToolResultMessage({ id: "call_1", name: "smoke_tool", input: { text: "ok" } }, true, "ok");
 const danglingToolUse: Message = {
   id: "dangling_tool_use",
   role: "assistant",
   createdAt: new Date().toISOString(),
-  blocks: [{ type: "tool_use", id: "call_missing_result", name: "echo", input: { text: "missing" } }],
+  blocks: [{ type: "tool_use", id: "call_missing_result", name: "smoke_tool", input: { text: "missing" } }],
 };
-const danglingToolResult = createToolResultMessage({ id: "call_missing_use", name: "echo", input: { text: "missing" } }, true, "missing");
+const danglingToolResult = createToolResultMessage({ id: "call_missing_use", name: "smoke_tool", input: { text: "missing" } }, true, "missing");
 
 const plain = buildResponsesRequest(
   { messages: [createTextMessage("user", "hello")], tools: [], stream: true },

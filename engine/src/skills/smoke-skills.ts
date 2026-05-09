@@ -11,7 +11,7 @@ async function main(): Promise<void> {
       description: "Review a plan before implementation.",
       entrypoint: "Review the supplied plan for correctness and missing validation.",
       execution: "inline",
-      allowedTools: ["echo"],
+      allowedTools: ["plan"],
       model: "gpt-5.5",
       effort: "high",
     },
