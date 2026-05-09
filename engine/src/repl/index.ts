@@ -11,7 +11,7 @@ import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
 import { getUserDotEnvPath, loadDefaultDotEnvFiles } from "../model/env.js";
 import { readModelProviderConfig, type ModelProviderName } from "../model/config.js";
-import { loadModelCatalog, reasoningEffortsForModel, resolveContextWindowTokens } from "../model/context-window.js";
+import { findModelMetadata, loadModelCatalog, reasoningEffortsForModel, resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
 import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
@@ -2067,7 +2067,22 @@ async function handleModelCommand(
   if (changed) {
     runtime.engine.setModel(nextModel, reasoningUpdate.reasoning, reasoningUpdate.update);
     try {
-      await persistModelCommandSettings(runtime, command, reasoningUpdate);
+      const { providerChanged } = await persistModelCommandSettings(runtime, command, reasoningUpdate);
+      if (providerChanged) {
+        const config = readModelProviderConfig(process.env);
+        if (config) {
+          const innerGateway = createModelGatewayFromConfig(config);
+          runtime.modelGateway.setInner(innerGateway);
+          runtime.agentRuntime.modelGateway = runtime.modelGateway;
+          runtime.engine.setModelProvider({
+            modelGateway: runtime.modelGateway,
+            model: config.model,
+            fallbackModel: config.fallbackModel,
+            reasoning: config.defaultReasoning,
+          });
+          runtime.defaultReasoning = config.defaultReasoning;
+        }
+      }
     } catch (error) {
       return { kind: "error", text: `Model settings changed for this session, but saving to ${runtime.envPath} failed: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -2096,18 +2111,30 @@ async function persistModelCommandSettings(
   runtime: ReplRuntime,
   command: Extract<ReturnType<typeof parseReplCommand>, { type: "model" }>,
   reasoningUpdate: { reasoning: ReasoningConfig | null | undefined; update: boolean },
-): Promise<void> {
-  const provider = currentModelProvider();
+): Promise<{ providerChanged: boolean }> {
+  const currentProvider = currentModelProvider();
+  let targetProvider = currentProvider;
   const updates: Record<string, string | undefined> = {};
-  if (command.model !== undefined) updates[modelEnvKeyForProvider(provider)] = command.model.trim() || undefined;
+  if (command.model !== undefined) {
+    const metadata = findModelMetadata(command.model);
+    if (metadata) {
+      const modelProvider = parseLoginProvider(metadata.provider);
+      if (modelProvider) {
+        targetProvider = modelProvider;
+        if (targetProvider !== currentProvider) updates.MODEL_PROVIDER = targetProvider;
+      }
+    }
+    updates[modelEnvKeyForProvider(targetProvider)] = command.model.trim() || undefined;
+  }
   if (command.reasoning !== undefined || reasoningUpdate.update) {
     updates.MODEL_REASONING_EFFORT = envValueForReasoning(reasoningUpdate.reasoning);
     updates.MODEL_REASONING_SUMMARY = undefined;
   }
-  if (Object.keys(updates).length === 0) return;
+  if (Object.keys(updates).length === 0) return { providerChanged: false };
   await writeEnvUpdates(runtime.envPath, updates);
   applyEnvUpdatesToProcess(updates);
   runtime.defaultReasoning = reasoningUpdate.update ? reasoningUpdate.reasoning : runtime.defaultReasoning;
+  return { providerChanged: targetProvider !== currentProvider };
 }
 
 function currentModelProvider(): LoginProviderName {
