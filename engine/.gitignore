@@ -12,3 +12,5 @@ model-call-*.final.txt
 .agent/sessions/
 .agent-tasks/
 .DS_Store
+.agent/tmp/
+.agent/*

@@ -198,14 +198,17 @@ export class QueryEngine {
 
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.options.modelGateway);
     const result = await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget));
-    if (!result.changed) return result;
+    this.applyCompactionResult(result);
+    return result;
+  }
 
-    this.history.length = 0;
-    this.history.push(...result.messages.map(cloneMessage));
-    this.sessionStore?.recordCompactBoundary();
-    for (const message of result.messages) {
-      this.sessionStore?.recordMessage(message);
-    }
+  async pureCompact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
+    await this.initialize();
+    if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
+
+    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.options.modelGateway);
+    const result = await (compactor.pureCompact?.(this.history, this.options.contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const });
+    this.applyCompactionResult(result);
     return result;
   }
 
@@ -223,6 +226,16 @@ export class QueryEngine {
 
   getHistoryMessages(): Message[] {
     return this.history.map(cloneMessage);
+  }
+
+  private applyCompactionResult(result: CompactionResult): void {
+    if (!result.changed) return;
+    this.history.length = 0;
+    this.history.push(...result.messages.map(cloneMessage));
+    this.sessionStore?.recordCompactBoundary();
+    for (const message of result.messages) {
+      this.sessionStore?.recordMessage(message);
+    }
   }
 
   async contextMetrics(): Promise<ContextMetrics> {

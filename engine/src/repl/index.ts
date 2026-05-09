@@ -864,6 +864,31 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       }
       return;
     }
+    if (command.type === "pure") {
+      const abortController = new AbortController();
+      activeAbortController.current = abortController;
+      interruptArmed.current = false;
+      setBusyState(true);
+      setStatus((current) => ({ ...current, phase: "compacting", detail: "pure compact", activityTick: current.activityTick + 1 }));
+      try {
+        const result = await runtime.engine.pureCompact({ abortSignal: abortController.signal });
+        const metrics = await runtime.engine.contextMetrics();
+        append(systemLine(formatPureCompaction(result)));
+        setStatus((current) => reduceStatus(current, { type: "context.metrics", metrics }));
+      } catch (error) {
+        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      } finally {
+        if (activeAbortController.current === abortController) activeAbortController.current = undefined;
+        interruptArmed.current = false;
+        setBusyState(false);
+        setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
+        const queued = takeQueuedPromptState();
+        if (queued !== undefined) {
+          void submitLine(queued.text, queued.attachments);
+        }
+      }
+      return;
+    }
     if (command.type === "reset") {
       runtime.engine.reset();
       runtime.usage.reset();
@@ -2390,6 +2415,11 @@ function formatUsageTotals(totals: UsageTotals): string {
 function formatManualCompaction(result: CompactionResult): string {
   if (!result.changed) return "No earlier context available to compact.";
   return `manual context compacted: ${result.messages.length} messages retained, ${formatNumber(result.tokensFreed ?? 0)} chars freed`;
+}
+
+function formatPureCompaction(result: CompactionResult): string {
+  if (!result.changed) return "No context available to purify.";
+  return `pure context compacted: ${result.messages.length} sanitized message(s) retained, ${formatNumber(result.tokensFreed ?? 0)} chars removed; raw command/log/code details omitted`;
 }
 
 function colorForKind(kind: UiLine["kind"]) {

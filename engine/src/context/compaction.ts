@@ -17,7 +17,7 @@ export interface ContextBudgetOptions {
   compactMaxOutputTokens?: number;
 }
 
-export type CompactionReason = "none" | "snip" | "microcompact" | "autocompact" | "reactive_compact" | "manualcompact";
+export type CompactionReason = "none" | "snip" | "microcompact" | "autocompact" | "reactive_compact" | "manualcompact" | "purecompact";
 
 export interface CompactionResult {
   messages: Message[];
@@ -30,6 +30,7 @@ export interface CompactionResult {
 export interface Compactor {
   compact(messages: readonly Message[], options?: ContextBudgetOptions): Promise<CompactionResult>;
   manualCompact?(messages: readonly Message[], options?: ContextBudgetOptions): Promise<CompactionResult>;
+  pureCompact?(messages: readonly Message[], options?: ContextBudgetOptions): Promise<CompactionResult>;
   reactiveCompact?(messages: readonly Message[], error: Error, options?: ContextBudgetOptions): Promise<CompactionResult>;
 }
 
@@ -49,6 +50,10 @@ export class DeterministicCompactor implements Compactor {
 
   async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     return manualCompactWithSummary(messages, options);
+  }
+
+  async pureCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return pureCompactWithSanitizedSummary(messages, options);
   }
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
@@ -86,6 +91,10 @@ export class ModelDrivenCompactor implements Compactor {
     } catch {
       return this.fallback.manualCompact?.(messages, options) ?? manualCompactWithSummary(messages, options);
     }
+  }
+
+  async pureCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return pureCompactWithSanitizedSummary(messages, options);
   }
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
@@ -162,6 +171,10 @@ export class NoopCompactor implements Compactor {
   }
 
   async manualCompact(messages: readonly Message[]): Promise<CompactionResult> {
+    return { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async pureCompact(messages: readonly Message[]): Promise<CompactionResult> {
     return { messages: [...messages], changed: false, reason: "none" };
   }
 }
@@ -293,6 +306,25 @@ function reactiveCompactWithSummary(
   );
 }
 
+function pureCompactWithSanitizedSummary(messages: readonly Message[], options: ContextBudgetOptions): CompactionResult {
+  if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
+
+  const summary = buildPureSummary(messages, options.summaryMaxChars ?? 4000);
+  const boundary = createCompactionBoundaryMessage(
+    `Pure compacted conversation after a transport/WAF risk block.\n\n${summary}`,
+    "purecompact",
+    false,
+  );
+
+  return {
+    messages: [boundary],
+    summary,
+    changed: true,
+    reason: "purecompact",
+    tokensFreed: Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars([boundary])),
+  };
+}
+
 function buildCompactionResult(
   originalMessages: readonly Message[],
   recentMessages: readonly Message[],
@@ -362,6 +394,102 @@ function buildHistorySummary(messages: readonly Message[], maxChars: number): st
   });
   const joined = lines.join("\n");
   return joined.length > maxChars ? `${joined.slice(0, maxChars)}\n- ...summary truncated...` : joined;
+}
+
+function buildPureSummary(messages: readonly Message[], maxChars: number): string {
+  const userLines: string[] = [];
+  const assistantLines: string[] = [];
+  const toolLines: string[] = [];
+  const stateLines: string[] = [];
+
+  for (const message of messages) {
+    const text = sanitizeForPureState(serializeMessageForPure(message));
+    if (!text) continue;
+    const line = `- ${text}`;
+    if (message.metadata?.compactBoundary === true) stateLines.push(line);
+    else if (message.role === "user") userLines.push(line);
+    else if (message.role === "assistant") assistantLines.push(line);
+    else if (message.role === "tool_result") toolLines.push(line);
+    else if (message.role !== "system" && message.role !== "progress" && message.role !== "tombstone") stateLines.push(`- ${message.role}: ${text}`);
+  }
+
+  const sections = [
+    "Purpose: sanitized continuation state produced by /pure after a risk/WAF block; raw commands, logs, code snippets, and bulky tool output were intentionally omitted.",
+    formatPureSection("Recent user goals/constraints", lastItems(userLines, 10)),
+    formatPureSection("Recent assistant progress/decisions", lastItems(assistantLines, 8)),
+    formatPureSection("Tool activity summary", lastItems(toolLines, 8)),
+    formatPureSection("Prior compact/state facts", lastItems(stateLines, 8)),
+    "Pending work: continue from the latest user request using the sanitized facts above; ask for clarification only if a required detail was removed by sanitization.",
+  ].filter(Boolean).join("\n");
+
+  return sections.length > maxChars ? `${sections.slice(0, maxChars)}\n- ...pure summary truncated...` : sections;
+}
+
+function formatPureSection(title: string, lines: readonly string[]): string {
+  return lines.length > 0 ? `${title}:\n${dedupeLines(lines).join("\n")}` : `${title}: none retained.`;
+}
+
+function lastItems<T>(items: readonly T[], limit: number): T[] {
+  return items.slice(Math.max(0, items.length - limit));
+}
+
+function dedupeLines(lines: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const line of lines) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    deduped.push(line);
+  }
+  return deduped;
+}
+
+function serializeMessageForPure(message: Message): string {
+  return message.blocks
+    .map((block) => {
+      if (block.type === "text") return block.text;
+      if (block.type === "image") return block.label ?? `[image ${block.mimeType}]`;
+      if (block.type === "thinking") return "[assistant thinking omitted]";
+      if (block.type === "tool_use") return `tool_use ${block.name}: ${sanitizeToolPayload(block.input)}`;
+      if (block.type === "tool_result") return `tool_result ${block.name}: ${block.ok ? "ok" : "error"}`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function sanitizeToolPayload(input: unknown): string {
+  const serialized = typeof input === "string" ? input : JSON.stringify(input);
+  if (!serialized) return "no input";
+  return sanitizeForPureState(serialized).slice(0, 180) || "details omitted";
+}
+
+function sanitizeForPureState(text: string): string {
+  const normalized = text.replace(/```[\s\S]*?```/g, "[code block omitted]");
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => sanitizePureLine(line))
+    .filter(Boolean);
+  return dedupeLines(lines).join("; ").replace(/\s+/g, " ").trim().slice(0, 700);
+}
+
+function sanitizePureLine(line: string): string {
+  let safe = line.trim();
+  if (!safe) return "";
+  if (/\b(python\s+-c|node\s+-e|bash\s+-c|sh\s+-c|powershell|cmd\.exe|set-location|copy-item|invoke-webrequest|curl|read_text|write_text)\b/i.test(safe)) {
+    return "[omitted raw command/log detail]";
+  }
+  safe = safe.replace(/[A-Za-z]:[\\/][^\s"'`<>]+/g, (match) => summarizePathForPureState(match));
+  safe = safe.replace(/[\\]+/g, "/");
+  safe = safe.replace(/[{}<>`]/g, " ");
+  safe = safe.replace(/\s+/g, " ").trim();
+  return safe.length > 240 ? `${safe.slice(0, 240)}...` : safe;
+}
+
+function summarizePathForPureState(value: string): string {
+  const parts = value.split(/[\\/]+/).filter(Boolean);
+  const tail = parts.slice(Math.max(0, parts.length - 3)).join("/");
+  return tail ? `[path:${tail}]` : "[path]";
 }
 
 function serializeTranscriptForSummary(messages: readonly Message[], maxChars: number): string {
