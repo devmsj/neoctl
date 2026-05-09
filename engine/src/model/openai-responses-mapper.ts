@@ -19,12 +19,13 @@ import {
 export interface OpenAIResponsesMapperOptions {
   model: string;
   defaultMaxOutputTokens?: number;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
   streamIdleTimeoutMs?: number;
 }
 
 export function buildResponsesRequest(request: ModelRequest, options: OpenAIResponsesMapperOptions): Record<string, unknown> {
   const tools = buildResponsesTools(request.tools);
+  const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
   return dropUndefined({
     model: request.model ?? options.model,
     instructions: request.instructions ?? request.systemPrompt,
@@ -33,7 +34,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     previous_response_id: request.previousResponseId,
     max_output_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
-    reasoning: request.reasoning === null ? undefined : (request.reasoning ?? options.defaultReasoning),
+    reasoning: reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined),
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
     store: shouldStoreResponse(request, tools.length),

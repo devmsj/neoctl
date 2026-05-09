@@ -13,7 +13,7 @@ export interface BaseModelProviderConfig {
   streamIdleTimeoutMs?: number;
   maxRetries?: number;
   defaultMaxOutputTokens?: number;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
 }
 
 export type OpenAIEndpointPreference = "responses" | "chat" | "auto";
@@ -49,7 +49,8 @@ export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): M
 export function parseReasoning(
   effortValue: string | undefined,
   summaryValue?: string | undefined,
-): ReasoningConfig | undefined {
+): ReasoningConfig | null | undefined {
+  if (effortValue?.trim() === "off") return null;
   const effort = parseReasoningEffort(effortValue);
   const summary = parseReasoningSummary(summaryValue);
   if (!effort && !summary) return undefined;

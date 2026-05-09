@@ -19,7 +19,7 @@ export interface DeepSeekAdapterOptions {
   streamIdleTimeoutMs?: number;
   maxRetries?: number;
   defaultMaxOutputTokens?: number;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
 }
 
 export class DeepSeekAdapter implements ProviderAdapter, ModelGateway {

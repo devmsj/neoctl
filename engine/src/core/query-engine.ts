@@ -23,7 +23,7 @@ export interface QueryEngineOptions {
   agentId?: string;
   model?: string;
   fallbackModel?: string;
-  reasoning?: ReasoningConfig;
+  reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
   maxTurns?: number;

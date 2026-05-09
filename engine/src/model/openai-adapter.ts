@@ -24,7 +24,7 @@ export interface OpenAIAdapterOptions {
   streamIdleTimeoutMs?: number;
   maxRetries?: number;
   defaultMaxOutputTokens?: number;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
 }
 
 export class OpenAIAdapter implements ProviderAdapter, ModelGateway {

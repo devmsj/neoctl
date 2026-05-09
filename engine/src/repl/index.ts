@@ -43,7 +43,7 @@ interface ReplRuntime {
   usage: SessionUsageTracker;
   taskStore: TaskStore;
   initialMetrics: ContextMetrics;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
   envPath: string;
   envNotice?: string;
 }
@@ -955,9 +955,21 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "model") {
-      const line = handleModelCommand(command, runtime);
-      setStatus((current) => ({ ...current, metrics: { ...initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages } }));
-      append(line);
+      setBusyState(true);
+      setStatus((current) => ({ ...current, phase: "running", detail: "saving model settings", activityTick: current.activityTick + 1 }));
+      try {
+        const line = await handleModelCommand(command, runtime);
+        setStatus((current) => ({
+          ...current,
+          phase: "ready",
+          detail: undefined,
+          metrics: { ...initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages },
+          activityTick: current.activityTick + 1,
+        }));
+        append(line);
+      } finally {
+        setBusyState(false);
+      }
       return;
     }
 
@@ -2010,20 +2022,28 @@ function SlashCompletionLines(
   ));
 }
 
-function handleModelCommand(
+async function handleModelCommand(
   command: Extract<ReturnType<typeof parseReplCommand>, { type: "model" }>,
   runtime: ReplRuntime,
-): Omit<UiLine, "id"> {
+): Promise<Omit<UiLine, "id">> {
   const current = runtime.engine.getModelSettings();
   const nextModel = command.model ?? current.model;
   const validationError = validateModelReasoningArgument(nextModel, command.reasoning);
   if (validationError) return { kind: "error", text: validationError };
 
   const reasoningUpdate = resolveModelReasoningUpdate(command.reasoning, current.reasoning, nextModel, command.model !== undefined);
-  if (command.model !== undefined || command.reasoning !== undefined) {
+  const changed = command.model !== undefined || command.reasoning !== undefined;
+  if (changed) {
     runtime.engine.setModel(nextModel, reasoningUpdate.reasoning, reasoningUpdate.update);
+    try {
+      await persistModelCommandSettings(runtime, command, reasoningUpdate);
+    } catch (error) {
+      return { kind: "error", text: `Model settings changed for this session, but saving to ${runtime.envPath} failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
   }
-  return systemLine(formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning));
+
+  const settings = formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning);
+  return systemLine(changed ? `${settings}\nSaved to ${runtime.envPath}` : settings);
 }
 
 function resolveModelReasoningUpdate(
@@ -2041,6 +2061,51 @@ function resolveModelReasoningUpdate(
   return { reasoning: current, update: false };
 }
 
+async function persistModelCommandSettings(
+  runtime: ReplRuntime,
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "model" }>,
+  reasoningUpdate: { reasoning: ReasoningConfig | null | undefined; update: boolean },
+): Promise<void> {
+  const provider = currentModelProvider();
+  const updates: Record<string, string | undefined> = {};
+  if (command.model !== undefined) updates[modelEnvKeyForProvider(provider)] = command.model.trim() || undefined;
+  if (command.reasoning !== undefined || reasoningUpdate.update) {
+    updates.MODEL_REASONING_EFFORT = envValueForReasoning(reasoningUpdate.reasoning);
+    updates.MODEL_REASONING_SUMMARY = undefined;
+  }
+  if (Object.keys(updates).length === 0) return;
+  await writeEnvUpdates(runtime.envPath, updates);
+  applyEnvUpdatesToProcess(updates);
+  runtime.defaultReasoning = reasoningUpdate.update ? reasoningUpdate.reasoning : runtime.defaultReasoning;
+}
+
+function currentModelProvider(): LoginProviderName {
+  return parseLoginProvider(process.env.MODEL_PROVIDER) ?? "openai";
+}
+
+function modelEnvKeyForProvider(provider: LoginProviderName): "OPENAI_MODEL" | "DEEPSEEK_MODEL" {
+  return provider === "deepseek" ? "DEEPSEEK_MODEL" : "OPENAI_MODEL";
+}
+
+function envValueForReasoning(reasoning: ReasoningConfig | null | undefined): string | undefined {
+  if (reasoning === null) return "off";
+  return reasoning?.effort;
+}
+
+async function writeEnvUpdates(envPath: string, updates: Record<string, string | undefined>, removeKeys: string[] = []): Promise<void> {
+  await fs.mkdir(path.dirname(envPath), { recursive: true });
+  const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  const next = updateEnvContent(existing, updates, removeKeys);
+  await fs.writeFile(envPath, next, "utf8");
+}
+
+function applyEnvUpdatesToProcess(updates: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
 function validateModelReasoningArgument(modelId: string | undefined, reasoning: ModelReasoningArgument | undefined): string | undefined {
   if (!reasoning || reasoning === "default" || reasoning === "off") return undefined;
   if (!modelId) return `Cannot set reasoning effort '${reasoning}' without a configured model. Choose a model first.`;
@@ -2050,7 +2115,7 @@ function validateModelReasoningArgument(modelId: string | undefined, reasoning: 
   return undefined;
 }
 
-function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | undefined): string {
+function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | null | undefined): string {
   const window = resolveContextWindowTokens(settings.model);
   const lines = [
     "Model settings:",
@@ -2361,7 +2426,7 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
 const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
-  { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
   { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
   { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "800" },
   { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
@@ -2726,19 +2791,12 @@ function formatLoginFieldValue(field: LoginFieldDefinition, value: string, curso
 }
 
 function applyLoginFormToProcessEnv(state: LoginFormState): void {
-  const env = envEntriesForLoginForm(state);
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  applyEnvUpdatesToProcess(envEntriesForLoginForm(state));
   for (const key of DEPRECATED_MODEL_ENV_KEYS) delete process.env[key];
 }
 
 async function saveLoginFormToEnv(state: LoginFormState): Promise<void> {
-  await fs.mkdir(path.dirname(state.envPath), { recursive: true });
-  const existing = existsSync(state.envPath) ? readFileSync(state.envPath, "utf8") : "";
-  const next = updateEnvContent(existing, envEntriesForLoginForm(state), DEPRECATED_MODEL_ENV_KEYS);
-  await fs.writeFile(state.envPath, next, "utf8");
+  await writeEnvUpdates(state.envPath, envEntriesForLoginForm(state), DEPRECATED_MODEL_ENV_KEYS);
 }
 
 function envEntriesForLoginForm(state: LoginFormState): Record<string, string | undefined> {

@@ -19,15 +19,15 @@ export interface OpenAIChatMapperOptions {
   model: string;
   defaultMaxOutputTokens?: number;
   streamIdleTimeoutMs?: number;
-  defaultReasoning?: ReasoningConfig;
+  defaultReasoning?: ReasoningConfig | null;
   includeMetadata?: boolean;
   includeReasoningContent?: boolean;
 }
 
 export function buildChatRequest(request: ModelRequest, options: OpenAIChatMapperOptions): Record<string, unknown> {
   const tools = buildChatTools(request.tools);
-  const reasoningDisabled = request.reasoning === null;
-  const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning);
+  const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
+  const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined);
   return dropUndefined({
     model: request.model ?? options.model,
     messages: buildChatMessages(request, { includeReasoningContent: options.includeReasoningContent }),
