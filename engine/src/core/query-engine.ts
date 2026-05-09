@@ -3,6 +3,7 @@ import { DefaultContextManager, type ContextManager } from "../context/context-m
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
+import { supportsImageInput } from "../model/context-window.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
@@ -125,6 +126,7 @@ export class QueryEngine {
     const userMessage = options.blocks
       ? { ...createTextMessage("user", options.displayText ?? text), blocks: options.blocks }
       : createTextMessage("user", text);
+    this.assertUserMessageCapabilities(userMessage);
     this.userTurns += 1;
     this.history.push(userMessage);
     this.sessionStore?.recordMessage(userMessage);
@@ -186,6 +188,16 @@ export class QueryEngine {
   setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
     this.currentModel = model?.trim() || undefined;
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
+  }
+
+  canAcceptImageInput(): boolean {
+    return supportsImageInput(this.currentModel) !== false;
+  }
+
+  private assertUserMessageCapabilities(message: Message): void {
+    if (this.canAcceptImageInput()) return;
+    if (!message.blocks.some((block) => block.type === "image")) return;
+    throw new Error(`Model ${this.currentModel ?? "(default)"} does not support image input; image attachments were not added to the conversation.`);
   }
 
   setModelProvider(settings: { modelGateway: ModelGateway; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }): void {
