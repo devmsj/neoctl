@@ -334,11 +334,10 @@ function resetStatus(runtime: ReplRuntime): UiStatus {
   return initialStatus(runtime, initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount));
 }
 
-function setTerminalTitle(title: string, dotFilled = true): void {
+function setTerminalTitle(title: string, prefix = TERMINAL_TITLE_WORKING_PREFIX): void {
   if (!stdout.isTTY) return;
   const safeTitle = title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  const dotPrefix = dotFilled ? TERMINAL_TITLE_DOT_FILLED_PREFIX : TERMINAL_TITLE_DOT_BLANK_PREFIX;
-  const decoratedTitle = `${dotPrefix}${safeTitle || "neo"}`.slice(0, 120);
+  const decoratedTitle = `${prefix}${safeTitle || "neo"}`.slice(0, 120);
   stdout.write(`\u001b]0;${decoratedTitle}\u0007`);
 }
 
@@ -487,7 +486,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTaskCount, setBackgroundTaskCount] = useState(() => runtime.taskStore.activeCount());
   const [animationTick, setAnimationTick] = useState(0);
-  const [terminalTitleDotVisible, setTerminalTitleDotVisible] = useState(true);
+  const [terminalTitlePrefix, setTerminalTitlePrefix] = useState(TERMINAL_TITLE_READY_PREFIX);
   const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
@@ -531,26 +530,25 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
 
   useEffect(() => {
     if (!terminalTitleWorking) {
-      setTerminalTitleDotVisible(true);
+      setTerminalTitlePrefix(TERMINAL_TITLE_READY_PREFIX);
       return undefined;
     }
-    setTerminalTitleDotVisible(true);
-    const interval = setInterval(() => setTerminalTitleDotVisible((visible) => !visible), TERMINAL_TITLE_BLINK_INTERVAL_MS);
-    return () => clearInterval(interval);
+    setTerminalTitlePrefix(TERMINAL_TITLE_WORKING_PREFIX);
+    return undefined;
   }, [terminalTitleWorking]);
 
   useEffect(() => {
     const updateTitle = (snapshot: SessionStoreSnapshot | undefined) => {
       sessionTitleRef.current = sessionTerminalTitle(snapshot);
-      setTerminalTitle(sessionTitleRef.current, terminalTitleDotVisible);
+      setTerminalTitle(sessionTitleRef.current, terminalTitlePrefix);
     };
     updateTitle(runtime.engine.snapshot().session);
     return runtime.engine.onSessionTitleChange(updateTitle);
-  }, [runtime, terminalTitleDotVisible]);
+  }, [runtime, terminalTitlePrefix]);
 
   useEffect(() => {
-    setTerminalTitle(sessionTitleRef.current, terminalTitleDotVisible);
-  }, [terminalTitleDotVisible]);
+    setTerminalTitle(sessionTitleRef.current, terminalTitlePrefix);
+  }, [terminalTitlePrefix]);
 
   const setPromptState = (text: string, nextCursor: number, options?: { preserveSlashCompletionSelection?: boolean }) => {
     const safeCursor = Math.max(0, Math.min(nextCursor, text.length));
@@ -3906,9 +3904,8 @@ function isFullWidthCodePoint(codePoint: number): boolean {
 }
 
 const SESSIONS_DEFAULT_PAGE_SIZE = 10;
-const TERMINAL_TITLE_DOT_FILLED_PREFIX = "● ";
-const TERMINAL_TITLE_DOT_BLANK_PREFIX = "  ";
-const TERMINAL_TITLE_BLINK_INTERVAL_MS = 1000;
+const TERMINAL_TITLE_WORKING_PREFIX = "● ";
+const TERMINAL_TITLE_READY_PREFIX = "✓ ";
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
 const TOKEN_PULSE_MS = 900;
