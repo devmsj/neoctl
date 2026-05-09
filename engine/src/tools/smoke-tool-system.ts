@@ -226,7 +226,7 @@ async function main(): Promise<void> {
     returnedResults?: number;
     results?: Array<{ url?: string }>;
   };
-  const defaultOpenAISearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", MODEL_API_KEY: "test-key" } as NodeJS.ProcessEnv);
+  const defaultOpenAISearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv);
   const explicitExaSearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", SEARCH_PROVIDER: "exa" } as NodeJS.ProcessEnv);
   const fallbackSearchProvider = createSearchProvider({}, {} as NodeJS.ProcessEnv);
   const searchToolDefinition = registry.get("search");

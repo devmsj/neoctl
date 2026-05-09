@@ -5,7 +5,7 @@ neoctl 是一个用 TypeScript 编写的本地 AI 工程代理运行时。项目
 ## 特性亮点
 
 - **流式多轮 Agent Loop**：模型输出、thinking、工具调用、工具结果和终止状态都通过统一事件流传递。
-- **OpenAI 兼容模型网关**：支持 `/v1/responses` 与 `/v1/chat/completions`，`MODEL_ENDPOINT=auto` 时会优先尝试 Responses API，并在兼容网关不支持时回退到 Chat Completions。
+- **OpenAI 兼容模型网关**：支持 `/v1/responses` 与 `/v1/chat/completions`，`OPENAI_ENDPOINT=auto` 时会优先尝试 Responses API，并在兼容网关不支持时回退到 Chat Completions。
 - **内置工程工具集**：文件读写、文本替换、命令执行、目录列表、ripgrep 搜索、Web 搜索、计划展示、子代理和后台任务控制。
 - **上下文预算与压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用、预算大型工具结果，并支持自动、手动和错误恢复压缩。
 - **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览。
@@ -33,23 +33,26 @@ npm run dev
 - Windows：`%APPDATA%\neo\.env`
 - macOS/Linux：`~/.config/neo/.env`
 
-填入模型配置后重启：
+可以运行 `/login` 交互式填写并保存，也可以手动编辑。推荐格式是：`MODEL_PROVIDER` 只选择当前供应者；供应者专属的 key、base URL、model 分别写在 `OPENAI_*` / `DEEPSEEK_*` 下；跨供应者共用的运行参数保留 `MODEL_*`。
 
 ```env
+# Active provider
 MODEL_PROVIDER=openai
-MODEL_API_KEY=your-api-key
-MODEL_BASE_URL=https://api.openai.com
-MODEL_ID=gpt-5.5
-MODEL_ENDPOINT=auto
 
-# DeepSeek 可改为：
-# MODEL_PROVIDER=deepseek
-# MODEL_API_KEY=your-deepseek-api-key
-# MODEL_BASE_URL=https://api.deepseek.com
-# MODEL_ID=deepseek-chat
+# OpenAI provider settings
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_BASE_URL=https://api.openai.com
+OPENAI_MODEL=gpt-5.5
+OPENAI_FALLBACK_MODEL=
+OPENAI_ENDPOINT=auto
 
-# 可选
-MODEL_FALLBACK_ID=
+# DeepSeek provider settings
+DEEPSEEK_API_KEY=your-deepseek-api-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_FALLBACK_MODEL=
+
+# Shared model runtime settings
 MODEL_REASONING_EFFORT=high
 MODEL_REASONING_SUMMARY=auto
 MODEL_MAX_OUTPUT_TOKENS=800
@@ -90,6 +93,7 @@ npm run smoke:openai -- "Say pong"
 | `/model <model-id>` | 切换模型 |
 | `/model <model-id> <effort>` | 切换模型并设置 reasoning effort |
 | `/model <effort>` | 只切换 reasoning effort |
+| `/login` | 交互式选择供应者、编辑配置并保存到 env 文件 |
 | `/cost` | 查看当前 REPL 会话累计 token 使用量 |
 | `/compact` | 手动压缩早期上下文 |
 | `/pure` | 在风险/WAF 阻断后清理上下文但不重置会话 |
@@ -168,12 +172,12 @@ src/
 | 变量 | 说明 |
 | --- | --- |
 | `MODEL_PROVIDER` | `openai` 或 `deepseek` |
-| `MODEL_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | API Key |
-| `MODEL_BASE_URL` / `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` | 服务地址；DeepSeek 默认 `https://api.deepseek.com` |
-| `MODEL_ID` / `OPENAI_MODEL` / `DEEPSEEK_MODEL` | 默认模型；OpenAI 默认 `gpt-5.5`，DeepSeek 默认 `deepseek-chat` |
-| `MODEL_FALLBACK_ID` / `OPENAI_FALLBACK_MODEL` / `DEEPSEEK_FALLBACK_MODEL` | 模型调用失败时的 fallback model |
-| `MODEL_ENDPOINT` / `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；DeepSeek 固定使用 Chat Completions |
-| `MODEL_REASONING_EFFORT` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
+| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | 供应者专属 API Key；只读取当前 `MODEL_PROVIDER` 对应的一组变量 |
+| `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` | 供应者专属服务地址；DeepSeek 默认 `https://api.deepseek.com` |
+| `OPENAI_MODEL` / `DEEPSEEK_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.5`，DeepSeek 默认 `deepseek-chat` |
+| `OPENAI_FALLBACK_MODEL` / `DEEPSEEK_FALLBACK_MODEL` | 供应者专属 fallback model |
+| `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；DeepSeek 固定使用 Chat Completions |
+| `MODEL_REASONING_EFFORT` | 共享运行设置：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
 | `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
 | `MODEL_CONTEXT_WINDOW_TOKENS` | 覆盖模型上下文窗口估算 |
@@ -221,7 +225,7 @@ REPL 当前注册的内置工具：
 - `read` 对大文件使用 offset/limit 分段读取，避免一次性塞满上下文。
 - `list` 默认跳过 `.git`、`node_modules`、`dist`、`build`、`coverage` 等重目录。
 - `grep` 不依赖系统 PATH，会调用 `vendor/ripgrep` 中的平台二进制；支持 glob、大小写模式、fixed strings、隐藏文件、上下文行、结果数和列宽限制。
-- `search` 默认优先使用显式 `SEARCH_PROVIDER` / `WEB_SEARCH_PROVIDER`；未显式配置且当前模型提供者为 OpenAI（`MODEL_PROVIDER=openai` 或存在 `MODEL_API_KEY`/`OPENAI_API_KEY`）时走 OpenAI Responses API 的 GPT web search，否则走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。模型也可以在单次工具调用里通过 `provider` 字段切换后端，但工具提示会要求：除非用户明确要求特定 provider，或默认/当前搜索 provider 在重试后持续不可用，否则不要显式指定 `provider`，让系统默认选择生效。
+- `search` 默认优先使用显式 `SEARCH_PROVIDER` / `WEB_SEARCH_PROVIDER`；未显式配置且当前模型提供者为 OpenAI（`MODEL_PROVIDER=openai` 或存在 `OPENAI_API_KEY`）时走 OpenAI Responses API 的 GPT web search，否则走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。模型也可以在单次工具调用里通过 `provider` 字段切换后端，但工具提示会要求：除非用户明确要求特定 provider，或默认/当前搜索 provider 在重试后持续不可用，否则不要显式指定 `provider`，让系统默认选择生效。
 
 ### 命令执行
 

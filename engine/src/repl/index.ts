@@ -171,6 +171,7 @@ interface LoginFieldDefinition {
   key: string;
   label: string;
   envKey: string;
+  scope: "provider" | "shared";
   required?: boolean;
   secret?: boolean;
   placeholder?: string;
@@ -186,6 +187,7 @@ interface LoginFormState {
   cursor: number;
   values: Record<string, string>;
   envPath: string;
+  legacyProvider?: LoginProviderName;
 }
 
 async function main(): Promise<void> {
@@ -282,7 +284,7 @@ async function createRuntime(): Promise<ReplRuntime> {
 }
 
 function formatCreatedEnvNotice(path: string): string {
-  return `Created default config file: ${path}\nFill MODEL_API_KEY in that file, then restart neo.`;
+  return `Created default config file: ${path}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY), then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -2358,33 +2360,53 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
 
 const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek"];
 
+const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
+  { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
+  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "800" },
+  { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
+  { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
+  { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
+];
+
 const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]> = {
   openai: [
-    { key: "apiKey", label: "API key", envKey: "MODEL_API_KEY", required: true, secret: true, placeholder: "sk-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "MODEL_BASE_URL", placeholder: "https://api.openai.com" },
-    { key: "model", label: "Model", envKey: "MODEL_ID", required: true, placeholder: "gpt-5.5" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "MODEL_FALLBACK_ID" },
-    { key: "endpoint", label: "Endpoint", envKey: "MODEL_ENDPOINT", placeholder: "auto", options: ["auto", "responses", "chat"] },
-    { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
-    { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", options: ["", "auto", "concise", "detailed"] },
-    { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", placeholder: "800" },
-    { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", placeholder: "120000" },
-    { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", placeholder: "120000" },
-    { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", placeholder: "2" },
+    { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
+    { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.5" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "OPENAI_FALLBACK_MODEL", scope: "provider" },
+    { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
+    ...SHARED_LOGIN_FIELDS,
   ],
   deepseek: [
-    { key: "apiKey", label: "API key", envKey: "MODEL_API_KEY", required: true, secret: true, placeholder: "sk-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "MODEL_BASE_URL", placeholder: "https://api.deepseek.com" },
-    { key: "model", label: "Model", envKey: "MODEL_ID", required: true, placeholder: "deepseek-chat" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "MODEL_FALLBACK_ID" },
-    { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
-    { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", options: ["", "auto", "concise", "detailed"] },
-    { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", placeholder: "800" },
-    { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", placeholder: "120000" },
-    { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", placeholder: "120000" },
-    { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", placeholder: "2" },
+    { key: "apiKey", label: "API key", envKey: "DEEPSEEK_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "DEEPSEEK_BASE_URL", scope: "provider", placeholder: "https://api.deepseek.com" },
+    { key: "model", label: "Model", envKey: "DEEPSEEK_MODEL", scope: "provider", required: true, placeholder: "deepseek-chat" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "DEEPSEEK_FALLBACK_MODEL", scope: "provider" },
+    ...SHARED_LOGIN_FIELDS,
   ],
 };
+
+const DEPRECATED_MODEL_ENV_KEYS = [
+  "MODEL_API_KEY",
+  "MODEL_BASE_URL",
+  "MODEL_ID",
+  "MODEL_FALLBACK_ID",
+  "MODEL_ENDPOINT",
+  "OPENAI_PROVIDER",
+  "OPENAI_REASONING_EFFORT",
+  "OPENAI_REASONING_SUMMARY",
+  "OPENAI_MAX_OUTPUT_TOKENS",
+  "OPENAI_TIMEOUT_MS",
+  "OPENAI_STREAM_IDLE_TIMEOUT_MS",
+  "OPENAI_MAX_RETRIES",
+  "DEEPSEEK_REASONING_EFFORT",
+  "DEEPSEEK_REASONING_SUMMARY",
+  "DEEPSEEK_MAX_OUTPUT_TOKENS",
+  "DEEPSEEK_TIMEOUT_MS",
+  "DEEPSEEK_STREAM_IDLE_TIMEOUT_MS",
+  "DEEPSEEK_MAX_RETRIES",
+];
 
 function sessionsPageCount(state: SessionsBrowserState): number {
   return Math.max(1, Math.ceil(state.sessions.length / state.pageSize));
@@ -2614,7 +2636,7 @@ function validateLoginForm(state: LoginFormState): string | undefined {
 
 function createLoginFormState(envPath = getUserDotEnvPath()): LoginFormState {
   const env = parseEnvFileSafe(envPath);
-  const currentProvider = parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? (process.env.DEEPSEEK_API_KEY ? "deepseek" : "openai");
+  const currentProvider = parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? ((env.DEEPSEEK_API_KEY ?? process.env.DEEPSEEK_API_KEY) ? "deepseek" : "openai");
   return loginFormForProvider(currentProvider, envPath, env);
 }
 
@@ -2635,31 +2657,12 @@ function loginFormForProvider(provider: LoginProviderName, envPath: string, env:
 function loginValuesForProvider(provider: LoginProviderName, env: Record<string, string>): Record<string, string> {
   const values: Record<string, string> = {};
   for (const field of LOGIN_FIELD_DEFINITIONS[provider]) {
-    values[field.key] = env[field.envKey] ?? providerAliasValue(provider, field.key, env) ?? "";
+    values[field.key] = env[field.envKey] ?? "";
   }
   if (!values.baseUrl) values.baseUrl = provider === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com";
   if (!values.model) values.model = provider === "deepseek" ? "deepseek-chat" : "gpt-5.5";
   if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
   return values;
-}
-
-function providerAliasValue(provider: LoginProviderName, fieldKey: string, env: Record<string, string>): string | undefined {
-  const prefix = provider === "deepseek" ? "DEEPSEEK" : "OPENAI";
-  const aliases: Record<string, string> = {
-    apiKey: `${prefix}_API_KEY`,
-    baseUrl: `${prefix}_BASE_URL`,
-    model: `${prefix}_MODEL`,
-    fallbackModel: `${prefix}_FALLBACK_MODEL`,
-    endpoint: "OPENAI_ENDPOINT",
-    reasoningEffort: `${prefix}_REASONING_EFFORT`,
-    reasoningSummary: `${prefix}_REASONING_SUMMARY`,
-    maxOutputTokens: `${prefix}_MAX_OUTPUT_TOKENS`,
-    timeoutMs: `${prefix}_TIMEOUT_MS`,
-    streamIdleTimeoutMs: `${prefix}_STREAM_IDLE_TIMEOUT_MS`,
-    maxRetries: `${prefix}_MAX_RETRIES`,
-  };
-  const alias = aliases[fieldKey];
-  return alias ? env[alias] : undefined;
 }
 
 function parseLoginProvider(value: string | undefined): LoginProviderName | undefined {
@@ -2705,11 +2708,12 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
         { key: field.key, color: "white" },
         e(Text, { color: selected ? "black" : "white", backgroundColor: selected ? "cyan" : undefined }, `${index + 1}.`.padStart(3)),
         e(Text, { color: field.required ? "yellow" : "gray" }, ` ${field.label.padEnd(maxLabel)} `),
-        e(Text, { color: rawValue ? "white" : "gray" }, fitToWidth(`${visibleValue}${placeholder}`, Math.max(8, contentWidth - maxLabel - 5))),
+        e(Text, { color: field.scope === "shared" ? "blue" : "gray" }, field.scope === "shared" ? "shared " : "provider "),
+        e(Text, { color: rawValue ? "white" : "gray" }, fitToWidth(`${visibleValue}${placeholder}`, Math.max(8, contentWidth - maxLabel - 14))),
       );
     }),
     e(Text, { color: "gray" }, fitToWidth("↑/↓ field · ←/→ cursor · type edit · Tab cycle choices · Enter save · Esc back/cancel", contentWidth)),
-    e(Text, { color: "gray" }, fitToWidth("Required: API key, model. Empty optional fields are removed from env.", contentWidth)),
+    e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_* / DEEPSEEK_*; shared runtime fields save as MODEL_*.", contentWidth)),
   );
 }
 
@@ -2727,12 +2731,13 @@ function applyLoginFormToProcessEnv(state: LoginFormState): void {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  for (const key of DEPRECATED_MODEL_ENV_KEYS) delete process.env[key];
 }
 
 async function saveLoginFormToEnv(state: LoginFormState): Promise<void> {
   await fs.mkdir(path.dirname(state.envPath), { recursive: true });
   const existing = existsSync(state.envPath) ? readFileSync(state.envPath, "utf8") : "";
-  const next = updateEnvContent(existing, envEntriesForLoginForm(state));
+  const next = updateEnvContent(existing, envEntriesForLoginForm(state), DEPRECATED_MODEL_ENV_KEYS);
   await fs.writeFile(state.envPath, next, "utf8");
 }
 
@@ -2744,17 +2749,19 @@ function envEntriesForLoginForm(state: LoginFormState): Record<string, string | 
     const value = (state.values[field.key] ?? "").trim();
     entries[field.envKey] = value || undefined;
   }
-  if (state.provider !== "openai") entries.MODEL_ENDPOINT = undefined;
   return entries;
 }
 
-function updateEnvContent(content: string, updates: Record<string, string | undefined>): string {
+function updateEnvContent(content: string, updates: Record<string, string | undefined>, removeKeys: string[] = []): string {
   const keys = new Set(Object.keys(updates));
+  const removals = new Set(removeKeys);
   const seen = new Set<string>();
   const lines = content ? content.split(/\r?\n/) : [];
   const updatedLines = lines.map((line) => {
     const parsed = parseEnvLine(line);
-    if (!parsed || !keys.has(parsed.key)) return line;
+    if (!parsed) return line;
+    if (removals.has(parsed.key) && !keys.has(parsed.key)) return undefined;
+    if (!keys.has(parsed.key)) return line;
     seen.add(parsed.key);
     const value = updates[parsed.key];
     if (value === undefined) return undefined;
@@ -2763,11 +2770,29 @@ function updateEnvContent(content: string, updates: Record<string, string | unde
 
   const missing = Object.entries(updates).filter((entry): entry is [string, string] => !seen.has(entry[0]) && entry[1] !== undefined);
   if (missing.length > 0) {
-    if (updatedLines.length > 0 && updatedLines[updatedLines.length - 1]?.trim()) updatedLines.push("");
-    updatedLines.push("# Neo login configuration");
-    for (const [key, value] of missing) updatedLines.push(`${key}=${quoteEnvValue(value)}`);
+    const grouped = groupLoginEnvEntries(missing);
+    appendEnvGroup(updatedLines, "# Neo active provider", grouped.active);
+    appendEnvGroup(updatedLines, "# OpenAI provider settings", grouped.openai);
+    appendEnvGroup(updatedLines, "# DeepSeek provider settings", grouped.deepseek);
+    appendEnvGroup(updatedLines, "# Shared model runtime settings", grouped.shared);
   }
   return `${updatedLines.join("\n").replace(/\n*$/u, "")}\n`;
+}
+
+function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "deepseek" | "shared", Array<[string, string]>> {
+  return {
+    active: entries.filter(([key]) => key === "MODEL_PROVIDER"),
+    openai: entries.filter(([key]) => key.startsWith("OPENAI_")),
+    deepseek: entries.filter(([key]) => key.startsWith("DEEPSEEK_")),
+    shared: entries.filter(([key]) => key.startsWith("MODEL_") && key !== "MODEL_PROVIDER"),
+  };
+}
+
+function appendEnvGroup(lines: string[], header: string, entries: Array<[string, string]>): void {
+  if (entries.length === 0) return;
+  if (lines.length > 0 && lines[lines.length - 1]?.trim()) lines.push("");
+  lines.push(header);
+  for (const [key, value] of entries) lines.push(`${key}=${quoteEnvValue(value)}`);
 }
 
 function parseEnvFileSafe(envPath: string): Record<string, string> {

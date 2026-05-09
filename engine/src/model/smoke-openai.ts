@@ -6,7 +6,7 @@ import { createModelGatewayFromConfig } from "./provider-factory.js";
 async function main(): Promise<void> {
   loadDefaultDotEnvFiles({ override: true });
   const config = readModelProviderConfig(process.env);
-  if (!config) throw new Error("MODEL_API_KEY or OPENAI_API_KEY is required");
+  if (!config) throw new Error("OPENAI_API_KEY is required when MODEL_PROVIDER=openai");
 
   const gateway = createModelGatewayFromConfig({
     ...config,

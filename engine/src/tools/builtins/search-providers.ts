@@ -77,9 +77,9 @@ function resolveSearchProviderName(config: SearchProviderConfig, env: NodeJS.Pro
   const explicit = config.provider ?? env.SEARCH_PROVIDER ?? env.WEB_SEARCH_PROVIDER;
   if (explicit?.trim()) return explicit.trim().toLowerCase();
 
-  const modelProvider = env.MODEL_PROVIDER ?? env.OPENAI_PROVIDER;
+  const modelProvider = env.MODEL_PROVIDER;
   if (modelProvider?.trim().toLowerCase() === "openai") return "openai";
-  if ((env.MODEL_API_KEY ?? env.OPENAI_API_KEY)?.trim()) return "openai";
+  if (env.OPENAI_API_KEY?.trim()) return "openai";
   return DEFAULT_SEARCH_PROVIDER;
 }
 
@@ -95,9 +95,9 @@ export function createSearchProvider(config: SearchProviderConfig = {}, env: Nod
     case "openai":
     case "gpt":
       return createOpenAISearchProvider({
-        apiKey: config.openai?.apiKey ?? env.OPENAI_SEARCH_API_KEY ?? env.WEB_SEARCH_OPENAI_API_KEY ?? env.MODEL_API_KEY ?? env.OPENAI_API_KEY,
-        baseUrl: config.openai?.baseUrl ?? env.OPENAI_SEARCH_BASE_URL ?? env.WEB_SEARCH_OPENAI_BASE_URL ?? env.MODEL_BASE_URL ?? env.OPENAI_BASE_URL,
-        model: config.openai?.model ?? env.OPENAI_SEARCH_MODEL ?? env.WEB_SEARCH_OPENAI_MODEL ?? env.MODEL_ID ?? env.OPENAI_MODEL,
+        apiKey: config.openai?.apiKey ?? env.OPENAI_SEARCH_API_KEY ?? env.WEB_SEARCH_OPENAI_API_KEY ?? env.OPENAI_API_KEY,
+        baseUrl: config.openai?.baseUrl ?? env.OPENAI_SEARCH_BASE_URL ?? env.WEB_SEARCH_OPENAI_BASE_URL ?? env.OPENAI_BASE_URL,
+        model: config.openai?.model ?? env.OPENAI_SEARCH_MODEL ?? env.WEB_SEARCH_OPENAI_MODEL ?? env.OPENAI_MODEL,
         toolType: config.openai?.toolType ?? env.OPENAI_SEARCH_TOOL_TYPE ?? env.WEB_SEARCH_OPENAI_TOOL_TYPE,
         searchContextSize: config.openai?.searchContextSize ?? parseOpenAISearchContextSize(env.OPENAI_SEARCH_CONTEXT_SIZE ?? env.WEB_SEARCH_OPENAI_CONTEXT_SIZE),
         maxOutputTokens: config.openai?.maxOutputTokens ?? parseOptionalInteger(env.OPENAI_SEARCH_MAX_OUTPUT_TOKENS ?? env.WEB_SEARCH_OPENAI_MAX_OUTPUT_TOKENS),
@@ -142,7 +142,7 @@ export function createOpenAISearchProvider(config: OpenAISearchProviderConfig = 
   return {
     name: "openai",
     async search(input, signal) {
-      if (!apiKey) throw new SearchProviderError("OpenAI search requires OPENAI_SEARCH_API_KEY, MODEL_API_KEY, or OPENAI_API_KEY", "openai");
+      if (!apiKey) throw new SearchProviderError("OpenAI search requires OPENAI_SEARCH_API_KEY or OPENAI_API_KEY", "openai");
       const response = await callOpenAIWebSearch({
         apiKey,
         baseUrl,

@@ -15,24 +15,30 @@ export interface DefaultDotEnvLoadResult {
 }
 
 const USER_DOT_ENV_TEMPLATE = `# Neo CLI model configuration
-# Uncomment and fill these values, then run: neo
+# Keep provider-specific credentials/settings isolated. Choose the active provider here.
 
-# MODEL_PROVIDER=openai
-# MODEL_API_KEY=your-api-key
-# MODEL_BASE_URL=https://api.openai.com
-# MODEL_ID=gpt-4.1
-# MODEL_ENDPOINT=auto
-#
-# DeepSeek example:
-# MODEL_PROVIDER=deepseek
-# MODEL_API_KEY=your-deepseek-api-key
-# MODEL_BASE_URL=https://api.deepseek.com
-# MODEL_ID=deepseek-chat
+MODEL_PROVIDER=openai
 
-# Optional
-# MODEL_FALLBACK_ID=
-# MODEL_REASONING_EFFORT=
-# MODEL_MAX_OUTPUT_TOKENS=
+# OpenAI provider settings
+# OPENAI_API_KEY=your-openai-api-key
+# OPENAI_BASE_URL=https://api.openai.com
+# OPENAI_MODEL=gpt-5.5
+# OPENAI_FALLBACK_MODEL=
+# OPENAI_ENDPOINT=auto
+
+# DeepSeek provider settings
+# DEEPSEEK_API_KEY=your-deepseek-api-key
+# DEEPSEEK_BASE_URL=https://api.deepseek.com
+# DEEPSEEK_MODEL=deepseek-chat
+# DEEPSEEK_FALLBACK_MODEL=
+
+# Shared model runtime settings
+# MODEL_REASONING_EFFORT=high
+# MODEL_REASONING_SUMMARY=auto
+# MODEL_MAX_OUTPUT_TOKENS=800
+# MODEL_TIMEOUT_MS=120000
+# MODEL_STREAM_IDLE_TIMEOUT_MS=120000
+# MODEL_MAX_RETRIES=2
 `;
 
 export function createModelGatewayFromEnv(): ModelGateway {
