@@ -2586,9 +2586,9 @@ function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
 
 function formatPlanItem(item: PlanItemLike): string {
   const text = escapePlanMarkdown(item.description.trim());
-  if (item.status === "completed") return `- [x] ~~${text}~~`;
-  if (item.status === "in_progress") return `- [ ] ▶ ${text}`;
-  return `- [ ] ${text}`;
+  if (item.status === "completed") return `- ~~${text}~~`;
+  if (item.status === "in_progress") return `- ▶ ${text}`;
+  return `- ${text}`;
 }
 
 function escapePlanMarkdown(text: string): string {
