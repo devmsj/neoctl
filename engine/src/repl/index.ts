@@ -845,11 +845,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       setStatus((current) => ({ ...current, phase: "compacting", detail: "manual compact", activityTick: current.activityTick + 1 }));
       try {
         const result = await runtime.engine.compact({ abortSignal: abortController.signal });
+        const metrics = await runtime.engine.contextMetrics();
         append(systemLine(formatManualCompaction(result)));
-        setStatus((current) => ({
-          ...current,
-          metrics: { ...(current.metrics ?? runtime.initialMetrics), messageCount: runtime.engine.snapshot().messages },
-        }));
+        setStatus((current) => reduceStatus(current, { type: "context.metrics", metrics }));
       } catch (error) {
         append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       } finally {

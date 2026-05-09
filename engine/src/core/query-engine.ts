@@ -1,13 +1,16 @@
-import type { ContextManager } from "../context/context-manager.js";
+import { InMemoryAppState } from "../app/app-state.js";
+import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
-import type { CanUseTool } from "../tools/tool.js";
+import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
-import type { AgentEvent } from "../types/events.js";
+import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
+import { buildContextMetrics } from "./context-metrics.js";
+import { appendSystemContext, prependUserContext } from "./message-pipeline.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
 import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
@@ -220,6 +223,34 @@ export class QueryEngine {
 
   getHistoryMessages(): Message[] {
     return this.history.map(cloneMessage);
+  }
+
+  async contextMetrics(): Promise<ContextMetrics> {
+    await this.initialize();
+    const messages = this.getHistoryMessages();
+    const toolContext: ToolUseContext = {
+      agentId: this.agentId,
+      tools: this.options.tools,
+      appState: new InMemoryAppState(this.agentId),
+      toolResultMemory: this.sessionStore?.toolResultMemory,
+      recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
+      messages,
+      emit: () => undefined,
+    };
+    const contextManager = this.options.contextManager ?? new DefaultContextManager();
+    const context = await contextManager.build({
+      agentId: this.agentId,
+      messages,
+      enabledTools: this.options.tools.definitions(toolContext).map((tool) => tool.name),
+      toolUseContext: toolContext,
+    });
+    const toolDefinitions = this.options.tools.definitions(toolContext);
+    return buildContextMetrics({
+      model: this.currentModel,
+      messages: prependUserContext(messages, context.userContext),
+      systemPrompt: appendSystemContext(context.systemPrompt, context.systemContext),
+      tools: toolDefinitions,
+    });
   }
 
   get toolResultMemory() {
