@@ -1,7 +1,8 @@
 import type { ModelGateway } from "./model-gateway.js";
 import { NotConfiguredModelGateway } from "./model-gateway.js";
+import { DeepSeekAdapter } from "./deepseek-adapter.js";
 import { OpenAIAdapter } from "./openai-adapter.js";
-import type { ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
+import type { DeepSeekProviderConfig, ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
 import { readModelProviderConfig } from "./config.js";
 
 export function createModelGatewayFromConfig(config: ModelProviderConfig | undefined): ModelGateway {
@@ -10,6 +11,8 @@ export function createModelGatewayFromConfig(config: ModelProviderConfig | undef
   switch (config.provider) {
     case "openai":
       return createOpenAIGateway(config);
+    case "deepseek":
+      return createDeepSeekGateway(config);
   }
 }
 
@@ -24,6 +27,20 @@ function createOpenAIGateway(config: OpenAIProviderConfig): ModelGateway {
     model: config.model,
     fallbackModel: config.fallbackModel,
     endpoint: config.openai?.endpoint,
+    timeoutMs: config.timeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxRetries: config.maxRetries,
+    defaultMaxOutputTokens: config.defaultMaxOutputTokens,
+    defaultReasoning: config.defaultReasoning,
+  });
+}
+
+function createDeepSeekGateway(config: DeepSeekProviderConfig): ModelGateway {
+  return new DeepSeekAdapter({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    fallbackModel: config.fallbackModel,
     timeoutMs: config.timeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
     maxRetries: config.maxRetries,

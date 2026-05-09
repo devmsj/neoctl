@@ -1,4 +1,4 @@
-import { createTextMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage } from "../types/messages.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import { findModelMetadata } from "./context-window.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
@@ -20,6 +20,8 @@ export interface OpenAIChatMapperOptions {
   defaultMaxOutputTokens?: number;
   streamIdleTimeoutMs?: number;
   defaultReasoning?: ReasoningConfig;
+  includeMetadata?: boolean;
+  includeReasoningContent?: boolean;
 }
 
 export function buildChatRequest(request: ModelRequest, options: OpenAIChatMapperOptions): Record<string, unknown> {
@@ -28,21 +30,27 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
   const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning);
   return dropUndefined({
     model: request.model ?? options.model,
-    messages: buildChatMessages(request),
+    messages: buildChatMessages(request, { includeReasoningContent: options.includeReasoningContent }),
     tools: tools.length ? tools : undefined,
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     max_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
-    reasoning_effort: reasoning?.effort,
+    reasoning_effort: chatReasoningEffortOption(request.model ?? options.model, reasoning),
     thinking: chatThinkingOption(request.model ?? options.model, reasoning, reasoningDisabled),
-    metadata: request.metadata,
+    metadata: options.includeMetadata === false ? undefined : request.metadata,
     ...((request.providerOptions?.chat as Record<string, unknown> | undefined) ?? {}),
   });
+}
+
+function chatReasoningEffortOption(model: string, reasoning: ReasoningConfig | undefined): string | undefined {
+  const metadata = findModelMetadata(model);
+  if (metadata?.provider === "deepseek" && metadata.reasoning === false) return undefined;
+  return reasoning?.effort;
 }
 
 function chatThinkingOption(model: string, reasoning: ReasoningConfig | undefined, reasoningDisabled: boolean): Record<string, string> | undefined {
   const metadata = findModelMetadata(model);
   if (metadata?.provider !== "deepseek") return undefined;
-  if (reasoningDisabled) return { type: "disabled" };
+  if (reasoningDisabled || metadata.reasoning === false) return { type: "disabled" };
   if (!reasoning?.effort) return undefined;
   return { type: reasoning.effort === "none" ? "disabled" : "enabled" };
 }
@@ -52,6 +60,7 @@ export async function* normalizeChatStream(
   options: OpenAIChatMapperOptions,
 ): AsyncGenerator<ModelStreamEvent> {
   const textParts: string[] = [];
+  const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   let responseId: string | undefined;
   let usage = undefined as ReturnType<typeof normalizeUsage>;
@@ -60,7 +69,7 @@ export async function* normalizeChatStream(
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
     yield { type: "provider_event", event };
-    if (type === "error") throw normalizeOpenAIStreamError(event);
+    if (type === "error") throw normalizeOpenAIStreamError(event, options.includeReasoningContent ? "deepseek" : "openai");
     responseId = asString(event.id) ?? responseId;
     const chunkUsage = normalizeUsage(event.usage);
     if (chunkUsage) {
@@ -75,6 +84,12 @@ export async function* normalizeChatStream(
       if (content) {
         textParts.push(content);
         yield { type: "assistant_delta", text: content };
+      }
+
+      const reasoningContent = options.includeReasoningContent ? asString(delta?.reasoning_content) : undefined;
+      if (reasoningContent) {
+        thinkingParts.push(reasoningContent);
+        yield { type: "thinking_delta", text: reasoningContent };
       }
 
       const toolCalls = Array.isArray(delta?.tool_calls) ? delta?.tool_calls : [];
@@ -103,6 +118,8 @@ export async function* normalizeChatStream(
 
   const text = textParts.join("");
   if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+  const thinking = thinkingParts.join("").trim();
+  if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
   yield { type: "response_completed", responseId, stopReason: "completed", usage };
 }
 
@@ -115,6 +132,8 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
     const message = choice.message as Record<string, unknown> | undefined;
     const content = asString(message?.content);
     if (content) yield { type: "assistant_message", message: createTextMessage("assistant", content) };
+    const reasoningContent = asString(message?.reasoning_content);
+    if (reasoningContent) yield { type: "assistant_message", message: createThinkingMessage(reasoningContent) };
     const toolCalls = Array.isArray(message?.tool_calls) ? message?.tool_calls : [];
     for (const toolCall of toolCalls as Record<string, unknown>[]) {
       const fn = toolCall.function as Record<string, unknown> | undefined;

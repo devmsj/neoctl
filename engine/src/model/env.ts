@@ -22,6 +22,12 @@ const USER_DOT_ENV_TEMPLATE = `# Neo CLI model configuration
 # MODEL_BASE_URL=https://api.openai.com
 # MODEL_ID=gpt-4.1
 # MODEL_ENDPOINT=auto
+#
+# DeepSeek example:
+# MODEL_PROVIDER=deepseek
+# MODEL_API_KEY=your-deepseek-api-key
+# MODEL_BASE_URL=https://api.deepseek.com
+# MODEL_ID=deepseek-chat
 
 # Optional
 # MODEL_FALLBACK_ID=

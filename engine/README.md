@@ -42,6 +42,12 @@ MODEL_BASE_URL=https://api.openai.com
 MODEL_ID=gpt-5.5
 MODEL_ENDPOINT=auto
 
+# DeepSeek 可改为：
+# MODEL_PROVIDER=deepseek
+# MODEL_API_KEY=your-deepseek-api-key
+# MODEL_BASE_URL=https://api.deepseek.com
+# MODEL_ID=deepseek-chat
+
 # 可选
 MODEL_FALLBACK_ID=
 MODEL_REASONING_EFFORT=high
@@ -67,6 +73,7 @@ npm run smoke:session   # 会话持久化冒烟测试
 npm run smoke:agents    # 子代理/任务冒烟测试
 npm run smoke:skills    # skill 模块冒烟测试
 npm run smoke:responses # OpenAI Responses mapper 冒烟测试
+npm run smoke:deepseek # DeepSeek Chat mapper 冒烟测试
 npm run smoke:openai -- "Say pong"
 ```
 
@@ -146,9 +153,10 @@ src/
 
 ## 模型层
 
-模型访问通过 `ModelGateway` 抽象。当前内置 provider 是 OpenAI 兼容实现：
+模型访问通过 `ModelGateway` 抽象。当前内置 provider 包括 OpenAI 与 DeepSeek：
 
 - `openai-adapter.ts`：端点选择、认证、超时、重试、Responses→Chat fallback。
+- `deepseek-adapter.ts`：DeepSeek OpenAI 格式 Chat Completions，默认 `https://api.deepseek.com/chat/completions`，支持 `reasoning_content` 到 thinking 事件的归一化。
 - `openai-responses-mapper.ts`：Responses API 请求和流事件归一化。
 - `openai-chat-mapper.ts`：Chat Completions 请求和流事件归一化。
 - `http-transport.ts` / `sse-decoder.ts`：HTTP 请求与 SSE 流解析。
@@ -159,12 +167,12 @@ src/
 
 | 变量 | 说明 |
 | --- | --- |
-| `MODEL_PROVIDER` | 当前只支持 `openai` |
-| `MODEL_API_KEY` / `OPENAI_API_KEY` | API Key |
-| `MODEL_BASE_URL` / `OPENAI_BASE_URL` | OpenAI 兼容服务地址 |
-| `MODEL_ID` / `OPENAI_MODEL` | 默认模型，代码默认值为 `gpt-5.5` |
-| `MODEL_FALLBACK_ID` / `OPENAI_FALLBACK_MODEL` | 模型调用失败时的 fallback model |
-| `MODEL_ENDPOINT` / `OPENAI_ENDPOINT` | `responses`、`chat` 或 `auto` |
+| `MODEL_PROVIDER` | `openai` 或 `deepseek` |
+| `MODEL_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | API Key |
+| `MODEL_BASE_URL` / `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` | 服务地址；DeepSeek 默认 `https://api.deepseek.com` |
+| `MODEL_ID` / `OPENAI_MODEL` / `DEEPSEEK_MODEL` | 默认模型；OpenAI 默认 `gpt-5.5`，DeepSeek 默认 `deepseek-chat` |
+| `MODEL_FALLBACK_ID` / `OPENAI_FALLBACK_MODEL` / `DEEPSEEK_FALLBACK_MODEL` | 模型调用失败时的 fallback model |
+| `MODEL_ENDPOINT` / `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；DeepSeek 固定使用 Chat Completions |
 | `MODEL_REASONING_EFFORT` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
 | `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
@@ -351,7 +359,7 @@ for await (const event of engine.sendUserText("Summarize this repository")) {
 
 ## 当前边界
 
-- 模型 provider 配置类型目前只内置 OpenAI 兼容 provider。
+- 模型 provider 配置类型目前内置 OpenAI 与 DeepSeek provider。
 - `src/safety` 是 permission、sandbox、audit 的接口边界；默认 REPL 没有强制沙箱策略。
 - `src/skills` 已实现工具与 catalog，但默认 REPL 未装配 skill catalog。
 - `isolation=worktree/remote` 在 AgentTool schema 中保留为接口形态，当前本地实现主要通过 `cwd` 和独立消息上下文隔离。
