@@ -27,6 +27,7 @@ import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
+import type { CompactionResult } from "../context/compaction.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
@@ -834,6 +835,33 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (command.type === "cost") {
       append({ kind: "system", text: formatUsageTotals(runtime.usage.snapshot()) });
+      return;
+    }
+    if (command.type === "compact") {
+      const abortController = new AbortController();
+      activeAbortController.current = abortController;
+      interruptArmed.current = false;
+      setBusyState(true);
+      setStatus((current) => ({ ...current, phase: "compacting", detail: "manual compact", activityTick: current.activityTick + 1 }));
+      try {
+        const result = await runtime.engine.compact({ abortSignal: abortController.signal });
+        append(systemLine(formatManualCompaction(result)));
+        setStatus((current) => ({
+          ...current,
+          metrics: { ...(current.metrics ?? runtime.initialMetrics), messageCount: runtime.engine.snapshot().messages },
+        }));
+      } catch (error) {
+        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      } finally {
+        if (activeAbortController.current === abortController) activeAbortController.current = undefined;
+        interruptArmed.current = false;
+        setBusyState(false);
+        setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
+        const queued = takeQueuedPromptState();
+        if (queued !== undefined) {
+          void submitLine(queued.text, queued.attachments);
+        }
+      }
       return;
     }
     if (command.type === "reset") {
@@ -2357,6 +2385,11 @@ function formatUsageTotals(totals: UsageTotals): string {
   if (totals.cachedTokens > 0) lines.push(`  Cached input tokens: ${formatNumber(totals.cachedTokens)}`);
 
   return lines.join("\n");
+}
+
+function formatManualCompaction(result: CompactionResult): string {
+  if (!result.changed) return "No earlier context available to compact.";
+  return `manual context compacted: ${result.messages.length} messages retained, ${formatNumber(result.tokensFreed ?? 0)} chars freed`;
 }
 
 function colorForKind(kind: UiLine["kind"]) {

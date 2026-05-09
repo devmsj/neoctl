@@ -1,5 +1,6 @@
 import type { ContextManager } from "../context/context-manager.js";
-import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool } from "../tools/tool.js";
@@ -186,6 +187,23 @@ export class QueryEngine {
     this.cancelPendingTitleWork();
     this.sessionStore?.reset();
     this.notifySessionTitleChange(this.sessionStore?.snapshot());
+  }
+
+  async compact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
+    await this.initialize();
+    if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
+
+    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.options.modelGateway);
+    const result = await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget));
+    if (!result.changed) return result;
+
+    this.history.length = 0;
+    this.history.push(...result.messages.map(cloneMessage));
+    this.sessionStore?.recordCompactBoundary();
+    for (const message of result.messages) {
+      this.sessionStore?.recordMessage(message);
+    }
+    return result;
   }
 
   snapshot(): { agentId: string; messages: number; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {

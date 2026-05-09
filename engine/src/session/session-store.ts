@@ -11,6 +11,7 @@ export type SessionTranscriptEntry =
   | { type: "message"; sessionId: string; agentId: string; message: Message }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
+  | { type: "compact"; sessionId: string; agentId: string; createdAt: string }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
 export interface SessionStoreOptions {
@@ -170,6 +171,12 @@ export class SessionStore {
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
+  recordCompactBoundary(): void {
+    this.resumedMessages.length = 0;
+    this.contentReplacements.length = 0;
+    this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
+  }
+
   recordTitle(title: string, kind: SessionTitleKind = "initial"): void {
     const normalized = normalizeTitle(title);
     if (!normalized || (normalized === this.title && kind === this.titleKind)) return;
@@ -279,6 +286,10 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
         loaded.titleKind = undefined;
         loaded.hasInitialTitle = false;
         loaded.hasTitleRefinement = false;
+      }
+      if (entry.type === "compact") {
+        loaded.messages.length = 0;
+        loaded.replacements.length = 0;
       }
       if (entry.type === "message") loaded.messages.push(entry.message);
       if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);

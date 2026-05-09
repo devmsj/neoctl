@@ -17,16 +17,19 @@ export interface ContextBudgetOptions {
   compactMaxOutputTokens?: number;
 }
 
+export type CompactionReason = "none" | "snip" | "microcompact" | "autocompact" | "reactive_compact" | "manualcompact";
+
 export interface CompactionResult {
   messages: Message[];
   summary?: string;
   changed: boolean;
-  reason?: "none" | "snip" | "microcompact" | "autocompact" | "reactive_compact";
+  reason?: CompactionReason;
   tokensFreed?: number;
 }
 
 export interface Compactor {
   compact(messages: readonly Message[], options?: ContextBudgetOptions): Promise<CompactionResult>;
+  manualCompact?(messages: readonly Message[], options?: ContextBudgetOptions): Promise<CompactionResult>;
   reactiveCompact?(messages: readonly Message[], error: Error, options?: ContextBudgetOptions): Promise<CompactionResult>;
 }
 
@@ -42,6 +45,10 @@ export class DeterministicCompactor implements Compactor {
     if (auto.changed) return mergeResults([micro, auto], auto.reason);
     if (micro.changed) return micro;
     return { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return manualCompactWithSummary(messages, options);
   }
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
@@ -65,6 +72,20 @@ export class ModelDrivenCompactor implements Compactor {
     if (auto.changed) return mergeResults([micro, auto], auto.reason);
     if (micro.changed) return micro;
     return { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    const keepRecentMessages = options.keepRecentMessages ?? 8;
+    const recent = messages.slice(-keepRecentMessages);
+    const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+    if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
+
+    try {
+      const summary = await this.summarizeWithModel(older, MANUAL_COMPACT_INSTRUCTIONS, options);
+      return buildCompactionResult(messages, recent, summary, "manualcompact", true);
+    } catch {
+      return this.fallback.manualCompact?.(messages, options) ?? manualCompactWithSummary(messages, options);
+    }
   }
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
@@ -137,6 +158,10 @@ export class ModelDrivenCompactor implements Compactor {
 
 export class NoopCompactor implements Compactor {
   async compact(messages: readonly Message[]): Promise<CompactionResult> {
+    return { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async manualCompact(messages: readonly Message[]): Promise<CompactionResult> {
     return { messages: [...messages], changed: false, reason: "none" };
   }
 }
@@ -234,6 +259,22 @@ function shouldCompactForBudget(messages: readonly Message[], options: ContextBu
   return estimateMessagesChars(messages) > fallbackMaxChars;
 }
 
+function manualCompactWithSummary(messages: readonly Message[], options: ContextBudgetOptions): CompactionResult {
+  const keepRecentMessages = options.keepRecentMessages ?? 8;
+  const recent = messages.slice(-keepRecentMessages);
+  const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+  if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
+
+  const summary = buildHistorySummary(older, options.summaryMaxChars ?? 6000);
+  return buildCompactionResult(
+    messages,
+    recent,
+    summary || "No older messages were available to summarize.",
+    "manualcompact",
+    false,
+  );
+}
+
 function reactiveCompactWithSummary(
   messages: readonly Message[],
   heading: string,
@@ -256,10 +297,14 @@ function buildCompactionResult(
   originalMessages: readonly Message[],
   recentMessages: readonly Message[],
   summary: string,
-  reason: "autocompact" | "reactive_compact",
+  reason: "autocompact" | "reactive_compact" | "manualcompact",
   modelDriven: boolean,
 ): CompactionResult {
-  const label = reason === "autocompact" ? "Auto compacted earlier conversation." : "Reactive compacted earlier conversation.";
+  const label = reason === "autocompact"
+    ? "Auto compacted earlier conversation."
+    : reason === "manualcompact"
+      ? "Manually compacted earlier conversation."
+      : "Reactive compacted earlier conversation.";
   const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven);
   const compacted = [boundary, ...recentMessages];
   return {
@@ -271,7 +316,7 @@ function buildCompactionResult(
   };
 }
 
-function mergeResults(results: readonly CompactionResult[], reason: CompactionResult["reason"]): CompactionResult {
+function mergeResults(results: readonly CompactionResult[], reason: CompactionReason | undefined): CompactionResult {
   const changedResults = results.filter((result) => result.changed);
   const last = changedResults[changedResults.length - 1] ?? results[results.length - 1];
   return {
@@ -386,6 +431,14 @@ function extractText(message: Message): string {
 function buildReactiveCompactInstruction(error: Error): string {
   return `${AUTO_COMPACT_INSTRUCTIONS}\n\nThe previous model request failed because the prompt was too long. Preserve enough task state to continue after this error. Error: ${error.message}`;
 }
+
+const MANUAL_COMPACT_INSTRUCTIONS = [
+  "Summarize the earlier agent conversation for continuation after a user-requested context compaction.",
+  "Preserve: user goals and constraints, decisions made, files or commands mentioned, completed work, pending work, task ids, important tool results, and any errors or blockers.",
+  "Drop: repetitive logs, transient progress chatter, and irrelevant wording.",
+  "Return concise plain text labels, not Markdown headings. Use labels like Goal:, Constraints:, Work completed:, Important facts:, Pending work:, Open risks:.",
+  "Do not include final-answer prose; this summary is an internal continuation state only.",
+].join("\n");
 
 const AUTO_COMPACT_INSTRUCTIONS = [
   "Summarize the earlier agent conversation for continuation after context compaction.",

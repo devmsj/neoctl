@@ -3,6 +3,7 @@ export type ModelReasoningArgument = "none" | "minimal" | "low" | "medium" | "hi
 export type ReplCommand =
   | { type: "help" }
   | { type: "cost" }
+  | { type: "compact" }
   | { type: "exit" }
   | { type: "log"; path?: string; off?: boolean }
   | { type: "model"; model?: string; reasoning?: ModelReasoningArgument }
@@ -24,6 +25,7 @@ export interface ReplCommandDefinition {
 export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/help", usage: "/help", description: "Show commands", arguments: "none" },
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session", arguments: "none" },
+  { name: "/compact", usage: "/compact", description: "Manually compact earlier context", arguments: "none" },
   { name: "/model", usage: "/model [model-id] [effort|default|off]", description: "Show or switch model and supported reasoning effort", arguments: "optional" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
@@ -40,6 +42,7 @@ export function parseReplCommand(line: string): ReplCommand {
   const { name, argument } = parsed;
   if (name === "/help") return { type: "help" };
   if (name === "/cost") return { type: "cost" };
+  if (name === "/compact") return { type: "compact" };
   if (name === "/exit" || name === "/quit") return { type: "exit" };
   if (name === "/model") return parseModelCommand(argument) ?? { type: "input", text: line };
   if (name === "/log") {
