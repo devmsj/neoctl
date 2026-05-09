@@ -1,151 +1,357 @@
-# Agent Scaffold Source
+# neoctl / neo
 
-This directory is a TypeScript implementation scaffold for the parent README. Chapters 01, 02, 03, 04, 05-core, and 07 now have runnable paths; later chapters still expose stable module boundaries and placeholders.
+neoctl 是一个用 TypeScript 编写的本地 AI 工程代理运行时。项目提供 `neo` 命令行 REPL，也导出核心运行时模块，围绕流式模型调用、工具执行、上下文管理、会话恢复和子代理任务编排构建。
 
-## Shape
+## 特性亮点
 
-- `src/repl`: the UI layer. It owns terminal input, slash commands, system init events, and rendering streamed events.
-- `src/core`: the multi-turn query loop, loop state, message pipeline, `QueryEngine`, and child-agent runner entry points.
-- `src/model`: provider-neutral model gateway/config/factory, provider adapters, OpenAI Responses/Chat mappers, HTTP transport, SSE decoder, retry, and normalized errors.
-- `src/tools`: lifecycle tool contracts, registry, schema validation, execution pipeline, batch orchestration, streaming executor, and built-in tools.
-- `src/context`: system prompt sections, runtime user/system context, deterministic compaction helpers, and model-driven compaction.
-- `src/session`: JSONL session transcripts, tool-result persistence, latest/specific session resume, and session listing.
-- `src/agents`: agent definitions, `AgentTool`, prompt rules, fork constraints, local task lifecycle, and agent smoke coverage.
-- `src/tasks`: background task store, task-control tools, named-agent message routing, and persisted task output files.
-- `src/skills`: inline workflow-as-tool injection and fork-skill boundary.
-- `src/safety`: optional permission, sandbox, and audit ports.
-- `src/app`: app-state ports used by tools and runtime code.
-- `vendor/ripgrep`: per-platform bundled `rg` binaries installed by `npm run vendor:rg` or optional `postinstall`.
+- **流式多轮 Agent Loop**：模型输出、thinking、工具调用、工具结果和终止状态都通过统一事件流传递。
+- **OpenAI 兼容模型网关**：支持 `/v1/responses` 与 `/v1/chat/completions`，`MODEL_ENDPOINT=auto` 时会优先尝试 Responses API，并在兼容网关不支持时回退到 Chat Completions。
+- **内置工程工具集**：文件读写、文本替换、命令执行、目录列表、ripgrep 搜索、Web 搜索、计划展示、子代理和后台任务控制。
+- **上下文预算与压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用、预算大型工具结果，并支持自动、手动和错误恢复压缩。
+- **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览。
+- **子代理与后台任务**：同一套 query loop 可运行同步子代理、后台子代理、fork 子代理，以及后台 shell 任务。
+- **TTY REPL 体验**：Ink UI、slash command 补全、Markdown 渲染、流式状态栏、token 使用统计、剪贴板文本/图片粘贴、会话标题和终端标题更新。
 
-## Commands
+## 快速开始
+
+要求 Node.js >= 20。
 
 ```bash
 npm install
-npm run vendor:rg
-npm run typecheck
 npm run build
-npm run smoke:core
-npm run smoke:tools
-npm run smoke:context
-npm run smoke:agents
-npm run smoke:skills
-npm run smoke:openai -- "Say pong"
+npm start
+```
+
+开发模式：
+
+```bash
 npm run dev
 ```
 
-## Core Loop
+首次启动会创建用户级配置文件：
 
-`src/core/query.ts` implements the Chapter 01 main path as a streaming state machine:
+- Windows：`%APPDATA%\neo\.env`
+- macOS/Linux：`~/.config/neo/.env`
 
-- prepares each turn from a single `QueryState`
-- applies compact-boundary filtering and tool-result budgeting before model calls
-- builds system/user context into the model request
-- streams assistant deltas and messages to the UI
-- collects `tool_use` events, executes tools, and feeds `tool_result` messages into the next model turn
-- tracks `previousResponseId` for Responses API tool-result continuation
-- emits terminal reasons such as `completed`, `max_turns`, `model_error`, and abort states
-- keeps max-output-token recovery and reactive compact continuation points explicit
+填入模型配置后重启：
 
-`npm run smoke:core` verifies the tool-call follow-up loop with a fake model and the built-in `echo` tool.
-
-## Tool System
-
-`src/tools` implements the Chapter 02 tool system contract:
-
-- tools are lifecycle objects with identity, aliases, schemas, metadata, validators, execution, result mapping, progress rendering, and optional context modifiers
-- `ToolRegistry` keeps built-in tools as a stable prompt-cache prefix, supports aliases, filters deferred tools, and merges external tools deterministically
-- `runToolUse()` performs schema validation, custom validation, permission decision, progress emission, abort handling, result mapping, max-result truncation, new messages, and context modifier propagation
-- `runTools()` partitions tool calls into concurrency-safe batches and serial batches, applying context modifiers in tool-use order
-- `StreamingToolExecutor` can start tools as tool calls arrive and can synthesize discarded results on fallback/abort
-- `grepTool` calls the bundled ripgrep binary through `ripgrep-binary.ts`, supports smart/sensitive/insensitive case modes, glob filters, hidden-file opt-in, bounded context lines, and bounded total results
-- `searchTool` performs web search through a pluggable `SearchProvider`; the initial backend is Exa MCP, with provider factory seams for future Bing/Tavily/custom implementations
-- `scripts/install-ripgrep.cjs` resolves the current OS/CPU, downloads the matching official ripgrep release asset, extracts `rg`, and writes a manifest beside the binary; runtime lookup does not depend on PATH
-
-`npm run smoke:tools` verifies aliases, schema/custom validation, unknown-tool errors, max result truncation, bundled-rg grep, pluggable web search, and concurrent batch execution.
-
-## Context And Prompts
-
-`src/context` implements the Chapter 03 and Chapter 05 prompt/context path:
-
-- `prompts.ts` builds system prompt sections with `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`, replacement priority, proactive agent append mode, and prefix splitting for cache-aware providers
-- `DefaultContextManager` memoizes user context (`currentDate`, project memory files) and system context (`cwd`, platform, git branch/status/recent commit)
-- `message-pipeline.ts` prepends user context as a user message, appends system context to the system prompt, respects compact boundaries, and budgets oversized tool results
-- `ModelDrivenCompactor` uses the configured model gateway for autocompact and reactive compact summaries
-- deterministic snip, microcompact, and summary fallback remain available when model summarization fails or when tests need predictable output
-- `query.ts` persists compact-boundary messages into the event stream and retries once after provider `context_length` errors
-
-`npm run smoke:context` verifies prompt boundary splitting, context injection, tool result budgeting, deterministic compaction, model-driven autocompact, and prompt-too-long recovery.
-
-## Session Resume
-
-The REPL writes JSONL transcripts under `.agent/sessions` by default. After each user message, a background title subagent check is scheduled after 5s: it creates one initial title, then performs one later refinement with the conversation and previous title if the prior title agent has finished. `/sessions` opens an interactive browser (default 10 per page): use ↑/↓ to select a session, ←/→ to switch pages when more than one page exists, Enter to resume the selected session, and Esc to close.
-
-Startup resume is available with environment variables:
-
-```bash
-set AGENT_SESSION_RESUME=1
-npm run dev
-
-set AGENT_SESSION_ID=<session_id>
-set AGENT_SESSION_RESUME=1
-npm run dev
-```
-
-Set `AGENT_SESSION_TRANSCRIPT=0` to disable transcript persistence, or `AGENT_SESSION_DIR=<absolute-or-relative-dir>` to store transcripts elsewhere. `/reset` clears the active history and records a reset marker so future resumes start after the reset.
-
-`npm run smoke:session` verifies transcript recording, latest-session lookup, specific-session resume, tool-result output persistence, and reset markers.
-
-## Subagents And Tasks
-
-`src/agents` and `src/tasks` implement the Chapter 04 core path:
-
-- `AgentTool` is a normal tool with `prompt`, `description`, `subagent_type`, `model`, `run_in_background`, `name`, `team_name`, `mode`, `isolation`, and `cwd` inputs
-- `AgentTool` now exports prompt rules covering fresh/fork/background/parallel/prompt-quality behavior
-- `runAgent()` creates isolated child messages/context/tool pools and reuses the same `query()` loop
-- `AgentDefinition` supports tool allow/deny lists, model, effort, permission mode, background, max turns, memory, isolation, and custom system prompts
-- sync agents return a completed structured result; background/fork agents register `LocalAgentTask` and return `async_launched`
-- `TaskOutput`, `TaskList`, `TaskGet`, `TaskStop`, and `SendMessage` provide the minimum control surface for background agents
-- completed background tasks write `.agent-tasks/<task_id>.txt`; the directory is gitignored
-- fork children get explicit anti-recursion and scope boilerplate; teammate/team inputs are represented as named background agents for now
-
-`npm run smoke:agents` verifies sync delegation, async launch, task output, output-file persistence, task listing, and named-agent message routing.
-
-## Skills
-
-`src/skills` implements the low-risk part of Chapter 05 SkillTool:
-
-- `SkillTool` validates skill existence and model invocation eligibility
-- inline skills inject a meta user message into the next model turn through `newMessages`
-- inline skills can update main loop model and effort through `contextModifier`
-- fork skills are recognized and return a structured `fork_required` result instead of silently pretending to run
-
-`npm run smoke:skills` verifies inline injection, context modification, fork-skill rejection, and unknown-skill validation.
-
-## Model Providers
-
-The REPL loads environment files, reads `MODEL_*` settings into a small discriminated provider config, and constructs a provider through `provider-factory.ts`. It loads the current directory `.env` first, then overrides it with the user-level config at `%APPDATA%\\neo\\.env` on Windows or `~/.config/neo/.env` on other platforms. If the user-level config file is missing, `neo` creates a commented template there and prints a startup notice telling the user to fill `MODEL_API_KEY`. Set `NEO_ENV_FILE` to point at a custom env file; that file has the highest priority. Provider-specific switches stay inside provider-owned config (`OpenAIProviderConfig.openai.endpoint` today), while `OPENAI_*` variables remain supported as compatibility aliases.
-
-```bash
-mkdir "%APPDATA%\\neo"
-notepad "%APPDATA%\\neo\\.env"
-
-# In the env file:
+```env
 MODEL_PROVIDER=openai
 MODEL_API_KEY=your-api-key
 MODEL_BASE_URL=https://api.openai.com
 MODEL_ID=gpt-5.5
-MODEL_REASONING_EFFORT=high
 MODEL_ENDPOINT=auto
 
-npm run smoke:openai -- "Say pong"
-npm run dev
+# 可选
+MODEL_FALLBACK_ID=
+MODEL_REASONING_EFFORT=high
+MODEL_REASONING_SUMMARY=auto
+MODEL_MAX_OUTPUT_TOKENS=800
+MODEL_TIMEOUT_MS=120000
+MODEL_STREAM_IDLE_TIMEOUT_MS=120000
+MODEL_MAX_RETRIES=2
 ```
 
-The OpenAI adapter is split into a small provider facade plus mappers:
+也可以在当前工作目录放 `.env`，或通过 `NEO_ENV_FILE=/path/to/.env` 指定配置文件。加载顺序是：当前目录 `.env` → 用户级 `.env` → `NEO_ENV_FILE`，后者优先级最高。
 
-- `openai-adapter.ts`: endpoint selection, auth, transport, retry, and Responses-to-Chat fallback
-- `openai-responses-mapper.ts`: `/v1/responses` request and event mapping
-- `openai-chat-mapper.ts`: OpenAI-compatible `/v1/chat/completions` fallback mapping
-- `openai-mappers.ts`: shared tool/message/usage helpers
+## 常用命令
 
-`MODEL_ENDPOINT=auto` tries `/v1/responses` first and falls back to `/v1/chat/completions` for OpenAI-compatible gateways that do not expose Responses API.
+```bash
+npm run typecheck       # TypeScript 类型检查
+npm run build           # 编译到 dist，并复制模型元数据
+npm run vendor:rg       # 下载/安装当前平台的 ripgrep 到 vendor/ripgrep
+npm run smoke:core      # 核心 query loop 冒烟测试
+npm run smoke:tools     # 工具体系冒烟测试
+npm run smoke:context   # 上下文和压缩冒烟测试
+npm run smoke:session   # 会话持久化冒烟测试
+npm run smoke:agents    # 子代理/任务冒烟测试
+npm run smoke:skills    # skill 模块冒烟测试
+npm run smoke:responses # OpenAI Responses mapper 冒烟测试
+npm run smoke:openai -- "Say pong"
+```
+
+`postinstall` 会以 optional 模式尝试安装 ripgrep；如果失败或需要重装，可手动运行 `npm run vendor:rg`。
+
+## REPL 用法
+
+启动后直接输入自然语言任务即可。常用 slash commands：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/help` | 显示命令列表 |
+| `/model` | 查看当前模型和 reasoning 设置 |
+| `/model <model-id>` | 切换模型 |
+| `/model <model-id> <effort>` | 切换模型并设置 reasoning effort |
+| `/model <effort>` | 只切换 reasoning effort |
+| `/cost` | 查看当前 REPL 会话累计 token 使用量 |
+| `/compact` | 手动压缩早期上下文 |
+| `/pure` | 在风险/WAF 阻断后清理上下文但不重置会话 |
+| `/sessions` | 打开会话浏览器 |
+| `/state` | 查看 query engine 状态与通信日志状态 |
+| `/log <absolute-dir>` | 将模型通信日志写入指定绝对目录 |
+| `/log off` | 关闭模型通信日志 |
+| `/reset` | 清空当前历史，并在 transcript 中写入 reset marker |
+| `/exit` / `/quit` | 退出 |
+
+交互细节：
+
+- `Tab` 可补全 slash command。
+- 上/下方向键可浏览输入历史，也可在补全面板中移动选择。
+- `/sessions` 中使用上/下选择，会话多页时左/右或 PageUp/PageDown 翻页，Enter 恢复，Esc 关闭，`d`/Delete/Backspace 删除选中的非活跃会话。
+- `Ctrl+V` / `Cmd+V` 或右键粘贴会读取系统剪贴板；长文本会以附件形式折叠，图片会作为 image block 发送给支持图片输入的模型。
+- 空输入时第一次 `Ctrl+C` 会尝试中断当前任务或提示再次退出，第二次退出；有输入内容时 `Ctrl+C` 清空输入。
+
+## 架构概览
+
+```text
+src/
+  repl/      Ink 终端 UI、输入编辑、slash commands、剪贴板、会话浏览
+  core/      QueryEngine、多轮 query loop、消息管线、事件流、子代理 runner
+  model/     模型网关、OpenAI adapter、HTTP/SSE、重试、错误归一化、模型元数据
+  tools/     Tool 接口、注册表、schema 校验、执行编排、内置工具
+  context/   system prompt、用户/系统上下文、上下文指标、压缩器
+  session/   JSONL transcript、会话列表/恢复、大型工具结果落盘
+  agents/    AgentTool、AgentDefinition、本地后台任务输出
+  tasks/     TaskStore、TaskOutput/TaskList/TaskGet/TaskStop/TaskResume/SendMessage
+  skills/    可复用 prompt workflow 的 SkillTool 与内存 catalog
+  app/        AppState port 和内存实现
+  safety/     permission / sandbox / audit 的接口边界
+  types/      message 与 event 类型
+```
+
+### 运行主线
+
+`QueryEngine` 是 REPL 与核心 loop 之间的状态封装：
+
+1. 接收用户输入并追加到历史。
+2. 记录 session transcript。
+3. 生成一次 system init message，用于展示本轮可用工具、模型、命令等信息。
+4. 调用 `query()` 进入流式多轮循环。
+5. 将模型消息、工具结果、压缩边界和终止状态持续写回历史与 transcript。
+
+`query()` 的每轮流程：
+
+1. 构建 runtime context：system prompt、user context、system context。
+2. 根据 compact boundary 选择参与模型调用的消息。
+3. 对大型工具结果做预算处理；启用 session 时会将超大结果写到 `.agent/sessions/<session>/tool-results/` 并用预览替换。
+4. 修复缺失的 tool_use/tool_result 配对，避免模型 API 拒绝历史。
+5. 估算 context metrics，并按预算触发压缩。
+6. 流式调用模型网关。
+7. 收集 assistant 文本、thinking、tool_use 和 usage。
+8. 如有工具调用，按并发安全规则执行工具，把 tool_result 放入下一轮。
+9. 无工具调用时结束；如果因输出 token 达限且没有工具调用，会尝试提高输出预算继续。
+10. 遇到 context length 错误时会进行一次 reactive compact 后重试。
+
+事件类型定义在 `src/types/events.ts`，包括 `state`、`context.metrics`、`assistant.delta`、`thinking.delta`、`tool.started`、`tool.finished`、`usage`、`terminal` 等。
+
+## 模型层
+
+模型访问通过 `ModelGateway` 抽象。当前内置 provider 是 OpenAI 兼容实现：
+
+- `openai-adapter.ts`：端点选择、认证、超时、重试、Responses→Chat fallback。
+- `openai-responses-mapper.ts`：Responses API 请求和流事件归一化。
+- `openai-chat-mapper.ts`：Chat Completions 请求和流事件归一化。
+- `http-transport.ts` / `sse-decoder.ts`：HTTP 请求与 SSE 流解析。
+- `errors.ts`：将 provider 错误归一为 `ModelAPIError` 分类。
+- `context-window.ts` + `model-metadata.json`：静态模型元数据，用于 context window、reasoning effort 和图片输入能力判断。
+
+支持的配置变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `MODEL_PROVIDER` | 当前只支持 `openai` |
+| `MODEL_API_KEY` / `OPENAI_API_KEY` | API Key |
+| `MODEL_BASE_URL` / `OPENAI_BASE_URL` | OpenAI 兼容服务地址 |
+| `MODEL_ID` / `OPENAI_MODEL` | 默认模型，代码默认值为 `gpt-5.5` |
+| `MODEL_FALLBACK_ID` / `OPENAI_FALLBACK_MODEL` | 模型调用失败时的 fallback model |
+| `MODEL_ENDPOINT` / `OPENAI_ENDPOINT` | `responses`、`chat` 或 `auto` |
+| `MODEL_REASONING_EFFORT` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
+| `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
+| `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
+| `MODEL_CONTEXT_WINDOW_TOKENS` | 覆盖模型上下文窗口估算 |
+| `MODEL_TIMEOUT_MS` | 请求超时 |
+| `MODEL_STREAM_IDLE_TIMEOUT_MS` | 流式响应空闲超时 |
+| `MODEL_MAX_RETRIES` | provider 重试次数 |
+
+## 工具体系
+
+工具实现统一遵循 `Tool<TInput>` 接口，包含：
+
+- 名称与 alias。
+- JSON Schema 输入定义。
+- 元数据：是否只读、是否可并发、是否可见、最大结果大小等。
+- 输入 normalize 与自定义校验。
+- 权限决策入口 `canUseTool`。
+- 执行函数 `call()` / `execute()`。
+- 结果映射、进度消息渲染、上下文修改器。
+
+`ToolRegistry` 负责注册和按 prompt cache 友好顺序输出工具定义；`runToolUse()` 负责 schema 校验、权限检查、进度事件、执行、结果映射和异常转 tool_result；`runTools()` 会把同一轮模型产生的工具调用按并发安全性分批执行。默认并发上限为 10，可用 `AGENT_MAX_TOOL_USE_CONCURRENCY` 调整。
+
+REPL 当前注册的内置工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `echo` | 返回输入文本，主要用于测试链路 |
+| `read` / `view` | 按行范围读取文本文件 |
+| `list` | 列目录，支持递归、隐藏文件、深度、排除项和数量限制 |
+| `grep` | 通过 bundled ripgrep 搜索工作区文本 |
+| `write` | 创建或覆盖文本文件 |
+| `edit` / `replace` | 基于唯一字符串替换修改文件，容忍 LF/CRLF 和直/弯引号差异 |
+| `exec` / `shell` / `bash` / `powershell` | 执行命令，支持 cwd、超时、输出截断和后台模式 |
+| `search` | 通过可插拔 provider 搜索 Web，默认 Exa MCP |
+| `plan` | 输出和更新当前任务计划 |
+| `agent` | 启动同步/后台/fork 子代理 |
+| `TaskOutput` | 读取后台任务输出，可阻塞等待完成 |
+| `TaskList` | 列出后台任务 |
+| `TaskGet` | 查看单个后台任务详情 |
+| `TaskStop` | 停止后台任务 |
+| `TaskResume` | 以新指令恢复已结束/失败/停止的后台 agent 任务 |
+| `SendMessage` | 给命名后台 agent 排队消息 |
+
+### 文件与搜索
+
+- `read` 对大文件使用 offset/limit 分段读取，避免一次性塞满上下文。
+- `list` 默认跳过 `.git`、`node_modules`、`dist`、`build`、`coverage` 等重目录。
+- `grep` 不依赖系统 PATH，会调用 `vendor/ripgrep` 中的平台二进制；支持 glob、大小写模式、fixed strings、隐藏文件、上下文行、结果数和列宽限制。
+- `search` 默认走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`，可通过 `SEARCH_PROVIDER`、`EXA_MCP_URL`、`EXA_MCP_TOOL_NAME`、`SEARCH_TIMEOUT_MS` 配置。
+
+### 命令执行
+
+`exec` 根据平台和 `shell` 参数选择 PowerShell、cmd、bash 或 sh。支持：
+
+- `cwd`：命令工作目录。
+- `timeoutMs`：超时控制。
+- `maxOutputChars`：分别限制 stdout/stderr 返回长度。
+- `background=true`：将长命令注册为后台任务，立即返回 task id，后续用 `TaskGet`/`TaskOutput`/`TaskStop` 管理。
+
+## 上下文与压缩
+
+`DefaultContextManager` 每轮构建两类上下文：
+
+- **User context**：当前日期，以及项目记忆文件内容。默认读取 `AGENTS.md`、`CLAUDE.md`、`.agent/memory.md`、`.codex/memory.md`、`.github/copilot-instructions.md`。
+- **System context**：cwd、platform、git branch、recent commit、status。
+
+`prompts.ts` 将 system prompt 分为可缓存稳定段和动态段，中间使用 `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` 标记。`message-pipeline.ts` 在模型调用前把 user context 作为用户消息 prepend，并把 system context append 到 system prompt。
+
+压缩实现位于 `src/context/compaction.ts`：
+
+- `DeterministicCompactor` 提供可预测的 snip、microcompact、summary fallback。
+- `ModelDrivenCompactor` 使用当前模型生成摘要，支持 autocompact、manual compact、pure compact 和 reactive compact。
+- 当工具结果过大时，session 模式下 `FileToolResultMemory` 会把完整结果写入文件，仅把预览和路径留在上下文中。
+
+## 会话持久化
+
+默认启用 transcript，位置为：
+
+```text
+.agent/sessions/<session_id>/transcript.jsonl
+.agent/sessions/<session_id>/tool-results/*
+```
+
+会话记录包括用户/助手/工具消息、内容替换记录、title、compact marker 和 reset marker。`/reset` 不删除文件，而是写入 reset marker，使未来 resume 从 reset 后继续。
+
+相关环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `AGENT_SESSION_TRANSCRIPT=0` | 禁用 transcript |
+| `AGENT_SESSION_DIR=<dir>` | 修改 session 根目录 |
+| `AGENT_SESSION_RESUME=1` | 启动时恢复最近会话 |
+| `AGENT_SESSION_ID=<id>` | 指定 session id；配合 resume 恢复指定会话 |
+| `AGENT_SESSION_TITLE_DELAY_MS` | 会话标题生成延迟，默认 5000ms |
+| `AGENT_TOOL_RESULT_THRESHOLD_CHARS` | 大型工具结果落盘阈值 |
+
+每次用户输入后，`QueryEngine` 会延迟启动一个无工具的标题子代理：先生成初始短标题，后续在已有标题基础上进行一次 refinement。标题用于 `/sessions` 列表和终端标题。
+
+## 子代理与任务
+
+`agent` 工具通过 `runAgent()` 复用主 query loop，但使用独立的消息、上下文和工具池。子代理定义支持工具 allow/deny、模型覆盖、最大轮数、背景运行、隔离类型和自定义 system prompt。
+
+调用模式：
+
+- **同步子代理**：默认模式；当前工具调用等待子代理完成后返回最终文本、耗时、token 和工具调用数。
+- **后台子代理**：`run_in_background=true` 或 `mode=background`；立即返回 `task_id` 和 output file。
+- **fork 子代理**：`mode=fork`；继承父上下文，但追加反递归和作用域约束。
+- **并行同步子代理**：同一模型轮次中多个 `agent` 调用设置 `parallel=true` 后可被并发批处理。
+
+后台任务由 `TaskStore` 管理，完成、失败或停止后会写入：
+
+```text
+.agent-tasks/<task_id>.txt
+```
+
+控制工具：
+
+- `TaskList()`：列任务。
+- `TaskGet({ task_id })`：查详情。
+- `TaskOutput({ task_id, block, timeout_ms })`：读输出，可等待完成。
+- `TaskStop({ task_id })`：停止任务。
+- `TaskResume({ task_id, directive })`：带新指令恢复任务。
+- `SendMessage({ target, message })`：向命名或指定 agent id 的后台任务追加待处理消息。
+
+子代理相关限制：
+
+- `AGENT_SUBAGENT_MAX_TURNS` 可覆盖子代理最大轮数。
+- `AGENT_SUBAGENT_WALL_TIMEOUT_MS` 可设置子代理墙钟超时。
+- fork 子代理不能继续生成更多子代理，避免递归失控。
+
+## Skill 模块
+
+`src/skills` 提供可复用 prompt workflow 的基础设施，但默认 REPL 运行时当前未注册任何 skill catalog。
+
+- `InMemorySkillCatalog` 可保存 `SkillDescriptor`。
+- `createSkillTool()` 会创建 `skill` 工具。
+- inline skill 会向下一轮模型注入 meta user message，并可修改主循环模型/effort。
+- fork skill 会返回 `fork_required`，需要调用方用 AgentTool 承接。
+
+这部分适合嵌入方在自定义 runtime 中按需注册。
+
+## 作为库使用
+
+`src/index.ts` 导出了核心模块，可在自己的程序中组合运行时：
+
+```ts
+import {
+  QueryEngine,
+  ToolRegistry,
+  createModelGatewayFromEnv,
+  readFileTool,
+  listDirectoryTool,
+  grepTool,
+  echoTool,
+} from "neoctl";
+
+const tools = new ToolRegistry();
+tools.register(echoTool);
+tools.register(readFileTool);
+tools.register(listDirectoryTool);
+tools.register(grepTool);
+
+const engine = new QueryEngine({
+  agentId: "main",
+  modelGateway: createModelGatewayFromEnv(),
+  tools,
+});
+
+for await (const event of engine.sendUserText("Summarize this repository")) {
+  console.log(event);
+}
+```
+
+如果直接从源码运行，请使用 `.ts` 源文件路径或 `tsx`；发布包会通过 `dist` 导出编译后的 `.js` 模块。
+
+## 运行数据目录
+
+| 路径 | 内容 |
+| --- | --- |
+| `.agent/sessions/` | 默认会话 transcript 和大型工具结果 |
+| `.agent-tasks/` | 后台 agent / exec 任务最终输出 |
+| `vendor/ripgrep/` | 当前平台 ripgrep 二进制和 manifest |
+| `dist/` | `npm run build` 生成的编译产物 |
+
+## 当前边界
+
+- 模型 provider 配置类型目前只内置 OpenAI 兼容 provider。
+- `src/safety` 是 permission、sandbox、audit 的接口边界；默认 REPL 没有强制沙箱策略。
+- `src/skills` 已实现工具与 catalog，但默认 REPL 未装配 skill catalog。
+- `isolation=worktree/remote` 在 AgentTool schema 中保留为接口形态，当前本地实现主要通过 `cwd` 和独立消息上下文隔离。
