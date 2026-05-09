@@ -52,6 +52,7 @@ export interface QueryDependencies {
   toolResultMemory?: ToolUseContext["toolResultMemory"];
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
   taskNotificationSource?: TaskNotificationSource;
+  exportToolCalls?: (calls: ToolUseRequest[]) => void;
 }
 
 export interface TaskNotificationSource {
@@ -322,6 +323,7 @@ async function* callModelForTurn(
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
 
+  if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   appendSyntheticToolUseMessage(assistantMessages, toolUses);
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
 }

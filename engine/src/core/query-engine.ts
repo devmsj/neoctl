@@ -16,6 +16,7 @@ import { runAgent } from "./run-agent.js";
 import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
 import type { TerminalReason } from "./state.js";
 import { SessionStore, type SessionStoreSnapshot, type SessionSummary, type SessionTitleKind } from "../session/session-store.js";
+import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 
 const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 
@@ -38,6 +39,7 @@ export interface QueryEngineOptions {
   agents?: readonly string[];
   skills?: readonly string[];
   plugins?: readonly string[];
+  exportToolCalls?: (calls: Array<{ id: string; name: string; input: unknown }>) => void;
   session?: {
     enabled?: boolean;
     sessionId?: string;
@@ -137,6 +139,11 @@ export class QueryEngine {
       skills: [...(this.options.skills ?? [])],
       plugins: [...(this.options.plugins ?? [])],
     });
+    initMessage.metadata = {
+      ...initMessage.metadata,
+      fallbackModel: this.currentFallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
+    };
     yield {
       type: "message",
       message: initMessage,
@@ -162,6 +169,7 @@ export class QueryEngine {
         taskNotificationSource: this.options.taskNotificationSource,
         toolResultMemory: this.sessionStore?.toolResultMemory,
         recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
+        exportToolCalls: (calls) => this.recordSyntheticToolCalls(calls),
       },
       queryOptions,
     );
@@ -253,6 +261,21 @@ export class QueryEngine {
   async contextMetrics(): Promise<ContextMetrics> {
     await this.initialize();
     const messages = this.getHistoryMessages();
+    const promptSnapshot = await this.buildPromptExportSnapshot(messages);
+    return buildContextMetrics({
+      model: this.currentModel,
+      messages: prependUserContext(messages, promptSnapshot.userContext ?? {}),
+      systemPrompt: promptSnapshot.systemPrompt ?? "",
+      tools: Array.isArray(promptSnapshot.toolDefinitions) ? promptSnapshot.toolDefinitions : [],
+    });
+  }
+
+  async promptExportSnapshot(): Promise<SessionPromptExportSnapshot> {
+    await this.initialize();
+    return this.buildPromptExportSnapshot(this.getHistoryMessages());
+  }
+
+  private async buildPromptExportSnapshot(messages: Message[]): Promise<SessionPromptExportSnapshot> {
     const toolContext: ToolUseContext = {
       agentId: this.agentId,
       tools: this.options.tools,
@@ -263,23 +286,59 @@ export class QueryEngine {
       emit: () => undefined,
     };
     const contextManager = this.options.contextManager ?? new DefaultContextManager();
+    const initialToolDefinitions = this.options.tools.definitions(toolContext);
     const context = await contextManager.build({
       agentId: this.agentId,
       messages,
-      enabledTools: this.options.tools.definitions(toolContext).map((tool) => tool.name),
+      enabledTools: initialToolDefinitions.map((tool) => tool.name),
       toolUseContext: toolContext,
     });
     const toolDefinitions = this.options.tools.definitions(toolContext);
-    return buildContextMetrics({
+    const messagesWithUserContext = prependUserContext([], context.userContext);
+    const userContextPrompt = messagesWithUserContext[0]?.blocks
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    return {
       model: this.currentModel,
-      messages: prependUserContext(messages, context.userContext),
+      fallbackModel: this.currentFallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
       systemPrompt: appendSystemContext(context.systemPrompt, context.systemContext),
-      tools: toolDefinitions,
-    });
+      baseSystemPrompt: context.systemPrompt,
+      promptSections: context.promptSections,
+      userContext: context.userContext,
+      systemContext: context.systemContext,
+      userContextPrompt,
+      toolDefinitions,
+      commands: [...(this.options.commands ?? [])],
+      agents: [...(this.options.agents ?? [])],
+      skills: [...(this.options.skills ?? [])],
+      plugins: [...(this.options.plugins ?? [])],
+    };
   }
 
   get toolResultMemory() {
     return this.sessionStore?.toolResultMemory;
+  }
+
+  private recordSyntheticToolCalls(calls: Array<{ id: string; name: string; input: unknown }>): void {
+    const missing = calls.filter((call) =>
+      !this.history.some((message) =>
+        message.blocks.some((block) => block.type === "tool_use" && block.id === call.id),
+      ),
+    );
+    if (!missing.length) return;
+    const message: Message = {
+      id: `tool-use-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      role: "assistant",
+      createdAt: new Date().toISOString(),
+      blocks: missing.map((call) => ({ type: "tool_use", id: call.id, name: call.name, input: call.input })),
+      isMeta: true,
+      metadata: { syntheticToolUse: true },
+    };
+    this.history.push(message);
+    this.sessionStore?.recordMessage(message);
+    this.options.exportToolCalls?.(missing);
   }
 
   private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {

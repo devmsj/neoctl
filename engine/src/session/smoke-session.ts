@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { FileToolResultMemory, PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
 import { SessionStore } from "./session-store.js";
+import { writeSessionMarkdownExport } from "./session-export.js";
 import type { Message } from "../types/messages.js";
 
 async function main(): Promise<void> {
@@ -28,6 +29,21 @@ async function main(): Promise<void> {
   const latest = await SessionStore.open({ agentId: "main", rootDir: root, resume: true });
   const listed = await SessionStore.list({ agentId: "main", rootDir: root });
   const resumedBudget = await resumed.toolResultMemory.applyBudget(resumed.getInitialMessages(), { maxSerializedLength: 180 });
+  const exportPath = path.join(root, "exports", "session.md");
+  const exportResult = await writeSessionMarkdownExport({
+    outputPath: exportPath,
+    session: resumed.snapshot(),
+    agentId: "main",
+    promptSnapshot: {
+      model: "smoke-model",
+      systemPrompt: "system prompt smoke",
+      userContextPrompt: "User context:\ncurrentDate: 2026-05-09",
+      toolDefinitions: [{ name: "alpha", description: "Alpha tool", inputSchema: { type: "object" } }],
+      commands: ["/export <absolute-md-path>"],
+    },
+    maxToolResultLines: 3,
+  });
+  const exportedMarkdown = await fs.readFile(exportPath, "utf8");
   const afterReset = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
   afterReset.reset();
   const resetResume = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
@@ -55,11 +71,16 @@ async function main(): Promise<void> {
     resumedBudget.messages.some((message) =>
       message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),
     ) &&
+    exportResult.bytes > 0 &&
+    exportedMarkdown.includes("# Neo Session Export") &&
+    exportedMarkdown.includes("system prompt smoke") &&
+    exportedMarkdown.includes("## Transcript") &&
+    exportedMarkdown.includes("Tool use ID: call_a") &&
     resetResume.snapshot().resumedMessages === 0 &&
     deleted &&
     listedAfterDelete.length === 0;
 
-  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot(), deleted, listedAfterDelete }, null, 2));
+  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, exportResult, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot(), deleted, listedAfterDelete }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

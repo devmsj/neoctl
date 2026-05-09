@@ -30,6 +30,7 @@ import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { CompactionResult } from "../context/compaction.js";
+import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
@@ -258,6 +259,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     modelGateway,
     tools,
     taskNotificationSource,
+    commands: replCommandDefinitions.map((command) => command.usage),
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: process.env.AGENT_SESSION_ID,
@@ -938,6 +940,20 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (command.type === "state") {
       append(systemLine(formatReplData({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
+      return;
+    }
+    if (command.type === "export") {
+      setBusyState(true);
+      setStatus((current) => ({ ...current, phase: "running", detail: "exporting session", activityTick: current.activityTick + 1 }));
+      try {
+        const line = await handleExportCommand(command, runtime);
+        append(line);
+      } catch (error) {
+        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      } finally {
+        setBusyState(false);
+        setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
+      }
       return;
     }
     if (command.type === "sessions") {
@@ -2349,6 +2365,23 @@ async function handleSessionsCommand(
     return;
   }
   setBrowser({ sessions, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
+}
+
+async function handleExportCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "export" }>,
+  runtime: ReplRuntime,
+): Promise<Omit<UiLine, "id">> {
+  const snapshot = runtime.engine.snapshot();
+  if (!snapshot.session) throw new Error("session transcripts are disabled; cannot export current session");
+  const promptSnapshot = await runtime.engine.promptExportSnapshot();
+  const result = await writeSessionMarkdownExport({
+    outputPath: command.path,
+    session: snapshot.session,
+    agentId: snapshot.agentId,
+    promptSnapshot,
+    engineSnapshot: { ...snapshot, communicationLog: runtime.communicationLogger.snapshot(), usage: runtime.usage.snapshot() },
+  });
+  return systemLine(`Exported current session to ${result.outputPath}\nEntries: ${result.entries}\nMessages: ${result.messages}\nBytes: ${result.bytes}`);
 }
 
 async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<SessionStoreSnapshot | undefined> {
