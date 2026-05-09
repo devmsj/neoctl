@@ -6,6 +6,7 @@ export type ReplCommand =
   | { type: "compact" }
   | { type: "pure" }
   | { type: "exit" }
+  | { type: "login" }
   | { type: "log"; path?: string; off?: boolean }
   | { type: "model"; model?: string; reasoning?: ModelReasoningArgument }
   | { type: "reset" }
@@ -28,6 +29,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/cost", usage: "/cost", description: "Show total token usage for this REPL session", arguments: "none" },
   { name: "/compact", usage: "/compact", description: "Manually compact earlier context", arguments: "none" },
   { name: "/pure", usage: "/pure", description: "Sanitize context after WAF/risk blocks without resetting", arguments: "none" },
+  { name: "/login", usage: "/login", description: "Configure and save a model provider to the env file", arguments: "none" },
   { name: "/model", usage: "/model [model-id] [effort|default|off]", description: "Show or switch model and supported reasoning effort", arguments: "optional" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
@@ -46,6 +48,7 @@ export function parseReplCommand(line: string): ReplCommand {
   if (name === "/cost") return { type: "cost" };
   if (name === "/compact") return { type: "compact" };
   if (name === "/pure") return { type: "pure" };
+  if (name === "/login") return { type: "login" };
   if (name === "/exit" || name === "/quit") return { type: "exit" };
   if (name === "/model") return parseModelCommand(argument) ?? { type: "input", text: line };
   if (name === "/log") {

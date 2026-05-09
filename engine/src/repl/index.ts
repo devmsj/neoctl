@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { stdin, stdout } from "node:process";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -8,11 +9,11 @@ import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 import { QueryEngine } from "../core/query-engine.js";
 import type { SessionStoreSnapshot, SessionSummary } from "../session/session-store.js";
-import { loadDefaultDotEnvFiles } from "../model/env.js";
-import { readModelProviderConfig } from "../model/config.js";
+import { getUserDotEnvPath, loadDefaultDotEnvFiles } from "../model/env.js";
+import { readModelProviderConfig, type ModelProviderName } from "../model/config.js";
 import { loadModelCatalog, reasoningEffortsForModel, resolveContextWindowTokens } from "../model/context-window.js";
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
-import { createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
+import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { echoTool } from "../tools/builtins/echo-tool.js";
@@ -37,10 +38,13 @@ const e = React.createElement;
 interface ReplRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
+  modelGateway: LoggingModelGateway;
+  agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig;
+  envPath: string;
   envNotice?: string;
 }
 
@@ -160,6 +164,30 @@ interface ClipboardAttachment {
   image?: ClipboardImagePayload;
 }
 
+type LoginProviderName = ModelProviderName;
+type LoginStep = "provider" | "fields";
+
+interface LoginFieldDefinition {
+  key: string;
+  label: string;
+  envKey: string;
+  required?: boolean;
+  secret?: boolean;
+  placeholder?: string;
+  options?: readonly string[];
+}
+
+interface LoginFormState {
+  step: LoginStep;
+  providers: LoginProviderName[];
+  selectedProviderIndex: number;
+  provider: LoginProviderName;
+  selectedFieldIndex: number;
+  cursor: number;
+  values: Record<string, string>;
+  envPath: string;
+}
+
 async function main(): Promise<void> {
   const runtime = await createRuntime();
   const instance = render(e(InkRepl, { runtime }), {
@@ -242,10 +270,13 @@ async function createRuntime(): Promise<ReplRuntime> {
   return {
     engine,
     communicationLogger,
+    modelGateway,
+    agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
     initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length),
     defaultReasoning: modelConfig?.defaultReasoning,
+    envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
   };
 }
@@ -467,6 +498,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [pasteStatus, setPasteStatus] = useState<string | undefined>(undefined);
   const pasteStatusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
+  const [loginForm, setLoginForm] = useState<LoginFormState | undefined>(undefined);
+  const loginFormRef = useRef<LoginFormState | undefined>(undefined);
 
   useEffect(() => {
     enableTerminalFocusReporting();
@@ -541,6 +574,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   };
 
   const resetSlashCompletionSelection = () => setSlashCompletionSelection(0);
+
+  const setLoginFormState = (next: LoginFormState | undefined) => {
+    loginFormRef.current = next;
+    setLoginForm(next);
+  };
 
   const syncAttachmentsForText = (text: string) => {
     const next = attachmentsRef.current.filter((attachment) => text.includes(attachment.label));
@@ -904,6 +942,12 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       await handleSessionsCommand(runtime, setSessionsBrowser, (line) => append(line));
       return;
     }
+    if (command.type === "login") {
+      setSessionsBrowser(undefined);
+      setLoginFormState(createLoginFormState(runtime.envPath));
+      append(systemLine("Opening provider login. Use ↑/↓ to choose, Enter to continue/save, Esc to cancel."));
+      return;
+    }
     if (command.type === "log") {
       await handleLogCommand(command, runtime, append);
       return;
@@ -981,6 +1025,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
     setSessionsBrowser(undefined);
+    setLoginFormState(undefined);
     setQueuedPromptState(undefined);
     setPromptState("", 0);
   }, [runtime]);
@@ -991,7 +1036,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const prompt = promptPrefix(busy);
   const promptDisplayText = input.length === 0 && promptPlaceholder ? promptPlaceholder : input;
   const promptDisplayCursor = input.length === 0 && promptPlaceholder ? promptPlaceholder.length : cursor;
-  const slashCompletions = inputLockedByQueue || promptPlaceholder ? [] : slashCommandCompletions(input, cursor);
+  const slashCompletions = inputLockedByQueue || promptPlaceholder || loginForm ? [] : slashCommandCompletions(input, cursor);
   const visibleSlashCompletionCount = slashCompletions.length;
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
@@ -1009,7 +1054,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, 0);
   const statusRenderRows = STATUS_BAR_RENDER_ROWS + (backgroundTaskCount > 0 ? BACKGROUND_TASK_STATUS_RENDER_ROWS : 0);
   const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - dynamicMarginOverhead - 1);
+  const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
 
   useInput((value, key) => {
     if (isTerminalFocusInSequence(value)) {
@@ -1055,6 +1101,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     }
     if (busyRef.current && queuedInputRef.current !== undefined) {
       if (key.escape) restoreQueuedPromptToEditor();
+      return;
+    }
+    if (loginFormRef.current) {
+      handleLoginFormInput(value, key, loginFormRef.current, setLoginFormState, runtime, append, setStatus);
       return;
     }
     if (sessionsBrowser) {
@@ -1200,6 +1250,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
     e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
+    loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
@@ -2305,6 +2356,36 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
   return lines;
 }
 
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek"];
+
+const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]> = {
+  openai: [
+    { key: "apiKey", label: "API key", envKey: "MODEL_API_KEY", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "MODEL_BASE_URL", placeholder: "https://api.openai.com" },
+    { key: "model", label: "Model", envKey: "MODEL_ID", required: true, placeholder: "gpt-5.5" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "MODEL_FALLBACK_ID" },
+    { key: "endpoint", label: "Endpoint", envKey: "MODEL_ENDPOINT", placeholder: "auto", options: ["auto", "responses", "chat"] },
+    { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+    { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", options: ["", "auto", "concise", "detailed"] },
+    { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", placeholder: "800" },
+    { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", placeholder: "120000" },
+    { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", placeholder: "120000" },
+    { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", placeholder: "2" },
+  ],
+  deepseek: [
+    { key: "apiKey", label: "API key", envKey: "MODEL_API_KEY", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "MODEL_BASE_URL", placeholder: "https://api.deepseek.com" },
+    { key: "model", label: "Model", envKey: "MODEL_ID", required: true, placeholder: "deepseek-chat" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "MODEL_FALLBACK_ID" },
+    { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", options: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+    { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", options: ["", "auto", "concise", "detailed"] },
+    { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", placeholder: "800" },
+    { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", placeholder: "120000" },
+    { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", placeholder: "120000" },
+    { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", placeholder: "2" },
+  ],
+};
+
 function sessionsPageCount(state: SessionsBrowserState): number {
   return Math.max(1, Math.ceil(state.sessions.length / state.pageSize));
 }
@@ -2369,6 +2450,354 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
     }),
     e(Text, { color: "gray" }, fitToWidth(footer, contentWidth)),
   );
+}
+
+function handleLoginFormInput(
+  value: string,
+  key: { upArrow?: boolean; downArrow?: boolean; leftArrow?: boolean; rightArrow?: boolean; return?: boolean; escape?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean },
+  state: LoginFormState,
+  setLoginFormState: (next: LoginFormState | undefined) => void,
+  runtime: ReplRuntime,
+  append: (line: Omit<UiLine, "id">) => number,
+  setStatus: React.Dispatch<React.SetStateAction<UiStatus>>,
+): void {
+  if (key.escape) {
+    if (state.step === "fields") setLoginFormState({ ...state, step: "provider" });
+    else {
+      setLoginFormState(undefined);
+      append(systemLine("Login cancelled."));
+    }
+    return;
+  }
+
+  if (state.step === "provider") {
+    if (key.upArrow) {
+      setLoginFormState(moveLoginProviderSelection(state, -1));
+      return;
+    }
+    if (key.downArrow) {
+      setLoginFormState(moveLoginProviderSelection(state, 1));
+      return;
+    }
+    if (key.return) {
+      const provider = state.providers[state.selectedProviderIndex] ?? state.provider;
+      setLoginFormState({ ...loginFormForProvider(provider, state.envPath), step: "fields" });
+      return;
+    }
+    return;
+  }
+
+  const fields = LOGIN_FIELD_DEFINITIONS[state.provider];
+  const field = fields[state.selectedFieldIndex];
+  if (!field) return;
+
+  if (key.upArrow) {
+    setLoginFormState(moveLoginFieldSelection(state, -1));
+    return;
+  }
+  if (key.downArrow) {
+    setLoginFormState(moveLoginFieldSelection(state, 1));
+    return;
+  }
+  if (key.leftArrow) {
+    setLoginFormState({ ...state, cursor: Math.max(0, state.cursor - 1) });
+    return;
+  }
+  if (key.rightArrow) {
+    const current = state.values[field.key] ?? "";
+    setLoginFormState({ ...state, cursor: Math.min(current.length, state.cursor + 1) });
+    return;
+  }
+  if (key.tab && field.options?.length) {
+    setLoginFormState(cycleLoginFieldOption(state, field));
+    return;
+  }
+  if (key.backspace || key.delete) {
+    setLoginFormState(deleteLoginFieldCharacter(state, field));
+    return;
+  }
+  if (key.return) {
+    void submitLoginForm(state, runtime, append, setLoginFormState, setStatus);
+    return;
+  }
+  if (value && !key.ctrl && !key.meta) {
+    setLoginFormState(insertLoginFieldText(state, field, value));
+  }
+}
+
+function moveLoginProviderSelection(state: LoginFormState, delta: number): LoginFormState {
+  const selectedProviderIndex = (state.selectedProviderIndex + delta + state.providers.length) % state.providers.length;
+  return { ...state, selectedProviderIndex, provider: state.providers[selectedProviderIndex] ?? state.provider };
+}
+
+function moveLoginFieldSelection(state: LoginFormState, delta: number): LoginFormState {
+  const fields = LOGIN_FIELD_DEFINITIONS[state.provider];
+  const selectedFieldIndex = (state.selectedFieldIndex + delta + fields.length) % fields.length;
+  const field = fields[selectedFieldIndex];
+  return { ...state, selectedFieldIndex, cursor: field ? (state.values[field.key] ?? "").length : 0 };
+}
+
+function cycleLoginFieldOption(state: LoginFormState, field: LoginFieldDefinition): LoginFormState {
+  const options = field.options ?? [];
+  const current = state.values[field.key] ?? "";
+  const index = options.indexOf(current);
+  const next = options[(index + 1 + options.length) % options.length] ?? "";
+  return { ...state, values: { ...state.values, [field.key]: next }, cursor: next.length };
+}
+
+function insertLoginFieldText(state: LoginFormState, field: LoginFieldDefinition, value: string): LoginFormState {
+  const current = state.values[field.key] ?? "";
+  const cursor = Math.max(0, Math.min(state.cursor, current.length));
+  const next = `${current.slice(0, cursor)}${value}${current.slice(cursor)}`;
+  return { ...state, values: { ...state.values, [field.key]: next }, cursor: cursor + value.length };
+}
+
+function deleteLoginFieldCharacter(state: LoginFormState, field: LoginFieldDefinition): LoginFormState {
+  const current = state.values[field.key] ?? "";
+  const cursor = Math.max(0, Math.min(state.cursor, current.length));
+  if (cursor <= 0) return state;
+  const next = `${current.slice(0, cursor - 1)}${current.slice(cursor)}`;
+  return { ...state, values: { ...state.values, [field.key]: next }, cursor: cursor - 1 };
+}
+
+async function submitLoginForm(
+  state: LoginFormState,
+  runtime: ReplRuntime,
+  append: (line: Omit<UiLine, "id">) => number,
+  setLoginFormState: (next: LoginFormState | undefined) => void,
+  setStatus: React.Dispatch<React.SetStateAction<UiStatus>>,
+): Promise<void> {
+  const validationError = validateLoginForm(state);
+  if (validationError) {
+    append({ kind: "error", text: validationError });
+    return;
+  }
+
+  try {
+    await saveLoginFormToEnv(state);
+    applyLoginFormToProcessEnv(state);
+    const config = readModelProviderConfig(process.env);
+    if (!config) throw new Error("Saved provider config could not be loaded from environment.");
+    const innerGateway = createModelGatewayFromConfig(config);
+    runtime.modelGateway.setInner(innerGateway);
+    runtime.agentRuntime.modelGateway = runtime.modelGateway;
+    runtime.engine.setModelProvider({
+      modelGateway: runtime.modelGateway,
+      model: config.model,
+      fallbackModel: config.fallbackModel,
+      reasoning: config.defaultReasoning,
+    });
+    runtime.defaultReasoning = config.defaultReasoning;
+    setStatus((current) => ({
+      ...current,
+      metrics: { ...initialContextMetrics(config.model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages },
+    }));
+    setLoginFormState(undefined);
+    append(systemLine(`Saved ${state.provider} login to ${state.envPath}\n${formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
+  } catch (error) {
+    append({ kind: "error", text: `Login save failed: ${error instanceof Error ? error.message : String(error)}` });
+  }
+}
+
+function validateLoginForm(state: LoginFormState): string | undefined {
+  for (const field of LOGIN_FIELD_DEFINITIONS[state.provider]) {
+    const value = (state.values[field.key] ?? "").trim();
+    if (field.required && !value) return `${field.label} is required.`;
+    if (field.options?.length && value && !field.options.includes(value)) return `${field.label} must be one of: ${field.options.filter(Boolean).join(", ")}`;
+  }
+  for (const fieldKey of ["maxOutputTokens", "timeoutMs", "streamIdleTimeoutMs", "maxRetries"]) {
+    const value = state.values[fieldKey]?.trim();
+    if (value && !Number.isFinite(Number(value))) return `${fieldKey} must be a number.`;
+  }
+  return undefined;
+}
+
+function createLoginFormState(envPath = getUserDotEnvPath()): LoginFormState {
+  const env = parseEnvFileSafe(envPath);
+  const currentProvider = parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? (process.env.DEEPSEEK_API_KEY ? "deepseek" : "openai");
+  return loginFormForProvider(currentProvider, envPath, env);
+}
+
+function loginFormForProvider(provider: LoginProviderName, envPath: string, env: Record<string, string> = parseEnvFileSafe(envPath)): LoginFormState {
+  const selectedProviderIndex = Math.max(0, LOGIN_PROVIDERS.indexOf(provider));
+  return {
+    step: "provider",
+    providers: LOGIN_PROVIDERS,
+    selectedProviderIndex,
+    provider,
+    selectedFieldIndex: 0,
+    cursor: 0,
+    values: loginValuesForProvider(provider, env),
+    envPath,
+  };
+}
+
+function loginValuesForProvider(provider: LoginProviderName, env: Record<string, string>): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of LOGIN_FIELD_DEFINITIONS[provider]) {
+    values[field.key] = env[field.envKey] ?? providerAliasValue(provider, field.key, env) ?? "";
+  }
+  if (!values.baseUrl) values.baseUrl = provider === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com";
+  if (!values.model) values.model = provider === "deepseek" ? "deepseek-chat" : "gpt-5.5";
+  if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
+  return values;
+}
+
+function providerAliasValue(provider: LoginProviderName, fieldKey: string, env: Record<string, string>): string | undefined {
+  const prefix = provider === "deepseek" ? "DEEPSEEK" : "OPENAI";
+  const aliases: Record<string, string> = {
+    apiKey: `${prefix}_API_KEY`,
+    baseUrl: `${prefix}_BASE_URL`,
+    model: `${prefix}_MODEL`,
+    fallbackModel: `${prefix}_FALLBACK_MODEL`,
+    endpoint: "OPENAI_ENDPOINT",
+    reasoningEffort: `${prefix}_REASONING_EFFORT`,
+    reasoningSummary: `${prefix}_REASONING_SUMMARY`,
+    maxOutputTokens: `${prefix}_MAX_OUTPUT_TOKENS`,
+    timeoutMs: `${prefix}_TIMEOUT_MS`,
+    streamIdleTimeoutMs: `${prefix}_STREAM_IDLE_TIMEOUT_MS`,
+    maxRetries: `${prefix}_MAX_RETRIES`,
+  };
+  const alias = aliases[fieldKey];
+  return alias ? env[alias] : undefined;
+}
+
+function parseLoginProvider(value: string | undefined): LoginProviderName | undefined {
+  if (value === "openai" || value === "deepseek") return value;
+  return undefined;
+}
+
+function loginFormViewHeight(state: LoginFormState): number {
+  return state.step === "provider" ? state.providers.length + 3 : LOGIN_FIELD_DEFINITIONS[state.provider].length + 4;
+}
+
+function LoginFormView({ state, width }: { state: LoginFormState; width: number }) {
+  const contentWidth = Math.max(30, width);
+  if (state.step === "provider") {
+    return e(
+      Box,
+      { flexDirection: "column", marginTop: 1 },
+      e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: choose provider · saving to ${state.envPath}`, contentWidth)),
+      ...state.providers.map((provider, index) => e(
+        Text,
+        { key: provider, color: "white" },
+        e(Text, { color: index === state.selectedProviderIndex ? "black" : "white", backgroundColor: index === state.selectedProviderIndex ? "cyan" : undefined }, `${index + 1}.`.padStart(3)),
+        e(Text, { color: "gray" }, " "),
+        e(Text, { color: "cyan" }, provider),
+      )),
+      e(Text, { color: "gray" }, fitToWidth("↑/↓ select · Enter edit config · Esc close", contentWidth)),
+    );
+  }
+
+  const fields = LOGIN_FIELD_DEFINITIONS[state.provider];
+  const maxLabel = Math.max(...fields.map((field) => field.label.length));
+  return e(
+    Box,
+    { flexDirection: "column", marginTop: 1 },
+    e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: ${state.provider} · ${state.envPath}`, contentWidth)),
+    ...fields.map((field, index) => {
+      const selected = index === state.selectedFieldIndex;
+      const rawValue = state.values[field.key] ?? "";
+      const visibleValue = formatLoginFieldValue(field, rawValue, selected ? state.cursor : undefined);
+      const placeholder = rawValue ? "" : (field.placeholder ? ` (${field.placeholder})` : "");
+      return e(
+        Text,
+        { key: field.key, color: "white" },
+        e(Text, { color: selected ? "black" : "white", backgroundColor: selected ? "cyan" : undefined }, `${index + 1}.`.padStart(3)),
+        e(Text, { color: field.required ? "yellow" : "gray" }, ` ${field.label.padEnd(maxLabel)} `),
+        e(Text, { color: rawValue ? "white" : "gray" }, fitToWidth(`${visibleValue}${placeholder}`, Math.max(8, contentWidth - maxLabel - 5))),
+      );
+    }),
+    e(Text, { color: "gray" }, fitToWidth("↑/↓ field · ←/→ cursor · type edit · Tab cycle choices · Enter save · Esc back/cancel", contentWidth)),
+    e(Text, { color: "gray" }, fitToWidth("Required: API key, model. Empty optional fields are removed from env.", contentWidth)),
+  );
+}
+
+function formatLoginFieldValue(field: LoginFieldDefinition, value: string, cursor: number | undefined): string {
+  const display = field.secret && value ? "•".repeat(Math.min(value.length, 24)) : value;
+  if (cursor === undefined) return display;
+  const safeCursor = Math.max(0, Math.min(cursor, display.length));
+  const selected = display[safeCursor] ?? " ";
+  return `${display.slice(0, safeCursor)}█${selected === " " ? "" : display.slice(safeCursor + 1)}`;
+}
+
+function applyLoginFormToProcessEnv(state: LoginFormState): void {
+  const env = envEntriesForLoginForm(state);
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+async function saveLoginFormToEnv(state: LoginFormState): Promise<void> {
+  await fs.mkdir(path.dirname(state.envPath), { recursive: true });
+  const existing = existsSync(state.envPath) ? readFileSync(state.envPath, "utf8") : "";
+  const next = updateEnvContent(existing, envEntriesForLoginForm(state));
+  await fs.writeFile(state.envPath, next, "utf8");
+}
+
+function envEntriesForLoginForm(state: LoginFormState): Record<string, string | undefined> {
+  const entries: Record<string, string | undefined> = {
+    MODEL_PROVIDER: state.provider,
+  };
+  for (const field of LOGIN_FIELD_DEFINITIONS[state.provider]) {
+    const value = (state.values[field.key] ?? "").trim();
+    entries[field.envKey] = value || undefined;
+  }
+  if (state.provider !== "openai") entries.MODEL_ENDPOINT = undefined;
+  return entries;
+}
+
+function updateEnvContent(content: string, updates: Record<string, string | undefined>): string {
+  const keys = new Set(Object.keys(updates));
+  const seen = new Set<string>();
+  const lines = content ? content.split(/\r?\n/) : [];
+  const updatedLines = lines.map((line) => {
+    const parsed = parseEnvLine(line);
+    if (!parsed || !keys.has(parsed.key)) return line;
+    seen.add(parsed.key);
+    const value = updates[parsed.key];
+    if (value === undefined) return undefined;
+    return `${parsed.key}=${quoteEnvValue(value)}`;
+  }).filter((line): line is string => line !== undefined);
+
+  const missing = Object.entries(updates).filter((entry): entry is [string, string] => !seen.has(entry[0]) && entry[1] !== undefined);
+  if (missing.length > 0) {
+    if (updatedLines.length > 0 && updatedLines[updatedLines.length - 1]?.trim()) updatedLines.push("");
+    updatedLines.push("# Neo login configuration");
+    for (const [key, value] of missing) updatedLines.push(`${key}=${quoteEnvValue(value)}`);
+  }
+  return `${updatedLines.join("\n").replace(/\n*$/u, "")}\n`;
+}
+
+function parseEnvFileSafe(envPath: string): Record<string, string> {
+  if (!existsSync(envPath)) return {};
+  const env: Record<string, string> = {};
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (parsed) env[parsed.key] = stripEnvQuotes(parsed.value.trim());
+  }
+  return env;
+}
+
+function parseEnvLine(line: string): { key: string; value: string } | undefined {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return undefined;
+  const separator = trimmed.indexOf("=");
+  if (separator <= 0) return undefined;
+  const key = trimmed.slice(0, separator).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return undefined;
+  return { key, value: trimmed.slice(separator + 1) };
+}
+
+function quoteEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_./:@+-]*$/.test(value)) return value;
+  return JSON.stringify(value);
+}
+
+function stripEnvQuotes(value: string): string {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) return value.slice(1, -1);
+  return value;
 }
 
 function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number): { numberPrefix: string; rest: string } {

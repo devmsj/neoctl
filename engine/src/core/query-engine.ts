@@ -55,6 +55,8 @@ export class QueryEngine {
   private sessionStore?: SessionStore;
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
+  private currentFallbackModel?: string;
+  private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
   private userTurns = 0;
   private titleSchedulerVersion = 0;
@@ -64,7 +66,9 @@ export class QueryEngine {
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
     this.currentModel = options.model;
+    this.currentFallbackModel = options.fallbackModel;
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
+    this.currentModelGateway = options.modelGateway;
   }
 
   onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
@@ -142,7 +146,7 @@ export class QueryEngine {
     const queryOptions: QueryOptions = {
       agentId: this.agentId,
       model: this.currentModel,
-      fallbackModel: this.options.fallbackModel,
+      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       queryOrigin: this.options.queryOrigin ?? "repl",
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
@@ -154,6 +158,7 @@ export class QueryEngine {
       this.history,
       {
         ...this.options,
+        modelGateway: this.currentModelGateway,
         taskNotificationSource: this.options.taskNotificationSource,
         toolResultMemory: this.sessionStore?.toolResultMemory,
         recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
@@ -175,10 +180,17 @@ export class QueryEngine {
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 
+  setModelProvider(settings: { modelGateway: ModelGateway; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }): void {
+    this.currentModelGateway = settings.modelGateway;
+    this.currentModel = settings.model?.trim() || undefined;
+    this.currentFallbackModel = settings.fallbackModel?.trim() || undefined;
+    this.currentReasoning = settings.reasoning === null ? null : cloneReasoningConfig(settings.reasoning);
+  }
+
   getModelSettings(): { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null } {
     return {
       model: this.currentModel,
-      fallbackModel: this.options.fallbackModel,
+      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
     };
   }
@@ -196,7 +208,7 @@ export class QueryEngine {
     await this.initialize();
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
-    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.options.modelGateway);
+    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
     const result = await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget));
     this.applyCompactionResult(result);
     return result;
@@ -206,7 +218,7 @@ export class QueryEngine {
     await this.initialize();
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
-    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.options.modelGateway);
+    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
     const result = await (compactor.pureCompact?.(this.history, this.options.contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const });
     this.applyCompactionResult(result);
     return result;
@@ -217,7 +229,7 @@ export class QueryEngine {
       agentId: this.agentId,
       messages: this.history.length,
       model: this.currentModel,
-      fallbackModel: this.options.fallbackModel,
+      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       lastTerminalReason: this.lastTerminalReason,
       session: this.sessionStore?.snapshot(),
@@ -314,9 +326,9 @@ export class QueryEngine {
       this.titleAgentRun = { version, controller };
       const title = await generateSessionTitle({
         agentId: `${this.agentId}-session-title`,
-        modelGateway: this.options.modelGateway,
+        modelGateway: this.currentModelGateway,
         model: this.currentModel,
-        fallbackModel: this.options.fallbackModel,
+        fallbackModel: this.currentFallbackModel,
         kind,
         previousTitle: state.title,
         messages: this.history,

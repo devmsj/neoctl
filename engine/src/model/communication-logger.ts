@@ -39,7 +39,11 @@ export class CommunicationLogger {
 }
 
 export class LoggingModelGateway implements ModelGateway {
-  constructor(private readonly inner: ModelGateway, readonly logger: CommunicationLogger) {}
+  constructor(private inner: ModelGateway, readonly logger: CommunicationLogger) {}
+
+  setInner(inner: ModelGateway): void {
+    this.inner = inner;
+  }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     const log = await this.logger.createCallLog(request);
