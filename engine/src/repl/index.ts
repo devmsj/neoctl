@@ -269,6 +269,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     },
   });
   await engine.initialize();
+  const initialMetrics = await engine.contextMetrics();
   return {
     engine,
     communicationLogger,
@@ -276,7 +277,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
-    initialMetrics: initialContextMetrics(modelConfig?.model, engine.snapshot().messages, tools.names().length),
+    initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
@@ -317,16 +318,20 @@ function initialContextMetrics(model: string | undefined, messageCount: number, 
   };
 }
 
-function initialStatus(runtime: ReplRuntime): UiStatus {
+function initialStatus(runtime: ReplRuntime, metrics = runtime.initialMetrics): UiStatus {
   return {
     phase: "ready",
     metrics: {
-      ...runtime.initialMetrics,
+      ...metrics,
       messageCount: runtime.engine.snapshot().messages,
     },
     streamedOutputTokens: 0,
     activityTick: 0,
   };
+}
+
+function resetStatus(runtime: ReplRuntime): UiStatus {
+  return initialStatus(runtime, initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount));
 }
 
 function setTerminalTitle(title: string, dotFilled = true): void {
@@ -681,9 +686,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch, renderedKey: undefined } : line));
   };
 
-  const resumeSnapshot = (snapshot: SessionStoreSnapshot) => {
+  const resumeSnapshot = (snapshot: SessionStoreSnapshot, metrics?: ContextMetrics) => {
     runtime.usage.reset();
-    setStatus(initialStatus(runtime));
+    setStatus(initialStatus(runtime, metrics));
     resetLinesToHistory(runtime, setLines, lineId);
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
@@ -932,7 +937,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (command.type === "reset") {
       runtime.engine.reset();
       runtime.usage.reset();
-      setStatus(initialStatus(runtime));
+      setStatus(resetStatus(runtime));
       append(systemLine("transcript reset"));
       return;
     }
@@ -1160,8 +1165,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         const selected = sessionsBrowser.sessions[sessionAbsoluteIndex(sessionsBrowser)];
         if (selected) {
           setSessionsBrowser(undefined);
-          void handleResumeCommand(selected.sessionId, runtime, (line) => append(line)).then((resumed) => {
-            if (resumed) resumeSnapshot(resumed);
+          void handleResumeCommand(selected.sessionId, runtime, (line) => append(line)).then((result) => {
+            if (result) resumeSnapshot(result.snapshot, result.metrics);
           });
         }
         return;
@@ -2382,9 +2387,15 @@ async function handleExportCommand(
   return systemLine(`Exported current session to ${result.outputPath}\nEntries: ${result.entries}\nMessages: ${result.messages}\nBytes: ${result.bytes}`);
 }
 
-async function handleResumeCommand(sessionId: string | undefined, runtime: ReplRuntime, append: (line: Omit<UiLine, "id">) => number): Promise<SessionStoreSnapshot | undefined> {
+async function handleResumeCommand(
+  sessionId: string | undefined,
+  runtime: ReplRuntime,
+  append: (line: Omit<UiLine, "id">) => number,
+): Promise<{ snapshot: SessionStoreSnapshot; metrics: ContextMetrics } | undefined> {
   try {
-    return await runtime.engine.resumeSession(sessionId);
+    const snapshot = await runtime.engine.resumeSession(sessionId);
+    const metrics = await runtime.engine.contextMetrics();
+    return { snapshot, metrics };
   } catch (error) {
     append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     return undefined;
