@@ -992,7 +992,7 @@ function titleForRole(role: Message["role"]): string {
 }
 
 function titleForKind(kind: UiLine["kind"]): string {
-  if (kind === "thinking") return `${THINKING_MARKER} Think`;
+  if (kind === "thinking") return "think";
   if (kind === "tool") return "Tool";
   if (kind === "error") return "Error";
   if (kind === "meta") return "Meta";
@@ -1174,7 +1174,6 @@ function formatNumber(value: number | undefined): string {
   return value === undefined ? "?" : new Intl.NumberFormat("en-US").format(Math.round(value));
 }
 
-const THINKING_MARKER = "◆";
 const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
 
@@ -1214,7 +1213,10 @@ const WEB_HTML = String.raw`<!doctype html>
     #transcript { flex: 1; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
     .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
     .block:first-child { margin-top: 0; }
-    .marker { width: 18px; flex: 0 0 18px; user-select: none; }
+    .marker { width: 18px; flex: 0 0 18px; user-select: none; line-height: 1.45; }
+    .marker.circle { position: relative; overflow: hidden; text-indent: -999px; }
+    .marker.circle::before { content: ""; position: absolute; left: 0; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+    .marker.diamond { font-size: 1em; }
     .content { position: relative; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
     .content.plain { white-space: pre-wrap; }
     .content.summary { color: #d7dce5; }
@@ -1339,6 +1341,7 @@ function renderTranscript() {
 function renderLine(line) {
   const kind = line.kind || 'system';
   const marker = markerForLine(line, kind);
+  const markerCls = marker === '●' ? 'circle' : 'diamond';
   const expanded = state.expandedToolLines.has(line.id);
   const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
   const collapsed = collapsible && !expanded;
@@ -1348,7 +1351,7 @@ function renderLine(line) {
   const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
   const body = '<div class="tool-body">' + renderText(line.text || '', line.format, markdown) + '</div>';
   const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
-  return '<div class="' + cls + '" data-line-id="' + String(line.id) + '"><div class="marker">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div></div>';
+  return '<div class="' + cls + '" data-line-id="' + String(line.id) + '"><div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div></div>';
 }
 function markerForLine(line, kind) {
   if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';

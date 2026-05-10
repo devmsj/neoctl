@@ -3043,7 +3043,7 @@ function kindForRole(role: Message["role"]): UiLine["kind"] {
 }
 
 function titleForKind(kind: UiLine["kind"]): string {
-  if (kind === "thinking") return `${THINKING_MARKER} Think`;
+  if (kind === "thinking") return `${THINKING_MARKER} think`;
   if (kind === "tool") return "Tool";
   if (kind === "error") return "Error";
   if (kind === "meta") return "Meta";
