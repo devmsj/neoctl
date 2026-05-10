@@ -291,6 +291,8 @@ class WebRepl {
   private status: UiStatus;
   private busy = false;
   private queuedInput: string | undefined;
+  private foregroundRun: Promise<void> | undefined;
+  private readonly backgroundSessionRuns = new Map<string, Promise<void>>();
   private backgroundTaskCount: number;
 
   constructor(private runtime: WebRuntime) {
@@ -323,7 +325,8 @@ class WebRepl {
       status: this.status,
       busy: this.busy,
       queuedInput: this.queuedInput,
-      backgroundTaskCount: this.backgroundTaskCount,
+      backgroundTaskCount: this.backgroundTaskCount + this.backgroundSessionRuns.size,
+      backgroundSessionRunCount: this.backgroundSessionRuns.size,
       session: this.runtime.engine.snapshot().session,
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
@@ -341,11 +344,15 @@ class WebRepl {
       this.broadcastSync();
       return { ok: true };
     }
-    void this.handleCommandOrPrompt(text, attachments).catch((error) => {
+    const run = this.handleCommandOrPrompt(text, attachments).catch((error) => {
       this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       this.setBusy(false);
       this.setStatus({ ...this.status, phase: "ready", detail: undefined });
     });
+    this.foregroundRun = run;
+    run.finally(() => {
+      if (this.foregroundRun === run) this.foregroundRun = undefined;
+    }).catch(() => undefined);
     return { ok: true };
   }
 
@@ -355,9 +362,12 @@ class WebRepl {
 
   async resumeSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!sessionId) return { ok: false, error: "sessionId is required" };
-    if (this.busy) return { ok: false, error: "Current session is running; wait for it to finish before switching sessions." };
     try {
-      const snapshot = await this.runtime.engine.resumeSession(sessionId);
+      await this.detachRunningForeground("session switch");
+      this.runtime.engine = this.runtime.engine.forkForSession(sessionId, true);
+      await this.runtime.engine.initialize();
+      const snapshot = this.runtime.engine.snapshot().session;
+      if (!snapshot) throw new Error("session transcripts are disabled");
       await this.refreshSessionView(systemLine(formatResume(snapshot)));
       return { ok: true };
     } catch (error) {
@@ -368,9 +378,12 @@ class WebRepl {
   }
 
   async newSession(): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (this.busy) return { ok: false, error: "Current session is running; wait for it to finish before creating a new session." };
     try {
-      const snapshot = await this.runtime.engine.newSession();
+      await this.detachRunningForeground("new session");
+      this.runtime.engine = this.runtime.engine.forkForSession(undefined, false);
+      await this.runtime.engine.initialize();
+      const snapshot = this.runtime.engine.snapshot().session;
+      if (!snapshot) throw new Error("session transcripts are disabled");
       await this.refreshSessionView(systemLine(`new session ${snapshot.sessionId}`));
       return { ok: true };
     } catch (error) {
@@ -486,6 +499,26 @@ class WebRepl {
   private setStatus(next: UiStatus): void {
     this.status = next;
     this.broadcastSync();
+  }
+
+  private async detachRunningForeground(reason: string): Promise<void> {
+    if (!this.busy) return;
+    const snapshot = this.runtime.engine.snapshot().session;
+    const sessionId = snapshot?.sessionId ?? `session-${Date.now().toString(36)}`;
+    const run = this.foregroundRun;
+    if (run) {
+      this.backgroundSessionRuns.set(sessionId, run);
+      run.finally(() => {
+        this.backgroundSessionRuns.delete(sessionId);
+        this.broadcastSync();
+      }).catch(() => undefined);
+    }
+    this.activeAbortController = undefined;
+    this.interruptArmed = false;
+    this.queuedInput = undefined;
+    this.busy = false;
+    this.status = { ...this.status, phase: "ready", detail: undefined };
+    this.append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
   }
 
   private reduce(event: AgentEvent): void {
@@ -621,6 +654,10 @@ class WebRepl {
       this.append(systemLine(formatReplData({ ...this.runtime.engine.snapshot(), contextMetrics, communicationLog: this.runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
       return;
     }
+    if (command.type === "new") {
+      await this.newSession();
+      return;
+    }
     if (command.type === "sessions") {
       const sessions = await this.runtime.engine.listSessions(30);
       void sessions;
@@ -690,18 +727,22 @@ class WebRepl {
     this.interruptArmed = false;
     this.setBusy(true);
     this.setStatus({ ...this.status, phase: "running", detail: "working", usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
+    const engine = this.runtime.engine;
     try {
-      for await (const event of this.runtime.engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
-        this.handleEvent(event);
+      for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
+        if (this.runtime.engine === engine) this.handleEvent(event);
       }
     } catch (error) {
-      this.finalizeLiveLine(this.assistantLineId);
-      this.finalizeThinkingLine();
-      this.finalizeActiveToolLines();
-      this.assistantLineId = undefined;
-      this.finalizedThinkingLineId = undefined;
-      this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (this.runtime.engine === engine) {
+        this.finalizeLiveLine(this.assistantLineId);
+        this.finalizeThinkingLine();
+        this.finalizeActiveToolLines();
+        this.assistantLineId = undefined;
+        this.finalizedThinkingLineId = undefined;
+        this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
     } finally {
+      if (this.runtime.engine !== engine) return;
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
       this.finalizeLiveLine(this.assistantLineId);

@@ -11,6 +11,7 @@ export type ReplCommand =
   | { type: "login" }
   | { type: "log"; path?: string; off?: boolean }
   | { type: "model"; model?: string; reasoning?: ModelReasoningArgument }
+  | { type: "new" }
   | { type: "reset" }
   | { type: "sessions" }
   | { type: "state" }
@@ -35,6 +36,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/env", usage: "/env", description: "Open the neoctl configuration directory", arguments: "none" },
   { name: "/login", usage: "/login", description: "Configure and save a model provider to the env file", arguments: "none" },
   { name: "/model", usage: "/model [model-id] [effort|default|off]", description: "Show or switch model and supported reasoning effort", arguments: "optional" },
+  { name: "/new", usage: "/new", description: "Start a new session; running current session continues in background", arguments: "none" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
   { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
@@ -57,6 +59,7 @@ export function parseReplCommand(line: string): ReplCommand {
   if (name === "/login") return { type: "login" };
   if (name === "/exit" || name === "/quit") return { type: "exit" };
   if (name === "/model") return parseModelCommand(argument) ?? { type: "input", text: line };
+  if (name === "/new") return { type: "new" };
   if (name === "/log") {
     if (argument.toLowerCase() === "off") return { type: "log", off: true };
     return { type: "log", path: argument };

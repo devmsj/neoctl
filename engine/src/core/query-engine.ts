@@ -74,6 +74,19 @@ export class QueryEngine {
     this.currentModelGateway = options.modelGateway;
   }
 
+  forkForSession(sessionId?: string, resume = true): QueryEngine {
+    return new QueryEngine({
+      ...this.options,
+      model: this.currentModel,
+      fallbackModel: this.currentFallbackModel,
+      reasoning: cloneReasoningConfig(this.currentReasoning),
+      modelGateway: this.currentModelGateway,
+      session: this.options.session
+        ? { ...this.options.session, sessionId, resume }
+        : undefined,
+    });
+  }
+
   onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
     this.sessionTitleListeners.add(listener);
     return () => this.sessionTitleListeners.delete(listener);

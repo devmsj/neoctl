@@ -489,9 +489,13 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTaskCount, setBackgroundTaskCount] = useState(() => runtime.taskStore.activeCount());
+  const [backgroundSessionRunCount, setBackgroundSessionRunCount] = useState(0);
+  const backgroundSessionRunsRef = useRef(new Map<string, Promise<void>>());
+  const activePromptRunRef = useRef<Promise<void> | undefined>(undefined);
   const [animationTick, setAnimationTick] = useState(0);
   const [terminalTitlePrefix, setTerminalTitlePrefix] = useState(TERMINAL_TITLE_READY_PREFIX);
-  const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0;
+  const totalBackgroundCount = backgroundTaskCount + backgroundSessionRunCount;
+  const terminalTitleWorking = isActivePhase(status.phase) || totalBackgroundCount > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
   const queuedInputRef = useRef<string | undefined>(undefined);
@@ -521,10 +525,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, []);
 
   useEffect(() => {
-    if (!busy && backgroundTaskCount === 0) return undefined;
+    if (!busy && totalBackgroundCount === 0) return undefined;
     const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [busy, backgroundTaskCount]);
+  }, [busy, totalBackgroundCount]);
 
   useEffect(() => {
     const updateBackgroundTaskCount = () => setBackgroundTaskCount(runtime.taskStore.activeCount());
@@ -695,7 +699,29 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch, renderedKey: undefined } : line));
   };
 
+  const detachRunningForeground = (reason: string) => {
+    if (!busyRef.current) return;
+    const snapshot = runtime.engine.snapshot().session;
+    const sessionId = snapshot?.sessionId ?? `session-${Date.now().toString(36)}`;
+    const run = activePromptRunRef.current;
+    if (run) {
+      backgroundSessionRunsRef.current.set(sessionId, run);
+      setBackgroundSessionRunCount(backgroundSessionRunsRef.current.size);
+      run.finally(() => {
+        backgroundSessionRunsRef.current.delete(sessionId);
+        setBackgroundSessionRunCount(backgroundSessionRunsRef.current.size);
+      }).catch(() => undefined);
+    }
+    activeAbortController.current = undefined;
+    interruptArmed.current = false;
+    setQueuedPromptState(undefined);
+    setBusyState(false);
+    setStatus((current) => ({ ...current, phase: "ready", detail: undefined }));
+    append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
+  };
+
   const resumeSnapshot = (snapshot: SessionStoreSnapshot, metrics?: ContextMetrics) => {
+    detachRunningForeground("session switch");
     runtime.usage.reset();
     setStatus(initialStatus(runtime, metrics));
     resetLinesToHistory(runtime, setLines, lineId);
@@ -852,12 +878,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (busyRef.current) {
-      if (queuedInputRef.current !== undefined) return;
-      setQueuedPromptState(text, submitAttachments);
-      setHistorySelection(undefined);
-      setPromptState("", 0);
-      clearAttachments();
-      return;
+      detachRunningForeground("new prompt");
     }
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
@@ -984,6 +1005,23 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       }
       return;
     }
+    if (command.type === "new") {
+      detachRunningForeground("new session");
+      runtime.engine = runtime.engine.forkForSession(undefined, false);
+      await runtime.engine.initialize();
+      const snapshot = runtime.engine.snapshot().session;
+      const metrics = await runtime.engine.contextMetrics();
+      runtime.usage.reset();
+      setStatus(initialStatus(runtime, metrics));
+      resetLinesToHistory(runtime, setLines, lineId);
+      assistantLineId.current = undefined;
+      thinkingLineId.current = undefined;
+      finalizedThinkingLineId.current = undefined;
+      toolLineIds.current.clear();
+      clearPendingToolResultTimers();
+      append(systemLine(snapshot ? `new session ${snapshot.sessionId}` : "new session"));
+      return;
+    }
     if (command.type === "sessions") {
       await handleSessionsCommand(runtime, setSessionsBrowser, (line) => append(line));
       return;
@@ -1042,18 +1080,27 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       outputTokenUpdatedAt: undefined,
       retryCooldownUntil: undefined,
     }));
-    try {
-      for await (const event of runtime.engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: text })) {
-        handleEvent(event);
+    const engine = runtime.engine;
+    const run = (async () => {
+      for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: text })) {
+        if (runtime.engine === engine) handleEvent(event);
       }
+    })();
+    activePromptRunRef.current = run;
+    try {
+      await run;
     } catch (error) {
-      finalizeLiveLine(assistantLineId.current);
-      finalizeThinkingLine();
-      finalizeActiveToolLines();
-      assistantLineId.current = undefined;
-      finalizedThinkingLineId.current = undefined;
-      append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (runtime.engine === engine) {
+        finalizeLiveLine(assistantLineId.current);
+        finalizeThinkingLine();
+        finalizeActiveToolLines();
+        assistantLineId.current = undefined;
+        finalizedThinkingLineId.current = undefined;
+        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
     } finally {
+      if (activePromptRunRef.current === run) activePromptRunRef.current = undefined;
+      if (runtime.engine !== engine) return;
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
       finalizeLiveLine(assistantLineId.current);
@@ -1119,7 +1166,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const blockIndex = staticLines.length + i;
     return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
   }, 0);
-  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (backgroundTaskCount > 0 ? BACKGROUND_TASK_STATUS_RENDER_ROWS : 0);
+  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (totalBackgroundCount > 0 ? BACKGROUND_TASK_STATUS_RENDER_ROWS : 0);
   const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
@@ -1346,7 +1393,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
-    backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
+    totalBackgroundCount > 0 ? e(BackgroundTaskStatusLine, { count: totalBackgroundCount, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
     e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, ghostText: activePlaceholder, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
@@ -2508,7 +2555,10 @@ async function handleResumeCommand(
   append: (line: Omit<UiLine, "id">) => number,
 ): Promise<{ snapshot: SessionStoreSnapshot; metrics: ContextMetrics } | undefined> {
   try {
-    const snapshot = await runtime.engine.resumeSession(sessionId);
+    runtime.engine = runtime.engine.forkForSession(sessionId, true);
+    await runtime.engine.initialize();
+    const snapshot = runtime.engine.snapshot().session;
+    if (!snapshot) throw new Error("session transcripts are disabled");
     const metrics = await runtime.engine.contextMetrics();
     return { snapshot, metrics };
   } catch (error) {
