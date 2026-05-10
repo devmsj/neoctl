@@ -111,6 +111,7 @@ interface UiLine {
   summaryMaxLines?: number;
   live?: boolean;
   pendingReplacement?: boolean;
+  collapsible?: boolean;
 }
 
 interface UiStatus {
@@ -1009,22 +1010,22 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
-  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatPlanToolPayload(toolUse.input) };
-  return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatReplData(toolUse.input, 1200), previewStyle: "summary" };
+  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatPlanToolPayload(toolUse.input), collapsible: true };
+  return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatReplData(toolUse.input, 1200), previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines };
+  return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
 }
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Partial<UiLine> {
   const inputText = formatReplData(toolUse.input, 1200);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: false, pendingReplacement: false };
+  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: false, pendingReplacement: false, collapsible: true };
 }
 
-function toolTitle(toolName: string, phase: "running" | "finished"): string {
-  return `${phase === "running" ? "◇" : "◆"} ${toolName}`;
+function toolTitle(toolName: string, _phase: "running" | "finished"): string {
+  return toolName;
 }
 
 interface PlanToolPayloadLike extends Record<string, unknown> {
@@ -1214,9 +1215,15 @@ const WEB_HTML = String.raw`<!doctype html>
     .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
     .block:first-child { margin-top: 0; }
     .marker { width: 18px; flex: 0 0 18px; user-select: none; }
-    .content { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+    .content { position: relative; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
     .content.plain { white-space: pre-wrap; }
     .content.summary { color: #d7dce5; }
+    .kind-tool.collapsible .content { padding-right: 78px; }
+    .tool-body { position: relative; }
+    .kind-tool.collapsed .tool-body { max-height: calc(1.45em * 6); overflow: hidden; opacity: .72; mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); }
+    .tool-toggle { position: absolute; top: 0; right: 0; opacity: 0; pointer-events: none; border: 1px solid #263043; border-radius: 999px; padding: 1px 8px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; line-height: 17px; cursor: pointer; transition: opacity .12s ease, color .12s ease, border-color .12s ease; }
+    .kind-tool.collapsible:hover .tool-toggle, .kind-tool.collapsible:focus-within .tool-toggle { opacity: 1; pointer-events: auto; }
+    .tool-toggle:hover { color: var(--cyan); border-color: #31556b; }
     .markdown { color: var(--text); }
     .markdown > :first-child { margin-top: 0; }
     .markdown > :last-child { margin-bottom: 0; }
@@ -1300,7 +1307,8 @@ const WEB_HTML = String.raw`<!doctype html>
 <script type="module">
 import { marked } from '/vendor/marked.esm.js';
 marked.setOptions({ gfm: true, breaks: false, async: false });
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0 };
+const TOOL_COLLAPSED_LINES = 6;
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set() };
 const transcript = document.getElementById('transcript');
 const statusEl = document.getElementById('status');
 const queuedEl = document.getElementById('queued');
@@ -1330,16 +1338,34 @@ function renderTranscript() {
 }
 function renderLine(line) {
   const kind = line.kind || 'system';
-  const marker = kind === 'thinking' ? '◆' : '●';
+  const marker = markerForLine(line, kind);
+  const expanded = state.expandedToolLines.has(line.id);
+  const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
+  const collapsed = collapsible && !expanded;
   const title = line.title ? '<div class="title ' + (line.titleStatus || '') + '">' + esc(line.title) + '</div>' : '';
   const markdown = shouldRenderMarkdown(line);
-  const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : ''].filter(Boolean).join(' ');
+  const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : '', collapsible ? 'collapsible' : '', collapsed ? 'collapsed' : '', expanded ? 'expanded' : ''].filter(Boolean).join(' ');
   const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
-  return '<div class="' + cls + '"><div class="marker">' + marker + '</div><div class="' + contentCls + '">' + title + renderText(line.text || '', line.format, markdown) + '</div></div>';
+  const body = '<div class="tool-body">' + renderText(line.text || '', line.format, markdown) + '</div>';
+  const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
+  return '<div class="' + cls + '" data-line-id="' + String(line.id) + '"><div class="marker">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div></div>';
+}
+function markerForLine(line, kind) {
+  if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
+  if (kind === 'thinking') return '◆';
+  return '●';
 }
 function shouldRenderMarkdown(line) {
   if (line.format === 'ansi') return false;
   return line.kind === 'assistant' || line.kind === 'thinking' || line.kind === 'system' || line.kind === 'tool';
+}
+function hasMoreThanLines(text, maxLines) {
+  if (!text) return false;
+  let lines = 1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10 && ++lines > maxLines) return true;
+  }
+  return false;
 }
 function renderText(text, format, markdown) {
   if (format === 'ansi') return '<span class="ansi">' + esc(stripAnsi(text)) + '</span>';
@@ -1414,6 +1440,15 @@ async function submit() {
   const body = await res.json();
   if (!body.ok && body.error) alert(body.error);
 }
+transcript.addEventListener('click', (e) => {
+  const button = e.target.closest('.tool-toggle');
+  if (!button) return;
+  const id = Number(button.getAttribute('data-line-id'));
+  if (!Number.isFinite(id)) return;
+  if (state.expandedToolLines.has(id)) state.expandedToolLines.delete(id);
+  else state.expandedToolLines.add(id);
+  renderTranscript();
+});
 input.addEventListener('keydown', (e) => {
   const count = completions().length;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const c = selectedCompletion(); if (c && c.kind === 'command' && c.arguments !== 'none') { completeSelection(); input.value += ' '; input.selectionStart = input.selectionEnd = input.value.length; return; } submit(); return; }
