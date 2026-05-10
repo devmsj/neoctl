@@ -35,6 +35,7 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
 import { formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 import { openDirectory } from "../open-directory.js";
+import { runWebServer } from "../web/index.js";
 
 const e = React.createElement;
 interface ReplRuntime {
@@ -205,6 +206,12 @@ interface LoginFormState {
 }
 
 async function main(argv = process.argv.slice(2)): Promise<void> {
+  const webArgs = parseWebCliArgs(argv);
+  if (webArgs) {
+    await runWebServer(webArgs);
+    return;
+  }
+
   const initialCommand = parseCliReplCommandArgs(argv);
   if (argv.length > 0 && !initialCommand) {
     console.error(`Unknown or incomplete command: ${argv.join(" ")}\n\n${cliHelpText(binaryName())}`);
@@ -222,6 +229,13 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   });
   await instance.waitUntilExit();
   console.log("bye.");
+}
+
+function parseWebCliArgs(argv: string[]): string[] | undefined {
+  if (argv.length === 0) return undefined;
+  const first = argv[0];
+  if (first !== "-web" && first !== "--web") return undefined;
+  return argv.slice(1);
 }
 
 function binaryName(): string {

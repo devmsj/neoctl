@@ -113,12 +113,16 @@ npm run smoke:openai -- "Say pong"
 
 ```bash
 neo -help
+neo -web
+neo -web --port 3001
 neo -model
 neo -model gpt-5.5 high
 neo -new
 ```
 
-除 `-help` 会直接打印帮助并退出外，其它命令会启动 REPL 并执行对应内部命令，例如 `neo -model` 等同于进入 REPL 后输入 `/model`。
+`neo -web` / `neo --web` 会启动本地浏览器 UI，默认监听 `127.0.0.1:3000`，可通过 `--host`、`--port` 参数或 `NEO_WEB_HOST`、`NEO_WEB_PORT` 环境变量调整。
+
+除 `-help` 会直接打印帮助并退出、`-web` 会启动 Web UI 外，其它命令会启动 REPL 并执行对应内部命令，例如 `neo -model` 等同于进入 REPL 后输入 `/model`。
 
 常用 slash commands：
 

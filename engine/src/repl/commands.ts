@@ -148,15 +148,17 @@ export function parseCliReplCommandArgs(argv: string[]): CliReplCommandParseResu
   return { line, definition };
 }
 
-const cliUsageWidth = Math.max(...replCommandDefinitions.map((command) => command.usage.replace(/^\//, "-").length));
+const cliCommandUsages = ["-web [--host <host>] [--port <port>]", ...replCommandDefinitions.map((command) => command.usage.replace(/^\//, "-"))];
+const cliUsageWidth = Math.max(...cliCommandUsages.map((usage) => usage.length));
 
 export function cliHelpText(binaryName = "neo"): string {
   return [
     `Usage: ${binaryName} [command]`,
     "",
-    "CLI commands mirror REPL slash commands. Use '-' or '--' in place of '/'.",
+    "Use -web/--web to start the browser UI. Other CLI commands mirror REPL slash commands; use '-' or '--' in place of '/'.",
     "",
     "Commands:",
+    `  ${"-web [--host <host>] [--port <port>]".padEnd(cliUsageWidth)}  Start the local browser UI`,
     ...replCommandDefinitions.map((command) => {
       const usage = command.usage.replace(/^\//, "-");
       return `  ${usage.padEnd(cliUsageWidth)}  ${command.description}`;
@@ -164,6 +166,8 @@ export function cliHelpText(binaryName = "neo"): string {
     "",
     "Examples:",
     `  ${binaryName} -help`,
+    `  ${binaryName} -web`,
+    `  ${binaryName} -web --port 3001`,
     `  ${binaryName} -model`,
     `  ${binaryName} -model gpt-5.5 high`,
     `  ${binaryName} -new`,

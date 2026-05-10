@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { QueryEngine } from "../core/query-engine.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import { loadDefaultDotEnvFiles } from "../model/env.js";
@@ -31,6 +32,13 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import { WEB_HTML } from "./html.js";
 import { appTips, formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 import { openDirectory } from "../open-directory.js";
+
+const require = createRequire(import.meta.url);
+const markedPackageDir = path.dirname(require.resolve("marked/package.json"));
+const highlightPackageDir = path.dirname(require.resolve("@highlightjs/cdn-assets/package.json"));
+const markedAssetPath = path.join(markedPackageDir, "lib", "marked.esm.js");
+const highlightAssetPath = path.join(highlightPackageDir, "highlight.min.js");
+const highlightThemeAssetPath = path.join(highlightPackageDir, "styles", "atom-one-dark.min.css");
 
 interface WebRuntime {
   engine: QueryEngine;
@@ -874,9 +882,9 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);
-    if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, path.join(process.cwd(), "node_modules", "marked", "lib", "marked.esm.js"), "text/javascript; charset=utf-8");
-    if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "highlight.min.js"), "text/javascript; charset=utf-8");
-    if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "styles", "atom-one-dark.min.css"), "text/css; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, markedAssetPath, "text/javascript; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, highlightAssetPath, "text/javascript; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, highlightThemeAssetPath, "text/css; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "POST" && url.pathname === "/api/submit") {
