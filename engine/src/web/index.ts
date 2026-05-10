@@ -28,6 +28,7 @@ import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { CompactionResult } from "../context/compaction.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
+import { WEB_HTML } from "./html.js";
 
 interface WebRuntime {
   engine: QueryEngine;
@@ -130,6 +131,27 @@ interface UiStatus {
 interface WebServerOptions {
   host: string;
   port: number;
+}
+
+type LoginProviderName = ModelProviderName;
+
+interface LoginFieldDefinition {
+  key: string;
+  label: string;
+  envKey: string;
+  scope: "provider" | "shared";
+  required?: boolean;
+  secret?: boolean;
+  placeholder?: string;
+  options?: readonly string[];
+}
+
+interface LoginFormPayload {
+  envPath: string;
+  providers: LoginProviderName[];
+  provider: LoginProviderName;
+  fields: LoginFieldDefinition[];
+  values: Record<string, string>;
 }
 
 export async function runWebServer(argv = process.argv.slice(2)): Promise<void> {
@@ -293,6 +315,7 @@ class WebRepl {
       queuedInput: this.queuedInput,
       backgroundTaskCount: this.backgroundTaskCount,
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
+      interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
     };
   }
 
@@ -311,6 +334,78 @@ class WebRepl {
       this.setStatus({ ...this.status, phase: "ready", detail: undefined });
     });
     return { ok: true };
+  }
+
+  async listSessions() {
+    return this.runtime.engine.listSessions(Number.POSITIVE_INFINITY);
+  }
+
+  async resumeSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!sessionId) return { ok: false, error: "sessionId is required" };
+    try {
+      const snapshot = await this.runtime.engine.resumeSession(sessionId);
+      const metrics = await this.runtime.engine.contextMetrics();
+      this.runtime.usage.reset();
+      this.status = initialStatus(this.runtime, metrics);
+      const lineId = { current: 0 };
+      this.lines = initialLines(this.runtime, lineId);
+      this.lineId = lineId.current;
+      this.assistantLineId = undefined;
+      this.thinkingLineId = undefined;
+      this.finalizedThinkingLineId = undefined;
+      this.toolLineIds.clear();
+      this.append(systemLine(formatResume(snapshot)));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.append({ kind: "error", text: message });
+      return { ok: false, error: message };
+    }
+  }
+
+  async deleteSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!sessionId) return { ok: false, error: "sessionId is required" };
+    try {
+      const deleted = await this.runtime.engine.deleteSession(sessionId);
+      if (!deleted) return { ok: false, error: `session not found: ${sessionId}` };
+      this.append(systemLine(`deleted session ${sessionId}`));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.append({ kind: "error", text: message });
+      return { ok: false, error: message };
+    }
+  }
+
+  loginForm(providerValue?: string): LoginFormPayload {
+    const provider = parseLoginProvider(providerValue);
+    return createLoginFormPayload(this.runtime.envPath, provider);
+  }
+
+  async saveLogin(providerValue: string, values: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+    const provider = parseLoginProvider(providerValue);
+    if (!provider) return { ok: false, error: "provider must be openai or deepseek" };
+    const payload: LoginFormPayload = { ...createLoginFormPayload(this.runtime.envPath, provider), provider, values };
+    const validationError = validateLoginFormPayload(payload);
+    if (validationError) return { ok: false, error: validationError };
+    try {
+      await saveLoginPayloadToEnv(payload);
+      applyLoginPayloadToProcessEnv(payload);
+      const config = readModelProviderConfig(process.env);
+      if (!config) throw new Error("Saved provider config could not be loaded from environment.");
+      const innerGateway = createModelGatewayFromConfig(config);
+      this.runtime.modelGateway.setInner(innerGateway);
+      this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
+      this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
+      this.runtime.defaultReasoning = config.defaultReasoning;
+      this.status = { ...this.status, metrics: { ...initialContextMetrics(config.model, this.runtime.engine.snapshot().messages, this.runtime.initialMetrics.toolCount), messageCount: this.runtime.engine.snapshot().messages } };
+      this.append(systemLine(`Saved ${provider} login to ${this.runtime.envPath}\n${formatModelSettings(this.runtime.engine.getModelSettings(), this.runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
+      return { ok: true };
+    } catch (error) {
+      const message = `Login save failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.append({ kind: "error", text: message });
+      return { ok: false, error: message };
+    }
   }
 
   interrupt(): { ok: true; interrupted: boolean } {
@@ -495,10 +590,9 @@ class WebRepl {
     }
     if (command.type === "sessions") {
       const sessions = await this.runtime.engine.listSessions(30);
-      const body = sessions.length === 0
-        ? "No saved sessions found."
-        : sessions.map((session, index) => `${String(index + 1).padStart(2)}. ${session.title || "untitled"}\n    ${session.sessionId} · ${session.messages} message(s) · ${session.updatedAt}`).join("\n");
-      this.append(systemLine(body, EXPANDED_SUMMARY_MAX_LINES));
+      void sessions;
+      if (sessions.length === 0) this.append(systemLine("No saved sessions found."));
+      this.broadcastSync();
       return;
     }
     if (command.type === "export") {
@@ -533,7 +627,7 @@ class WebRepl {
       return;
     }
     if (command.type === "login") {
-      this.append(systemLine(`Provider login is available in the terminal Ink UI. In neo web, edit ${this.runtime.envPath} or run neo /login in a terminal.`));
+      this.broadcastSync();
       return;
     }
     if (text.trimStart().startsWith("/")) {
@@ -632,6 +726,20 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
       return sendJson(res, await repl.submit(String(body.text ?? "")));
     }
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
+    if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, { sessions: await repl.listSessions() });
+    if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
+      const body = await readJsonBody<{ sessionId?: string }>(req);
+      return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));
+    }
+    if (req.method === "POST" && url.pathname === "/api/sessions/delete") {
+      const body = await readJsonBody<{ sessionId?: string }>(req);
+      return sendJson(res, await repl.deleteSession(String(body.sessionId ?? "")));
+    }
+    if (req.method === "GET" && url.pathname === "/api/login") return sendJson(res, repl.loginForm(url.searchParams.get("provider") ?? undefined));
+    if (req.method === "POST" && url.pathname === "/api/login") {
+      const body = await readJsonBody<{ provider?: string; values?: Record<string, string> }>(req);
+      return sendJson(res, await repl.saveLogin(String(body.provider ?? ""), body.values ?? {}));
+    }
     sendJson(res, { error: "not found" }, 404);
   } catch (error) {
     sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
@@ -668,6 +776,13 @@ function webCatalog(runtime: WebRuntime) {
     modelIds,
     reasoning: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"],
     envPath: runtime.envPath,
+  };
+}
+
+function webInteractiveCatalog(runtime: WebRuntime) {
+  return {
+    sessions: true,
+    login: createLoginFormPayload(runtime.envPath),
   };
 }
 
@@ -838,6 +953,108 @@ function parseLoginProvider(value: string | undefined): ModelProviderName | unde
   return undefined;
 }
 
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek"];
+
+const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
+  { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
+  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "800" },
+  { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
+  { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
+  { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
+];
+
+const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]> = {
+  openai: [
+    { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
+    { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.5" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "OPENAI_FALLBACK_MODEL", scope: "provider" },
+    { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
+    ...SHARED_LOGIN_FIELDS,
+  ],
+  deepseek: [
+    { key: "apiKey", label: "API key", envKey: "DEEPSEEK_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "DEEPSEEK_BASE_URL", scope: "provider", placeholder: "https://api.deepseek.com" },
+    { key: "model", label: "Model", envKey: "DEEPSEEK_MODEL", scope: "provider", required: true, placeholder: "deepseek-chat" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "DEEPSEEK_FALLBACK_MODEL", scope: "provider" },
+    ...SHARED_LOGIN_FIELDS,
+  ],
+};
+
+const DEPRECATED_MODEL_ENV_KEYS = [
+  "MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_ID", "MODEL_FALLBACK_ID", "MODEL_ENDPOINT", "OPENAI_PROVIDER",
+  "OPENAI_REASONING_EFFORT", "OPENAI_REASONING_SUMMARY", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_TIMEOUT_MS", "OPENAI_STREAM_IDLE_TIMEOUT_MS", "OPENAI_MAX_RETRIES",
+  "DEEPSEEK_REASONING_EFFORT", "DEEPSEEK_REASONING_SUMMARY", "DEEPSEEK_MAX_OUTPUT_TOKENS", "DEEPSEEK_TIMEOUT_MS", "DEEPSEEK_STREAM_IDLE_TIMEOUT_MS", "DEEPSEEK_MAX_RETRIES",
+];
+
+function createLoginFormPayload(envPath: string, provider?: LoginProviderName): LoginFormPayload {
+  const env = parseEnvFileSafe(envPath);
+  const selectedProvider = provider ?? parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? currentModelProvider();
+  return {
+    envPath,
+    providers: LOGIN_PROVIDERS,
+    provider: selectedProvider,
+    fields: LOGIN_FIELD_DEFINITIONS[selectedProvider],
+    values: loginValuesForProvider(selectedProvider, env),
+  };
+}
+
+function loginValuesForProvider(provider: LoginProviderName, env: Record<string, string>): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of LOGIN_FIELD_DEFINITIONS[provider]) values[field.key] = env[field.envKey] ?? "";
+  if (!values.baseUrl) values.baseUrl = provider === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com";
+  if (!values.model) values.model = provider === "deepseek" ? "deepseek-chat" : "gpt-5.5";
+  if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
+  return values;
+}
+
+function validateLoginFormPayload(payload: LoginFormPayload): string | undefined {
+  for (const field of LOGIN_FIELD_DEFINITIONS[payload.provider]) {
+    const value = (payload.values[field.key] ?? "").trim();
+    if (field.required && !value) return `${field.label} is required.`;
+    if (field.options?.length && value && !field.options.includes(value)) return `${field.label} must be one of: ${field.options.filter(Boolean).join(", ")}`;
+  }
+  for (const fieldKey of ["maxOutputTokens", "timeoutMs", "streamIdleTimeoutMs", "maxRetries"]) {
+    const value = payload.values[fieldKey]?.trim();
+    if (value && !Number.isFinite(Number(value))) return `${fieldKey} must be a number.`;
+  }
+  return undefined;
+}
+
+async function saveLoginPayloadToEnv(payload: LoginFormPayload): Promise<void> {
+  await writeEnvUpdates(payload.envPath, envEntriesForLoginPayload(payload), DEPRECATED_MODEL_ENV_KEYS);
+}
+
+function applyLoginPayloadToProcessEnv(payload: LoginFormPayload): void {
+  applyEnvUpdatesToProcess(envEntriesForLoginPayload(payload));
+  for (const key of DEPRECATED_MODEL_ENV_KEYS) delete process.env[key];
+}
+
+function envEntriesForLoginPayload(payload: LoginFormPayload): Record<string, string | undefined> {
+  const entries: Record<string, string | undefined> = { MODEL_PROVIDER: payload.provider };
+  for (const field of LOGIN_FIELD_DEFINITIONS[payload.provider]) {
+    const value = (payload.values[field.key] ?? "").trim();
+    entries[field.envKey] = value || undefined;
+  }
+  return entries;
+}
+
+function parseEnvFileSafe(envPath: string): Record<string, string> {
+  if (!existsSync(envPath)) return {};
+  const env: Record<string, string> = {};
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (parsed) env[parsed.key] = stripEnvQuotes(parsed.value.trim());
+  }
+  return env;
+}
+
+function stripEnvQuotes(value: string): string {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) return value.slice(1, -1);
+  return value;
+}
+
 function modelEnvKeyForProvider(provider: ModelProviderName): "OPENAI_MODEL" | "DEEPSEEK_MODEL" {
   return provider === "deepseek" ? "DEEPSEEK_MODEL" : "OPENAI_MODEL";
 }
@@ -847,19 +1064,23 @@ function envValueForReasoning(reasoning: ReasoningConfig | null | undefined): st
   return reasoning?.effort;
 }
 
-async function writeEnvUpdates(envPath: string, updates: Record<string, string | undefined>): Promise<void> {
+async function writeEnvUpdates(envPath: string, updates: Record<string, string | undefined>, removeKeys: string[] = []): Promise<void> {
   await fs.mkdir(path.dirname(envPath), { recursive: true });
   const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  const next = updateEnvContent(existing, updates);
+  const next = updateEnvContent(existing, updates, removeKeys);
   await fs.writeFile(envPath, next, "utf8");
 }
 
-function updateEnvContent(existing: string, updates: Record<string, string | undefined>): string {
-  const lines = existing.split(/\r?\n/);
+function updateEnvContent(existing: string, updates: Record<string, string | undefined>, removeKeys: string[] = []): string {
+  const keys = new Set(Object.keys(updates));
+  const removals = new Set(removeKeys);
   const seen = new Set<string>();
+  const lines = existing ? existing.split(/\r?\n/) : [];
   const next = lines.map((line) => {
     const parsed = parseEnvLine(line);
-    if (!parsed || !(parsed.key in updates)) return line;
+    if (!parsed) return line;
+    if (removals.has(parsed.key) && !keys.has(parsed.key)) return undefined;
+    if (!keys.has(parsed.key)) return line;
     seen.add(parsed.key);
     const value = updates[parsed.key];
     return value === undefined ? undefined : `${parsed.key}=${formatEnvValue(value)}`;
@@ -880,6 +1101,10 @@ function parseEnvLine(line: string): { key: string; value: string } | undefined 
 function formatEnvValue(value: string): string {
   if (/^[A-Za-z0-9_./:@-]*$/.test(value)) return value;
   return JSON.stringify(value);
+}
+
+function formatResume(snapshot: { sessionId: string; resumedMessages: number; transcriptPath: string }): string {
+  return `resumed session ${snapshot.sessionId}: ${snapshot.resumedMessages} messages from ${snapshot.transcriptPath}`;
 }
 
 function applyEnvUpdatesToProcess(updates: Record<string, string | undefined>): void {
@@ -1181,496 +1406,6 @@ function formatNumber(value: number | undefined): string {
 
 const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
-
-const WEB_HTML = String.raw`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>neo web</title>
-  <link rel="stylesheet" href="/vendor/highlight-theme.css" />
-  <script defer src="/vendor/highlight.min.js"></script>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #07080b;
-      --panel: #0b0d12;
-      --text: #e5e7eb;
-      --muted: #858b98;
-      --cyan: #22d3ee;
-      --green: #22c55e;
-      --purple: #a855f7;
-      --gold: #d4b04c;
-      --red: #ef4444;
-      --yellow: #eab308;
-      --line: #161a23;
-      --page-max-width: 1120px;
-      --page-gutter: max(18px, calc((100vw - var(--page-max-width)) / 2));
-      --topbar-gutter: max(14px, calc((100vw - var(--page-max-width)) / 2));
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
-    body { background: radial-gradient(circle at top, #101522 0, var(--bg) 42rem); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    #app { height: 100%; display: flex; flex-direction: column; }
-    .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
-    .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; }
-    .hint { margin-left: auto; font-size: 12px; }
-    #transcriptWrap { position: relative; flex: 1; min-height: 0; }
-    #transcript { height: 100%; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
-    .scroll-bottom-zone { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; padding: 0 var(--page-gutter); display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity .14s ease; z-index: 2; }
-    .scroll-bottom-zone.available { opacity: 1; pointer-events: auto; }
-    #scrollBottom { width: 100%; height: 12px; border: 1px solid rgba(34, 211, 238, .42); border-radius: 999px 999px 0 0; background: linear-gradient(90deg, rgba(34, 211, 238, .06), rgba(34, 211, 238, .22), rgba(34, 211, 238, .06)); color: var(--cyan); font: inherit; font-size: 10px; line-height: 10px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; box-shadow: 0 0 18px rgba(34, 211, 238, .2), inset 0 1px 0 rgba(255,255,255,.08); text-shadow: 0 0 10px currentColor; }
-    #scrollBottom:hover, #scrollBottom:focus-visible { border-color: rgba(34, 211, 238, .82); box-shadow: 0 0 22px rgba(34, 211, 238, .42), inset 0 1px 0 rgba(255,255,255,.18); outline: none; }
-    .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
-    .block:first-child { margin-top: 0; }
-    .marker { width: 18px; flex: 0 0 18px; user-select: none; line-height: 1.45; }
-    .marker.circle { position: relative; overflow: hidden; text-indent: -999px; }
-    .marker.circle::before { content: ""; position: absolute; left: 0; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
-    .marker.diamond { font-size: 1em; }
-    .content { position: relative; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
-    .content.plain { white-space: pre-wrap; }
-    .content.summary { color: #d7dce5; }
-    .kind-tool.collapsible .content { padding-right: 78px; }
-    .tool-body { position: relative; }
-    .kind-tool.collapsed .tool-body { max-height: calc(1.45em * 6); overflow: hidden; opacity: .72; mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); }
-    .tool-toggle { position: absolute; top: 0; right: 0; opacity: 0; pointer-events: none; border: 1px solid #263043; border-radius: 999px; padding: 1px 8px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; line-height: 17px; cursor: pointer; transition: opacity .12s ease, color .12s ease, border-color .12s ease; }
-    .kind-tool.collapsible:hover .tool-toggle, .kind-tool.collapsible:focus-within .tool-toggle { opacity: 1; pointer-events: auto; }
-    .tool-toggle:hover { color: var(--cyan); border-color: #31556b; }
-    .markdown { color: var(--text); }
-    .markdown > :first-child { margin-top: 0; }
-    .markdown > :last-child { margin-bottom: 0; }
-    .markdown p { margin: 0 0 .72em; }
-    .markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 1em 0 .45em; line-height: 1.25; color: #f3f4f6; font-weight: 700; }
-    .markdown h1 { font-size: 1.34em; padding-bottom: .22em; border-bottom: 1px solid #222837; }
-    .markdown h2 { font-size: 1.18em; }
-    .markdown h3 { font-size: 1.06em; }
-    .markdown ul, .markdown ol { margin: .35em 0 .78em; padding-left: 2.1em; }
-    .markdown li { margin: .18em 0; }
-    .markdown li > p { margin: .25em 0; }
-    .markdown blockquote { margin: .75em 0; padding: .2em 0 .2em 1em; border-left: 3px solid #334155; color: #bac2cf; background: rgba(148, 163, 184, .05); }
-    .markdown pre { position: relative; margin: .85em 0; padding: 12px 14px; overflow: auto; border: 1px solid #202635; border-radius: 8px; background: #0c1018; color: #d8dee9; white-space: pre; box-shadow: inset 0 1px 0 rgba(255,255,255,.025); }
-    .markdown pre[data-lang]::before { content: attr(data-lang); position: sticky; left: 100%; float: right; margin: -5px -7px 4px 12px; padding: 1px 6px; border: 1px solid #263043; border-radius: 999px; background: rgba(15, 23, 42, .92); color: #94a3b8; font-size: 11px; line-height: 16px; text-transform: lowercase; }
-    .markdown code { padding: .12em .34em; border: 1px solid #222838; border-radius: 5px; background: #0c1018; color: #facc15; font: .94em ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    .markdown pre code, .markdown pre code.hljs { display: block; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 1em; overflow: visible; }
-    .markdown .hljs { background: transparent; color: inherit; }
-    .markdown table { display: block; width: max-content; max-width: 100%; overflow: auto; margin: .85em 0; border-collapse: collapse; }
-    .markdown th, .markdown td { padding: 6px 10px; border: 1px solid #263043; }
-    .markdown th { background: #111827; color: #f3f4f6; font-weight: 700; }
-    .markdown tr:nth-child(2n) td { background: rgba(148, 163, 184, .045); }
-    .markdown hr { border: 0; border-top: 1px solid #222837; margin: 1em 0; }
-    .markdown a { color: var(--cyan); text-decoration: none; }
-    .markdown a:hover { text-decoration: underline; }
-    .markdown strong { color: #f8fafc; }
-    .markdown del { color: var(--muted); }
-    .markdown input[type="checkbox"] { vertical-align: -2px; margin-right: .4em; accent-color: var(--cyan); }
-    .title { color: var(--muted); font-weight: 700; margin-bottom: 2px; }
-    .body-title { color: var(--text); font-weight: 700; margin-bottom: .35em; }
-    .title.success::after { content: " ✓"; color: var(--green); }
-    .title.failure::after { content: " ✕"; color: var(--red); }
-    .kind-user .marker, .kind-user .content { color: var(--cyan); }
-    .kind-assistant .marker { color: var(--green); }
-    .kind-thinking .marker, .kind-thinking .title, .kind-thinking .content { color: var(--purple); }
-    .kind-tool .marker, .kind-tool .title { color: var(--gold); }
-    .kind-error .marker, .kind-error .title, .kind-error .content { color: var(--red); }
-    .kind-system .marker { color: #fff; }
-    .kind-meta .marker, .kind-meta .content { color: var(--muted); }
-    .live .marker { animation: pulse 900ms ease-in-out infinite; }
-    @keyframes pulse { 50% { opacity: .35; } }
-    .ansi { color: #d1d5db; }
-    #status { flex: 0 0 auto; min-height: 28px; padding: 4px var(--page-gutter); color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 0; overflow: hidden; white-space: nowrap; }
-    .phase { font-weight: 700; color: var(--green); }
-    .phase.active { color: var(--cyan); text-shadow: 0 0 12px currentColor; animation: shimmer 1.35s linear infinite; }
-    .phase.thinking { color: var(--purple); }
-    .phase.tools { color: var(--gold); }
-    .phase.stopped { color: var(--yellow); }
-    .sep { color: var(--muted); padding: 0 7px; }
-    .ctx-stat { word-spacing: .35em; }
-    .ctx-stat span { word-spacing: normal; }
-    .token-hot { color: var(--cyan); font-weight: 700; }
-    @keyframes shimmer { 0%, 100% { filter: brightness(.9); } 45% { filter: brightness(1.9); } }
-    #queued { display: none; padding: 0 var(--page-gutter) 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #composerWrap { flex: 0 0 auto; padding: 0 var(--page-gutter) 16px; background: rgba(7, 8, 11, .92); }
-    #completions { display: none; margin-left: 26px; margin-bottom: 6px; color: var(--muted); max-width: calc(var(--page-max-width) - 26px); }
-    .completion-title { color: var(--cyan); font-weight: 700; }
-    .completion-row { display: grid; grid-template-columns: 4ch minmax(10ch, 32ch) 1fr; gap: 1ch; min-height: 20px; align-items: center; }
-    .completion-row.selected .num { background: var(--cyan); color: #020617; }
-    .completion-row .name { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .completion-row.reasoning .name { color: var(--purple); }
-    .completion-row .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .completion-footer { color: var(--muted); }
-    #composer { display: flex; gap: 8px; align-items: flex-start; }
-    #prompt { color: var(--cyan); flex: 0 0 auto; padding-top: 7px; }
-    #input { flex: 1; min-height: 32px; max-height: 35vh; resize: none; border: 0; outline: 0; padding: 7px 0; background: transparent; color: var(--text); font: inherit; line-height: 1.45; caret-color: var(--cyan); }
-    #input.command { color: var(--cyan); }
-    #input.locked { color: var(--muted); }
-    .kbd { color: #aab2c0; border: 1px solid #303646; border-bottom-color: #222736; border-radius: 4px; padding: 0 4px; }
-  </style>
-</head>
-<body>
-<div id="app">
-  <div class="topbar"><span class="brand">neo web</span><span id="connection">connecting…</span><span class="hint"><span class="kbd">Enter</span> send · <span class="kbd">Shift Enter</span> newline · <span class="kbd">Ctrl C</span> interrupt</span></div>
-  <div id="transcriptWrap"><div id="transcript"></div><div id="scrollBottomZone" class="scroll-bottom-zone"><button id="scrollBottom" type="button" aria-label="Scroll to bottom">bottom</button></div></div>
-  <div id="status"></div>
-  <div id="queued"></div>
-  <div id="composerWrap">
-    <div id="completions"></div>
-    <div id="composer"><div id="prompt">●</div><textarea id="input" spellcheck="false" autofocus></textarea></div>
-  </div>
-</div>
-<script type="module">
-import { marked } from '/vendor/marked.esm.js';
-marked.setOptions({ gfm: true, breaks: false, async: false });
-const TOOL_COLLAPSED_LINES = 6;
-const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set() };
-const renderedLineKeys = new Map();
-const statusNodes = {};
-const phaseDisplay = { value: state.status.phase, displayedAt: Date.now(), pending: undefined, timer: undefined };
-let renderPending = false;
-const transcript = document.getElementById('transcript');
-const scrollBottomZone = document.getElementById('scrollBottomZone');
-const scrollBottom = document.getElementById('scrollBottom');
-const statusEl = document.getElementById('status');
-const queuedEl = document.getElementById('queued');
-const input = document.getElementById('input');
-const completionsEl = document.getElementById('completions');
-const connection = document.getElementById('connection');
-
-const es = new EventSource('/events');
-es.addEventListener('open', () => connection.textContent = 'connected');
-es.addEventListener('error', () => connection.textContent = 'reconnecting…');
-es.addEventListener('sync', (event) => {
-  const payload = JSON.parse(event.data);
-  state.lines = payload.lines || [];
-  state.status = payload.status || state.status;
-  state.busy = !!payload.busy;
-  state.queuedInput = payload.queuedInput;
-  state.backgroundTaskCount = payload.backgroundTaskCount || 0;
-  if (payload.catalog) state.catalog = payload.catalog;
-  scheduleRender();
-});
-
-function scheduleRender() {
-  if (renderPending) return;
-  renderPending = true;
-  requestAnimationFrame(() => { renderPending = false; render(); });
-}
-function render() { renderTranscript(); renderStatus(); renderQueued(); renderCompletions(); updateScrollBottomAffordance(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
-function renderTranscript() {
-  const atBottom = isTranscriptAtBottom();
-  const seen = new Set();
-  let cursor = transcript.firstElementChild;
-  for (const line of state.lines) {
-    const id = String(line.id);
-    seen.add(id);
-    let element = transcript.querySelector('[data-line-id="' + cssEscape(id) + '"]');
-    const key = lineRenderKey(line);
-    if (!element) {
-      element = document.createElement('div');
-      element.setAttribute('data-line-id', id);
-      updateLineElement(element, line);
-      renderedLineKeys.set(id, key);
-    } else if (renderedLineKeys.get(id) !== key) {
-      updateLineElement(element, line);
-      renderedLineKeys.set(id, key);
-    }
-    if (element !== cursor) transcript.insertBefore(element, cursor);
-    cursor = element.nextElementSibling;
-  }
-  for (const child of Array.from(transcript.children)) {
-    const id = child.getAttribute('data-line-id');
-    if (!seen.has(id)) { renderedLineKeys.delete(id); child.remove(); }
-  }
-  if (atBottom) transcript.scrollTop = transcript.scrollHeight;
-}
-function isTranscriptAtBottom() {
-  return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
-}
-function updateScrollBottomAffordance() {
-  scrollBottomZone.classList.toggle('available', !isTranscriptAtBottom());
-}
-function updateLineElement(element, line) {
-  const kind = line.kind || 'system';
-  const marker = markerForLine(line, kind);
-  const markerCls = marker === '●' ? 'circle' : 'diamond';
-  const expanded = state.expandedToolLines.has(line.id);
-  const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
-  const collapsed = collapsible && !expanded;
-  const title = line.title ? '<div class="title ' + (line.titleStatus || '') + '">' + esc(line.title) + '</div>' : '';
-  const bodyTitle = line.bodyTitle ? '<div class="body-title">' + esc(line.bodyTitle) + '</div>' : '';
-  const markdown = shouldRenderMarkdown(line);
-  const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : '', collapsible ? 'collapsible' : '', collapsed ? 'collapsed' : '', expanded ? 'expanded' : ''].filter(Boolean).join(' ');
-  const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
-  const body = '<div class="tool-body">' + bodyTitle + renderText(line.text || '', line.format, markdown) + '</div>';
-  const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
-  element.className = cls;
-  element.innerHTML = '<div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div>';
-}
-function lineRenderKey(line) {
-  const kind = line.kind || 'system';
-  const expanded = state.expandedToolLines.has(line.id);
-  const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
-  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0'].join('\u001f');
-}
-function markerForLine(line, kind) {
-  if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
-  if (kind === 'thinking') return '◆';
-  return '●';
-}
-function shouldRenderMarkdown(line) {
-  if (line.format === 'ansi') return false;
-  return line.kind === 'assistant' || line.kind === 'thinking' || line.kind === 'system' || line.kind === 'tool';
-}
-function hasMoreThanLines(text, maxLines) {
-  if (!text) return false;
-  let lines = 1;
-  for (let i = 0; i < text.length; i += 1) {
-    if (text.charCodeAt(i) === 10 && ++lines > maxLines) return true;
-  }
-  return false;
-}
-function renderText(text, format, markdown) {
-  if (format === 'ansi') return '<span class="ansi">' + esc(stripAnsi(text)) + '</span>';
-  if (!markdown) return linkify(esc(text));
-  return sanitizeMarkdownHtml(marked.parse(text || ''));
-}
-function renderStatus() {
-  ensureStatusNodes();
-  const s = state.status || {};
-  const displayPhase = minimumDisplayPhase(s.phase || 'ready');
-  const phase = phaseLabel(displayPhase);
-  const ctx = contextParts(s.metrics);
-  const inputTokens = compactNumber((s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens));
-  const outputTokens = compactNumber((s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens);
-  const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
-  const phaseActive = isActivePhase(displayPhase);
-  const active = isActivePhase(s.phase);
-  const phaseClass = ['phase', phaseActive ? 'active' : '', displayPhase === 'thinking' ? 'thinking' : '', displayPhase === 'running_tools' ? 'tools' : '', displayPhase === 'stopped' ? 'stopped' : ''].filter(Boolean).join(' ');
-  setText(statusNodes.phase, phase);
-  if (statusNodes.phase.className !== phaseClass) statusNodes.phase.className = phaseClass;
-  setText(statusNodes.model, model);
-  setText(statusNodes.ctxPercent, ctx.percent);
-  const ctxColor = contextColor(s.metrics);
-  if (statusNodes.ctxPercent.style.color !== ctxColor) statusNodes.ctxPercent.style.color = ctxColor;
-  setText(statusNodes.ctxLimit, ctx.limit);
-  setText(statusNodes.inputTokens, inputTokens);
-  const outputArrowClass = active ? 'token-hot' : '';
-  if (statusNodes.outputArrow.className !== outputArrowClass) statusNodes.outputArrow.className = outputArrowClass;
-  setText(statusNodes.outputTokens, outputTokens);
-  const tasks = state.backgroundTaskCount ? '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') : '';
-  const tasksDisplay = tasks ? '' : 'none';
-  if (statusNodes.tasksWrap.style.display !== tasksDisplay) statusNodes.tasksWrap.style.display = tasksDisplay;
-  setText(statusNodes.tasks, tasks);
-}
-function ensureStatusNodes() {
-  if (statusNodes.phase) return;
-  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span>↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
-  for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
-}
-function minimumDisplayPhase(target) {
-  if (phaseDisplay.timer) {
-    clearTimeout(phaseDisplay.timer);
-    phaseDisplay.timer = undefined;
-  }
-  if (Object.is(target, phaseDisplay.value)) {
-    phaseDisplay.pending = undefined;
-    return phaseDisplay.value;
-  }
-  const applyPending = () => {
-    const next = phaseDisplay.pending;
-    if (next === undefined || Object.is(next, phaseDisplay.value)) {
-      phaseDisplay.pending = undefined;
-      return;
-    }
-    phaseDisplay.value = next;
-    phaseDisplay.displayedAt = Date.now();
-    phaseDisplay.pending = undefined;
-    phaseDisplay.timer = undefined;
-    scheduleRender();
-  };
-  phaseDisplay.pending = target;
-  const remainingMs = STATUS_PHASE_MIN_DISPLAY_MS - (Date.now() - phaseDisplay.displayedAt);
-  if (remainingMs <= 0) applyPending();
-  else phaseDisplay.timer = setTimeout(applyPending, remainingMs);
-  return phaseDisplay.value;
-}
-function setText(node, text) {
-  text = String(text);
-  if (node.textContent !== text) node.textContent = text;
-}
-function renderQueued() {
-  if (!state.queuedInput) { if (queuedEl.style.display !== 'none') queuedEl.style.display = 'none'; return; }
-  if (queuedEl.style.display !== 'block') queuedEl.style.display = 'block';
-  setText(queuedEl, 'queued next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)');
-}
-function completions() {
-  const text = input.value;
-  const cursor = input.selectionStart || 0;
-  const prefix = text.slice(0, cursor);
-  const suffix = text.slice(cursor);
-  if (!prefix.startsWith('/') || /\r|\n/.test(prefix) || /\S/.test(suffix)) return [];
-  if (prefix.startsWith('/model') && (prefix.length === 6 || prefix[6] === ' ')) return modelCompletions(prefix);
-  if (prefix.length > 1 && !/^\/[\w-]*$/.test(prefix)) return [];
-  const normalized = prefix.toLowerCase();
-  return (state.catalog.commands || []).flatMap(c => [c.name].concat(c.aliases || []).map(name => ({ value: name, insertText: name, description: c.description, arguments: c.arguments, kind: 'command' }))).filter(c => c.value.toLowerCase().startsWith(normalized));
-}
-function modelCompletions(prefix) {
-  const hasTrailingSpace = /\s$/.test(prefix);
-  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
-  const args = tokens.slice(1);
-  if (args.length >= 2 && !hasTrailingSpace) return reasoningCompletions(args[0] || '', args[1] || '');
-  if (args.length >= 2) return [];
-  if (args.length === 1 && hasTrailingSpace) return reasoningCompletions(args[0] || '', '');
-  const current = args[0] || '';
-  const models = (state.catalog.modelIds || []).filter(id => id.toLowerCase().includes(current.toLowerCase())).slice(0, 80).map(id => ({ value: id, insertText: '/model ' + id, description: 'model id', arguments: 'optional', kind: 'model' }));
-  const reasoning = reasoningCompletions('', current);
-  return models.concat(reasoning);
-}
-function reasoningCompletions(modelId, current) { return (state.catalog.reasoning || []).filter(x => x.startsWith((current || '').toLowerCase())).map(x => ({ value: x, insertText: modelId ? '/model ' + modelId + ' ' + x : '/model ' + x, description: x === 'default' ? 'use env/provider default' : x === 'off' ? 'send no reasoning config' : 'reasoning effort: ' + x, arguments: 'optional', kind: 'reasoning' })); }
-function renderCompletions() {
-  const list = completions();
-  input.classList.toggle('command', input.value.startsWith('/'));
-  if (!list.length || state.busy && state.queuedInput !== undefined) { completionsEl.style.display = 'none'; return; }
-  const selected = Math.max(0, Math.min(state.completionIndex, list.length - 1));
-  state.completionIndex = selected;
-  const pageSize = 10;
-  const pageStart = Math.floor(selected / pageSize) * pageSize;
-  const visible = list.slice(pageStart, pageStart + pageSize);
-  const pageCount = Math.ceil(list.length / pageSize);
-  const title = pageCount > 1 ? 'Completions (' + list.length + ') page ' + (Math.floor(pageStart / pageSize) + 1) + '/' + pageCount : 'Completions (' + list.length + ')';
-  completionsEl.style.display = 'block';
-  completionsEl.innerHTML = '<div class="completion-title">' + esc(title) + '</div>' + visible.map((c, i) => '<div class="completion-row ' + (c.kind || '') + ' ' + (i + pageStart === selected ? 'selected' : '') + '"><span class="num">' + (i + pageStart + 1) + '.</span><span class="name">' + esc(c.value) + '</span><span class="desc">' + esc(c.description || '') + '</span></div>').join('') + '<div class="completion-footer">↑/↓ select · ←/→ page · Tab complete</div>';
-}
-function selectedCompletion() { const list = completions(); return list.length ? list[Math.max(0, Math.min(state.completionIndex, list.length - 1))] : undefined; }
-function completeSelection() { const c = selectedCompletion(); if (!c) return false; const cursor = input.selectionStart || 0; input.value = c.insertText + input.value.slice(cursor); input.selectionStart = input.selectionEnd = c.insertText.length; autosize(); renderCompletions(); return true; }
-async function submit() {
-  const text = input.value;
-  if (!text.trim()) return;
-  state.history = [text].concat(state.history.filter(x => x !== text)).slice(0, 100);
-  state.historyIndex = undefined;
-  input.value = '';
-  autosize();
-  renderCompletions();
-  const res = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-  const body = await res.json();
-  if (!body.ok && body.error) alert(body.error);
-}
-transcript.addEventListener('scroll', updateScrollBottomAffordance, { passive: true });
-scrollBottom.addEventListener('click', () => { transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' }); updateScrollBottomAffordance(); });
-transcript.addEventListener('click', (e) => {
-  const button = e.target.closest('.tool-toggle');
-  if (!button) return;
-  const id = Number(button.getAttribute('data-line-id'));
-  if (!Number.isFinite(id)) return;
-  if (state.expandedToolLines.has(id)) state.expandedToolLines.delete(id);
-  else state.expandedToolLines.add(id);
-  const line = state.lines.find(x => x.id === id);
-  const element = transcript.querySelector('[data-line-id="' + cssEscape(String(id)) + '"]');
-  if (line && element) {
-    updateLineElement(element, line);
-    renderedLineKeys.set(String(id), lineRenderKey(line));
-  }
-});
-input.addEventListener('keydown', (e) => {
-  const count = completions().length;
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const c = selectedCompletion(); if (c && c.kind === 'command' && c.arguments !== 'none') { completeSelection(); input.value += ' '; input.selectionStart = input.selectionEnd = input.value.length; return; } submit(); return; }
-  if (e.key === 'Tab') { if (completeSelection()) e.preventDefault(); return; }
-  if (e.key === 'ArrowUp' && count) { e.preventDefault(); state.completionIndex = (state.completionIndex + count - 1) % count; renderCompletions(); return; }
-  if (e.key === 'ArrowDown' && count) { e.preventDefault(); state.completionIndex = (state.completionIndex + 1) % count; renderCompletions(); return; }
-  if (e.key === 'ArrowLeft' && count > 10) { e.preventDefault(); state.completionIndex = (state.completionIndex + count - 10) % count; renderCompletions(); return; }
-  if (e.key === 'ArrowRight' && count > 10) { e.preventDefault(); state.completionIndex = (state.completionIndex + 10) % count; renderCompletions(); return; }
-  if (e.key === 'ArrowUp' && !input.value && state.history.length) { e.preventDefault(); state.historyIndex = Math.min(state.history.length - 1, (state.historyIndex ?? -1) + 1); input.value = state.history[state.historyIndex] || ''; autosize(); return; }
-  if (e.key === 'ArrowDown' && state.historyIndex !== undefined) { e.preventDefault(); state.historyIndex -= 1; if (state.historyIndex < 0) { state.historyIndex = undefined; input.value = ''; } else input.value = state.history[state.historyIndex] || ''; autosize(); return; }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else fetch('/api/interrupt', { method: 'POST' }); }
-  if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) fetch('/api/interrupt', { method: 'POST' }); else renderCompletions(); }
-});
-input.addEventListener('input', () => { state.completionIndex = 0; autosize(); renderCompletions(); });
-function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; updateScrollBottomAffordance(); }
-function phaseLabel(phase) { if (phase === 'calling_model') return 'model'; if (phase === 'thinking') return 'think'; if (phase === 'running_tools') return 'tools'; if (phase === 'injecting_context') return 'context'; return phase || 'ready'; }
-function isActivePhase(phase) { return ['running', 'preparing', 'calling_model', 'thinking', 'running_tools', 'compacting', 'injecting_context'].includes(phase); }
-function contextParts(metrics) { if (!metrics) return { used: '?', limit: '?', percent: '?' }; return { used: compactNumber(metrics.estimatedInputTokens), limit: metrics.contextWindowTokens ? compactNumber(metrics.contextWindowTokens) : '?', percent: metrics.contextUsageRatio === undefined ? '?' : (metrics.contextUsageRatio * 100).toFixed(1) + '%' }; }
-function contextColor(metrics) { const r = metrics && metrics.contextUsageRatio; if (r === undefined) return 'var(--muted)'; if (r >= .9) return 'var(--red)'; if (r >= .75) return 'var(--yellow)'; return 'var(--muted)'; }
-function compactNumber(value) { if (value === undefined || value === null) return '?'; const n = Math.max(0, Math.round(value)); if (n >= 1000000) return trimFixed(n / 1000000) + 'm'; if (n >= 10000) return Math.round(n / 1000) + 'k'; if (n >= 1000) return trimFixed(n / 1000) + 'k'; return String(n); }
-function trimFixed(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, ''); }
-function truncateMiddle(value, max) { value = String(value); if (value.length <= max) return value; if (max <= 3) return value.slice(0, max); const l = Math.ceil((max - 3) / 2), r = Math.floor((max - 3) / 2); return value.slice(0, l) + '...' + value.slice(value.length - r); }
-function stripAnsi(value) { return String(value).replace(/\x1b\[[0-9;]*m/g, ''); }
-function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'); }
-function sanitizeMarkdownHtml(html) {
-  const template = document.createElement('template');
-  template.innerHTML = String(html);
-  const allowed = new Set(['A', 'P', 'BR', 'STRONG', 'B', 'EM', 'I', 'CODE', 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'DEL', 'S', 'INPUT', 'TASK-LIST']);
-  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
-  const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
-  for (const node of nodes) {
-    if (!allowed.has(node.tagName)) {
-      node.replaceWith(document.createTextNode(node.textContent || ''));
-      continue;
-    }
-    for (const attr of Array.from(node.attributes)) {
-      const name = attr.name.toLowerCase();
-      const value = attr.value;
-      const keep = (node.tagName === 'A' && name === 'href' && safeHref(value)) ||
-        (node.tagName === 'A' && name === 'title') ||
-        (node.tagName === 'CODE' && name === 'class' && /^language-[\w-]+$/.test(value)) ||
-        (node.tagName === 'INPUT' && (name === 'type' || name === 'checked' || name === 'disabled'));
-      if (!keep) node.removeAttribute(attr.name);
-    }
-    if (node.tagName === 'A') {
-      node.setAttribute('target', '_blank');
-      node.setAttribute('rel', 'noreferrer noopener');
-    }
-    if (node.tagName === 'INPUT') {
-      if (node.getAttribute('type') !== 'checkbox') node.remove();
-      else node.setAttribute('disabled', '');
-    }
-  }
-  highlightMarkdownCodeBlocks(template.content);
-  return template.innerHTML;
-}
-function highlightMarkdownCodeBlocks(root) {
-  const highlighter = window.hljs;
-  for (const code of root.querySelectorAll('pre > code')) {
-    const language = normalizeCodeLanguage(code.className);
-    const pre = code.parentElement;
-    if (pre && language) pre.setAttribute('data-lang', language);
-    if (!highlighter) continue;
-    try {
-      const source = code.textContent || '';
-      const canUseLanguage = language && highlighter.getLanguage(language);
-      const result = canUseLanguage
-        ? highlighter.highlight(source, { language, ignoreIllegals: true })
-        : source.length <= 20000
-          ? highlighter.highlightAuto(source)
-          : undefined;
-      if (!result) continue;
-      code.innerHTML = result.value;
-      code.className = ['hljs', result.language ? 'language-' + result.language : language ? 'language-' + language : ''].filter(Boolean).join(' ');
-      if (pre && result.language && !pre.hasAttribute('data-lang')) pre.setAttribute('data-lang', result.language);
-    } catch {
-      code.textContent = code.textContent || '';
-    }
-  }
-}
-function normalizeCodeLanguage(className) {
-  const match = /(?:^|\s)language-([\w-]+)/.exec(className || '') || /(?:^|\s)lang-([\w-]+)/.exec(className || '');
-  if (!match) return '';
-  const value = match[1].toLowerCase();
-  const aliases = { cjs: 'javascript', js: 'javascript', jsx: 'javascript', mjs: 'javascript', node: 'javascript', py: 'python', python3: 'python', sh: 'bash', shell: 'bash', ts: 'typescript', tsx: 'typescript', yml: 'yaml' };
-  return aliases[value] || value;
-}
-function safeHref(value) {
-  try {
-    const url = new URL(value, window.location.href);
-    return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:';
-  } catch { return false; }
-}
-function esc(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function linkify(value) { return value.replace(/(https?:\/\/[^\s<]+)/g, '<a style="color:var(--cyan)" target="_blank" href="$1">$1</a>'); }
-autosize();
-</script>
-</body>
-</html>`;
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runWebServer().catch((error) => {
