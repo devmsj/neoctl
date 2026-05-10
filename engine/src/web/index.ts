@@ -465,7 +465,8 @@ class WebRepl {
       this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
       this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
       this.runtime.defaultReasoning = config.defaultReasoning;
-      this.status = { ...this.status, metrics: { ...initialContextMetrics(config.model, this.runtime.engine.snapshot().messages, this.runtime.initialMetrics.toolCount), messageCount: this.runtime.engine.snapshot().messages } };
+      const metrics = await this.runtime.engine.contextMetrics();
+      this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
       this.append(systemLine(`Saved ${provider} login to ${this.runtime.envPath}\n${formatModelSettings(this.runtime.engine.getModelSettings(), this.runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
       return { ok: true };
     } catch (error) {
@@ -1016,29 +1017,6 @@ function pushTextBlock(blocks: MessageBlock[], text: string): void {
   const previous = blocks[blocks.length - 1];
   if (previous?.type === "text") previous.text += text;
   else blocks.push({ type: "text", text });
-}
-
-function initialContextMetrics(model: string | undefined, messageCount: number, toolCount: number): ContextMetrics {
-  const window = resolveContextWindowTokens(model);
-  return {
-    model,
-    estimatedInputTokens: 0,
-    estimatedChars: 0,
-    messageCount,
-    toolCount,
-    contextWindowTokens: window.tokens,
-    contextWindowSource: window.source,
-    contextUsageRatio: window.tokens ? 0 : undefined,
-    modelMetadata: window.model ? {
-      id: window.model.id,
-      provider: window.model.provider,
-      maxOutputTokens: window.model.maxOutputTokens,
-      knowledgeCutoff: window.model.knowledgeCutoff,
-      reasoning: window.model.reasoning,
-      imageInput: window.model.imageInput,
-      source: window.model.source,
-    } : undefined,
-  };
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {

@@ -326,31 +326,6 @@ function parseResumeFlag(value: string | undefined): boolean {
   return ["1", "true", "yes", "latest"].includes(value.toLowerCase());
 }
 
-function initialContextMetrics(model: string | undefined, messageCount: number, toolCount: number): ContextMetrics {
-  const window = resolveContextWindowTokens(model);
-  return {
-    model,
-    estimatedInputTokens: 0,
-    estimatedChars: 0,
-    messageCount,
-    toolCount,
-    contextWindowTokens: window.tokens,
-    contextWindowSource: window.source,
-    contextUsageRatio: window.tokens ? 0 : undefined,
-    modelMetadata: window.model
-      ? {
-          id: window.model.id,
-          provider: window.model.provider,
-          maxOutputTokens: window.model.maxOutputTokens,
-          knowledgeCutoff: window.model.knowledgeCutoff,
-          reasoning: window.model.reasoning,
-          imageInput: window.model.imageInput,
-          source: window.model.source,
-        }
-      : undefined,
-  };
-}
-
 function activeBackgroundTasks(runtime: ReplRuntime) {
   return runtime.taskStore.list().filter((task) => !runtime.taskStore.isTerminal(task));
 }
@@ -1117,11 +1092,12 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       setStatus((current) => ({ ...current, phase: "running", detail: "saving model settings", activityTick: current.activityTick + 1 }));
       try {
         const line = await handleModelCommand(command, runtime);
+        const metrics = await runtime.engine.contextMetrics();
         setStatus((current) => ({
           ...current,
           phase: "ready",
           detail: undefined,
-          metrics: { ...initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages },
+          metrics,
           activityTick: current.activityTick + 1,
         }));
         append(line);
@@ -3015,9 +2991,11 @@ async function submitLoginForm(
       reasoning: config.defaultReasoning,
     });
     runtime.defaultReasoning = config.defaultReasoning;
+    const metrics = await runtime.engine.contextMetrics();
     setStatus((current) => ({
       ...current,
-      metrics: { ...initialContextMetrics(config.model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount), messageCount: runtime.engine.snapshot().messages },
+      metrics,
+      activityTick: current.activityTick + 1,
     }));
     setLoginFormState(undefined);
     append(systemLine(`Saved ${state.provider} login to ${state.envPath}\n${formatModelSettings(runtime.engine.getModelSettings(), runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
