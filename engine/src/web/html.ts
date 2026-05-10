@@ -95,7 +95,9 @@ export const WEB_HTML = String.raw`<!doctype html>
     .live .marker { animation: pulse 900ms ease-in-out infinite; }
     @keyframes pulse { 50% { opacity: .35; } }
     .ansi { color: #d1d5db; }
-    #status { flex: 0 0 auto; min-height: 28px; padding: 4px var(--page-gutter); color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 0; overflow: hidden; white-space: nowrap; }
+    #status { flex: 0 0 auto; min-height: 28px; padding: 4px var(--page-gutter); color: var(--muted); border-top: 1px solid var(--line); display: flex; flex-direction: column; align-items: stretch; gap: 2px; overflow: hidden; white-space: nowrap; }
+    .status-main, .status-bg-row { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .status-bg-row { color: var(--yellow); font-size: 12px; }
     .phase { font-weight: 700; color: var(--green); }
     .phase.active { color: var(--cyan); text-shadow: 0 0 12px currentColor; animation: shimmer 1.35s linear infinite; }
     .phase.thinking { color: var(--purple); }
@@ -192,7 +194,7 @@ const ANIMATED_NUMBER_INTERVAL_MS = 50;
 const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
 const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
 const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, backgroundSessionRunCount: 0, runningSessionIds: [], session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, backgroundTasks: [], backgroundSessionRunCount: 0, runningSessionIds: [], session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
 const animatedNumbers = { input: { target: undefined, display: undefined, timer: undefined }, output: { target: undefined, display: undefined, timer: undefined } };
 const renderedLineKeys = new Map();
 const statusNodes = {};
@@ -227,6 +229,7 @@ es.addEventListener('sync', (event) => {
   state.busy = !!payload.busy;
   state.queuedInput = payload.queuedInput;
   state.backgroundTaskCount = payload.backgroundTaskCount || 0;
+  state.backgroundTasks = payload.backgroundTasks || [];
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0;
   state.runningSessionIds = payload.runningSessionIds || state.runningSessionIds || [];
   state.session = payload.session;
@@ -347,14 +350,29 @@ function renderStatus() {
   const outputArrowClass = modelOutputPending(s, now) ? '' : tokenArrowHotClass(s.outputTokenUpdatedAt, now, 'token-output-hot');
   if (statusNodes.outputArrow.className !== outputArrowClass) statusNodes.outputArrow.className = outputArrowClass;
   setText(statusNodes.outputTokens, outputTokens);
-  const tasks = state.backgroundTaskCount ? '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') : '';
-  const tasksDisplay = tasks ? '' : 'none';
-  if (statusNodes.tasksWrap.style.display !== tasksDisplay) statusNodes.tasksWrap.style.display = tasksDisplay;
-  setText(statusNodes.tasks, tasks);
+  renderBackgroundTasks();
+}
+function renderBackgroundTasks() {
+  const tasks = state.backgroundTasks || [];
+  const rows = statusNodes.backgroundRows;
+  if (!rows) return;
+  rows.innerHTML = '';
+  if (!tasks.length) { rows.style.display = 'none'; return; }
+  rows.style.display = '';
+  const summary = document.createElement('div');
+  summary.className = 'status-bg-row';
+  summary.textContent = '◇ background tools: ' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's');
+  rows.appendChild(summary);
+  for (const task of tasks.slice(0, 2)) {
+    const row = document.createElement('div');
+    row.className = 'status-bg-row';
+    row.textContent = '  ' + task.type + ':' + truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, Math.floor(window.innerWidth / 18))) + ' · ' + task.status + ' · ' + formatElapsed(Date.now() - Date.parse(task.createdAt || new Date().toISOString()));
+    rows.appendChild(row);
+  }
 }
 function ensureStatusNodes() {
   if (statusNodes.phase) return;
-  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span data-part="ctxPercent"></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
+  statusEl.innerHTML = '<div class="status-main"><span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span data-part="ctxPercent"></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span></div><div data-part="backgroundRows"></div>';
   for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
 }
 function minimumDisplayPhase(target) {
@@ -620,6 +638,15 @@ async function submit() {
   const text = input.value;
   if (text.trim() === '/sessions') { input.value = ''; autosize(); renderCompletions(); await openSessionsPanel(); return; }
   if (text.trim() === '/login') { input.value = ''; autosize(); renderCompletions(); await openLoginPanel(); return; }
+  if (text.trim() === '/new') {
+    input.value = '';
+    state.attachments = [];
+    autosize();
+    renderCompletions();
+    const result = await postJson('/api/sessions/new', {});
+    if (!result.ok && result.error) alert(result.error);
+    return;
+  }
   const attachments = attachmentsForText(text);
   if (!text.trim() && attachments.length === 0) return;
   state.history = [text].concat(state.history.filter(x => x !== text)).slice(0, 100);
@@ -704,6 +731,7 @@ function isActivePhase(phase) { return ['running', 'preparing', 'calling_model',
 function contextParts(metrics) { if (!metrics) return { percent: '?' }; return { percent: metrics.contextUsageRatio === undefined ? '?' : (metrics.contextUsageRatio * 100).toFixed(1) + '%' }; }
 function contextColor(metrics) { const r = metrics && metrics.contextUsageRatio; if (r === undefined) return 'var(--muted)'; if (r >= .9) return 'var(--red)'; if (r >= .75) return 'var(--yellow)'; return 'var(--muted)'; }
 function compactNumber(value) { if (value === undefined || value === null) return '?'; const n = Math.max(0, Math.round(value)); if (n >= 1000000) return trimFixed(n / 1000000) + 'm'; if (n >= 10000) return Math.round(n / 1000) + 'k'; if (n >= 1000) return trimFixed(n / 1000) + 'k'; return String(n); }
+function formatElapsed(ms) { const seconds = Math.max(0, Math.floor(ms / 1000)); if (seconds < 60) return seconds + 's'; const minutes = Math.floor(seconds / 60); const rem = String(seconds % 60).padStart(2, '0'); if (minutes < 60) return minutes + 'm' + rem + 's'; return Math.floor(minutes / 60) + 'h' + String(minutes % 60).padStart(2, '0') + 'm'; }
 function trimFixed(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, ''); }
 function truncateMiddle(value, max) { value = String(value); if (value.length <= max) return value; if (max <= 3) return value.slice(0, max); const l = Math.ceil((max - 3) / 2), r = Math.floor((max - 3) / 2); return value.slice(0, l) + '...' + value.slice(value.length - r); }
 function stripAnsi(value) { return String(value).replace(/\x1b\[[0-9;]*m/g, ''); }

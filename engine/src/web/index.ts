@@ -337,6 +337,7 @@ class WebRepl {
       busy: this.busy,
       queuedInput: this.queuedInput,
       backgroundTaskCount: this.backgroundTaskCount,
+      backgroundTasks: this.backgroundTasks(),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
@@ -350,7 +351,9 @@ class WebRepl {
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
-    if (this.busy) {
+    const command = parseReplCommand(text);
+    const startsNewSessionWhileBusy = this.busy && command.type === "new";
+    if (this.busy && !startsNewSessionWhileBusy) {
       if (this.queuedInput !== undefined) return { ok: false, error: "A queued prompt is already waiting. Press Esc/Ctrl+C in the web UI to clear it." };
       this.queuedInput = text;
       this.broadcastSync();
@@ -518,6 +521,19 @@ class WebRepl {
   private setStatus(next: UiStatus): void {
     this.status = next;
     this.broadcastSync();
+  }
+
+  private backgroundTasks() {
+    return this.runtime.taskStore.list()
+      .filter((task) => !this.runtime.taskStore.isTerminal(task))
+      .map((task) => ({
+        taskId: task.taskId,
+        agentId: task.agentId,
+        type: task.type,
+        status: task.status,
+        description: task.description,
+        createdAt: task.createdAt,
+      }));
   }
 
   private async detachRunningForeground(reason: string): Promise<boolean> {
