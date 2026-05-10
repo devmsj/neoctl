@@ -28,6 +28,21 @@ npm start
 npm run dev
 ```
 
+构建当前平台的便携可执行分发目录：
+
+```bash
+npm run standalone
+```
+
+产物输出到 `standalone/<platform>-<arch>/`，例如 Windows x64 为 `standalone/win32-x64/neo.exe`。该目录内包含内嵌 Node.js 的启动器、`dist/`、`node_modules/` 和当前平台的 `vendor/ripgrep/`，目标机器无需预装 Node.js；分发时请压缩并保留整个目录结构，不要只复制单个 `neo.exe`。
+
+推送 `v*` tag 或手动触发 GitHub Actions 的 `Build standalone executables` workflow，会分别生成：
+
+- `neo-win32-x64.zip`
+- `neo-linux-x64.tar.gz`
+- `neo-darwin-x64.tar.gz`
+- `neo-darwin-arm64.tar.gz`
+
 首次启动会创建用户级配置文件：
 
 - Windows：`%APPDATA%\neo\.env`
@@ -77,6 +92,8 @@ MODEL_MAX_RETRIES=2
 npm run typecheck       # TypeScript 类型检查
 npm run build           # 编译到 dist，并复制模型元数据
 npm run vendor:rg       # 下载/安装当前平台的 ripgrep 到 vendor/ripgrep
+npm run standalone      # 构建当前平台的便携可执行分发目录
+npm run standalone:clean # 清理 standalone 构建产物
 npm run smoke:core      # 核心 query loop 冒烟测试
 npm run smoke:tools     # 工具体系冒烟测试
 npm run smoke:context   # 上下文和压缩冒烟测试

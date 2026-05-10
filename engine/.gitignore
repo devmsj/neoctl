@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.standalone-build/
+standalone/
 .idea/
 .env
 .env.*

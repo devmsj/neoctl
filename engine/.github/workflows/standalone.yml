@@ -1,0 +1,69 @@
+name: Build standalone executables
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32-x64
+            archive: neo-win32-x64.zip
+          - os: ubuntu-latest
+            platform: linux-x64
+            archive: neo-linux-x64.tar.gz
+          - os: macos-13
+            platform: darwin-x64
+            archive: neo-darwin-x64.tar.gz
+          - os: macos-latest
+            platform: darwin-arm64
+            archive: neo-darwin-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run standalone
+
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path standalone/${{ matrix.platform }}/* -DestinationPath release/${{ matrix.archive }} -Force
+
+      - name: Package Unix artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p release
+          tar -czf release/${{ matrix.archive }} -C standalone/${{ matrix.platform }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: release/${{ matrix.archive }}
+          if-no-files-found: error
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/${{ matrix.archive }}

@@ -87,6 +87,7 @@ function findModelCatalogFile(): string {
     path.join(moduleDir, "model-metadata.json"),
     path.join(process.cwd(), "dist", "model", "model-metadata.json"),
     path.join(process.cwd(), "src", "model", "model-metadata.json"),
+    path.join(path.dirname(process.execPath), "dist", "model", "model-metadata.json"),
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
   if (!found) throw new Error(`model-metadata.json not found in: ${candidates.join(", ")}`);
