@@ -13,6 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/repl/index.js",
     "dev": "tsx src/repl/index.ts",
+    "web": "node dist/web/index.js",
+    "dev:web": "tsx src/web/index.ts",
     "smoke:core": "tsx src/core/smoke-core-loop.ts",
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",
