@@ -299,6 +299,7 @@ class WebRepl {
       this.backgroundTaskCount = runtime.taskStore.activeCount();
       this.broadcastSync();
     });
+    runtime.engine.onSessionTitleChange(() => this.broadcastSync());
   }
 
   subscribe(res: ServerResponse): void {
@@ -321,6 +322,7 @@ class WebRepl {
       busy: this.busy,
       queuedInput: this.queuedInput,
       backgroundTaskCount: this.backgroundTaskCount,
+      session: this.runtime.engine.snapshot().session,
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
     };
@@ -1344,7 +1346,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Partial<UiLine> {
   const inputText = formatReplData(toolUse.input, 1200);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: false, pendingReplacement: false, collapsible: true };
+  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: true, pendingReplacement: true, collapsible: true };
 }
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {

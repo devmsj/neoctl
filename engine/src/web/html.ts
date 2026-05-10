@@ -30,7 +30,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     #app { height: 100%; display: flex; flex-direction: column; }
     .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
     .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; }
-    .hint { margin-left: auto; font-size: 12px; }
+    .page-title { color: var(--muted); font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #transcriptWrap { position: relative; flex: 1; min-height: 0; }
     #transcript { height: 100%; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
     .scroll-bottom-zone { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; padding: 0 var(--page-gutter); display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity .14s ease; z-index: 2; }
@@ -102,7 +102,10 @@ export const WEB_HTML = String.raw`<!doctype html>
     .sep { color: var(--muted); padding: 0 7px; }
     .ctx-stat { word-spacing: .35em; }
     .ctx-stat span { word-spacing: normal; }
-    .token-hot { color: var(--cyan); font-weight: 700; }
+    .token-hot { font-weight: 700; }
+    .token-input-hot { color: var(--green); }
+    .token-output-hot { color: var(--cyan); }
+    .token-error-hot { color: var(--red); }
     @keyframes shimmer { 0%, 100% { filter: brightness(.9); } 45% { filter: brightness(1.9); } }
     #queued { display: none; padding: 0 var(--page-gutter) 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #panel { display: none; flex: 0 0 auto; padding: 8px var(--page-gutter); border-top: 1px solid var(--line); background: rgba(7, 8, 11, .96); color: var(--muted); max-height: 34vh; overflow: auto; }
@@ -132,12 +135,11 @@ export const WEB_HTML = String.raw`<!doctype html>
     #input { flex: 1; min-height: 32px; max-height: 35vh; resize: none; border: 0; outline: 0; padding: 7px 0; background: transparent; color: var(--text); font: inherit; line-height: 1.45; caret-color: var(--cyan); }
     #input.command { color: var(--cyan); }
     #input.locked { color: var(--muted); }
-    .kbd { color: #aab2c0; border: 1px solid #303646; border-bottom-color: #222736; border-radius: 4px; padding: 0 4px; }
   </style>
 </head>
 <body>
 <div id="app">
-  <div class="topbar"><span class="brand">neo web</span><span id="connection">connecting…</span><span class="hint"><span class="kbd">Enter</span> send · <span class="kbd">Shift Enter</span> newline · <span class="kbd">Ctrl C</span> interrupt</span></div>
+  <div class="topbar"><span class="brand">neo web</span><span id="connection">connecting…</span><span id="pageTitle" class="page-title"></span></div>
   <div id="transcriptWrap"><div id="transcript"></div><div id="scrollBottomZone" class="scroll-bottom-zone"><button id="scrollBottom" type="button" aria-label="Scroll to bottom">bottom</button></div></div>
   <div id="status"></div>
   <div id="queued"></div>
@@ -152,7 +154,13 @@ import { marked } from '/vendor/marked.esm.js';
 marked.setOptions({ gfm: true, breaks: false, async: false });
 const TOOL_COLLAPSED_LINES = 6;
 const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0 };
+const TOKEN_PULSE_MS = 900;
+const ANIMATED_NUMBER_INTERVAL_MS = 50;
+const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
+const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
+const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0 };
+const animatedNumbers = { input: { target: undefined, display: undefined, timer: undefined }, output: { target: undefined, display: undefined, timer: undefined } };
 const renderedLineKeys = new Map();
 const statusNodes = {};
 const phaseDisplay = { value: state.status.phase, displayedAt: Date.now(), pending: undefined, timer: undefined };
@@ -166,6 +174,7 @@ const panelEl = document.getElementById('panel');
 const input = document.getElementById('input');
 const completionsEl = document.getElementById('completions');
 const connection = document.getElementById('connection');
+const pageTitle = document.getElementById('pageTitle');
 
 const es = new EventSource('/events');
 es.addEventListener('open', () => connection.textContent = 'connected');
@@ -177,6 +186,7 @@ es.addEventListener('sync', (event) => {
   state.busy = !!payload.busy;
   state.queuedInput = payload.queuedInput;
   state.backgroundTaskCount = payload.backgroundTaskCount || 0;
+  state.session = payload.session;
   if (payload.catalog) state.catalog = payload.catalog;
   if (payload.interactive) state.interactive = payload.interactive;
   scheduleRender();
@@ -187,7 +197,7 @@ function scheduleRender() {
   renderPending = true;
   requestAnimationFrame(() => { renderPending = false; render(); });
 }
-function render() { renderTranscript(); renderStatus(); renderQueued(); renderPanel(); renderCompletions(); updateScrollBottomAffordance(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
+function render() { renderTranscript(); renderStatus(); renderTitle(); renderQueued(); renderPanel(); renderCompletions(); updateScrollBottomAffordance(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
 function renderTranscript() {
   const atBottom = isTranscriptAtBottom();
   const seen = new Set();
@@ -272,11 +282,10 @@ function renderStatus() {
   const displayPhase = minimumDisplayPhase(s.phase || 'ready');
   const phase = phaseLabel(displayPhase);
   const ctx = contextParts(s.metrics);
-  const inputTokens = compactNumber((s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens));
-  const outputTokens = compactNumber((s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens);
+  const inputTokens = compactNumber(animatedNumber('input', (s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens)));
+  const outputTokens = compactNumber(animatedNumber('output', (s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens));
   const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
   const phaseActive = isActivePhase(displayPhase);
-  const active = isActivePhase(s.phase);
   const phaseClass = ['phase', phaseActive ? 'active' : '', displayPhase === 'thinking' ? 'thinking' : '', displayPhase === 'running_tools' ? 'tools' : '', displayPhase === 'stopped' ? 'stopped' : ''].filter(Boolean).join(' ');
   setText(statusNodes.phase, phase);
   if (statusNodes.phase.className !== phaseClass) statusNodes.phase.className = phaseClass;
@@ -285,8 +294,12 @@ function renderStatus() {
   const ctxColor = contextColor(s.metrics);
   if (statusNodes.ctxPercent.style.color !== ctxColor) statusNodes.ctxPercent.style.color = ctxColor;
   setText(statusNodes.ctxLimit, ctx.limit);
+  const now = Date.now();
+  const retryPending = retryCooldownActive(s, now);
+  const inputArrowClass = retryPending ? 'token-hot token-error-hot' : tokenArrowHotClass(s.inputTokenUpdatedAt, now, 'token-input-hot');
+  if (statusNodes.inputArrow.className !== inputArrowClass) statusNodes.inputArrow.className = inputArrowClass;
   setText(statusNodes.inputTokens, inputTokens);
-  const outputArrowClass = active ? 'token-hot' : '';
+  const outputArrowClass = modelOutputPending(s, now) ? '' : tokenArrowHotClass(s.outputTokenUpdatedAt, now, 'token-output-hot');
   if (statusNodes.outputArrow.className !== outputArrowClass) statusNodes.outputArrow.className = outputArrowClass;
   setText(statusNodes.outputTokens, outputTokens);
   const tasks = state.backgroundTaskCount ? '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') : '';
@@ -296,7 +309,7 @@ function renderStatus() {
 }
 function ensureStatusNodes() {
   if (statusNodes.phase) return;
-  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span>↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
+  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
   for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
 }
 function minimumDisplayPhase(target) {
@@ -329,6 +342,72 @@ function minimumDisplayPhase(target) {
 function setText(node, text) {
   text = String(text);
   if (node.textContent !== text) node.textContent = text;
+}
+function renderTitle() {
+  const title = sessionDisplayTitle(state.session);
+  const prefix = isActivePhase((state.status || {}).phase) || state.backgroundTaskCount > 0 ? '● ' : '✓ ';
+  if (title) {
+    const value = prefix + title;
+    setText(pageTitle, value);
+    if (document.title !== value) document.title = value;
+  } else {
+    setText(pageTitle, '');
+  }
+}
+function sessionDisplayTitle(session) {
+  const title = session && typeof session.title === 'string' ? session.title.trim() : '';
+  return title && title !== 'neo' ? title : '';
+}
+function tokenArrowHotClass(updatedAt, now, hotClass) {
+  return updatedAt !== undefined && now - updatedAt <= TOKEN_PULSE_MS ? 'token-hot ' + hotClass : '';
+}
+function retryCooldownActive(status, now) {
+  return status && status.retryCooldownUntil !== undefined && now < status.retryCooldownUntil;
+}
+function modelOutputPending(status, now) {
+  if (retryCooldownActive(status, now)) return true;
+  if (!status || status.phase !== 'calling_model') return false;
+  return tokenArrowHotClass(status.outputTokenUpdatedAt, now, 'token-output-hot') === '';
+}
+function animatedNumber(key, target) {
+  const item = animatedNumbers[key];
+  if (target === undefined || target === null || !Number.isFinite(Number(target))) {
+    if (item.timer) clearInterval(item.timer);
+    item.timer = undefined;
+    item.target = undefined;
+    item.display = undefined;
+    return undefined;
+  }
+  target = Number(target);
+  if (item.display === undefined || item.target === undefined) {
+    item.target = target;
+    item.display = target;
+    return item.display;
+  }
+  if (Object.is(item.target, target)) return item.display;
+  if (item.timer) clearInterval(item.timer);
+  const from = Number(item.display);
+  const delta = target - from;
+  const startedAt = Date.now();
+  const durationMs = animatedNumberDurationMs(Math.abs(delta));
+  item.target = target;
+  item.timer = setInterval(() => {
+    const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
+    const eased = easeOutCubic(progress);
+    item.display = progress >= 1 ? target : from + delta * eased;
+    if (progress >= 1) { clearInterval(item.timer); item.timer = undefined; }
+    scheduleRender();
+  }, ANIMATED_NUMBER_INTERVAL_MS);
+  return item.display;
+}
+function animatedNumberDurationMs(delta) {
+  if (!Number.isFinite(delta) || delta <= 0) return ANIMATED_NUMBER_MIN_DURATION_MS;
+  const scaled = ANIMATED_NUMBER_MIN_DURATION_MS + Math.log10(delta + 1) * ANIMATED_NUMBER_DURATION_SCALE_MS;
+  return Math.min(ANIMATED_NUMBER_MAX_DURATION_MS, Math.max(ANIMATED_NUMBER_MIN_DURATION_MS, scaled));
+}
+function easeOutCubic(progress) {
+  const clamped = Math.max(0, Math.min(1, progress));
+  return 1 - Math.pow(1 - clamped, 3);
 }
 function renderQueued() {
   if (!state.queuedInput) { if (queuedEl.style.display !== 'none') queuedEl.style.display = 'none'; return; }
