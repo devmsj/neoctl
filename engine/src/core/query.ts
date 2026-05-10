@@ -5,11 +5,12 @@ import type { ContextManager, RuntimeContext } from "../context/context-manager.
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { ModelGateway, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
+import { supportsImageInput } from "../model/context-window.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runTools } from "../tools/tool-orchestration.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
-import { createTextMessage, createThinkingMessage, type Message, type ToolUseRequest } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import {
   appendSystemContext,
   applyToolResultBudget,
@@ -253,6 +254,7 @@ async function* callModelForTurn(
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
+  const modelMessages = adaptMessagesForModelCapabilities(messagesForQuery, activeModel);
 
   yield { type: "state", phase: "compacting", detail: "messages prepared for model" };
   yield { type: "context.metrics", metrics: telemetry.metrics };
@@ -262,7 +264,7 @@ async function* callModelForTurn(
     for await (const event of dependencies.modelGateway.stream({
       model: activeModel,
       fallbackModel: state.fallbackModel ?? options.fallbackModel,
-      messages: messagesForQuery,
+      messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
       tools: telemetry.toolDefinitions,
       stream: true,
@@ -326,6 +328,40 @@ async function* callModelForTurn(
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   appendSyntheticToolUseMessage(assistantMessages, toolUses);
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
+}
+
+function adaptMessagesForModelCapabilities(messages: Message[], model: string | undefined): Message[] {
+  if (supportsImageInput(model) !== false) return messages;
+
+  let changed = false;
+  const adapted = messages.map((message) => {
+    let messageChanged = false;
+    const blocks = message.blocks.map((block): MessageBlock => {
+      if (block.type !== "image") return block;
+      changed = true;
+      messageChanged = true;
+      return {
+        type: "text",
+        text: formatUnsupportedImagePlaceholder(block),
+      };
+    });
+
+    return messageChanged
+      ? {
+          ...message,
+          blocks,
+          metadata: { ...message.metadata, imageInputDowngraded: true },
+        }
+      : message;
+  });
+
+  return changed ? adapted : messages;
+}
+
+function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string }): string {
+  const label = block.label?.trim();
+  const suffix = `[image ${block.mimeType} omitted: current model does not support image input]`;
+  return label ? `${label} ${suffix}` : suffix;
 }
 
 async function* handleModelEvent(
