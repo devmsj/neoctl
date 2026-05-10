@@ -1760,7 +1760,7 @@ function renderCompactStatusSegments(
   const context = renderContextParts(status.metrics);
   const fixedText = [
     phaseText,
-    `ctx ${context.used} / ${context.limit} (${context.percent})`,
+    `ctx ${context.percent} of ${context.limit}`,
     `↑ ${inputValue}`,
     `↓ ${outputValue}`,
   ].join(STATUS_SEPARATOR);
@@ -1779,8 +1779,8 @@ function renderCompactStatusSegments(
     { text: model },
     statusDividerSegment(),
     statusLabelSegment("ctx"),
-    { text: ` ${context.used} / ${context.limit}` },
-    { text: ` (${context.percent})`, color: contextColor(status.metrics) },
+    { text: ` ${context.percent}`, color: contextColor(status.metrics) },
+    { text: ` of ${context.limit}` },
     statusDividerSegment(),
     statusLabelSegment("↑", tokenInputColor),
     { text: ` ${inputValue}` },

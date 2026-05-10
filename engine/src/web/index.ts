@@ -621,6 +621,8 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
   try {
     if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);
     if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, path.join(process.cwd(), "node_modules", "marked", "lib", "marked.esm.js"), "text/javascript; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "highlight.min.js"), "text/javascript; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "styles", "atom-one-dark.min.css"), "text/css; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "POST" && url.pathname === "/api/submit") {
@@ -1181,6 +1183,8 @@ const WEB_HTML = String.raw`<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>neo web</title>
+  <link rel="stylesheet" href="/vendor/highlight-theme.css" />
+  <script defer src="/vendor/highlight.min.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -1225,9 +1229,11 @@ const WEB_HTML = String.raw`<!doctype html>
     .markdown li { margin: .18em 0; }
     .markdown li > p { margin: .25em 0; }
     .markdown blockquote { margin: .75em 0; padding: .2em 0 .2em 1em; border-left: 3px solid #334155; color: #bac2cf; background: rgba(148, 163, 184, .05); }
-    .markdown pre { margin: .85em 0; padding: 12px 14px; overflow: auto; border: 1px solid #202635; border-radius: 8px; background: #0c1018; color: #d8dee9; white-space: pre; }
+    .markdown pre { position: relative; margin: .85em 0; padding: 12px 14px; overflow: auto; border: 1px solid #202635; border-radius: 8px; background: #0c1018; color: #d8dee9; white-space: pre; box-shadow: inset 0 1px 0 rgba(255,255,255,.025); }
+    .markdown pre[data-lang]::before { content: attr(data-lang); position: sticky; left: 100%; float: right; margin: -5px -7px 4px 12px; padding: 1px 6px; border: 1px solid #263043; border-radius: 999px; background: rgba(15, 23, 42, .92); color: #94a3b8; font-size: 11px; line-height: 16px; text-transform: lowercase; }
     .markdown code { padding: .12em .34em; border: 1px solid #222838; border-radius: 5px; background: #0c1018; color: #facc15; font: .94em ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    .markdown pre code { padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 1em; }
+    .markdown pre code, .markdown pre code.hljs { display: block; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 1em; overflow: visible; }
+    .markdown .hljs { background: transparent; color: inherit; }
     .markdown table { display: block; width: max-content; max-width: 100%; overflow: auto; margin: .85em 0; border-collapse: collapse; }
     .markdown th, .markdown td { padding: 6px 10px; border: 1px solid #263043; }
     .markdown th { background: #111827; color: #f3f4f6; font-weight: 700; }
@@ -1258,6 +1264,8 @@ const WEB_HTML = String.raw`<!doctype html>
     .phase.tools { color: var(--gold); }
     .phase.stopped { color: var(--yellow); }
     .sep { color: var(--muted); padding: 0 7px; }
+    .ctx-stat { word-spacing: .35em; }
+    .ctx-stat span { word-spacing: normal; }
     .token-hot { color: var(--cyan); font-weight: 700; }
     @keyframes shimmer { 0%, 100% { filter: brightness(.9); } 45% { filter: brightness(1.9); } }
     #queued { display: none; padding: 0 var(--page-gutter) 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1347,7 +1355,7 @@ function renderStatus() {
   const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
   const active = isActivePhase(s.phase);
   const phaseClass = ['phase', active ? 'active' : '', s.phase === 'thinking' ? 'thinking' : '', s.phase === 'running_tools' ? 'tools' : '', s.phase === 'stopped' ? 'stopped' : ''].join(' ');
-  statusEl.innerHTML = '<span class="' + phaseClass + '">' + esc(phase) + '</span><span class="sep">·</span>' + esc(model) + '<span class="sep">·</span><span>ctx</span> ' + esc(ctx.used) + ' / ' + esc(ctx.limit) + ' <span style="color:' + contextColor(s.metrics) + '">(' + esc(ctx.percent) + ')</span><span class="sep">·</span><span>↑</span> ' + esc(inputTokens) + '<span class="sep">·</span><span class="' + (active ? 'token-hot' : '') + '">↓</span> ' + esc(outputTokens) + (state.backgroundTaskCount ? '<span class="sep">·</span><span style="color:var(--yellow)">' + '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') + '</span>' : '');
+  statusEl.innerHTML = '<span class="' + phaseClass + '">' + esc(phase) + '</span><span class="sep">·</span>' + esc(model) + '<span class="sep">·</span><span class="ctx-stat">ctx <span style="color:' + contextColor(s.metrics) + '">' + esc(ctx.percent) + '</span> of ' + esc(ctx.limit) + '</span><span class="sep">·</span><span>↑</span> ' + esc(inputTokens) + '<span class="sep">·</span><span class="' + (active ? 'token-hot' : '') + '">↓</span> ' + esc(outputTokens) + (state.backgroundTaskCount ? '<span class="sep">·</span><span style="color:var(--yellow)">' + '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') + '</span>' : '');
 }
 function renderQueued() {
   if (!state.queuedInput) { queuedEl.style.display = 'none'; return; }
@@ -1459,7 +1467,39 @@ function sanitizeMarkdownHtml(html) {
       else node.setAttribute('disabled', '');
     }
   }
+  highlightMarkdownCodeBlocks(template.content);
   return template.innerHTML;
+}
+function highlightMarkdownCodeBlocks(root) {
+  const highlighter = window.hljs;
+  for (const code of root.querySelectorAll('pre > code')) {
+    const language = normalizeCodeLanguage(code.className);
+    const pre = code.parentElement;
+    if (pre && language) pre.setAttribute('data-lang', language);
+    if (!highlighter) continue;
+    try {
+      const source = code.textContent || '';
+      const canUseLanguage = language && highlighter.getLanguage(language);
+      const result = canUseLanguage
+        ? highlighter.highlight(source, { language, ignoreIllegals: true })
+        : source.length <= 20000
+          ? highlighter.highlightAuto(source)
+          : undefined;
+      if (!result) continue;
+      code.innerHTML = result.value;
+      code.className = ['hljs', result.language ? 'language-' + result.language : language ? 'language-' + language : ''].filter(Boolean).join(' ');
+      if (pre && result.language && !pre.hasAttribute('data-lang')) pre.setAttribute('data-lang', result.language);
+    } catch {
+      code.textContent = code.textContent || '';
+    }
+  }
+}
+function normalizeCodeLanguage(className) {
+  const match = /(?:^|\s)language-([\w-]+)/.exec(className || '') || /(?:^|\s)lang-([\w-]+)/.exec(className || '');
+  if (!match) return '';
+  const value = match[1].toLowerCase();
+  const aliases = { cjs: 'javascript', js: 'javascript', jsx: 'javascript', mjs: 'javascript', node: 'javascript', py: 'python', python3: 'python', sh: 'bash', shell: 'bash', ts: 'typescript', tsx: 'typescript', yml: 'yaml' };
+  return aliases[value] || value;
 }
 function safeHref(value) {
   try {
