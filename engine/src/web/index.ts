@@ -1311,6 +1311,9 @@ import { marked } from '/vendor/marked.esm.js';
 marked.setOptions({ gfm: true, breaks: false, async: false });
 const TOOL_COLLAPSED_LINES = 6;
 const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set() };
+const renderedLineKeys = new Map();
+const statusNodes = {};
+let renderPending = false;
 const transcript = document.getElementById('transcript');
 const statusEl = document.getElementById('status');
 const queuedEl = document.getElementById('queued');
@@ -1329,16 +1332,43 @@ es.addEventListener('sync', (event) => {
   state.queuedInput = payload.queuedInput;
   state.backgroundTaskCount = payload.backgroundTaskCount || 0;
   if (payload.catalog) state.catalog = payload.catalog;
-  render();
+  scheduleRender();
 });
 
+function scheduleRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => { renderPending = false; render(); });
+}
 function render() { renderTranscript(); renderStatus(); renderQueued(); renderCompletions(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
 function renderTranscript() {
   const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
-  transcript.innerHTML = state.lines.map(renderLine).join('');
+  const seen = new Set();
+  let cursor = transcript.firstElementChild;
+  for (const line of state.lines) {
+    const id = String(line.id);
+    seen.add(id);
+    let element = transcript.querySelector('[data-line-id="' + cssEscape(id) + '"]');
+    const key = lineRenderKey(line);
+    if (!element) {
+      element = document.createElement('div');
+      element.setAttribute('data-line-id', id);
+      updateLineElement(element, line);
+      renderedLineKeys.set(id, key);
+    } else if (renderedLineKeys.get(id) !== key) {
+      updateLineElement(element, line);
+      renderedLineKeys.set(id, key);
+    }
+    if (element !== cursor) transcript.insertBefore(element, cursor);
+    cursor = element.nextElementSibling;
+  }
+  for (const child of Array.from(transcript.children)) {
+    const id = child.getAttribute('data-line-id');
+    if (!seen.has(id)) { renderedLineKeys.delete(id); child.remove(); }
+  }
   if (atBottom) transcript.scrollTop = transcript.scrollHeight;
 }
-function renderLine(line) {
+function updateLineElement(element, line) {
   const kind = line.kind || 'system';
   const marker = markerForLine(line, kind);
   const markerCls = marker === '●' ? 'circle' : 'diamond';
@@ -1351,7 +1381,14 @@ function renderLine(line) {
   const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
   const body = '<div class="tool-body">' + renderText(line.text || '', line.format, markdown) + '</div>';
   const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
-  return '<div class="' + cls + '" data-line-id="' + String(line.id) + '"><div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div></div>';
+  element.className = cls;
+  element.innerHTML = '<div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div>';
+}
+function lineRenderKey(line) {
+  const kind = line.kind || 'system';
+  const expanded = state.expandedToolLines.has(line.id);
+  const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
+  return [kind, line.text || '', line.title || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0'].join('\u001f');
 }
 function markerForLine(line, kind) {
   if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
@@ -1376,6 +1413,7 @@ function renderText(text, format, markdown) {
   return sanitizeMarkdownHtml(marked.parse(text || ''));
 }
 function renderStatus() {
+  ensureStatusNodes();
   const s = state.status || {};
   const phase = phaseLabel(s.phase || 'ready');
   const ctx = contextParts(s.metrics);
@@ -1383,13 +1421,36 @@ function renderStatus() {
   const outputTokens = compactNumber((s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens);
   const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
   const active = isActivePhase(s.phase);
-  const phaseClass = ['phase', active ? 'active' : '', s.phase === 'thinking' ? 'thinking' : '', s.phase === 'running_tools' ? 'tools' : '', s.phase === 'stopped' ? 'stopped' : ''].join(' ');
-  statusEl.innerHTML = '<span class="' + phaseClass + '">' + esc(phase) + '</span><span class="sep">·</span>' + esc(model) + '<span class="sep">·</span><span class="ctx-stat">ctx <span style="color:' + contextColor(s.metrics) + '">' + esc(ctx.percent) + '</span> of ' + esc(ctx.limit) + '</span><span class="sep">·</span><span>↑</span> ' + esc(inputTokens) + '<span class="sep">·</span><span class="' + (active ? 'token-hot' : '') + '">↓</span> ' + esc(outputTokens) + (state.backgroundTaskCount ? '<span class="sep">·</span><span style="color:var(--yellow)">' + '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') + '</span>' : '');
+  const phaseClass = ['phase', active ? 'active' : '', s.phase === 'thinking' ? 'thinking' : '', s.phase === 'running_tools' ? 'tools' : '', s.phase === 'stopped' ? 'stopped' : ''].filter(Boolean).join(' ');
+  setText(statusNodes.phase, phase);
+  if (statusNodes.phase.className !== phaseClass) statusNodes.phase.className = phaseClass;
+  setText(statusNodes.model, model);
+  setText(statusNodes.ctxPercent, ctx.percent);
+  const ctxColor = contextColor(s.metrics);
+  if (statusNodes.ctxPercent.style.color !== ctxColor) statusNodes.ctxPercent.style.color = ctxColor;
+  setText(statusNodes.ctxLimit, ctx.limit);
+  setText(statusNodes.inputTokens, inputTokens);
+  const outputArrowClass = active ? 'token-hot' : '';
+  if (statusNodes.outputArrow.className !== outputArrowClass) statusNodes.outputArrow.className = outputArrowClass;
+  setText(statusNodes.outputTokens, outputTokens);
+  const tasks = state.backgroundTaskCount ? '◇'.repeat(Math.min(3, state.backgroundTaskCount)) + (state.backgroundTaskCount > 3 ? '×' + state.backgroundTaskCount : '') : '';
+  const tasksDisplay = tasks ? '' : 'none';
+  if (statusNodes.tasksWrap.style.display !== tasksDisplay) statusNodes.tasksWrap.style.display = tasksDisplay;
+  setText(statusNodes.tasks, tasks);
+}
+function ensureStatusNodes() {
+  if (statusNodes.phase) return;
+  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span>↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
+  for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
+}
+function setText(node, text) {
+  text = String(text);
+  if (node.textContent !== text) node.textContent = text;
 }
 function renderQueued() {
-  if (!state.queuedInput) { queuedEl.style.display = 'none'; return; }
-  queuedEl.style.display = 'block';
-  queuedEl.textContent = 'queued next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)';
+  if (!state.queuedInput) { if (queuedEl.style.display !== 'none') queuedEl.style.display = 'none'; return; }
+  if (queuedEl.style.display !== 'block') queuedEl.style.display = 'block';
+  setText(queuedEl, 'queued next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)');
 }
 function completions() {
   const text = input.value;
@@ -1450,7 +1511,12 @@ transcript.addEventListener('click', (e) => {
   if (!Number.isFinite(id)) return;
   if (state.expandedToolLines.has(id)) state.expandedToolLines.delete(id);
   else state.expandedToolLines.add(id);
-  renderTranscript();
+  const line = state.lines.find(x => x.id === id);
+  const element = transcript.querySelector('[data-line-id="' + cssEscape(String(id)) + '"]');
+  if (line && element) {
+    updateLineElement(element, line);
+    renderedLineKeys.set(String(id), lineRenderKey(line));
+  }
 });
 input.addEventListener('keydown', (e) => {
   const count = completions().length;
@@ -1475,6 +1541,7 @@ function compactNumber(value) { if (value === undefined || value === null) retur
 function trimFixed(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, ''); }
 function truncateMiddle(value, max) { value = String(value); if (value.length <= max) return value; if (max <= 3) return value.slice(0, max); const l = Math.ceil((max - 3) / 2), r = Math.floor((max - 3) / 2); return value.slice(0, l) + '...' + value.slice(value.length - r); }
 function stripAnsi(value) { return String(value).replace(/\x1b\[[0-9;]*m/g, ''); }
+function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'); }
 function sanitizeMarkdownHtml(html) {
   const template = document.createElement('template');
   template.innerHTML = String(html);
