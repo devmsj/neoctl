@@ -1085,9 +1085,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const inputLockedByQueue = busy && queuedInput !== undefined;
   const prompt = promptPrefix(busy);
   const currentTip = tipAt(tipIndex);
-  const activePlaceholder = promptPlaceholder ?? currentTip.placeholder;
-  const promptDisplayText = input.length === 0 ? activePlaceholder : input;
-  const promptDisplayCursor = input.length === 0 ? activePlaceholder.length : cursor;
+  const activePlaceholder = input.length === 0 ? promptPlaceholder ?? currentTip.placeholder : undefined;
+  const promptDisplayText = input;
+  const promptDisplayCursor = cursor;
+  const promptLayoutText = activePlaceholder ? ` ${activePlaceholder}` : promptDisplayText;
+  const promptLayoutCursor = activePlaceholder ? 0 : promptDisplayCursor;
   const slashCompletions = inputLockedByQueue || (input.length === 0 && promptPlaceholder !== undefined) || loginForm ? [] : slashCommandCompletions(input, cursor);
   const visibleSlashCompletionCount = slashCompletions.length;
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
@@ -1096,7 +1098,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
     slashCompletionIndexRef.current = selectedSlashCompletionIndex;
   }
-  const promptHeight = promptTextView(promptDisplayText, promptDisplayCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0) + (pasteStatus ? 1 : 0);
+  const promptHeight = promptTextView(promptLayoutText, promptLayoutCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0) + (pasteStatus ? 1 : 0);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
@@ -1334,7 +1336,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     backgroundTaskCount > 0 ? e(BackgroundTaskStatusLine, { count: backgroundTaskCount, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
-    e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
+    e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, ghostText: activePlaceholder, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
   );
 }
 
@@ -2001,22 +2003,28 @@ function selectedSlashCommandCompletion(text: string, cursor: number, selectedIn
 }
 
 function PromptLine(
-  { text, cursor, busy, locked, placeholder = false, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }:
-  { text: string; cursor: number; busy: boolean; locked: boolean; placeholder?: boolean; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number; attachments: ClipboardAttachment[] },
+  { text, cursor, busy, locked, placeholder = false, ghostText, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }:
+  { text: string; cursor: number; busy: boolean; locked: boolean; placeholder?: boolean; ghostText?: string; width: number; prompt: string; slashCompletions: SlashCommandCompletion[]; selectedSlashCompletionIndex: number; attachments: ClipboardAttachment[] },
 ) {
-  const visualLines = promptTextView(text, cursor, width, prompt);
+  const displayText = text.length === 0 && ghostText ? ` ${ghostText}` : text;
+  const displayCursor = text.length === 0 && ghostText ? 0 : cursor;
+  const visualLines = promptTextView(displayText, displayCursor, width, prompt);
   const inputColor = placeholder ? "gray" : (!locked && isValidReplCommandLine(text) ? "cyan" : undefined);
   return e(
     Box,
     { flexDirection: "column" },
-    ...visualLines.map((line, index) => e(
-      Box,
-      { key: `prompt-${index}`, height: 1, overflow: "hidden" },
-      e(Text, { color: locked ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
-      ...renderPromptPart(line.before, inputColor, attachments, `prompt-${index}-before`),
-      e(Text, { key: `prompt-${index}-cursor`, inverse: true, color: inputColor }, line.selected),
-      ...renderPromptPart(line.after, inputColor, attachments, `prompt-${index}-after`),
-    )),
+    ...visualLines.map((line, index) => {
+      const isGhostLine = text.length === 0 && ghostText !== undefined;
+      const afterColor = isGhostLine ? "gray" : inputColor;
+      return e(
+        Box,
+        { key: `prompt-${index}`, height: 1, overflow: "hidden" },
+        e(Text, { color: locked ? "gray" : "cyan" }, index === 0 ? prompt : " ".repeat(prompt.length)),
+        ...renderPromptPart(line.before, inputColor, attachments, `prompt-${index}-before`),
+        e(Text, { key: `prompt-${index}-cursor`, inverse: true, color: inputColor }, line.selected),
+        ...renderPromptPart(line.after, afterColor, attachments, `prompt-${index}-after`),
+      );
+    }),
     ...SlashCompletionLines({ completions: slashCompletions, width, prompt, selectedIndex: selectedSlashCompletionIndex }),
   );
 }

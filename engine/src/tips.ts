@@ -126,6 +126,36 @@ export const appTips: AppTip[] = [
     placeholder: "Tip: Ask to run npm test, typecheck, or a project-specific command after changes",
     detail: "If you know the right validation command, include it in the request so the assistant can verify the work precisely.",
   },
+  {
+    id: "reset",
+    title: "Start fresh",
+    placeholder: "Tip: Type /reset to clear the current transcript without leaving the REPL",
+    detail: "/reset clears the visible conversation and adds a reset marker so you can start a fresh thread in the same session.",
+  },
+  {
+    id: "focus-files",
+    title: "Point to relevant files",
+    placeholder: "Tip: Mention exact files or symbols, e.g. “check src/repl/index.ts PromptLine”",
+    detail: "Naming files, functions, errors, or commands helps the assistant inspect the right context first and avoid broad searches.",
+  },
+  {
+    id: "review-diff",
+    title: "Review before finishing",
+    placeholder: "Tip: Ask to show or summarize the diff before wrapping up a change",
+    detail: "For risky edits, ask for a diff summary or specific files changed before running validation and finalizing.",
+  },
+  {
+    id: "current-docs",
+    title: "Use current docs",
+    placeholder: "Tip: For fast-moving APIs, ask the assistant to search the web before changing code",
+    detail: "When behavior depends on current packages, SDKs, or service docs, request a web search so the answer is not based only on local code.",
+  },
+  {
+    id: "parallel-investigation",
+    title: "Split independent work",
+    placeholder: "Tip: For independent checks, ask the assistant to investigate them in parallel",
+    detail: "Independent searches, audits, or comparisons can be delegated to subagents so findings come back faster and with clearer scope.",
+  },
 ];
 
 export function tipAt(index: number): AppTip {
