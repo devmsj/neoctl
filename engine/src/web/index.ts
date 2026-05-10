@@ -1188,19 +1188,22 @@ const WEB_HTML = String.raw`<!doctype html>
       --red: #ef4444;
       --yellow: #eab308;
       --line: #161a23;
+      --page-max-width: 1120px;
+      --page-gutter: max(18px, calc((100vw - var(--page-max-width)) / 2));
+      --topbar-gutter: max(14px, calc((100vw - var(--page-max-width)) / 2));
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body { background: radial-gradient(circle at top, #101522 0, var(--bg) 42rem); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     #app { height: 100%; display: flex; flex-direction: column; }
-    .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
+    .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
     .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; }
     .hint { margin-left: auto; font-size: 12px; }
-    #transcript { flex: 1; overflow: auto; padding: 18px 18px 8px; scroll-behavior: smooth; }
+    #transcript { flex: 1; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
     .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
     .block:first-child { margin-top: 0; }
     .marker { width: 18px; flex: 0 0 18px; user-select: none; }
-    .content { min-width: 0; max-width: 1200px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .content { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
     .content.summary { color: #d7dce5; }
     .title { color: var(--muted); font-weight: 700; margin-bottom: 2px; }
     .title.success::after { content: " ✓"; color: var(--green); }
@@ -1215,7 +1218,7 @@ const WEB_HTML = String.raw`<!doctype html>
     .live .marker { animation: pulse 900ms ease-in-out infinite; }
     @keyframes pulse { 50% { opacity: .35; } }
     .ansi { color: #d1d5db; }
-    #status { flex: 0 0 auto; min-height: 28px; padding: 4px 18px; color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 0; overflow: hidden; white-space: nowrap; }
+    #status { flex: 0 0 auto; min-height: 28px; padding: 4px var(--page-gutter); color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 0; overflow: hidden; white-space: nowrap; }
     .phase { font-weight: 700; color: var(--green); }
     .phase.active { color: var(--cyan); text-shadow: 0 0 12px currentColor; animation: shimmer 1.35s linear infinite; }
     .phase.thinking { color: var(--purple); }
@@ -1224,9 +1227,9 @@ const WEB_HTML = String.raw`<!doctype html>
     .sep { color: var(--muted); padding: 0 7px; }
     .token-hot { color: var(--cyan); font-weight: 700; }
     @keyframes shimmer { 0%, 100% { filter: brightness(.9); } 45% { filter: brightness(1.9); } }
-    #queued { display: none; padding: 0 18px 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #composerWrap { flex: 0 0 auto; padding: 0 18px 16px; background: rgba(7, 8, 11, .92); }
-    #completions { display: none; margin-left: 26px; margin-bottom: 6px; color: var(--muted); max-width: 980px; }
+    #queued { display: none; padding: 0 var(--page-gutter) 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #composerWrap { flex: 0 0 auto; padding: 0 var(--page-gutter) 16px; background: rgba(7, 8, 11, .92); }
+    #completions { display: none; margin-left: 26px; margin-bottom: 6px; color: var(--muted); max-width: calc(var(--page-max-width) - 26px); }
     .completion-title { color: var(--cyan); font-weight: 700; }
     .completion-row { display: grid; grid-template-columns: 4ch minmax(10ch, 32ch) 1fr; gap: 1ch; min-height: 20px; align-items: center; }
     .completion-row.selected .num { background: var(--cyan); color: #020617; }
