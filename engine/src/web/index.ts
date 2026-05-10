@@ -620,6 +620,7 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);
+    if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, path.join(process.cwd(), "node_modules", "marked", "lib", "marked.esm.js"), "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "POST" && url.pathname === "/api/submit") {
@@ -635,6 +636,12 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
 
 function sendHtml(res: ServerResponse, body: string): void {
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(body);
+}
+
+async function sendFile(res: ServerResponse, filepath: string, contentType: string): Promise<void> {
+  const body = await fs.readFile(filepath);
+  res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "public, max-age=3600" });
   res.end(body);
 }
 
@@ -1203,8 +1210,34 @@ const WEB_HTML = String.raw`<!doctype html>
     .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
     .block:first-child { margin-top: 0; }
     .marker { width: 18px; flex: 0 0 18px; user-select: none; }
-    .content { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .content { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+    .content.plain { white-space: pre-wrap; }
     .content.summary { color: #d7dce5; }
+    .markdown { color: var(--text); }
+    .markdown > :first-child { margin-top: 0; }
+    .markdown > :last-child { margin-bottom: 0; }
+    .markdown p { margin: 0 0 .72em; }
+    .markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 1em 0 .45em; line-height: 1.25; color: #f3f4f6; font-weight: 700; }
+    .markdown h1 { font-size: 1.34em; padding-bottom: .22em; border-bottom: 1px solid #222837; }
+    .markdown h2 { font-size: 1.18em; }
+    .markdown h3 { font-size: 1.06em; }
+    .markdown ul, .markdown ol { margin: .35em 0 .78em; padding-left: 2.1em; }
+    .markdown li { margin: .18em 0; }
+    .markdown li > p { margin: .25em 0; }
+    .markdown blockquote { margin: .75em 0; padding: .2em 0 .2em 1em; border-left: 3px solid #334155; color: #bac2cf; background: rgba(148, 163, 184, .05); }
+    .markdown pre { margin: .85em 0; padding: 12px 14px; overflow: auto; border: 1px solid #202635; border-radius: 8px; background: #0c1018; color: #d8dee9; white-space: pre; }
+    .markdown code { padding: .12em .34em; border: 1px solid #222838; border-radius: 5px; background: #0c1018; color: #facc15; font: .94em ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .markdown pre code { padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-size: 1em; }
+    .markdown table { display: block; width: max-content; max-width: 100%; overflow: auto; margin: .85em 0; border-collapse: collapse; }
+    .markdown th, .markdown td { padding: 6px 10px; border: 1px solid #263043; }
+    .markdown th { background: #111827; color: #f3f4f6; font-weight: 700; }
+    .markdown tr:nth-child(2n) td { background: rgba(148, 163, 184, .045); }
+    .markdown hr { border: 0; border-top: 1px solid #222837; margin: 1em 0; }
+    .markdown a { color: var(--cyan); text-decoration: none; }
+    .markdown a:hover { text-decoration: underline; }
+    .markdown strong { color: #f8fafc; }
+    .markdown del { color: var(--muted); }
+    .markdown input[type="checkbox"] { vertical-align: -2px; margin-right: .4em; accent-color: var(--cyan); }
     .title { color: var(--muted); font-weight: 700; margin-bottom: 2px; }
     .title.success::after { content: " ✓"; color: var(--green); }
     .title.failure::after { content: " ✕"; color: var(--red); }
@@ -1256,7 +1289,9 @@ const WEB_HTML = String.raw`<!doctype html>
     <div id="composer"><div id="prompt">●</div><textarea id="input" spellcheck="false" autofocus></textarea></div>
   </div>
 </div>
-<script>
+<script type="module">
+import { marked } from '/vendor/marked.esm.js';
+marked.setOptions({ gfm: true, breaks: false, async: false });
 const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0 };
 const transcript = document.getElementById('transcript');
 const statusEl = document.getElementById('status');
@@ -1289,12 +1324,19 @@ function renderLine(line) {
   const kind = line.kind || 'system';
   const marker = kind === 'thinking' ? '◆' : '●';
   const title = line.title ? '<div class="title ' + (line.titleStatus || '') + '">' + esc(line.title) + '</div>' : '';
+  const markdown = shouldRenderMarkdown(line);
   const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : ''].filter(Boolean).join(' ');
-  return '<div class="' + cls + '"><div class="marker">' + marker + '</div><div class="content ' + (line.previewStyle === 'summary' ? 'summary' : '') + '">' + title + renderText(line.text || '', line.format) + '</div></div>';
+  const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
+  return '<div class="' + cls + '"><div class="marker">' + marker + '</div><div class="' + contentCls + '">' + title + renderText(line.text || '', line.format, markdown) + '</div></div>';
 }
-function renderText(text, format) {
+function shouldRenderMarkdown(line) {
+  if (line.format === 'ansi') return false;
+  return line.kind === 'assistant' || line.kind === 'thinking' || line.kind === 'system' || line.kind === 'tool';
+}
+function renderText(text, format, markdown) {
   if (format === 'ansi') return '<span class="ansi">' + esc(stripAnsi(text)) + '</span>';
-  return linkify(esc(text));
+  if (!markdown) return linkify(esc(text));
+  return sanitizeMarkdownHtml(marked.parse(text || ''));
 }
 function renderStatus() {
   const s = state.status || {};
@@ -1387,6 +1429,44 @@ function compactNumber(value) { if (value === undefined || value === null) retur
 function trimFixed(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, ''); }
 function truncateMiddle(value, max) { value = String(value); if (value.length <= max) return value; if (max <= 3) return value.slice(0, max); const l = Math.ceil((max - 3) / 2), r = Math.floor((max - 3) / 2); return value.slice(0, l) + '...' + value.slice(value.length - r); }
 function stripAnsi(value) { return String(value).replace(/\x1b\[[0-9;]*m/g, ''); }
+function sanitizeMarkdownHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html);
+  const allowed = new Set(['A', 'P', 'BR', 'STRONG', 'B', 'EM', 'I', 'CODE', 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'DEL', 'S', 'INPUT', 'TASK-LIST']);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (!allowed.has(node.tagName)) {
+      node.replaceWith(document.createTextNode(node.textContent || ''));
+      continue;
+    }
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value;
+      const keep = (node.tagName === 'A' && name === 'href' && safeHref(value)) ||
+        (node.tagName === 'A' && name === 'title') ||
+        (node.tagName === 'CODE' && name === 'class' && /^language-[\w-]+$/.test(value)) ||
+        (node.tagName === 'INPUT' && (name === 'type' || name === 'checked' || name === 'disabled'));
+      if (!keep) node.removeAttribute(attr.name);
+    }
+    if (node.tagName === 'A') {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noreferrer noopener');
+    }
+    if (node.tagName === 'INPUT') {
+      if (node.getAttribute('type') !== 'checkbox') node.remove();
+      else node.setAttribute('disabled', '');
+    }
+  }
+  return template.innerHTML;
+}
+function safeHref(value) {
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:';
+  } catch { return false; }
+}
 function esc(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function linkify(value) { return value.replace(/(https?:\/\/[^\s<]+)/g, '<a style="color:var(--cyan)" target="_blank" href="$1">$1</a>'); }
 autosize();
