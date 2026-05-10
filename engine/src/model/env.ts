@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { getNeoctlHome } from "../paths.js";
 import type { ModelGateway } from "./model-gateway.js";
 import { createModelGatewayFromProcessEnv } from "./provider-factory.js";
 import { parseReasoning } from "./config.js";
@@ -53,11 +53,9 @@ export function createModelGatewayFromEnv(): ModelGateway {
 }
 
 export function loadDefaultDotEnvFiles(options: DotEnvLoadOptions = {}): DefaultDotEnvLoadResult {
-  loadDotEnvIfPresent(resolve(process.cwd(), ".env"), options);
-
   const userDotEnvPath = getUserDotEnvPath();
   const createdUserDotEnv = ensureUserDotEnvFile(userDotEnvPath);
-  loadDotEnvIfPresent(userDotEnvPath, { ...options, override: true });
+  loadDotEnvIfPresent(userDotEnvPath, options);
 
   const explicitPath = process.env.NEO_ENV_FILE?.trim();
   if (explicitPath) loadDotEnvIfPresent(resolve(explicitPath), { ...options, override: true });
@@ -66,12 +64,11 @@ export function loadDefaultDotEnvFiles(options: DotEnvLoadOptions = {}): Default
 }
 
 export function getUserDotEnvPath(): string {
-  const baseDir = process.env.APPDATA || resolve(homedir(), ".config");
-  return resolve(baseDir, "neo", ".env");
+  return resolve(getNeoctlHome(), ".env");
 }
 
 export function loadDotEnvIfPresent(
-  path = resolve(process.cwd(), ".env"),
+  path = getUserDotEnvPath(),
   options: DotEnvLoadOptions = {},
 ): void {
   if (!existsSync(path)) return;

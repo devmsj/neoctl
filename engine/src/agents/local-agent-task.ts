@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { getNeoctlHome } from "../paths.js";
 import type { Message } from "../types/messages.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
@@ -115,5 +116,5 @@ export function renderLocalAgentTaskOutput(task: LocalAgentTask): string {
 }
 
 function defaultTaskOutputFile(taskId: string): string {
-  return resolve(process.cwd(), ".agent-tasks", `${taskId}.txt`);
+  return resolve(getNeoctlHome(), "agent-tasks", `${taskId}.txt`);
 }

@@ -108,7 +108,7 @@ interface UiLine {
   title?: string;
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
-  format?: "markdown" | "ansi";
+  format?: "markdown" | "ansi" | "plain";
   previewStyle?: "summary";
   summaryMaxLines?: number;
   live?: boolean;
@@ -813,7 +813,7 @@ function initialLines(runtime: WebRuntime, lineId: { current: number }): UiLine[
     { id: 0, kind: "system", title: "System", text: `Interactive web UI enabled. Type /help for commands.${suffix}`, previewStyle: "summary" },
   ];
   lineId.current = 0;
-  if (runtime.envNotice) lines.push({ id: ++lineId.current, kind: "system", title: "Config", text: runtime.envNotice, previewStyle: "summary" });
+  if (runtime.envNotice) lines.push({ id: ++lineId.current, kind: "system", title: "Config", text: runtime.envNotice, format: "plain", previewStyle: "summary" });
   for (const line of restoredHistoryLines(runtime)) lines.push({ id: ++lineId.current, ...line });
   return lines;
 }

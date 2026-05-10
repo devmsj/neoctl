@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Message } from "../types/messages.js";
+import { getNeoctlHome } from "../paths.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
 
 export type SessionTitleKind = "initial" | "refinement";
@@ -319,8 +320,7 @@ function createEmptyLoadedTranscript(): LoadedTranscript {
 
 function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {
   if (options.rootDir) return path.resolve(options.rootDir);
-  const cwd = path.resolve(options.cwd ?? process.cwd());
-  return path.join(cwd, ".agent", "sessions");
+  return path.join(getNeoctlHome(), "sessions");
 }
 
 function createSessionId(): string {

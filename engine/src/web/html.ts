@@ -250,7 +250,7 @@ function markerForLine(line, kind) {
   return '●';
 }
 function shouldRenderMarkdown(line) {
-  if (line.format === 'ansi') return false;
+  if (line.format === 'ansi' || line.format === 'plain') return false;
   return line.kind === 'assistant' || line.kind === 'thinking' || line.kind === 'system' || line.kind === 'tool';
 }
 function hasMoreThanLines(text, maxLines) {
