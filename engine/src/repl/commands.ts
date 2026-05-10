@@ -5,6 +5,7 @@ export type ReplCommand =
   | { type: "cost" }
   | { type: "compact" }
   | { type: "pure" }
+  | { type: "env" }
   | { type: "exit" }
   | { type: "export"; path: string }
   | { type: "login" }
@@ -31,6 +32,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/compact", usage: "/compact", description: "Manually compact earlier context", arguments: "none" },
   { name: "/pure", usage: "/pure", description: "Sanitize context after WAF/risk blocks without resetting", arguments: "none" },
   { name: "/export", usage: "/export <absolute-md-path>", description: "Export the current session transcript as detailed Markdown", arguments: "required" },
+  { name: "/env", usage: "/env", description: "Open the neoctl configuration directory", arguments: "none" },
   { name: "/login", usage: "/login", description: "Configure and save a model provider to the env file", arguments: "none" },
   { name: "/model", usage: "/model [model-id] [effort|default|off]", description: "Show or switch model and supported reasoning effort", arguments: "optional" },
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
@@ -51,6 +53,7 @@ export function parseReplCommand(line: string): ReplCommand {
   if (name === "/compact") return { type: "compact" };
   if (name === "/pure") return { type: "pure" };
   if (name === "/export") return { type: "export", path: argument };
+  if (name === "/env") return { type: "env" };
   if (name === "/login") return { type: "login" };
   if (name === "/exit" || name === "/quit") return { type: "exit" };
   if (name === "/model") return parseModelCommand(argument) ?? { type: "input", text: line };

@@ -34,6 +34,7 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
 import { formatTipLine, initialTipIndex, tipAt } from "../tips.js";
+import { openDirectory } from "../open-directory.js";
 
 const e = React.createElement;
 interface ReplRuntime {
@@ -968,6 +969,17 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       } finally {
         setBusyState(false);
         setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
+      }
+      return;
+    }
+    if (command.type === "env") {
+      const envDirectory = path.dirname(runtime.envPath);
+      try {
+        await fs.mkdir(envDirectory, { recursive: true });
+        await openDirectory(envDirectory);
+        append(systemLine(`Opened env directory: ${envDirectory}`));
+      } catch (error) {
+        append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}` });
       }
       return;
     }

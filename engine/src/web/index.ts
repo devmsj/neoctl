@@ -30,6 +30,7 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
 import { appTips, formatTipLine, initialTipIndex, tipAt } from "../tips.js";
+import { openDirectory } from "../open-directory.js";
 
 interface WebRuntime {
   engine: QueryEngine;
@@ -615,6 +616,17 @@ class WebRepl {
       } finally {
         this.setBusy(false);
         this.setStatus({ ...this.status, phase: "ready", detail: undefined, activityTick: this.status.activityTick + 1 });
+      }
+      return;
+    }
+    if (command.type === "env") {
+      const envDirectory = path.dirname(this.runtime.envPath);
+      try {
+        await fs.mkdir(envDirectory, { recursive: true });
+        await openDirectory(envDirectory);
+        this.append(systemLine(`Opened env directory: ${envDirectory}`));
+      } catch (error) {
+        this.append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}` });
       }
       return;
     }
