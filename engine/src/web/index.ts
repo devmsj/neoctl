@@ -110,7 +110,7 @@ interface UiLine {
   title?: string;
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
-  format?: "markdown" | "ansi" | "plain";
+  format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
   summaryMaxLines?: number;
   live?: boolean;
@@ -1528,17 +1528,80 @@ function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
 }
 
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
-  if (isExecOutput(output)) {
-    const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
-    const sections = [`${status} · ${output.durationMs}ms`, `$ ${output.command}`];
-    if (output.stdout) sections.push("stdout:", output.stdout.replace(/\s+$/u, ""));
-    if (output.stderr) sections.push("stderr:", output.stderr.replace(/\s+$/u, ""));
-    if (!output.stdout && !output.stderr) sections.push(ok ? "no output" : "no captured output");
-    return { text: sections.join("\n"), format: "ansi" };
-  }
+  if ((toolName === "edit" || toolName === "write") && isRecord(output) && isEditToolOutput(output)) return { text: formatEditToolDiff(output, ok), format: "diff", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
+  if (isExecOutput(output)) return { text: formatExecToolResult(output, ok), format: "plain", summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+  if (toolName === "list" && isRecord(output)) return { text: formatListToolResult(output, ok) };
+  if (toolName === "read" && isRecord(output)) return { text: formatReadToolResult(output, ok) };
+  if (toolName === "grep" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
+  if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true, bodyTitle: planToolBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+}
+
+interface EditToolOutputLike extends Record<string, unknown> {
+  path: string;
+  operation: string;
+  replacements: number;
+  patch: EditPatchHunkLike[];
+}
+
+interface EditPatchHunkLike {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+function isEditToolOutput(value: Record<string, unknown>): value is EditToolOutputLike {
+  return typeof value.path === "string" && typeof value.operation === "string" && typeof value.replacements === "number" && Array.isArray(value.patch) && value.patch.every(isEditPatchHunk);
+}
+
+function isEditPatchHunk(value: unknown): value is EditPatchHunkLike {
+  return isRecord(value) && typeof value.oldStart === "number" && typeof value.oldLines === "number" && typeof value.newStart === "number" && typeof value.newLines === "number" && Array.isArray(value.lines) && value.lines.every((line) => typeof line === "string");
+}
+
+function formatEditToolDiff(output: EditToolOutputLike, ok: boolean): string {
+  const lines = [
+    `${ok ? output.operation : "failed"} ${output.path}, ${output.replacements} replacement(s)`,
+    `--- ${output.path}`,
+    `+++ ${output.path}`,
+  ];
+  for (const hunk of output.patch) {
+    lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+    lines.push(...formatEditPatchHunkLines(hunk));
+  }
+  if (output.patch.length === 0) lines.push("no changes");
+  return lines.join("\n");
+}
+
+function formatEditPatchHunkLines(hunk: EditPatchHunkLike): string[] {
+  const oldLineWidth = diffLineNumberWidth(hunk.oldStart, hunk.oldLines);
+  const newLineWidth = diffLineNumberWidth(hunk.newStart, hunk.newLines);
+  let oldLineNumber = hunk.oldStart;
+  let newLineNumber = hunk.newStart;
+  return hunk.lines.map((rawLine) => {
+    const marker = diffLineMarker(rawLine);
+    if (!marker) return rawLine;
+    const showOldLineNumber = marker !== "+";
+    const showNewLineNumber = marker !== "-";
+    const oldLineLabel = showOldLineNumber ? String(oldLineNumber).padStart(oldLineWidth) : " ".repeat(oldLineWidth);
+    const newLineLabel = showNewLineNumber ? String(newLineNumber).padStart(newLineWidth) : " ".repeat(newLineWidth);
+    if (showOldLineNumber) oldLineNumber += 1;
+    if (showNewLineNumber) newLineNumber += 1;
+    return `${oldLineLabel} ${newLineLabel} │ ${marker}${rawLine.slice(1)}`;
+  });
+}
+
+function diffLineNumberWidth(start: number, lineCount: number): number {
+  const end = lineCount > 0 ? start + lineCount - 1 : start;
+  return Math.max(String(start).length, String(end).length, 2);
+}
+
+function diffLineMarker(line: string): "+" | "-" | " " | undefined {
+  const marker = line[0];
+  return marker === "+" || marker === "-" || marker === " " ? marker : undefined;
 }
 
 interface ExecOutputLike extends Record<string, unknown> {
@@ -1553,6 +1616,115 @@ interface ExecOutputLike extends Record<string, unknown> {
 
 function isExecOutput(value: unknown): value is ExecOutputLike {
   return isRecord(value) && typeof value.command === "string" && typeof value.durationMs === "number";
+}
+
+function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
+  const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
+  const lines = ["exec result", `status: ${status}`, `duration: ${output.durationMs}ms`, `command: ${output.command}`];
+  const stdout = typeof output.stdout === "string" ? output.stdout.replace(/\s+$/u, "") : "";
+  const stderr = typeof output.stderr === "string" ? output.stderr.replace(/\s+$/u, "") : "";
+  if (stdout) lines.push("stdout:", stdout);
+  if (stderr) lines.push("stderr:", stderr);
+  if (!stdout && !stderr) lines.push(ok ? "output: (none)" : "output: (not captured)");
+  return lines.join("\n");
+}
+
+function formatListToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const pathValue = typeof output.path === "string" ? output.path : "";
+  const typeValue = typeof output.type === "string" ? output.type : "result";
+  const returnedEntries = typeof output.returnedEntries === "number" ? output.returnedEntries : undefined;
+  const totalFiles = typeof output.totalFiles === "number" ? output.totalFiles : undefined;
+  const totalDirectories = typeof output.totalDirectories === "number" ? output.totalDirectories : undefined;
+  const entries = Array.isArray(output.entries) ? output.entries : [];
+  const names = entries.map((entry) => (isRecord(entry) && typeof entry.name === "string" ? entry.name : undefined)).filter((name): name is string => Boolean(name)).slice(0, 5);
+  const lines = [ok ? "list result" : "failed"];
+  if (pathValue) lines.push(`path: ${pathValue}`);
+  lines.push(`type: ${typeValue}`);
+  const counts = [returnedEntries !== undefined ? `${returnedEntries} shown` : undefined, totalFiles !== undefined ? `${totalFiles} files` : undefined, totalDirectories !== undefined ? `${totalDirectories} dirs` : undefined].filter((value): value is string => Boolean(value));
+  if (counts.length > 0) lines.push(`entries: ${counts.join(" · ")}`);
+  if (names.length > 0) lines.push("sample:", ...names.map((name) => `  ${name}`));
+  return lines.join("\n");
+}
+
+function formatReadToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatReplData(output, 1200)].join("\n");
+  const pathValue = typeof output.path === "string" ? output.path : undefined;
+  const startLine = typeof output.startLine === "number" ? output.startLine : undefined;
+  const endLine = typeof output.endLine === "number" ? output.endLine : undefined;
+  const totalLines = typeof output.totalLines === "number" ? output.totalLines : undefined;
+  const hasMoreBefore = output.hasMoreBefore === true;
+  const hasMoreAfter = output.hasMoreAfter === true;
+  const content = typeof output.content === "string" ? output.content.trimEnd() : "";
+  const lines = ["read result"];
+  if (pathValue) lines.push(`file: ${pathValue}`);
+  if (startLine !== undefined && endLine !== undefined && totalLines !== undefined) {
+    const more = [hasMoreBefore ? "more before" : undefined, hasMoreAfter ? "more after" : undefined].filter((value): value is string => Boolean(value)).join(", ");
+    lines.push(`range: lines ${startLine}-${endLine} of ${totalLines}${more ? ` (${more})` : ""}`);
+  }
+  lines.push("content:", content || "(empty range)");
+  return lines.join("\n");
+}
+
+function formatWebSearchToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatReplData(output, 1200)].join("\n");
+  const provider = typeof output.provider === "string" ? output.provider : "unknown";
+  const query = typeof output.query === "string" ? output.query : "";
+  const returnedResults = typeof output.returnedResults === "number" ? output.returnedResults : undefined;
+  const results = Array.isArray(output.results) ? output.results : [];
+  const lines = [`${returnedResults ?? results.length} web result(s) via ${provider}`];
+  if (query) lines.push(`query: ${query}`);
+  if (output.truncated === true) lines.push("truncated");
+  if (results.length === 0) return [...lines, "no results"].join("\n");
+  results.slice(0, 8).forEach((item, index) => {
+    if (!isRecord(item)) return;
+    const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : "Untitled";
+    const url = typeof item.url === "string" ? item.url : "";
+    const published = typeof item.published === "string" ? ` · ${item.published}` : "";
+    lines.push(`[${index + 1}] ${title}${published}`);
+    if (url) lines.push(url);
+    const highlights = Array.isArray(item.highlights) ? item.highlights.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    const snippet = highlights[0] ?? (typeof item.text === "string" ? item.text : undefined);
+    if (snippet) lines.push(truncate(snippet.replace(/\s+/gu, " "), 400));
+  });
+  return lines.join("\n");
+}
+
+function formatGrepToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["failed", error ?? formatReplData(output, 1200)].join("\n");
+  const query = typeof output.query === "string" ? output.query : undefined;
+  const grepPath = typeof output.grepPath === "string" ? output.grepPath : typeof output.path === "string" ? output.path : undefined;
+  const returnedMatches = typeof output.returnedMatches === "number" ? output.returnedMatches : undefined;
+  const totalMatchesKnown = typeof output.totalMatchesKnown === "number" ? output.totalMatchesKnown : undefined;
+  const truncated = output.truncated === true;
+  const matches = Array.isArray(output.matches) ? output.matches.filter(isGrepMatchLike) : [];
+  const lines = ["grep result"];
+  if (query !== undefined) lines.push(`query: ${query}`);
+  if (grepPath !== undefined) lines.push(`path: ${grepPath}`);
+  const countParts = [`${returnedMatches ?? matches.length} shown`, totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined, truncated ? "truncated" : undefined].filter((value): value is string => Boolean(value));
+  lines.push(`matches: ${countParts.join(" · ")}`);
+  if (matches.length === 0) return [...lines, "no matches"].join("\n");
+  lines.push("results:");
+  for (const match of matches) lines.push(formatGrepMatchLine(match));
+  return lines.join("\n");
+}
+
+interface GrepMatchLike {
+  file: string;
+  line: number;
+  column?: number;
+  text: string;
+}
+
+function isGrepMatchLike(value: unknown): value is GrepMatchLike {
+  return isRecord(value) && typeof value.file === "string" && typeof value.line === "number" && typeof value.text === "string" && (value.column === undefined || typeof value.column === "number");
+}
+
+function formatGrepMatchLine(match: GrepMatchLike): string {
+  const column = match.column !== undefined ? `:${match.column}` : "";
+  return `  ${match.file}:${match.line}${column}: ${match.text}`;
 }
 
 function formatReplData(value: unknown, maxLength: number): string {
@@ -1649,6 +1821,7 @@ function formatNumber(value: number | undefined): string {
 
 const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
+const EDIT_TOOL_SUMMARY_MAX_LINES = EXPANDED_SUMMARY_MAX_LINES;
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runWebServer().catch((error) => {

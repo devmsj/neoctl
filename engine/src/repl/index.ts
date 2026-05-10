@@ -3521,24 +3521,12 @@ function isReplScalar(value: unknown): boolean {
 }
 
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
-  if (toolName === "edit" && isRecord(output) && isEditToolOutput(output)) {
+  if ((toolName === "edit" || toolName === "write") && isRecord(output) && isEditToolOutput(output)) {
     return { text: formatEditToolDiff(output, ok), format: "ansi", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
   }
 
   if (isExecOutput(output)) {
-    const status = output.timedOut
-      ? "timed out"
-      : output.exitCode === 0
-        ? "exit 0"
-        : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
-    const sections = [
-      `${status} · ${output.durationMs}ms`,
-      `$ ${output.command}`,
-    ];
-    if (output.stdout) sections.push("stdout:", output.stdout.replace(/\s+$/u, ""));
-    if (output.stderr) sections.push("stderr:", output.stderr.replace(/\s+$/u, ""));
-    if (!output.stdout && !output.stderr) sections.push(ok ? "no output" : "no captured output");
-    return { text: sections.join("\n"), format: "ansi" };
+    return { text: formatExecToolResult(output, ok), format: "ansi", summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   }
 
   if (typeof output === "string" && hasAnsi(output)) {
@@ -3684,6 +3672,26 @@ function isExecOutput(value: unknown): value is ExecResultLike {
     typeof record.stdout === "string" &&
     typeof record.stderr === "string"
   );
+}
+
+function formatExecToolResult(output: ExecResultLike, ok: boolean): string {
+  const status = output.timedOut
+    ? "timed out"
+    : output.exitCode === 0
+      ? "exit 0"
+      : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
+  const lines = [
+    "exec result",
+    `status: ${status}`,
+    `duration: ${output.durationMs}ms`,
+    `command: ${output.command}`,
+  ];
+  const stdout = output.stdout.replace(/\s+$/u, "");
+  const stderr = output.stderr.replace(/\s+$/u, "");
+  if (stdout) lines.push("stdout:", stdout);
+  if (stderr) lines.push("stderr:", stderr);
+  if (!stdout && !stderr) lines.push(ok ? "output: (none)" : "output: (not captured)");
+  return lines.join("\n");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -95,6 +95,12 @@ export const WEB_HTML = String.raw`<!doctype html>
     .live .marker { animation: pulse 900ms ease-in-out infinite; }
     @keyframes pulse { 50% { opacity: .35; } }
     .ansi { color: #d1d5db; }
+    .diff { color: #d1d5db; }
+    .diff-line { display: block; }
+    .diff-add { color: var(--green); }
+    .diff-del { color: var(--red); }
+    .diff-hunk { color: var(--cyan); }
+    .diff-meta { color: var(--muted); }
     #status { flex: 0 0 auto; min-height: 28px; padding: 4px var(--page-gutter); color: var(--muted); border-top: 1px solid var(--line); display: flex; flex-direction: column; align-items: stretch; gap: 2px; overflow: hidden; white-space: nowrap; }
     .status-main, .status-bg-row { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .status-bg-row { color: var(--yellow); font-size: 12px; }
@@ -309,7 +315,7 @@ function markerForLine(line, kind) {
   return '●';
 }
 function shouldRenderMarkdown(line) {
-  if (line.format === 'ansi' || line.format === 'plain') return false;
+  if (line.format === 'ansi' || line.format === 'plain' || line.format === 'diff') return false;
   return line.kind === 'assistant' || line.kind === 'thinking' || line.kind === 'system' || line.kind === 'tool';
 }
 function hasMoreThanLines(text, maxLines) {
@@ -322,8 +328,25 @@ function hasMoreThanLines(text, maxLines) {
 }
 function renderText(text, format, markdown) {
   if (format === 'ansi') return '<span class="ansi">' + esc(stripAnsi(text)) + '</span>';
+  if (format === 'diff') return renderDiffText(text);
   if (!markdown) return linkify(esc(text));
   return sanitizeMarkdownHtml(marked.parse(text || ''));
+}
+function renderDiffText(text) {
+  const lines = String(text || '').split('\n');
+  return '<span class="diff">' + lines.map((line) => {
+    const cls = diffLineClass(line);
+    return '<span class="diff-line ' + cls + '">' + esc(line) + '</span>';
+  }).join('') + '</span>';
+}
+function diffLineClass(line) {
+  const pipeIndex = line.indexOf('│ ');
+  const diffMarker = pipeIndex >= 0 ? line.slice(pipeIndex + 2, pipeIndex + 3) : line.slice(0, 1);
+  if (line.startsWith('@@')) return 'diff-hunk';
+  if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('create ') || line.startsWith('edit ') || line.startsWith('write ') || line.startsWith('failed ') || line === 'no changes') return 'diff-meta';
+  if (diffMarker === '+') return 'diff-add';
+  if (diffMarker === '-') return 'diff-del';
+  return 'diff-meta';
 }
 function renderStatus() {
   ensureStatusNodes();
