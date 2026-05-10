@@ -704,7 +704,7 @@ class WebRepl {
     if (command.type === "reset") {
       this.runtime.engine.reset();
       this.runtime.usage.reset();
-      this.status = resetStatus(this.runtime);
+      this.status = await resetStatus(this.runtime);
       this.append(systemLine("transcript reset"));
       return;
     }
@@ -978,8 +978,8 @@ function initialStatus(runtime: WebRuntime, metrics = runtime.initialMetrics): U
   return { phase: "ready", metrics: { ...metrics, messageCount: runtime.engine.snapshot().messages }, streamedOutputTokens: 0, activityTick: 0 };
 }
 
-function resetStatus(runtime: WebRuntime): UiStatus {
-  return initialStatus(runtime, initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount));
+async function resetStatus(runtime: WebRuntime): Promise<UiStatus> {
+  return initialStatus(runtime, await runtime.engine.contextMetrics());
 }
 
 function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[]): { text: string; displayText: string; blocks?: MessageBlock[] } {

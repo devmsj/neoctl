@@ -352,8 +352,8 @@ function initialStatus(runtime: ReplRuntime, metrics = runtime.initialMetrics): 
   };
 }
 
-function resetStatus(runtime: ReplRuntime): UiStatus {
-  return initialStatus(runtime, initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount));
+async function resetStatus(runtime: ReplRuntime): Promise<UiStatus> {
+  return initialStatus(runtime, await runtime.engine.contextMetrics());
 }
 
 function setTerminalTitle(title: string, prefix = TERMINAL_TITLE_WORKING_PREFIX): void {
@@ -1028,7 +1028,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     if (command.type === "reset") {
       runtime.engine.reset();
       runtime.usage.reset();
-      setStatus(resetStatus(runtime));
+      setStatus(await resetStatus(runtime));
       append(systemLine("transcript reset"));
       return;
     }
