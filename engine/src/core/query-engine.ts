@@ -98,6 +98,14 @@ export class QueryEngine {
     return snapshot;
   }
 
+  async newSession(): Promise<SessionStoreSnapshot> {
+    this.sessionInitialized = true;
+    await this.openSession({ resume: false });
+    const snapshot = this.sessionStore?.snapshot();
+    if (!snapshot) throw new Error("session transcripts are disabled");
+    return snapshot;
+  }
+
   async listSessions(limit = 10): Promise<SessionSummary[]> {
     if (this.options.session?.enabled === false || !this.options.session) return [];
     return SessionStore.list({

@@ -355,25 +355,44 @@ class WebRepl {
 
   async resumeSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!sessionId) return { ok: false, error: "sessionId is required" };
+    if (this.busy) return { ok: false, error: "Current session is running; wait for it to finish before switching sessions." };
     try {
       const snapshot = await this.runtime.engine.resumeSession(sessionId);
-      const metrics = await this.runtime.engine.contextMetrics();
-      this.runtime.usage.reset();
-      this.status = initialStatus(this.runtime, metrics);
-      const lineId = { current: 0 };
-      this.lines = initialLines(this.runtime, lineId);
-      this.lineId = lineId.current;
-      this.assistantLineId = undefined;
-      this.thinkingLineId = undefined;
-      this.finalizedThinkingLineId = undefined;
-      this.toolLineIds.clear();
-      this.append(systemLine(formatResume(snapshot)));
+      await this.refreshSessionView(systemLine(formatResume(snapshot)));
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.append({ kind: "error", text: message });
       return { ok: false, error: message };
     }
+  }
+
+  async newSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.busy) return { ok: false, error: "Current session is running; wait for it to finish before creating a new session." };
+    try {
+      const snapshot = await this.runtime.engine.newSession();
+      await this.refreshSessionView(systemLine(`new session ${snapshot.sessionId}`));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.append({ kind: "error", text: message });
+      return { ok: false, error: message };
+    }
+  }
+
+  private async refreshSessionView(line?: Omit<UiLine, "id">): Promise<void> {
+    const metrics = await this.runtime.engine.contextMetrics();
+    this.runtime.usage.reset();
+    this.status = initialStatus(this.runtime, metrics);
+    const lineId = { current: 0 };
+    this.lines = initialLines(this.runtime, lineId);
+    this.lineId = lineId.current;
+    this.assistantLineId = undefined;
+    this.thinkingLineId = undefined;
+    this.finalizedThinkingLineId = undefined;
+    this.toolLineIds.clear();
+    if (line) this.append(line);
+    this.broadcastSync();
   }
 
   async deleteSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -761,6 +780,7 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
       const body = await readJsonBody<{ sessionId?: string }>(req);
       return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));
     }
+    if (req.method === "POST" && url.pathname === "/api/sessions/new") return sendJson(res, await repl.newSession());
     if (req.method === "POST" && url.pathname === "/api/sessions/delete") {
       const body = await readJsonBody<{ sessionId?: string }>(req);
       return sendJson(res, await repl.deleteSession(String(body.sessionId ?? "")));
