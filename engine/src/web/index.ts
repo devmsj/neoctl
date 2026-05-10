@@ -29,6 +29,7 @@ import type { CompactionResult } from "../context/compaction.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
+import { appTips, formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 
 interface WebRuntime {
   engine: QueryEngine;
@@ -325,6 +326,8 @@ class WebRepl {
       session: this.runtime.engine.snapshot().session,
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
+      tips: includeCatalog ? appTips : undefined,
+      tipIndex: initialTipIndex(this.runtime.engine.snapshot().session?.sessionId ?? process.cwd()),
     };
   }
 
@@ -812,7 +815,7 @@ function initialLines(runtime: WebRuntime, lineId: { current: number }): UiLine[
   const session = runtime.engine.snapshot().session;
   const suffix = session ? ` Session: ${session.sessionId}${session.resumedMessages > 0 ? ` (${session.resumedMessages} resumed messages)` : ""}.` : "";
   const lines: UiLine[] = [
-    { id: 0, kind: "system", title: "System", text: `Interactive web UI enabled. Type /help for commands.${suffix}`, previewStyle: "summary" },
+    { id: 0, kind: "system", title: "System", text: `Interactive web UI enabled. Type /help for commands.${suffix}\n${formatTipLine(tipAt(initialTipIndex(session?.sessionId ?? process.cwd())))}`, previewStyle: "summary" },
   ];
   lineId.current = 0;
   if (runtime.envNotice) lines.push({ id: ++lineId.current, kind: "system", title: "Config", text: runtime.envNotice, format: "plain", previewStyle: "summary" });
