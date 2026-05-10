@@ -977,9 +977,9 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       try {
         await fs.mkdir(envDirectory, { recursive: true });
         await openDirectory(envDirectory);
-        append(systemLine(`Opened env directory: ${envDirectory}`));
+        append({ kind: "system", title: "System", text: `Opened env directory: ${envDirectory}`, format: "plain", previewStyle: "summary" });
       } catch (error) {
-        append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}` });
+        append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}`, format: "plain" });
       }
       return;
     }

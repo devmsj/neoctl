@@ -9,6 +9,14 @@ export async function openDirectory(directory: string): Promise<void> {
     });
 
     child.once("error", reject);
+    if (process.platform === "win32") {
+      child.once("spawn", () => {
+        child.unref();
+        resolve();
+      });
+      return;
+    }
+
     child.once("close", (code) => {
       if (code === 0) {
         resolve();

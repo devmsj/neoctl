@@ -624,9 +624,9 @@ class WebRepl {
       try {
         await fs.mkdir(envDirectory, { recursive: true });
         await openDirectory(envDirectory);
-        this.append(systemLine(`Opened env directory: ${envDirectory}`));
+        this.append({ kind: "system", title: "System", text: `Opened env directory: ${envDirectory}`, format: "plain", previewStyle: "summary" });
       } catch (error) {
-        this.append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}` });
+        this.append({ kind: "error", text: `Failed to open env directory ${envDirectory}: ${error instanceof Error ? error.message : String(error)}`, format: "plain" });
       }
       return;
     }
