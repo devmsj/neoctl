@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-08",
+  "updatedAt": "2026-05-10",
   "notes": [
     "Static model metadata used for local REPL telemetry. Values are best-effort and should be refreshed when providers update model cards.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
@@ -18,7 +18,10 @@
     "anthropic-vision": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
     "mistral-vision": "https://docs.mistral.ai/capabilities/vision",
     "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
-    "deepseek-thinking-mode": "https://api-docs.deepseek.com/guides/thinking_mode"
+    "deepseek-thinking-mode": "https://api-docs.deepseek.com/guides/thinking_mode",
+    "kimi-overview": "https://platform.kimi.com/docs/api/overview",
+    "kimi-chat": "https://platform.kimi.com/docs/api/chat",
+    "kimi-thinking": "https://platform.moonshot.ai/docs/guide/kimi-k2-5-quickstart"
   },
   "models": [
     {
@@ -650,6 +653,52 @@
         "high",
         "max"
       ]
+    },
+    {
+      "id": "kimi-k2.6",
+      "provider": "kimi",
+      "modelIds": [
+        "kimi-k2.6"
+      ],
+      "contextWindowTokens": 256000,
+      "reasoning": true,
+      "imageInput": true,
+      "source": "kimi-chat",
+      "notes": "Default Kimi API Chat Completions model per Kimi quickstart; OpenAI-compatible endpoint https://api.moonshot.cn/v1/chat/completions."
+    },
+    {
+      "id": "kimi-k2.5",
+      "provider": "kimi",
+      "modelIds": [
+        "kimi-k2.5"
+      ],
+      "contextWindowTokens": 256000,
+      "reasoning": true,
+      "imageInput": true,
+      "source": "kimi-thinking"
+    },
+    {
+      "id": "kimi-k2-thinking",
+      "provider": "kimi",
+      "modelIds": [
+        "kimi-k2-thinking"
+      ],
+      "contextWindowTokens": 256000,
+      "reasoning": true,
+      "imageInput": false,
+      "source": "kimi-thinking",
+      "notes": "Thinking model responses may include reasoning_content, normalized to thinking events."
+    },
+    {
+      "id": "kimi-k2-0905-preview",
+      "provider": "kimi",
+      "modelIds": [
+        "kimi-k2-0905-preview"
+      ],
+      "contextWindowTokens": 256000,
+      "reasoning": false,
+      "imageInput": false,
+      "source": "kimi-chat"
     },
     {
       "id": "mistral-large-latest",

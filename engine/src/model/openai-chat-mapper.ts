@@ -22,6 +22,7 @@ export interface OpenAIChatMapperOptions {
   defaultReasoning?: ReasoningConfig | null;
   includeMetadata?: boolean;
   includeReasoningContent?: boolean;
+  providerName?: string;
 }
 
 export function buildChatRequest(request: ModelRequest, options: OpenAIChatMapperOptions): Record<string, unknown> {
@@ -44,13 +45,15 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
 function chatReasoningEffortOption(model: string, reasoning: ReasoningConfig | undefined): string | undefined {
   const metadata = findModelMetadata(model);
   if (metadata?.provider === "deepseek" && metadata.reasoning === false) return undefined;
+  if (metadata?.provider === "kimi") return undefined;
   return reasoning?.effort;
 }
 
 function chatThinkingOption(model: string, reasoning: ReasoningConfig | undefined, reasoningDisabled: boolean): Record<string, string> | undefined {
   const metadata = findModelMetadata(model);
-  if (metadata?.provider !== "deepseek") return undefined;
-  if (reasoningDisabled || metadata.reasoning === false) return { type: "disabled" };
+  if (metadata?.provider !== "deepseek" && metadata?.provider !== "kimi") return undefined;
+  if (reasoningDisabled) return { type: "disabled" };
+  if (metadata.reasoning === false) return metadata.provider === "deepseek" ? { type: "disabled" } : undefined;
   if (!reasoning?.effort) return undefined;
   return { type: reasoning.effort === "none" ? "disabled" : "enabled" };
 }
@@ -69,7 +72,7 @@ export async function* normalizeChatStream(
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
     yield { type: "provider_event", event };
-    if (type === "error") throw normalizeOpenAIStreamError(event, options.includeReasoningContent ? "deepseek" : "openai");
+    if (type === "error") throw normalizeOpenAIStreamError(event, options.providerName ?? (options.includeReasoningContent ? "deepseek" : "openai"));
     responseId = asString(event.id) ?? responseId;
     const chunkUsage = normalizeUsage(event.usage);
     if (chunkUsage) {

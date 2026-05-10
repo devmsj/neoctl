@@ -32,6 +32,12 @@ MODEL_PROVIDER=openai
 # DEEPSEEK_MODEL=deepseek-chat
 # DEEPSEEK_FALLBACK_MODEL=
 
+# Kimi provider settings
+# KIMI_API_KEY=your-kimi-api-key
+# KIMI_BASE_URL=https://api.moonshot.cn/v1
+# KIMI_MODEL=kimi-k2.6
+# KIMI_FALLBACK_MODEL=
+
 # Shared model runtime settings
 # MODEL_REASONING_EFFORT=high
 # MODEL_REASONING_SUMMARY=auto

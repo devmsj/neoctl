@@ -19,6 +19,8 @@ export * from "./model/context-window.js";
 export * from "./model/provider-factory.js";
 export * from "./model/openai-adapter.js";
 export * from "./model/openai-responses-adapter.js";
+export * from "./model/deepseek-adapter.js";
+export * from "./model/kimi-adapter.js";
 export * from "./model/provider-adapter.js";
 export * from "./model/env.js";
 export * from "./model/errors.js";

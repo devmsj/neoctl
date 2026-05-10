@@ -1,6 +1,6 @@
 import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
 
-export type ModelProviderName = "openai" | "deepseek";
+export type ModelProviderName = "openai" | "deepseek" | "kimi";
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
@@ -29,10 +29,15 @@ export interface DeepSeekProviderConfig extends BaseModelProviderConfig {
   provider: "deepseek";
 }
 
-export type ModelProviderConfig = OpenAIProviderConfig | DeepSeekProviderConfig;
+export interface KimiProviderConfig extends BaseModelProviderConfig {
+  provider: "kimi";
+}
+
+export type ModelProviderConfig = OpenAIProviderConfig | DeepSeekProviderConfig | KimiProviderConfig;
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_KIMI_MODEL = "kimi-k2.6";
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
 
 export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): ModelProviderConfig | undefined {
@@ -43,6 +48,8 @@ export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): M
       return readOpenAIProviderConfig(env);
     case "deepseek":
       return readDeepSeekProviderConfig(env);
+    case "kimi":
+      return readKimiProviderConfig(env);
   }
 }
 
@@ -105,6 +112,27 @@ function readDeepSeekProviderConfig(env: NodeJS.ProcessEnv): DeepSeekProviderCon
   };
 }
 
+function readKimiProviderConfig(env: NodeJS.ProcessEnv): KimiProviderConfig | undefined {
+  const apiKey = firstNonEmpty(env.KIMI_API_KEY, env.MOONSHOT_API_KEY);
+  if (!apiKey) return undefined;
+
+  return {
+    provider: "kimi",
+    apiKey,
+    baseUrl: firstNonEmpty(env.KIMI_BASE_URL, env.MOONSHOT_BASE_URL),
+    model: firstNonEmpty(env.KIMI_MODEL, env.MOONSHOT_MODEL) ?? DEFAULT_KIMI_MODEL,
+    fallbackModel: firstNonEmpty(env.KIMI_FALLBACK_MODEL, env.MOONSHOT_FALLBACK_MODEL),
+    timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
+    streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
+    maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
+    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)) ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    defaultReasoning: parseReasoning(
+      firstNonEmpty(env.MODEL_REASONING_EFFORT),
+      firstNonEmpty(env.MODEL_REASONING_SUMMARY),
+    ),
+  };
+}
+
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
   if (value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") return value;
   return undefined;
@@ -116,7 +144,7 @@ function parseReasoningSummary(value: string | undefined): ReasoningSummary | un
 }
 
 function parseProvider(value: string): ModelProviderName {
-  if (value === "openai" || value === "deepseek") return value;
+  if (value === "openai" || value === "deepseek" || value === "kimi") return value;
   throw new Error(`Unsupported MODEL_PROVIDER: ${value}`);
 }
 

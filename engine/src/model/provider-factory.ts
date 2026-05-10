@@ -1,8 +1,9 @@
 import type { ModelGateway } from "./model-gateway.js";
 import { NotConfiguredModelGateway } from "./model-gateway.js";
 import { DeepSeekAdapter } from "./deepseek-adapter.js";
+import { KimiAdapter } from "./kimi-adapter.js";
 import { OpenAIAdapter } from "./openai-adapter.js";
-import type { DeepSeekProviderConfig, ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
+import type { DeepSeekProviderConfig, KimiProviderConfig, ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
 import { readModelProviderConfig } from "./config.js";
 
 export function createModelGatewayFromConfig(config: ModelProviderConfig | undefined): ModelGateway {
@@ -13,6 +14,8 @@ export function createModelGatewayFromConfig(config: ModelProviderConfig | undef
       return createOpenAIGateway(config);
     case "deepseek":
       return createDeepSeekGateway(config);
+    case "kimi":
+      return createKimiGateway(config);
   }
 }
 
@@ -37,6 +40,20 @@ function createOpenAIGateway(config: OpenAIProviderConfig): ModelGateway {
 
 function createDeepSeekGateway(config: DeepSeekProviderConfig): ModelGateway {
   return new DeepSeekAdapter({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    fallbackModel: config.fallbackModel,
+    timeoutMs: config.timeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxRetries: config.maxRetries,
+    defaultMaxOutputTokens: config.defaultMaxOutputTokens,
+    defaultReasoning: config.defaultReasoning,
+  });
+}
+
+function createKimiGateway(config: KimiProviderConfig): ModelGateway {
+  return new KimiAdapter({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     model: config.model,

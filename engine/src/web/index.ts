@@ -268,7 +268,7 @@ function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSou
 }
 
 function formatCreatedEnvNotice(dotEnvPath: string): string {
-  return `Created default config file: ${dotEnvPath}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY), then restart neo.`;
+  return `Created default config file: ${dotEnvPath}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY or KIMI_API_KEY), then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -391,7 +391,7 @@ class WebRepl {
 
   async saveLogin(providerValue: string, values: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
     const provider = parseLoginProvider(providerValue);
-    if (!provider) return { ok: false, error: "provider must be openai or deepseek" };
+    if (!provider) return { ok: false, error: "provider must be openai, deepseek, or kimi" };
     const payload: LoginFormPayload = { ...createLoginFormPayload(this.runtime.envPath, provider), provider, values };
     const validationError = validateLoginFormPayload(payload);
     if (validationError) return { ok: false, error: validationError };
@@ -1005,11 +1005,11 @@ function currentModelProvider(): ModelProviderName {
 }
 
 function parseLoginProvider(value: string | undefined): ModelProviderName | undefined {
-  if (value === "openai" || value === "deepseek") return value;
+  if (value === "openai" || value === "deepseek" || value === "kimi") return value;
   return undefined;
 }
 
-const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek"];
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "deepseek", "kimi"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
@@ -1036,17 +1036,26 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
     { key: "fallbackModel", label: "Fallback model", envKey: "DEEPSEEK_FALLBACK_MODEL", scope: "provider" },
     ...SHARED_LOGIN_FIELDS,
   ],
+  kimi: [
+    { key: "apiKey", label: "API key", envKey: "KIMI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
+    { key: "baseUrl", label: "Base URL", envKey: "KIMI_BASE_URL", scope: "provider", placeholder: "https://api.moonshot.cn/v1" },
+    { key: "model", label: "Model", envKey: "KIMI_MODEL", scope: "provider", required: true, placeholder: "kimi-k2.6" },
+    { key: "fallbackModel", label: "Fallback model", envKey: "KIMI_FALLBACK_MODEL", scope: "provider" },
+    ...SHARED_LOGIN_FIELDS,
+  ],
 };
 
 const DEPRECATED_MODEL_ENV_KEYS = [
   "MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_ID", "MODEL_FALLBACK_ID", "MODEL_ENDPOINT", "OPENAI_PROVIDER",
   "OPENAI_REASONING_EFFORT", "OPENAI_REASONING_SUMMARY", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_TIMEOUT_MS", "OPENAI_STREAM_IDLE_TIMEOUT_MS", "OPENAI_MAX_RETRIES",
   "DEEPSEEK_REASONING_EFFORT", "DEEPSEEK_REASONING_SUMMARY", "DEEPSEEK_MAX_OUTPUT_TOKENS", "DEEPSEEK_TIMEOUT_MS", "DEEPSEEK_STREAM_IDLE_TIMEOUT_MS", "DEEPSEEK_MAX_RETRIES",
+  "KIMI_REASONING_EFFORT", "KIMI_REASONING_SUMMARY", "KIMI_MAX_OUTPUT_TOKENS", "KIMI_TIMEOUT_MS", "KIMI_STREAM_IDLE_TIMEOUT_MS", "KIMI_MAX_RETRIES",
+  "MOONSHOT_REASONING_EFFORT", "MOONSHOT_REASONING_SUMMARY", "MOONSHOT_MAX_OUTPUT_TOKENS", "MOONSHOT_TIMEOUT_MS", "MOONSHOT_STREAM_IDLE_TIMEOUT_MS", "MOONSHOT_MAX_RETRIES",
 ];
 
 function createLoginFormPayload(envPath: string, provider?: LoginProviderName): LoginFormPayload {
   const env = parseEnvFileSafe(envPath);
-  const selectedProvider = provider ?? parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? currentModelProvider();
+  const selectedProvider = provider ?? parseLoginProvider(env.MODEL_PROVIDER ?? process.env.MODEL_PROVIDER) ?? guessLoginProvider(env);
   return {
     envPath,
     providers: LOGIN_PROVIDERS,
@@ -1059,10 +1068,34 @@ function createLoginFormPayload(envPath: string, provider?: LoginProviderName): 
 function loginValuesForProvider(provider: LoginProviderName, env: Record<string, string>): Record<string, string> {
   const values: Record<string, string> = {};
   for (const field of LOGIN_FIELD_DEFINITIONS[provider]) values[field.key] = env[field.envKey] ?? "";
-  if (!values.baseUrl) values.baseUrl = provider === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com";
-  if (!values.model) values.model = provider === "deepseek" ? "deepseek-chat" : "gpt-5.5";
+  if (provider === "kimi") {
+    values.apiKey ||= env.MOONSHOT_API_KEY ?? process.env.MOONSHOT_API_KEY ?? "";
+    values.baseUrl ||= env.MOONSHOT_BASE_URL ?? process.env.MOONSHOT_BASE_URL ?? "";
+    values.model ||= env.MOONSHOT_MODEL ?? process.env.MOONSHOT_MODEL ?? "";
+    values.fallbackModel ||= env.MOONSHOT_FALLBACK_MODEL ?? process.env.MOONSHOT_FALLBACK_MODEL ?? "";
+  }
+  if (!values.baseUrl) values.baseUrl = defaultBaseUrlForLoginProvider(provider);
+  if (!values.model) values.model = defaultModelForLoginProvider(provider);
   if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
   return values;
+}
+
+function guessLoginProvider(env: Record<string, string>): LoginProviderName {
+  if (env.KIMI_API_KEY ?? env.MOONSHOT_API_KEY ?? process.env.KIMI_API_KEY ?? process.env.MOONSHOT_API_KEY) return "kimi";
+  if (env.DEEPSEEK_API_KEY ?? process.env.DEEPSEEK_API_KEY) return "deepseek";
+  return currentModelProvider();
+}
+
+function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
+  if (provider === "deepseek") return "https://api.deepseek.com";
+  if (provider === "kimi") return "https://api.moonshot.cn/v1";
+  return "https://api.openai.com";
+}
+
+function defaultModelForLoginProvider(provider: LoginProviderName): string {
+  if (provider === "deepseek") return "deepseek-chat";
+  if (provider === "kimi") return "kimi-k2.6";
+  return "gpt-5.5";
 }
 
 function validateLoginFormPayload(payload: LoginFormPayload): string | undefined {
@@ -1093,6 +1126,12 @@ function envEntriesForLoginPayload(payload: LoginFormPayload): Record<string, st
     const value = (payload.values[field.key] ?? "").trim();
     entries[field.envKey] = value || undefined;
   }
+  if (payload.provider === "kimi") {
+    entries.MOONSHOT_API_KEY = undefined;
+    entries.MOONSHOT_BASE_URL = undefined;
+    entries.MOONSHOT_MODEL = undefined;
+    entries.MOONSHOT_FALLBACK_MODEL = undefined;
+  }
   return entries;
 }
 
@@ -1111,8 +1150,10 @@ function stripEnvQuotes(value: string): string {
   return value;
 }
 
-function modelEnvKeyForProvider(provider: ModelProviderName): "OPENAI_MODEL" | "DEEPSEEK_MODEL" {
-  return provider === "deepseek" ? "DEEPSEEK_MODEL" : "OPENAI_MODEL";
+function modelEnvKeyForProvider(provider: ModelProviderName): "OPENAI_MODEL" | "DEEPSEEK_MODEL" | "KIMI_MODEL" {
+  if (provider === "deepseek") return "DEEPSEEK_MODEL";
+  if (provider === "kimi") return "KIMI_MODEL";
+  return "OPENAI_MODEL";
 }
 
 function envValueForReasoning(reasoning: ReasoningConfig | null | undefined): string | undefined {
