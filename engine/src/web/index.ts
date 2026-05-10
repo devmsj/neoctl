@@ -1215,7 +1215,12 @@ const WEB_HTML = String.raw`<!doctype html>
     .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
     .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; }
     .hint { margin-left: auto; font-size: 12px; }
-    #transcript { flex: 1; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
+    #transcriptWrap { position: relative; flex: 1; min-height: 0; }
+    #transcript { height: 100%; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
+    .scroll-bottom-zone { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; padding: 0 var(--page-gutter); display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity .14s ease; z-index: 2; }
+    .scroll-bottom-zone.available { opacity: 1; pointer-events: auto; }
+    #scrollBottom { width: 100%; height: 12px; border: 1px solid rgba(34, 211, 238, .42); border-radius: 999px 999px 0 0; background: linear-gradient(90deg, rgba(34, 211, 238, .06), rgba(34, 211, 238, .22), rgba(34, 211, 238, .06)); color: var(--cyan); font: inherit; font-size: 10px; line-height: 10px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; box-shadow: 0 0 18px rgba(34, 211, 238, .2), inset 0 1px 0 rgba(255,255,255,.08); text-shadow: 0 0 10px currentColor; }
+    #scrollBottom:hover, #scrollBottom:focus-visible { border-color: rgba(34, 211, 238, .82); box-shadow: 0 0 22px rgba(34, 211, 238, .42), inset 0 1px 0 rgba(255,255,255,.18); outline: none; }
     .block { display: flex; gap: 8px; margin-top: 16px; align-items: flex-start; }
     .block:first-child { margin-top: 0; }
     .marker { width: 18px; flex: 0 0 18px; user-select: none; line-height: 1.45; }
@@ -1304,7 +1309,7 @@ const WEB_HTML = String.raw`<!doctype html>
 <body>
 <div id="app">
   <div class="topbar"><span class="brand">neo web</span><span id="connection">connecting…</span><span class="hint"><span class="kbd">Enter</span> send · <span class="kbd">Shift Enter</span> newline · <span class="kbd">Ctrl C</span> interrupt</span></div>
-  <div id="transcript"></div>
+  <div id="transcriptWrap"><div id="transcript"></div><div id="scrollBottomZone" class="scroll-bottom-zone"><button id="scrollBottom" type="button" aria-label="Scroll to bottom">bottom</button></div></div>
   <div id="status"></div>
   <div id="queued"></div>
   <div id="composerWrap">
@@ -1323,6 +1328,8 @@ const statusNodes = {};
 const phaseDisplay = { value: state.status.phase, displayedAt: Date.now(), pending: undefined, timer: undefined };
 let renderPending = false;
 const transcript = document.getElementById('transcript');
+const scrollBottomZone = document.getElementById('scrollBottomZone');
+const scrollBottom = document.getElementById('scrollBottom');
 const statusEl = document.getElementById('status');
 const queuedEl = document.getElementById('queued');
 const input = document.getElementById('input');
@@ -1348,9 +1355,9 @@ function scheduleRender() {
   renderPending = true;
   requestAnimationFrame(() => { renderPending = false; render(); });
 }
-function render() { renderTranscript(); renderStatus(); renderQueued(); renderCompletions(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
+function render() { renderTranscript(); renderStatus(); renderQueued(); renderCompletions(); updateScrollBottomAffordance(); input.classList.toggle('locked', state.busy && state.queuedInput !== undefined); }
 function renderTranscript() {
-  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+  const atBottom = isTranscriptAtBottom();
   const seen = new Set();
   let cursor = transcript.firstElementChild;
   for (const line of state.lines) {
@@ -1375,6 +1382,12 @@ function renderTranscript() {
     if (!seen.has(id)) { renderedLineKeys.delete(id); child.remove(); }
   }
   if (atBottom) transcript.scrollTop = transcript.scrollHeight;
+}
+function isTranscriptAtBottom() {
+  return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+}
+function updateScrollBottomAffordance() {
+  scrollBottomZone.classList.toggle('available', !isTranscriptAtBottom());
 }
 function updateLineElement(element, line) {
   const kind = line.kind || 'system';
@@ -1542,6 +1555,8 @@ async function submit() {
   const body = await res.json();
   if (!body.ok && body.error) alert(body.error);
 }
+transcript.addEventListener('scroll', updateScrollBottomAffordance, { passive: true });
+scrollBottom.addEventListener('click', () => { transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' }); updateScrollBottomAffordance(); });
 transcript.addEventListener('click', (e) => {
   const button = e.target.closest('.tool-toggle');
   if (!button) return;
@@ -1570,7 +1585,7 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) fetch('/api/interrupt', { method: 'POST' }); else renderCompletions(); }
 });
 input.addEventListener('input', () => { state.completionIndex = 0; autosize(); renderCompletions(); });
-function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; }
+function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; updateScrollBottomAffordance(); }
 function phaseLabel(phase) { if (phase === 'calling_model') return 'model'; if (phase === 'thinking') return 'think'; if (phase === 'running_tools') return 'tools'; if (phase === 'injecting_context') return 'context'; return phase || 'ready'; }
 function isActivePhase(phase) { return ['running', 'preparing', 'calling_model', 'thinking', 'running_tools', 'compacting', 'injecting_context'].includes(phase); }
 function contextParts(metrics) { if (!metrics) return { used: '?', limit: '?', percent: '?' }; return { used: compactNumber(metrics.estimatedInputTokens), limit: metrics.contextWindowTokens ? compactNumber(metrics.contextWindowTokens) : '?', percent: metrics.contextUsageRatio === undefined ? '?' : (metrics.contextUsageRatio * 100).toFixed(1) + '%' }; }
