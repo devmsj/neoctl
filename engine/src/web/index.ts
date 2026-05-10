@@ -163,6 +163,16 @@ interface WebAttachmentPayload {
   data: string;
 }
 
+interface WebBackgroundSessionRun {
+  sessionId: string;
+  title?: string;
+  reason: string;
+  startedAt: number;
+  engine: QueryEngine;
+  abortController: AbortController;
+  promise: Promise<void>;
+}
+
 export async function runWebServer(argv = process.argv.slice(2)): Promise<void> {
   const options = parseWebArgs(argv);
   const runtime = await createRuntime();
@@ -292,7 +302,8 @@ class WebRepl {
   private busy = false;
   private queuedInput: string | undefined;
   private foregroundRun: Promise<void> | undefined;
-  private readonly backgroundSessionRuns = new Map<string, Promise<void>>();
+  private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
+  private readonly suppressReattachedStreaming = new Set<QueryEngine>();
   private backgroundTaskCount: number;
 
   constructor(private runtime: WebRuntime) {
@@ -325,8 +336,9 @@ class WebRepl {
       status: this.status,
       busy: this.busy,
       queuedInput: this.queuedInput,
-      backgroundTaskCount: this.backgroundTaskCount + this.backgroundSessionRuns.size,
+      backgroundTaskCount: this.backgroundTaskCount,
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
+      runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
@@ -357,12 +369,19 @@ class WebRepl {
   }
 
   async listSessions() {
-    return this.runtime.engine.listSessions(Number.POSITIVE_INFINITY);
+    const sessions = await this.runtime.engine.listSessions(Number.POSITIVE_INFINITY);
+    const runningSessionIds = [...this.backgroundSessionRuns.keys()];
+    return { sessions, runningSessionIds };
   }
 
   async resumeSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!sessionId) return { ok: false, error: "sessionId is required" };
     try {
+      const running = this.backgroundSessionRuns.get(sessionId);
+      if (running) {
+        await this.reattachRunningSession(running);
+        return { ok: true };
+      }
       await this.detachRunningForeground("session switch");
       this.runtime.engine = this.runtime.engine.forkForSession(sessionId, true);
       await this.runtime.engine.initialize();
@@ -501,15 +520,25 @@ class WebRepl {
     this.broadcastSync();
   }
 
-  private async detachRunningForeground(reason: string): Promise<void> {
-    if (!this.busy) return;
+  private async detachRunningForeground(reason: string): Promise<boolean> {
+    if (!this.busy) return false;
     const snapshot = this.runtime.engine.snapshot().session;
     const sessionId = snapshot?.sessionId ?? `session-${Date.now().toString(36)}`;
     const run = this.foregroundRun;
-    if (run) {
-      this.backgroundSessionRuns.set(sessionId, run);
+    if (run && !this.backgroundSessionRuns.has(sessionId)) {
+      const backgroundRun: WebBackgroundSessionRun = {
+        sessionId,
+        title: snapshot?.title,
+        reason,
+        startedAt: Date.now(),
+        engine: this.runtime.engine,
+        abortController: this.activeAbortController ?? new AbortController(),
+        promise: run,
+      };
+      this.backgroundSessionRuns.set(sessionId, backgroundRun);
       run.finally(() => {
         this.backgroundSessionRuns.delete(sessionId);
+        this.suppressReattachedStreaming.delete(backgroundRun.engine);
         this.broadcastSync();
       }).catch(() => undefined);
     }
@@ -519,6 +548,20 @@ class WebRepl {
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined };
     this.append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
+    return true;
+  }
+
+  private async reattachRunningSession(run: WebBackgroundSessionRun): Promise<void> {
+    await this.detachRunningForeground("session switch");
+    this.backgroundSessionRuns.delete(run.sessionId);
+    this.runtime.engine = run.engine;
+    this.activeAbortController = run.abortController;
+    this.interruptArmed = false;
+    this.foregroundRun = run.promise;
+    this.suppressReattachedStreaming.add(run.engine);
+    await this.refreshSessionView(systemLine(`reattached running session ${run.sessionId}`));
+    this.setBusy(true);
+    this.setStatus({ ...this.status, phase: "running", detail: "working" });
   }
 
   private reduce(event: AgentEvent): void {
@@ -730,7 +773,15 @@ class WebRepl {
     const engine = this.runtime.engine;
     try {
       for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
-        if (this.runtime.engine === engine) this.handleEvent(event);
+        if (this.runtime.engine !== engine) continue;
+        if (this.suppressReattachedStreaming.has(engine)) {
+          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
+            if (event.type === "message" || event.type === "terminal" || event.type === "error") this.suppressReattachedStreaming.delete(engine);
+            this.handleEvent(event);
+          }
+          continue;
+        }
+        this.handleEvent(event);
       }
     } catch (error) {
       if (this.runtime.engine === engine) {
@@ -816,7 +867,7 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
       return sendJson(res, await repl.submit(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
-    if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, { sessions: await repl.listSessions() });
+    if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions());
     if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
       const body = await readJsonBody<{ sessionId?: string }>(req);
       return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));

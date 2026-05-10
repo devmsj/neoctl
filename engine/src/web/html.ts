@@ -192,7 +192,7 @@ const ANIMATED_NUMBER_INTERVAL_MS = 50;
 const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
 const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
 const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, backgroundSessionRunCount: 0, runningSessionIds: [], session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
 const animatedNumbers = { input: { target: undefined, display: undefined, timer: undefined }, output: { target: undefined, display: undefined, timer: undefined } };
 const renderedLineKeys = new Map();
 const statusNodes = {};
@@ -227,6 +227,8 @@ es.addEventListener('sync', (event) => {
   state.busy = !!payload.busy;
   state.queuedInput = payload.queuedInput;
   state.backgroundTaskCount = payload.backgroundTaskCount || 0;
+  state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0;
+  state.runningSessionIds = payload.runningSessionIds || state.runningSessionIds || [];
   state.session = payload.session;
   if (payload.catalog) state.catalog = payload.catalog;
   if (payload.interactive) state.interactive = payload.interactive;
@@ -478,6 +480,7 @@ async function openSessionsPanel() {
   const res = await fetch('/api/sessions');
   const body = await res.json();
   state.sessions = body.sessions || [];
+  state.runningSessionIds = body.runningSessionIds || [];
   renderPanel();
 }
 function renderSessionsPanel() {
@@ -485,13 +488,13 @@ function renderSessionsPanel() {
   const selected = Math.max(0, Math.min(state.panelSelection, sessions.length - 1));
   state.panelSelection = selected;
   const currentSessionId = state.session && state.session.sessionId;
-  const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">Manage saved sessions.</div></div><div class="panel-toolbar"><button class="panel-primary" data-action="new-session" title="New session" aria-label="New session"' + (state.busy ? ' disabled' : '') + '>+</button></div></div>';
+  const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">Manage saved sessions.</div></div><div class="panel-toolbar"><button class="panel-primary" data-action="new-session" title="New session" aria-label="New session">+</button></div></div>';
   const body = sessions.length ? '<div class="session-list">' + sessions.map((s, i) => renderSessionCard(s, i, selected, currentSessionId)).join('') + '</div>' : '<div class="panel-muted">No saved sessions found. Tap + to start a new session.</div>';
   panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select · Enter enter · Delete remove</div>';
 }
 function renderSessionCard(s, i, selected, currentSessionId) {
   const isCurrent = s.sessionId === currentSessionId;
-  const isRunning = isCurrent && (state.busy || isActivePhase((state.status || {}).phase));
+  const isRunning = (state.runningSessionIds || []).includes(s.sessionId) || (isCurrent && (state.busy || isActivePhase((state.status || {}).phase)));
   const badges = [
     isRunning ? '<span class="session-badge running">● running</span>' : '',
     isCurrent ? '<span class="session-badge current">current</span>' : '',
@@ -663,16 +666,19 @@ transcript.addEventListener('click', (e) => {
     renderedLineKeys.set(String(id), lineRenderKey(line));
   }
 });
+function handleSessionsKey(e) {
+  if (state.panel !== 'sessions') return false;
+  const countSessions = (state.sessions || []).length;
+  if (e.key === 'Escape') { e.preventDefault(); showChatView(); return true; }
+  if (e.key === 'ArrowUp' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + countSessions - 1) % countSessions; renderPanel(); return true; }
+  if (e.key === 'ArrowDown' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + 1) % countSessions; renderPanel(); return true; }
+  if (e.key === 'Enter' && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) void enterSession(s.sessionId); return true; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) openSessionsPanelAfterDelete(s.sessionId); return true; }
+  return false;
+}
 input.addEventListener('keydown', (e) => {
   const count = completions().length;
-  if (state.panel === 'sessions') {
-    const countSessions = (state.sessions || []).length;
-    if (e.key === 'Escape') { e.preventDefault(); showChatView(); return; }
-    if (e.key === 'ArrowUp' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + countSessions - 1) % countSessions; renderPanel(); return; }
-    if (e.key === 'ArrowDown' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + 1) % countSessions; renderPanel(); return; }
-    if (e.key === 'Enter' && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) void enterSession(s.sessionId); return; }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) openSessionsPanelAfterDelete(s.sessionId); return; }
-  }
+  if (handleSessionsKey(e)) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const c = selectedCompletion(); if (c && c.kind === 'command' && c.arguments !== 'none') { completeSelection(); input.value += ' '; input.selectionStart = input.selectionEnd = input.value.length; return; } submit(); return; }
   if (e.key === 'Tab') { if (completeSelection()) e.preventDefault(); else if (!input.value) { e.preventDefault(); advanceTip(); } return; }
   if (e.key === 'ArrowUp' && count) { e.preventDefault(); state.completionIndex = (state.completionIndex + count - 1) % count; renderCompletions(); return; }
@@ -685,6 +691,10 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown' && !input.value) { e.preventDefault(); advanceTip(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else fetch('/api/interrupt', { method: 'POST' }); }
   if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) fetch('/api/interrupt', { method: 'POST' }); else renderCompletions(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target === input || e.target.closest('input, textarea, select')) return;
+  handleSessionsKey(e);
 });
 input.addEventListener('input', () => { state.completionIndex = 0; state.attachments = attachmentsForText(input.value); advanceTip(); autosize(); renderCompletions(); });
 input.addEventListener('paste', (e) => { void handlePaste(e); });
