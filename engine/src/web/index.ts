@@ -27,7 +27,7 @@ import { isModelReasoningArgument, parseReplCommand, helpText, replCommandDefini
 import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { CompactionResult } from "../context/compaction.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
-import type { Message, ToolUseRequest } from "../types/messages.js";
+import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
 
 interface WebRuntime {
@@ -152,6 +152,13 @@ interface LoginFormPayload {
   provider: LoginProviderName;
   fields: LoginFieldDefinition[];
   values: Record<string, string>;
+}
+
+interface WebAttachmentPayload {
+  kind: "image";
+  label: string;
+  mimeType: string;
+  data: string;
 }
 
 export async function runWebServer(argv = process.argv.slice(2)): Promise<void> {
@@ -319,16 +326,16 @@ class WebRepl {
     };
   }
 
-  async submit(text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
     const trimmed = text.trim();
-    if (!trimmed) return { ok: true };
+    if (!trimmed && attachments.length === 0) return { ok: true };
     if (this.busy) {
       if (this.queuedInput !== undefined) return { ok: false, error: "A queued prompt is already waiting. Press Esc/Ctrl+C in the web UI to clear it." };
       this.queuedInput = text;
       this.broadcastSync();
       return { ok: true };
     }
-    void this.handleCommandOrPrompt(text).catch((error) => {
+    void this.handleCommandOrPrompt(text, attachments).catch((error) => {
       this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       this.setBusy(false);
       this.setStatus({ ...this.status, phase: "ready", detail: undefined });
@@ -569,7 +576,7 @@ class WebRepl {
     if (event.type === "error") this.append({ kind: "error", text: event.error.message });
   }
 
-  private async handleCommandOrPrompt(text: string): Promise<void> {
+  private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = []): Promise<void> {
     const command = parseReplCommand(text);
     if (command.type === "exit") {
       this.append(systemLine("neo web server is still running. Close this tab or stop the server process with Ctrl+C."));
@@ -635,14 +642,19 @@ class WebRepl {
       return;
     }
 
-    this.append({ kind: "user", text });
+    const promptPayload = buildWebPromptPayload(command.text, attachments);
+    if (promptPayload.blocks?.some((block) => block.type === "image") && !this.runtime.engine.canAcceptImageInput()) {
+      this.append({ kind: "error", text: "Current model does not support image input; image attachments were not added to the conversation." });
+      return;
+    }
+    this.append({ kind: "user", text: promptPayload.displayText });
     const abortController = new AbortController();
     this.activeAbortController = abortController;
     this.interruptArmed = false;
     this.setBusy(true);
     this.setStatus({ ...this.status, phase: "running", detail: "working", usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
     try {
-      for await (const event of this.runtime.engine.sendUserText(command.text, { abortSignal: abortController.signal })) {
+      for await (const event of this.runtime.engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
         this.handleEvent(event);
       }
     } catch (error) {
@@ -722,8 +734,8 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "POST" && url.pathname === "/api/submit") {
-      const body = await readJsonBody<{ text?: string }>(req);
-      return sendJson(res, await repl.submit(String(body.text ?? "")));
+      const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
+      return sendJson(res, await repl.submit(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
     if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, { sessions: await repl.listSessions() });
@@ -767,6 +779,14 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   if (chunks.length === 0) return {} as T;
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+}
+
+function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is WebAttachmentPayload => {
+    if (!isRecord(item)) return false;
+    return item.kind === "image" && typeof item.label === "string" && /^\[img#\d+\]$/.test(item.label) && typeof item.mimeType === "string" && item.mimeType.startsWith("image/") && typeof item.data === "string";
+  });
 }
 
 function webCatalog(runtime: WebRuntime) {
@@ -814,6 +834,42 @@ function initialStatus(runtime: WebRuntime, metrics = runtime.initialMetrics): U
 
 function resetStatus(runtime: WebRuntime): UiStatus {
   return initialStatus(runtime, initialContextMetrics(runtime.engine.getModelSettings().model, runtime.engine.snapshot().messages, runtime.initialMetrics.toolCount));
+}
+
+function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[]): { text: string; displayText: string; blocks?: MessageBlock[] } {
+  const activeAttachments = attachments.filter((attachment) => displayText.includes(attachment.label));
+  if (activeAttachments.length === 0) return { text: displayText, displayText };
+  const blocks: MessageBlock[] = [];
+  let cursor = 0;
+  while (cursor < displayText.length) {
+    const next = nextWebAttachmentOccurrence(displayText, activeAttachments, cursor);
+    if (!next) {
+      pushTextBlock(blocks, displayText.slice(cursor));
+      break;
+    }
+    pushTextBlock(blocks, displayText.slice(cursor, next.index));
+    blocks.push({ type: "image", mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
+    cursor = next.index + next.attachment.label.length;
+  }
+  const text = blocks.map((block) => block.type === "text" ? block.text : block.type === "image" ? block.label ?? "[image]" : "").join("");
+  return { text, displayText: text, blocks };
+}
+
+function nextWebAttachmentOccurrence(text: string, attachments: readonly WebAttachmentPayload[], start: number): { index: number; attachment: WebAttachmentPayload } | undefined {
+  let best: { index: number; attachment: WebAttachmentPayload } | undefined;
+  for (const attachment of attachments) {
+    const index = text.indexOf(attachment.label, start);
+    if (index === -1) continue;
+    if (!best || index < best.index) best = { index, attachment };
+  }
+  return best;
+}
+
+function pushTextBlock(blocks: MessageBlock[], text: string): void {
+  if (!text) return;
+  const previous = blocks[blocks.length - 1];
+  if (previous?.type === "text") previous.text += text;
+  else blocks.push({ type: "text", text });
 }
 
 function initialContextMetrics(model: string | undefined, messageCount: number, toolCount: number): ContextMetrics {

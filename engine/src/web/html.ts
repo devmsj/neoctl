@@ -152,7 +152,7 @@ import { marked } from '/vendor/marked.esm.js';
 marked.setOptions({ gfm: true, breaks: false, async: false });
 const TOOL_COLLAPSED_LINES = 6;
 const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0 };
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0 };
 const renderedLineKeys = new Map();
 const statusNodes = {};
 const phaseDisplay = { value: state.status.phase, displayedAt: Date.now(), pending: undefined, timer: undefined };
@@ -430,17 +430,38 @@ async function saveLoginPanel() {
   const result = await postJson('/api/login', { provider, values });
   if (result.ok) { state.panel = undefined; renderPanel(); }
 }
+function attachmentsForText(text) { return state.attachments.filter(attachment => text.includes(attachment.label)); }
+function insertAtCursor(value) { const start = input.selectionStart || 0, end = input.selectionEnd || start; input.value = input.value.slice(0, start) + value + input.value.slice(end); input.selectionStart = input.selectionEnd = start + value.length; autosize(); renderCompletions(); }
+async function fileToDataUrlPayload(file) {
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || '')); reader.onerror = () => reject(reader.error || new Error('read failed')); reader.readAsDataURL(file); });
+  const comma = dataUrl.indexOf(',');
+  return { mimeType: file.type || 'image/png', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl };
+}
+async function handlePaste(e) {
+  const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  for (const file of files) {
+    const id = ++state.attachmentCounter;
+    const label = '[img#' + id + ']';
+    const payload = await fileToDataUrlPayload(file);
+    state.attachments.push({ kind: 'image', label, mimeType: payload.mimeType, data: payload.data });
+    insertAtCursor(label);
+  }
+}
 async function submit() {
   const text = input.value;
   if (text.trim() === '/sessions') { input.value = ''; autosize(); renderCompletions(); await openSessionsPanel(); return; }
   if (text.trim() === '/login') { input.value = ''; autosize(); renderCompletions(); await openLoginPanel(); return; }
-  if (!text.trim()) return;
+  const attachments = attachmentsForText(text);
+  if (!text.trim() && attachments.length === 0) return;
   state.history = [text].concat(state.history.filter(x => x !== text)).slice(0, 100);
   state.historyIndex = undefined;
   input.value = '';
+  state.attachments = [];
   autosize();
   renderCompletions();
-  const res = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+  const res = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, attachments }) });
   const body = await res.json();
   if (!body.ok && body.error) alert(body.error);
 }
@@ -497,7 +518,8 @@ input.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else fetch('/api/interrupt', { method: 'POST' }); }
   if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) fetch('/api/interrupt', { method: 'POST' }); else renderCompletions(); }
 });
-input.addEventListener('input', () => { state.completionIndex = 0; autosize(); renderCompletions(); });
+input.addEventListener('input', () => { state.completionIndex = 0; state.attachments = attachmentsForText(input.value); autosize(); renderCompletions(); });
+input.addEventListener('paste', (e) => { void handlePaste(e); });
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; updateScrollBottomAffordance(); }
 function phaseLabel(phase) { if (phase === 'calling_model') return 'model'; if (phase === 'thinking') return 'think'; if (phase === 'running_tools') return 'tools'; if (phase === 'injecting_context') return 'context'; return phase || 'ready'; }
 function isActivePhase(phase) { return ['running', 'preparing', 'calling_model', 'thinking', 'running_tools', 'compacting', 'injecting_context'].includes(phase); }
