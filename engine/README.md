@@ -109,7 +109,18 @@ npm run smoke:openai -- "Say pong"
 
 ## REPL 用法
 
-启动后直接输入自然语言任务即可。常用 slash commands：
+启动后直接输入自然语言任务即可。命令行参数也可用 `-`/`--` 形式调用同名 REPL slash command：
+
+```bash
+neo -help
+neo -model
+neo -model gpt-5.5 high
+neo -new
+```
+
+除 `-help` 会直接打印帮助并退出外，其它命令会启动 REPL 并执行对应内部命令，例如 `neo -model` 等同于进入 REPL 后输入 `/model`。
+
+常用 slash commands：
 
 | 命令 | 作用 |
 | --- | --- |

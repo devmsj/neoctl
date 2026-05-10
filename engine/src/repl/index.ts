@@ -26,7 +26,7 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
-import { isModelReasoningArgument, isValidReplCommandLine, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
+import { cliHelpText, isModelReasoningArgument, isValidReplCommandLine, parseCliReplCommandArgs, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { CompactionResult } from "../context/compaction.js";
 import { writeSessionMarkdownExport } from "../session/session-export.js";
@@ -204,13 +204,32 @@ interface LoginFormState {
   legacyProvider?: LoginProviderName;
 }
 
-async function main(): Promise<void> {
+async function main(argv = process.argv.slice(2)): Promise<void> {
+  const initialCommand = parseCliReplCommandArgs(argv);
+  if (argv.length > 0 && !initialCommand) {
+    console.error(`Unknown or incomplete command: ${argv.join(" ")}\n\n${cliHelpText(binaryName())}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (initialCommand?.definition.name === "/help") {
+    console.log(cliHelpText(binaryName()));
+    return;
+  }
+
   const runtime = await createRuntime();
-  const instance = render(e(InkRepl, { runtime }), {
+  const instance = render(e(InkRepl, { runtime, initialCommandLine: initialCommand?.line }), {
     exitOnCtrlC: false,
   });
   await instance.waitUntilExit();
   console.log("bye.");
+}
+
+function binaryName(): string {
+  const arg = process.argv[1];
+  if (!arg) return "neo";
+  const parsed = path.parse(arg);
+  const name = parsed.name || "neo";
+  return name === "index" ? "neo" : name;
 }
 
 function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
@@ -486,7 +505,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function InkRepl({ runtime }: { runtime: ReplRuntime }) {
+function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initialCommandLine?: string }) {
   const app = useApp();
   const lineId = useRef(0);
   const assistantLineId = useRef<number | undefined>(undefined);
@@ -1204,6 +1223,11 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setQueuedPromptState(undefined);
     setPromptState("", 0);
   }, [runtime]);
+
+  useEffect(() => {
+    if (initialCommandLine === undefined) return;
+    void submitLine(initialCommandLine);
+  }, []);
 
   const terminalSize = useTerminalSize();
   const width = terminalSize.columns;

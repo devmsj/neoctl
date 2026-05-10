@@ -121,3 +121,53 @@ export const helpText = [
   "Commands:",
   ...replCommandDefinitions.map((command) => `  ${command.usage.padEnd(helpUsageWidth)}  ${command.description}`),
 ].join("\n");
+
+export interface CliReplCommandParseResult {
+  line: string;
+  definition: ReplCommandDefinition;
+}
+
+export function parseCliReplCommandArgs(argv: string[]): CliReplCommandParseResult | undefined {
+  if (argv.length === 0) return undefined;
+  const first = argv[0];
+  const match = /^--?([^=\s]+)(?:=(.*))?$/.exec(first);
+  if (!match) return undefined;
+
+  const commandName = `/${match[1].toLowerCase()}`;
+  const definition = replCommandDefinitions.find((command) =>
+    command.name.toLowerCase() === commandName || command.aliases?.some((alias) => alias.toLowerCase() === commandName)
+  );
+  if (!definition) return undefined;
+
+  const inlineArgument = match[2];
+  const rest = inlineArgument === undefined ? argv.slice(1) : [inlineArgument, ...argv.slice(1)];
+  if (definition.arguments === "none" && rest.length > 0) return undefined;
+  if ((definition.arguments === "required" || definition.arguments === "log") && rest.length === 0) return undefined;
+
+  const line = rest.length === 0 ? definition.name : `${definition.name} ${rest.join(" ")}`;
+  return { line, definition };
+}
+
+const cliUsageWidth = Math.max(...replCommandDefinitions.map((command) => command.usage.replace(/^\//, "-").length));
+
+export function cliHelpText(binaryName = "neo"): string {
+  return [
+    `Usage: ${binaryName} [command]`,
+    "",
+    "CLI commands mirror REPL slash commands. Use '-' or '--' in place of '/'.",
+    "",
+    "Commands:",
+    ...replCommandDefinitions.map((command) => {
+      const usage = command.usage.replace(/^\//, "-");
+      return `  ${usage.padEnd(cliUsageWidth)}  ${command.description}`;
+    }),
+    "",
+    "Examples:",
+    `  ${binaryName} -help`,
+    `  ${binaryName} -model`,
+    `  ${binaryName} -model gpt-5.5 high`,
+    `  ${binaryName} -new`,
+    "",
+    "Inside the REPL, use the original slash form such as /help or /model.",
+  ].join("\n");
+}
