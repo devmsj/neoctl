@@ -1,22 +1,14 @@
 import { spawn } from "node:child_process";
 
 export async function openDirectory(directory: string): Promise<void> {
-  const opener = directoryOpener();
+  const opener = directoryOpener(directory);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(opener.command, [...opener.args, directory], {
+    const child = spawn(opener.command, opener.args, {
       stdio: "ignore",
       windowsHide: true,
     });
 
     child.once("error", reject);
-    if (process.platform === "win32") {
-      child.once("spawn", () => {
-        child.unref();
-        resolve();
-      });
-      return;
-    }
-
     child.once("close", (code) => {
       if (code === 0) {
         resolve();
@@ -27,8 +19,8 @@ export async function openDirectory(directory: string): Promise<void> {
   });
 }
 
-function directoryOpener(): { command: string; args: string[] } {
-  if (process.platform === "win32") return { command: "explorer", args: [] };
-  if (process.platform === "darwin") return { command: "open", args: [] };
-  return { command: "xdg-open", args: [] };
+function directoryOpener(directory: string): { command: string; args: string[] } {
+  if (process.platform === "win32") return { command: "cmd", args: ["/d", "/c", "start", "", directory] };
+  if (process.platform === "darwin") return { command: "open", args: [directory] };
+  return { command: "xdg-open", args: [directory] };
 }
