@@ -105,6 +105,7 @@ interface UiLine {
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
   title?: string;
+  bodyTitle?: string;
   titleStatus?: "success" | "failure";
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
@@ -1010,13 +1011,13 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
-  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatPlanToolPayload(toolUse.input), collapsible: true };
+  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
   return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatReplData(toolUse.input, 1200), previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
+  return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
 }
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Partial<UiLine> {
@@ -1045,16 +1046,20 @@ function isPlanToolPayload(value: unknown): value is PlanToolPayloadLike {
   return value.items.every((item) => isRecord(item) && typeof item.description === "string" && (item.status === "pending" || item.status === "in_progress" || item.status === "completed"));
 }
 
+function planToolBodyTitle(payload: PlanToolPayloadLike): string | undefined {
+  const title = payload.title?.trim();
+  return title ? title : undefined;
+}
+
 function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
   const sections: string[] = [];
-  if (payload.title?.trim()) sections.push(`**${payload.title.trim()}**`);
   if (payload.summary?.trim()) sections.push(payload.summary.trim());
   if (payload.note?.trim()) sections.push(payload.note.trim());
   sections.push(payload.items.map((item) => item.status === "completed" ? `- ~~${item.description.trim()}~~` : item.status === "in_progress" ? `- ▶ ${item.description.trim()}` : `- ${item.description.trim()}`).join("\n"));
   return sections.filter(Boolean).join("\n");
 }
 
-function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
+function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
   if (isExecOutput(output)) {
     const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
     const sections = [`${status} · ${output.durationMs}ms`, `$ ${output.command}`];
@@ -1063,7 +1068,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     if (!output.stdout && !output.stderr) sections.push(ok ? "no output" : "no captured output");
     return { text: sections.join("\n"), format: "ansi" };
   }
-  if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true };
+  if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true, bodyTitle: planToolBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
 }
@@ -1254,6 +1259,7 @@ const WEB_HTML = String.raw`<!doctype html>
     .markdown del { color: var(--muted); }
     .markdown input[type="checkbox"] { vertical-align: -2px; margin-right: .4em; accent-color: var(--cyan); }
     .title { color: var(--muted); font-weight: 700; margin-bottom: 2px; }
+    .body-title { color: var(--text); font-weight: 700; margin-bottom: .35em; }
     .title.success::after { content: " ✓"; color: var(--green); }
     .title.failure::after { content: " ✕"; color: var(--red); }
     .kind-user .marker, .kind-user .content { color: var(--cyan); }
@@ -1310,9 +1316,11 @@ const WEB_HTML = String.raw`<!doctype html>
 import { marked } from '/vendor/marked.esm.js';
 marked.setOptions({ gfm: true, breaks: false, async: false });
 const TOOL_COLLAPSED_LINES = 6;
+const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
 const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, catalog: { commands: [], modelIds: [], reasoning: [] }, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set() };
 const renderedLineKeys = new Map();
 const statusNodes = {};
+const phaseDisplay = { value: state.status.phase, displayedAt: Date.now(), pending: undefined, timer: undefined };
 let renderPending = false;
 const transcript = document.getElementById('transcript');
 const statusEl = document.getElementById('status');
@@ -1376,10 +1384,11 @@ function updateLineElement(element, line) {
   const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
   const collapsed = collapsible && !expanded;
   const title = line.title ? '<div class="title ' + (line.titleStatus || '') + '">' + esc(line.title) + '</div>' : '';
+  const bodyTitle = line.bodyTitle ? '<div class="body-title">' + esc(line.bodyTitle) + '</div>' : '';
   const markdown = shouldRenderMarkdown(line);
   const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : '', collapsible ? 'collapsible' : '', collapsed ? 'collapsed' : '', expanded ? 'expanded' : ''].filter(Boolean).join(' ');
   const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
-  const body = '<div class="tool-body">' + renderText(line.text || '', line.format, markdown) + '</div>';
+  const body = '<div class="tool-body">' + bodyTitle + renderText(line.text || '', line.format, markdown) + '</div>';
   const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
   element.className = cls;
   element.innerHTML = '<div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div>';
@@ -1388,7 +1397,7 @@ function lineRenderKey(line) {
   const kind = line.kind || 'system';
   const expanded = state.expandedToolLines.has(line.id);
   const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
-  return [kind, line.text || '', line.title || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0'].join('\u001f');
+  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0'].join('\u001f');
 }
 function markerForLine(line, kind) {
   if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
@@ -1415,13 +1424,15 @@ function renderText(text, format, markdown) {
 function renderStatus() {
   ensureStatusNodes();
   const s = state.status || {};
-  const phase = phaseLabel(s.phase || 'ready');
+  const displayPhase = minimumDisplayPhase(s.phase || 'ready');
+  const phase = phaseLabel(displayPhase);
   const ctx = contextParts(s.metrics);
   const inputTokens = compactNumber((s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens));
   const outputTokens = compactNumber((s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens);
   const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
+  const phaseActive = isActivePhase(displayPhase);
   const active = isActivePhase(s.phase);
-  const phaseClass = ['phase', active ? 'active' : '', s.phase === 'thinking' ? 'thinking' : '', s.phase === 'running_tools' ? 'tools' : '', s.phase === 'stopped' ? 'stopped' : ''].filter(Boolean).join(' ');
+  const phaseClass = ['phase', phaseActive ? 'active' : '', displayPhase === 'thinking' ? 'thinking' : '', displayPhase === 'running_tools' ? 'tools' : '', displayPhase === 'stopped' ? 'stopped' : ''].filter(Boolean).join(' ');
   setText(statusNodes.phase, phase);
   if (statusNodes.phase.className !== phaseClass) statusNodes.phase.className = phaseClass;
   setText(statusNodes.model, model);
@@ -1442,6 +1453,33 @@ function ensureStatusNodes() {
   if (statusNodes.phase) return;
   statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span>↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
   for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
+}
+function minimumDisplayPhase(target) {
+  if (phaseDisplay.timer) {
+    clearTimeout(phaseDisplay.timer);
+    phaseDisplay.timer = undefined;
+  }
+  if (Object.is(target, phaseDisplay.value)) {
+    phaseDisplay.pending = undefined;
+    return phaseDisplay.value;
+  }
+  const applyPending = () => {
+    const next = phaseDisplay.pending;
+    if (next === undefined || Object.is(next, phaseDisplay.value)) {
+      phaseDisplay.pending = undefined;
+      return;
+    }
+    phaseDisplay.value = next;
+    phaseDisplay.displayedAt = Date.now();
+    phaseDisplay.pending = undefined;
+    phaseDisplay.timer = undefined;
+    scheduleRender();
+  };
+  phaseDisplay.pending = target;
+  const remainingMs = STATUS_PHASE_MIN_DISPLAY_MS - (Date.now() - phaseDisplay.displayedAt);
+  if (remainingMs <= 0) applyPending();
+  else phaseDisplay.timer = setTimeout(applyPending, remainingMs);
+  return phaseDisplay.value;
 }
 function setText(node, text) {
   text = String(text);

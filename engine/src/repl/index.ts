@@ -128,6 +128,7 @@ interface UiLine {
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
   title?: string;
+  bodyTitle?: string;
   titleStatus?: "success" | "failure";
   format?: "markdown" | "ansi";
   previewStyle?: "summary";
@@ -1377,12 +1378,16 @@ function MessageLine(
   }
   const clipPendingMarkdown = !line.live && onMarkdownRenderComplete !== undefined && lineNeedsDynamicRender(line, contentWidth);
   const display = displayWindowForLine(line, contentWidth, line.live || clipPendingMarkdown ? liveMaxLines : undefined);
+  const contentNodes: React.ReactNode[] = [];
+  if (line.title) contentNodes.push(renderBlockTitle(line));
+  if (line.bodyTitle) contentNodes.push(e(Text, { key: `body-title-${line.id}`, bold: true }, line.bodyTitle));
+  contentNodes.push(...renderDisplayText(line, contentWidth, display.maxLines, display.skipTop, onMarkdownRenderComplete));
   return e(Box, { flexDirection: "row" },
     e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker(line.kind)),
     e(
       Box,
       { flexDirection: "column", width: contentWidth },
-      ...renderDisplayText(line, contentWidth, display.maxLines, display.skipTop, onMarkdownRenderComplete),
+      ...contentNodes,
     ),
   );
 }
@@ -1465,6 +1470,17 @@ function titleStatusMarker(status: NonNullable<UiLine["titleStatus"]>): string {
 
 function titleStatusColor(status: NonNullable<UiLine["titleStatus"]>): string {
   return status === "success" ? "green" : "red";
+}
+
+function renderBlockTitle(line: UiLine): React.ReactNode {
+  const title = line.title ?? titleForKind(line.kind);
+  if (!line.titleStatus) return e(Text, { key: `title-${line.id}`, color: colorForKind(line.kind), bold: true }, title);
+  return e(
+    Text,
+    { key: `title-${line.id}`, color: colorForKind(line.kind), bold: true },
+    `${title} `,
+    e(Text, { color: titleStatusColor(line.titleStatus), bold: true }, titleStatusMarker(line.titleStatus)),
+  );
 }
 
 function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skipTop = 0): React.ReactNode[] {
@@ -3094,6 +3110,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
     return {
       kind: "tool",
       title: toolTitle(toolUse.name, "running"),
+      bodyTitle: planToolBodyTitle(toolUse.input),
       text: formatPlanToolPayload(toolUse.input),
     };
   }
@@ -3111,6 +3128,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   const line: Omit<UiLine, "id"> = {
     kind: ok ? "tool" : "error",
     title: toolTitle(toolName, "finished"),
+    bodyTitle: formatted.bodyTitle,
     titleStatus: ok ? "success" : "failure",
     text: formatted.text,
     format: formatted.format,
@@ -3166,9 +3184,13 @@ function isPlanToolPayload(value: unknown): value is PlanToolPayloadLike {
   });
 }
 
+function planToolBodyTitle(payload: PlanToolPayloadLike): string | undefined {
+  const title = payload.title?.trim();
+  return title ? title : undefined;
+}
+
 function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
   const sections: string[] = [];
-  if (payload.title?.trim()) sections.push(`**${payload.title.trim()}**`);
   if (payload.summary?.trim()) sections.push(payload.summary.trim());
   if (payload.note?.trim()) sections.push(payload.note.trim());
   sections.push(payload.items.map(formatPlanItem).join("\n"));
@@ -3244,7 +3266,7 @@ function isReplScalar(value: unknown): boolean {
   return value === null || value === undefined || typeof value !== "object" || value instanceof Date;
 }
 
-function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
+function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
   if (toolName === "edit" && isRecord(output) && isEditToolOutput(output)) {
     return { text: formatEditToolDiff(output, ok), format: "ansi", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
   }
@@ -3286,7 +3308,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (toolName === "plan" && isPlanToolPayload(output)) {
-    return { text: formatPlanToolPayload(output), full: true };
+    return { text: formatPlanToolPayload(output), bodyTitle: planToolBodyTitle(output), full: true };
   }
 
   return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
