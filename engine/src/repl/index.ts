@@ -154,9 +154,20 @@ interface UiStatus {
 
 interface SessionsBrowserState {
   sessions: SessionSummary[];
+  runningSessionIds: string[];
   pageSize: number;
   pageIndex: number;
   selectedIndex: number;
+}
+
+interface BackgroundSessionRun {
+  sessionId: string;
+  title?: string;
+  reason: string;
+  startedAt: number;
+  engine: QueryEngine;
+  abortController: AbortController;
+  promise: Promise<void>;
 }
 
 interface ClipboardAttachment {
@@ -319,6 +330,14 @@ function initialContextMetrics(model: string | undefined, messageCount: number, 
         }
       : undefined,
   };
+}
+
+function activeBackgroundTasks(runtime: ReplRuntime) {
+  return runtime.taskStore.list().filter((task) => !runtime.taskStore.isTerminal(task));
+}
+
+function runningSessionIds(runs: Map<string, BackgroundSessionRun>): string[] {
+  return [...runs.keys()];
 }
 
 function initialStatus(runtime: ReplRuntime, metrics = runtime.initialMetrics): UiStatus {
@@ -488,14 +507,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
-  const [backgroundTaskCount, setBackgroundTaskCount] = useState(() => runtime.taskStore.activeCount());
-  const [backgroundSessionRunCount, setBackgroundSessionRunCount] = useState(0);
-  const backgroundSessionRunsRef = useRef(new Map<string, Promise<void>>());
+  const [backgroundTasks, setBackgroundTasks] = useState(() => activeBackgroundTasks(runtime));
+  const [backgroundSessionRuns, setBackgroundSessionRuns] = useState<BackgroundSessionRun[]>([]);
+  const backgroundSessionRunsRef = useRef(new Map<string, BackgroundSessionRun>());
+  const suppressReattachedStreamingRef = useRef(new Set<QueryEngine>());
   const activePromptRunRef = useRef<Promise<void> | undefined>(undefined);
   const [animationTick, setAnimationTick] = useState(0);
   const [terminalTitlePrefix, setTerminalTitlePrefix] = useState(TERMINAL_TITLE_READY_PREFIX);
-  const totalBackgroundCount = backgroundTaskCount + backgroundSessionRunCount;
-  const terminalTitleWorking = isActivePhase(status.phase) || totalBackgroundCount > 0;
+  const backgroundTaskCount = backgroundTasks.length;
+  const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0 || backgroundSessionRuns.length > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
   const queuedInputRef = useRef<string | undefined>(undefined);
@@ -525,15 +545,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
   }, []);
 
   useEffect(() => {
-    if (!busy && totalBackgroundCount === 0) return undefined;
+    if (!busy && backgroundTaskCount === 0 && backgroundSessionRuns.length === 0) return undefined;
     const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [busy, totalBackgroundCount]);
+  }, [busy, backgroundTaskCount, backgroundSessionRuns.length]);
 
   useEffect(() => {
-    const updateBackgroundTaskCount = () => setBackgroundTaskCount(runtime.taskStore.activeCount());
-    updateBackgroundTaskCount();
-    return runtime.taskStore.subscribe(updateBackgroundTaskCount);
+    const updateBackgroundTasks = () => setBackgroundTasks(activeBackgroundTasks(runtime));
+    updateBackgroundTasks();
+    return runtime.taskStore.subscribe(updateBackgroundTasks);
   }, [runtime]);
 
   useEffect(() => {
@@ -699,17 +719,33 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch, renderedKey: undefined } : line));
   };
 
-  const detachRunningForeground = (reason: string) => {
-    if (!busyRef.current) return;
+  const syncBackgroundSessionRuns = () => {
+    setBackgroundSessionRuns([...backgroundSessionRunsRef.current.values()]);
+  };
+
+  const detachRunningForeground = (reason: string): boolean => {
+    if (!busyRef.current) return false;
     const snapshot = runtime.engine.snapshot().session;
     const sessionId = snapshot?.sessionId ?? `session-${Date.now().toString(36)}`;
     const run = activePromptRunRef.current;
-    if (run) {
-      backgroundSessionRunsRef.current.set(sessionId, run);
-      setBackgroundSessionRunCount(backgroundSessionRunsRef.current.size);
+    if (run && !backgroundSessionRunsRef.current.has(sessionId)) {
+      const backgroundRun: BackgroundSessionRun = {
+        sessionId,
+        title: snapshot?.title,
+        reason,
+        startedAt: Date.now(),
+        engine: runtime.engine,
+        abortController: activeAbortController.current ?? new AbortController(),
+        promise: run,
+      };
+      backgroundSessionRunsRef.current.set(sessionId, backgroundRun);
+      syncBackgroundSessionRuns();
+      setSessionsBrowser((current) => current ? { ...current, runningSessionIds: runningSessionIds(backgroundSessionRunsRef.current) } : current);
       run.finally(() => {
         backgroundSessionRunsRef.current.delete(sessionId);
-        setBackgroundSessionRunCount(backgroundSessionRunsRef.current.size);
+        suppressReattachedStreamingRef.current.delete(backgroundRun.engine);
+        syncBackgroundSessionRuns();
+        setSessionsBrowser((current) => current ? { ...current, runningSessionIds: runningSessionIds(backgroundSessionRunsRef.current) } : current);
       }).catch(() => undefined);
     }
     activeAbortController.current = undefined;
@@ -718,10 +754,10 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     setBusyState(false);
     setStatus((current) => ({ ...current, phase: "ready", detail: undefined }));
     append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
+    return true;
   };
 
-  const resumeSnapshot = (snapshot: SessionStoreSnapshot, metrics?: ContextMetrics) => {
-    detachRunningForeground("session switch");
+  const resetForegroundView = (metrics?: ContextMetrics) => {
     runtime.usage.reset();
     setStatus(initialStatus(runtime, metrics));
     resetLinesToHistory(runtime, setLines, lineId);
@@ -730,7 +766,28 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     finalizedThinkingLineId.current = undefined;
     toolLineIds.current.clear();
     clearPendingToolResultTimers();
+  };
+
+  const resumeSnapshot = (snapshot: SessionStoreSnapshot, metrics?: ContextMetrics) => {
+    resetForegroundView(metrics);
     append(systemLine(formatResume(snapshot)));
+  };
+
+  const reattachRunningSession = async (run: BackgroundSessionRun) => {
+    detachRunningForeground("session switch");
+    backgroundSessionRunsRef.current.delete(run.sessionId);
+    syncBackgroundSessionRuns();
+    setSessionsBrowser((current) => current ? { ...current, runningSessionIds: runningSessionIds(backgroundSessionRunsRef.current) } : current);
+    runtime.engine = run.engine;
+    activeAbortController.current = run.abortController;
+    interruptArmed.current = false;
+    activePromptRunRef.current = run.promise;
+    suppressReattachedStreamingRef.current.add(run.engine);
+    const metrics = await runtime.engine.contextMetrics();
+    resetForegroundView(metrics);
+    setBusyState(true);
+    setStatus((current) => ({ ...current, phase: "running", detail: "working" }));
+    append(systemLine(`reattached running session ${run.sessionId}`));
   };
 
   const finalizeLiveLine = (id: number | undefined) => {
@@ -1023,7 +1080,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "sessions") {
-      await handleSessionsCommand(runtime, setSessionsBrowser, (line) => append(line));
+      await handleSessionsCommand(runtime, runningSessionIds(backgroundSessionRunsRef.current), setSessionsBrowser, (line) => append(line));
       return;
     }
     if (command.type === "login") {
@@ -1083,7 +1140,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const engine = runtime.engine;
     const run = (async () => {
       for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: text })) {
-        if (runtime.engine === engine) handleEvent(event);
+        if (runtime.engine !== engine) continue;
+        if (suppressReattachedStreamingRef.current.has(engine)) {
+          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
+            if (event.type === "message" || event.type === "terminal" || event.type === "error") suppressReattachedStreamingRef.current.delete(engine);
+            handleEvent(event);
+          }
+          continue;
+        }
+        handleEvent(event);
       }
     })();
     activePromptRunRef.current = run;
@@ -1166,7 +1231,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     const blockIndex = staticLines.length + i;
     return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
   }, 0);
-  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (totalBackgroundCount > 0 ? BACKGROUND_TASK_STATUS_RENDER_ROWS : 0);
+  const statusRenderRows = STATUS_BAR_RENDER_ROWS + backgroundTaskStatusRenderRows(backgroundTasks.length);
   const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
@@ -1246,9 +1311,15 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
         const selected = sessionsBrowser.sessions[sessionAbsoluteIndex(sessionsBrowser)];
         if (selected) {
           setSessionsBrowser(undefined);
-          void handleResumeCommand(selected.sessionId, runtime, (line) => append(line)).then((result) => {
-            if (result) resumeSnapshot(result.snapshot, result.metrics);
-          });
+          const running = backgroundSessionRunsRef.current.get(selected.sessionId);
+          if (running) {
+            void reattachRunningSession(running);
+          } else {
+            detachRunningForeground("session switch");
+            void handleResumeCommand(selected.sessionId, runtime, (line) => append(line)).then((result) => {
+              if (result) resumeSnapshot(result.snapshot, result.metrics);
+            });
+          }
         }
         return;
       }
@@ -1393,7 +1464,7 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
-    totalBackgroundCount > 0 ? e(BackgroundTaskStatusLine, { count: totalBackgroundCount, width }) : null,
+    backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
     e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, ghostText: activePlaceholder, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
@@ -1850,17 +1921,34 @@ function StatusBar(
   );
 }
 
+function backgroundTaskStatusRenderRows(taskCount: number): number {
+  if (taskCount <= 0) return 0;
+  return 1 + Math.min(taskCount, 2);
+}
+
 function BackgroundTaskStatusLine(
-  { count, width: terminalWidth }:
-  { count: number; width: number },
+  { tasks, width: terminalWidth }:
+  { tasks: ReturnType<typeof activeBackgroundTasks>; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const text = count <= 3 ? "◇".repeat(Math.max(0, count)) : `◇×${count}`;
+  const summary = `◇ background tools: ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
+  const detailTasks = tasks.slice(0, 2);
   return e(
     Box,
-    { width, height: 1, overflow: "hidden" },
-    e(Text, { color: "yellow" }, fitToWidth(text, width)),
+    { flexDirection: "column", width, overflow: "hidden" },
+    e(Text, { color: "yellow" }, fitToWidth(summary, width)),
+    ...detailTasks.map((task) => e(Text, { key: task.taskId, color: "yellow" }, fitToWidth(`  ${task.type}:${truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, width - 30))} · ${task.status} · ${formatElapsed(Date.now() - new Date(task.createdAt).getTime())}`, width))),
   );
+}
+
+function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) return `${minutes}m${remainder.toString().padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${(minutes % 60).toString().padStart(2, "0")}m`;
 }
 
 function renderCompactStatusSegments(
@@ -2520,6 +2608,7 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
 
 async function handleSessionsCommand(
   runtime: ReplRuntime,
+  runningSessionIds: string[],
   setBrowser: (state: SessionsBrowserState | undefined) => void,
   append: (line: Omit<UiLine, "id">) => number,
 ) {
@@ -2529,7 +2618,7 @@ async function handleSessionsCommand(
     append(systemLine("No saved sessions found."));
     return;
   }
-  setBrowser({ sessions, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
+  setBrowser({ sessions, runningSessionIds, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
 }
 
 async function handleExportCommand(
@@ -2590,6 +2679,7 @@ async function handleDeleteSessionCommand(
       setBrowser({
         ...current,
         sessions: nextSessions,
+        runningSessionIds: current.runningSessionIds.filter((id) => id !== sessionId),
         pageIndex,
         selectedIndex: Math.min(current.selectedIndex, Math.max(0, pageLength - 1)),
       });
@@ -2750,7 +2840,7 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
     ...pageItems.map((session, index) => {
       const selected = index === state.selectedIndex;
       const absoluteIndex = state.pageIndex * state.pageSize + index;
-      const row = formatSessionBrowserRow(session, absoluteIndex, contentWidth);
+      const row = formatSessionBrowserRow(session, absoluteIndex, contentWidth, state.runningSessionIds.includes(session.sessionId));
       return e(
         Text,
         { key: session.sessionId, color: "white" },
@@ -3141,16 +3231,17 @@ function stripEnvQuotes(value: string): string {
   return value;
 }
 
-function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number): { numberPrefix: string; rest: string } {
+function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number, running = false): { numberPrefix: string; rest: string } {
   const numberPrefix = `${absoluteIndex + 1}.`.padStart(4);
   const title = session.title?.trim() || "(untitled)";
+  const runningTag = running ? " · running" : "";
   const updated = session.updatedAt ? ` · ${formatSessionTimestamp(session.updatedAt)}` : "";
   const messages = ` · ${session.messages} messages`;
-  const fixedParts = `${numberPrefix} ${updated}${messages}`;
+  const fixedParts = `${numberPrefix} ${runningTag}${updated}${messages}`;
   const idBudget = Math.max(12, Math.min(32, Math.floor(width * 0.28)));
   const id = truncateMiddle(session.sessionId, idBudget);
   const titleBudget = Math.max(8, width - fixedParts.length - id.length - 5);
-  const row = fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)} · ${id}${updated}${messages}`, width);
+  const row = fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)} · ${id}${runningTag}${updated}${messages}`, width);
   return { numberPrefix, rest: row.slice(numberPrefix.length) };
 }
 
