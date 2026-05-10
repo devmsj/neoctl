@@ -111,6 +111,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     #panel { display: none; flex: 0 0 auto; padding: 12px var(--page-gutter); border-top: 1px solid var(--line); background: rgba(7, 8, 11, .97); color: var(--muted); max-height: min(58vh, 560px); overflow: auto; }
     #app.sessions-page #transcriptWrap, #app.sessions-page #status, #app.sessions-page #queued, #app.sessions-page #composerWrap { display: none; }
     #app.sessions-page #panel { flex: 1 1 auto; max-height: none; border-top: 0; padding-top: 18px; }
+    #app.sessions-page .topbar { display: none; }
     #panel.open { display: block; }
     .panel-title { color: var(--cyan); font-weight: 700; margin-bottom: 6px; }
     .panel-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
@@ -133,7 +134,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     .panel-toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .panel-actions button, .login-actions button, .panel-close, .panel-primary { border: 1px solid #263043; border-radius: 999px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; min-height: 24px; padding: 2px 9px; }
     .panel-actions button:disabled, .login-actions button:disabled, .panel-close:disabled, .panel-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
-    .panel-primary { color: #020617; border-color: rgba(34, 211, 238, .72); background: linear-gradient(90deg, var(--cyan), #67e8f9); font-weight: 700; }
+    .panel-primary { width: 34px; height: 34px; min-height: 34px; padding: 0; border-radius: 50%; color: #020617; border-color: rgba(34, 211, 238, .72); background: linear-gradient(90deg, var(--cyan), #67e8f9); font-weight: 700; font-size: 22px; line-height: 30px; }
     .panel-actions button:hover, .login-actions button:hover, .panel-close:hover, .panel-primary:hover { color: var(--cyan); border-color: #31556b; box-shadow: 0 0 14px rgba(34, 211, 238, .18); }
     .panel-primary:hover { color: #020617; }
     .panel-actions button.danger:hover { color: var(--red); border-color: rgba(239, 68, 68, .5); box-shadow: 0 0 14px rgba(239, 68, 68, .14); }
@@ -191,7 +192,7 @@ const ANIMATED_NUMBER_INTERVAL_MS = 50;
 const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
 const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
 const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0 };
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
 const animatedNumbers = { input: { target: undefined, display: undefined, timer: undefined }, output: { target: undefined, display: undefined, timer: undefined } };
 const renderedLineKeys = new Map();
 const statusNodes = {};
@@ -208,8 +209,8 @@ const completionsEl = document.getElementById('completions');
 const brand = document.getElementById('brand');
 const connection = document.getElementById('connection');
 
-const sessionsPage = location.pathname === '/sessions';
-const openSessionsOnLoad = sessionsPage;
+const sessionsPage = () => state.view === 'sessions';
+const openSessionsOnLoad = state.view === 'sessions';
 const es = new EventSource('/events');
 es.addEventListener('open', () => {
   connection.hidden = true;
@@ -460,16 +461,20 @@ function renderQueued() {
   setText(queuedEl, 'queued next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)');
 }
 function renderPanel() {
+  document.getElementById('app').classList.toggle('sessions-page', sessionsPage());
   if (!state.panel) { panelEl.className = ''; panelEl.innerHTML = ''; return; }
   panelEl.className = 'open';
   if (state.panel === 'sessions') renderSessionsPanel();
   else if (state.panel === 'login') renderLoginPanel();
 }
 async function openSessionsPanel() {
+  state.view = 'sessions';
   state.panel = 'sessions';
   state.panelSelection = 0;
+  history.replaceState(null, '', '/sessions');
+  renderPanel();
   panelEl.className = 'open';
-  panelEl.innerHTML = '<div class="panel-title">Saved sessions</div><div class="panel-muted">loading…</div>';
+  panelEl.innerHTML = '<div class="panel-title">Sessions</div><div class="panel-muted">loading…</div>';
   const res = await fetch('/api/sessions');
   const body = await res.json();
   state.sessions = body.sessions || [];
@@ -480,9 +485,9 @@ function renderSessionsPanel() {
   const selected = Math.max(0, Math.min(state.panelSelection, sessions.length - 1));
   state.panelSelection = selected;
   const currentSessionId = state.session && state.session.sessionId;
-  const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">' + (sessionsPage ? 'Standalone session manager.' : 'Opened in a separate manager page without interrupting this run.') + '</div></div><div class="panel-toolbar"><button class="panel-primary" data-action="new-session"' + (state.busy ? ' disabled' : '') + '>new session</button>' + (sessionsPage ? '<button class="panel-close" data-action="open-chat">chat</button>' : '') + (!sessionsPage ? '<button class="panel-close" data-action="panel-close">close</button>' : '') + '</div></div>';
-  const body = sessions.length ? '<div class="session-list">' + sessions.map((s, i) => renderSessionCard(s, i, selected, currentSessionId)).join('') + '</div>' : '<div class="panel-muted">No saved sessions found. Create a new session to start fresh.</div>';
-  panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select · Enter resume · Delete remove' + (sessionsPage ? '' : ' · Esc close') + '</div>';
+  const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">Manage saved sessions.</div></div><div class="panel-toolbar"><button class="panel-primary" data-action="new-session" title="New session" aria-label="New session"' + (state.busy ? ' disabled' : '') + '>+</button></div></div>';
+  const body = sessions.length ? '<div class="session-list">' + sessions.map((s, i) => renderSessionCard(s, i, selected, currentSessionId)).join('') + '</div>' : '<div class="panel-muted">No saved sessions found. Tap + to start a new session.</div>';
+  panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select · Enter enter · Delete remove</div>';
 }
 function renderSessionCard(s, i, selected, currentSessionId) {
   const isCurrent = s.sessionId === currentSessionId;
@@ -493,9 +498,27 @@ function renderSessionCard(s, i, selected, currentSessionId) {
     '<span class="session-badge">' + esc(s.messages) + ' messages</span>',
   ].filter(Boolean).join('');
   const classes = ['session-card', i === selected ? 'selected' : '', isCurrent ? 'current' : '', isRunning ? 'running' : ''].filter(Boolean).join(' ');
-  return '<div class="' + classes + '" data-session-index="' + i + '"><div class="session-main"><div class="session-title-line"><span class="session-name">' + esc(s.title || '(untitled)') + '</span></div><div class="session-badges">' + badges + '</div><div class="session-meta">' + esc(truncateMiddle(s.sessionId, 28)) + ' · updated ' + esc(s.updatedAt || 'unknown') + '</div></div><div class="session-actions"><span class="panel-actions"><button data-action="resume" data-session-id="' + esc(s.sessionId) + '">' + (isCurrent ? 'reload' : 'resume') + '</button><button class="danger" data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div></div>';
+  return '<div class="' + classes + '" data-session-index="' + i + '"><div class="session-main"><div class="session-title-line"><span class="session-name">' + esc(s.title || '(untitled)') + '</span></div><div class="session-badges">' + badges + '</div><div class="session-meta">' + esc(truncateMiddle(s.sessionId, 28)) + ' · updated ' + esc(s.updatedAt || 'unknown') + '</div></div><div class="session-actions"><span class="panel-actions"><button data-action="enter" data-session-id="' + esc(s.sessionId) + '">enter</button><button class="danger" data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div></div>';
+}
+function showChatView() {
+  state.view = 'chat';
+  state.panel = undefined;
+  history.replaceState(null, '', '/');
+  renderPanel();
+  input.focus();
+}
+async function enterSession(sessionId) {
+  const result = await postJson('/api/sessions/resume', { sessionId });
+  if (result.ok) showChatView();
+}
+async function createAndEnterSession() {
+  const result = await postJson('/api/sessions/new', {});
+  if (result.ok) showChatView();
 }
 async function openSessionsPanelAfterDelete(sessionId) {
+  const session = (state.sessions || []).find(s => s.sessionId === sessionId);
+  const label = session ? (session.title || session.sessionId) : sessionId;
+  if (!confirm('Delete session "' + label + '"? This cannot be undone.')) return;
   await postJson('/api/sessions/delete', { sessionId });
   await openSessionsPanel();
 }
@@ -608,18 +631,14 @@ async function submit() {
 }
 transcript.addEventListener('scroll', updateScrollBottomAffordance, { passive: true });
 scrollBottom.addEventListener('click', () => { transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' }); updateScrollBottomAffordance(); });
-brand.addEventListener('click', () => {
-  if (sessionsPage) { location.href = '/'; return; }
-  window.open('/sessions', '_blank', 'noopener');
-});
+brand.addEventListener('click', () => { void openSessionsPanel(); });
 panelEl.addEventListener('click', async (e) => {
   const button = e.target.closest('button');
   if (!button) return;
   const action = button.getAttribute('data-action');
   if (action === 'panel-close') { state.panel = undefined; renderPanel(); input.focus(); return; }
-  if (action === 'open-chat') { location.href = '/'; return; }
-  if (action === 'new-session') { await postJson('/api/sessions/new', {}); await openSessionsPanel(); return; }
-  if (action === 'resume') { await postJson('/api/sessions/resume', { sessionId: button.getAttribute('data-session-id') }); if (sessionsPage) await openSessionsPanel(); else { state.panel = undefined; renderPanel(); } return; }
+  if (action === 'new-session') { await createAndEnterSession(); return; }
+  if (action === 'enter') { await enterSession(button.getAttribute('data-session-id')); return; }
   if (action === 'delete') { await openSessionsPanelAfterDelete(button.getAttribute('data-session-id')); return; }
   if (action === 'login-save') { await saveLoginPanel(); return; }
 });
@@ -648,10 +667,10 @@ input.addEventListener('keydown', (e) => {
   const count = completions().length;
   if (state.panel === 'sessions') {
     const countSessions = (state.sessions || []).length;
-    if (e.key === 'Escape' && !sessionsPage) { e.preventDefault(); state.panel = undefined; renderPanel(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); showChatView(); return; }
     if (e.key === 'ArrowUp' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + countSessions - 1) % countSessions; renderPanel(); return; }
     if (e.key === 'ArrowDown' && countSessions) { e.preventDefault(); state.panelSelection = (state.panelSelection + 1) % countSessions; renderPanel(); return; }
-    if (e.key === 'Enter' && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) { void postJson('/api/sessions/resume', { sessionId: s.sessionId }).then(() => sessionsPage ? openSessionsPanel() : undefined); if (!sessionsPage) { state.panel = undefined; renderPanel(); } } return; }
+    if (e.key === 'Enter' && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) void enterSession(s.sessionId); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && countSessions) { e.preventDefault(); const s = state.sessions[state.panelSelection]; if (s) openSessionsPanelAfterDelete(s.sessionId); return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const c = selectedCompletion(); if (c && c.kind === 'command' && c.arguments !== 'none') { completeSelection(); input.value += ' '; input.selectionStart = input.selectionEnd = input.value.length; return; } submit(); return; }
@@ -751,7 +770,7 @@ function safeHref(value) {
 }
 function esc(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function linkify(value) { return value.replace(/(https?:\/\/[^\s<]+)/g, '<a style="color:var(--cyan)" target="_blank" href="$1">$1</a>'); }
-if (sessionsPage) document.getElementById('app').classList.add('sessions-page');
+document.getElementById('app').classList.toggle('sessions-page', sessionsPage());
 updateInputPlaceholder();
 autosize();
 if (openSessionsOnLoad) void openSessionsPanel();
