@@ -745,7 +745,7 @@ function reqKeepAlive(res: ServerResponse): void {
 async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
-    if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/sessions")) return sendHtml(res, WEB_HTML);
     if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, path.join(process.cwd(), "node_modules", "marked", "lib", "marked.esm.js"), "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "highlight.min.js"), "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, path.join(process.cwd(), "node_modules", "@highlightjs", "cdn-assets", "styles", "atom-one-dark.min.css"), "text/css; charset=utf-8");

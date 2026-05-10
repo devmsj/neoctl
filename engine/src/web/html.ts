@@ -29,7 +29,8 @@ export const WEB_HTML = String.raw`<!doctype html>
     body { background: radial-gradient(circle at top, #101522 0, var(--bg) 42rem); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     #app { height: 100%; display: flex; flex-direction: column; }
     .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
-    .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; background: transparent; padding: 0; font: inherit; cursor: pointer; text-align: left; }
+    .brand:hover, .brand:focus-visible { color: #67e8f9; text-decoration: underline; text-underline-offset: 3px; outline: none; }
     .brand.session-title { letter-spacing: 0; }
     #connection { flex: 0 0 auto; color: var(--yellow); }
     #transcriptWrap { position: relative; flex: 1; min-height: 0; }
@@ -107,14 +108,40 @@ export const WEB_HTML = String.raw`<!doctype html>
     .token-error-hot { color: var(--red); }
     @keyframes shimmer { 0%, 100% { filter: brightness(.9); } 45% { filter: brightness(1.9); } }
     #queued { display: none; padding: 0 var(--page-gutter) 4px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #panel { display: none; flex: 0 0 auto; padding: 8px var(--page-gutter); border-top: 1px solid var(--line); background: rgba(7, 8, 11, .96); color: var(--muted); max-height: 34vh; overflow: auto; }
+    #panel { display: none; flex: 0 0 auto; padding: 12px var(--page-gutter); border-top: 1px solid var(--line); background: rgba(7, 8, 11, .97); color: var(--muted); max-height: min(58vh, 560px); overflow: auto; }
     #panel.open { display: block; }
     .panel-title { color: var(--cyan); font-weight: 700; margin-bottom: 6px; }
-    .panel-row { display: grid; grid-template-columns: 3ch minmax(10ch, 1fr) auto auto; gap: 10px; align-items: center; min-height: 24px; color: var(--text); }
-    .panel-row.selected .panel-num { background: var(--cyan); color: #020617; }
+    .panel-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+    .panel-subtitle { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .session-list { display: grid; gap: 8px; }
+    .session-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 12px; border: 1px solid #1f2937; border-radius: 12px; background: linear-gradient(180deg, rgba(15, 23, 42, .72), rgba(11, 13, 18, .82)); color: var(--text); cursor: pointer; }
+    .session-card.selected { border-color: rgba(34, 211, 238, .78); box-shadow: 0 0 0 1px rgba(34, 211, 238, .18), 0 0 22px rgba(34, 211, 238, .12); }
+    .session-card.running { border-color: rgba(34, 197, 94, .58); }
+    .session-card.current { background: linear-gradient(180deg, rgba(8, 47, 73, .56), rgba(15, 23, 42, .82)); }
+    .session-main { min-width: 0; }
+    .session-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .session-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+    .session-badge { border: 1px solid #263043; border-radius: 999px; padding: 1px 7px; color: var(--muted); font-size: 11px; line-height: 17px; background: rgba(15, 23, 42, .72); }
+    .session-badge.running { color: #bbf7d0; border-color: rgba(34, 197, 94, .45); background: rgba(22, 101, 52, .22); }
+    .session-badge.current { color: #a5f3fc; border-color: rgba(34, 211, 238, .45); background: rgba(8, 145, 178, .16); }
+    .session-meta { margin-top: 7px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .session-actions { display: flex; align-items: center; gap: 6px; }
     .panel-muted { color: var(--muted); }
-    .panel-actions button, .login-actions button { margin-left: 6px; border: 1px solid #263043; border-radius: 999px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
-    .panel-actions button:hover, .login-actions button:hover { color: var(--cyan); border-color: #31556b; box-shadow: 0 0 14px rgba(34, 211, 238, .18); }
+    .panel-actions button, .login-actions button, .panel-close { border: 1px solid #263043; border-radius: 999px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; min-height: 24px; padding: 2px 9px; }
+    .panel-actions button:hover, .login-actions button:hover, .panel-close:hover { color: var(--cyan); border-color: #31556b; box-shadow: 0 0 14px rgba(34, 211, 238, .18); }
+    .panel-actions button.danger:hover { color: var(--red); border-color: rgba(239, 68, 68, .5); box-shadow: 0 0 14px rgba(239, 68, 68, .14); }
+    @media (max-width: 640px) {
+      :root { --page-gutter: 12px; --topbar-gutter: 12px; }
+      .topbar { height: 40px; }
+      #panel { max-height: 72vh; padding-top: 10px; }
+      .panel-header { align-items: center; }
+      .session-card { grid-template-columns: 1fr; padding: 12px; }
+      .session-actions { justify-content: stretch; }
+      .session-actions .panel-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+      .session-actions button { margin: 0; min-height: 36px; }
+      .session-title-line { align-items: flex-start; }
+    }
     .login-grid { display: grid; grid-template-columns: minmax(12ch, 22ch) 1fr; gap: 6px 10px; align-items: center; }
     .login-grid label { color: var(--muted); }
     .login-grid input, .login-grid select { min-width: 0; border: 1px solid #263043; border-radius: 6px; padding: 4px 6px; background: #0b1020; color: var(--text); font: inherit; }
@@ -138,7 +165,7 @@ export const WEB_HTML = String.raw`<!doctype html>
 </head>
 <body>
 <div id="app">
-  <div class="topbar"><span id="brand" class="brand">neo web</span><span id="connection" hidden>connecting…</span></div>
+  <div class="topbar"><button id="brand" class="brand" type="button" title="Open sessions">neo web</button><span id="connection" hidden>connecting…</span></div>
   <div id="transcriptWrap"><div id="transcript"></div><div id="scrollBottomZone" class="scroll-bottom-zone"><button id="scrollBottom" type="button" aria-label="Scroll to bottom">bottom</button></div></div>
   <div id="status"></div>
   <div id="queued"></div>
@@ -175,6 +202,7 @@ const completionsEl = document.getElementById('completions');
 const brand = document.getElementById('brand');
 const connection = document.getElementById('connection');
 
+const openSessionsOnLoad = location.pathname === '/sessions';
 const es = new EventSource('/events');
 es.addEventListener('open', () => {
   connection.hidden = true;
@@ -444,7 +472,21 @@ function renderSessionsPanel() {
   const sessions = state.sessions || [];
   const selected = Math.max(0, Math.min(state.panelSelection, sessions.length - 1));
   state.panelSelection = selected;
-  panelEl.innerHTML = '<div class="panel-title">Saved sessions</div>' + (sessions.length ? sessions.map((s, i) => '<div class="panel-row ' + (i === selected ? 'selected' : '') + '" data-session-index="' + i + '"><span class="panel-num">' + (i + 1) + '.</span><span>' + esc(s.title || '(untitled)') + ' <span class="panel-muted">' + esc(truncateMiddle(s.sessionId, 18)) + ' · ' + esc(s.messages) + ' messages · ' + esc(s.updatedAt || '') + '</span></span><span class="panel-actions"><button data-action="resume" data-session-id="' + esc(s.sessionId) + '">resume</button><button data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div>').join('') : '<div class="panel-muted">No saved sessions found.</div>') + '<div class="panel-muted">↑/↓ select · Enter resume · Delete remove · Esc close</div>';
+  const currentSessionId = state.session && state.session.sessionId;
+  const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">Open from the title bar without interrupting the current run.</div></div><button class="panel-close" data-action="panel-close">close</button></div>';
+  const body = sessions.length ? '<div class="session-list">' + sessions.map((s, i) => renderSessionCard(s, i, selected, currentSessionId)).join('') + '</div>' : '<div class="panel-muted">No saved sessions found.</div>';
+  panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select · Enter resume · Delete remove · Esc close</div>';
+}
+function renderSessionCard(s, i, selected, currentSessionId) {
+  const isCurrent = s.sessionId === currentSessionId;
+  const isRunning = isCurrent && (state.busy || isActivePhase((state.status || {}).phase));
+  const badges = [
+    isRunning ? '<span class="session-badge running">● running</span>' : '',
+    isCurrent ? '<span class="session-badge current">current</span>' : '',
+    '<span class="session-badge">' + esc(s.messages) + ' messages</span>',
+  ].filter(Boolean).join('');
+  const classes = ['session-card', i === selected ? 'selected' : '', isCurrent ? 'current' : '', isRunning ? 'running' : ''].filter(Boolean).join(' ');
+  return '<div class="' + classes + '" data-session-index="' + i + '"><div class="session-main"><div class="session-title-line"><span class="session-name">' + esc(s.title || '(untitled)') + '</span></div><div class="session-badges">' + badges + '</div><div class="session-meta">' + esc(truncateMiddle(s.sessionId, 28)) + ' · updated ' + esc(s.updatedAt || 'unknown') + '</div></div><div class="session-actions"><span class="panel-actions"><button data-action="resume" data-session-id="' + esc(s.sessionId) + '">' + (isCurrent ? 'reload' : 'resume') + '</button><button class="danger" data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div></div>';
 }
 async function openSessionsPanelAfterDelete(sessionId) {
   await postJson('/api/sessions/delete', { sessionId });
@@ -559,6 +601,7 @@ async function submit() {
 }
 transcript.addEventListener('scroll', updateScrollBottomAffordance, { passive: true });
 scrollBottom.addEventListener('click', () => { transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' }); updateScrollBottomAffordance(); });
+brand.addEventListener('click', () => { void openSessionsPanel(); });
 panelEl.addEventListener('click', async (e) => {
   const button = e.target.closest('button');
   if (!button) return;
@@ -698,6 +741,7 @@ function esc(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&am
 function linkify(value) { return value.replace(/(https?:\/\/[^\s<]+)/g, '<a style="color:var(--cyan)" target="_blank" href="$1">$1</a>'); }
 updateInputPlaceholder();
 autosize();
+if (openSessionsOnLoad) void openSessionsPanel();
 </script>
 </body>
 </html>`;
