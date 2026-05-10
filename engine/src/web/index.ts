@@ -598,7 +598,8 @@ class WebRepl {
       return;
     }
     if (command.type === "state") {
-      this.append(systemLine(formatReplData({ ...this.runtime.engine.snapshot(), communicationLog: this.runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
+      const contextMetrics = await this.runtime.engine.contextMetrics();
+      this.append(systemLine(formatReplData({ ...this.runtime.engine.snapshot(), contextMetrics, communicationLog: this.runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
       return;
     }
     if (command.type === "sessions") {

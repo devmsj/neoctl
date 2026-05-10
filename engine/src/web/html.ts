@@ -29,8 +29,9 @@ export const WEB_HTML = String.raw`<!doctype html>
     body { background: radial-gradient(circle at top, #101522 0, var(--bg) 42rem); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     #app { height: 100%; display: flex; flex-direction: column; }
     .topbar { height: 34px; display: flex; align-items: center; gap: 12px; padding: 0 var(--topbar-gutter); border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(7, 8, 11, .75); backdrop-filter: blur(12px); }
-    .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; }
-    .page-title { color: var(--muted); font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand { color: var(--cyan); font-weight: 700; letter-spacing: .08em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand.session-title { letter-spacing: 0; }
+    #connection { flex: 0 0 auto; color: var(--yellow); }
     #transcriptWrap { position: relative; flex: 1; min-height: 0; }
     #transcript { height: 100%; overflow: auto; padding: 22px var(--page-gutter) 10px; scroll-behavior: smooth; }
     .scroll-bottom-zone { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; padding: 0 var(--page-gutter); display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity .14s ease; z-index: 2; }
@@ -100,8 +101,6 @@ export const WEB_HTML = String.raw`<!doctype html>
     .phase.tools { color: var(--gold); }
     .phase.stopped { color: var(--yellow); }
     .sep { color: var(--muted); padding: 0 7px; }
-    .ctx-stat { word-spacing: .35em; }
-    .ctx-stat span { word-spacing: normal; }
     .token-hot { font-weight: 700; }
     .token-input-hot { color: var(--green); }
     .token-output-hot { color: var(--cyan); }
@@ -139,7 +138,7 @@ export const WEB_HTML = String.raw`<!doctype html>
 </head>
 <body>
 <div id="app">
-  <div class="topbar"><span class="brand">neo web</span><span id="connection">connecting…</span><span id="pageTitle" class="page-title"></span></div>
+  <div class="topbar"><span id="brand" class="brand">neo web</span><span id="connection" hidden>connecting…</span></div>
   <div id="transcriptWrap"><div id="transcript"></div><div id="scrollBottomZone" class="scroll-bottom-zone"><button id="scrollBottom" type="button" aria-label="Scroll to bottom">bottom</button></div></div>
   <div id="status"></div>
   <div id="queued"></div>
@@ -173,12 +172,18 @@ const queuedEl = document.getElementById('queued');
 const panelEl = document.getElementById('panel');
 const input = document.getElementById('input');
 const completionsEl = document.getElementById('completions');
+const brand = document.getElementById('brand');
 const connection = document.getElementById('connection');
-const pageTitle = document.getElementById('pageTitle');
 
 const es = new EventSource('/events');
-es.addEventListener('open', () => connection.textContent = 'connected');
-es.addEventListener('error', () => connection.textContent = 'reconnecting…');
+es.addEventListener('open', () => {
+  connection.hidden = true;
+  connection.textContent = '';
+});
+es.addEventListener('error', () => {
+  connection.hidden = false;
+  connection.textContent = 'reconnecting…';
+});
 es.addEventListener('sync', (event) => {
   const payload = JSON.parse(event.data);
   state.lines = payload.lines || [];
@@ -296,7 +301,6 @@ function renderStatus() {
   setText(statusNodes.ctxPercent, ctx.percent);
   const ctxColor = contextColor(s.metrics);
   if (statusNodes.ctxPercent.style.color !== ctxColor) statusNodes.ctxPercent.style.color = ctxColor;
-  setText(statusNodes.ctxLimit, ctx.limit);
   const now = Date.now();
   const retryPending = retryCooldownActive(s, now);
   const inputArrowClass = retryPending ? 'token-hot token-error-hot' : tokenArrowHotClass(s.inputTokenUpdatedAt, now, 'token-input-hot');
@@ -312,7 +316,7 @@ function renderStatus() {
 }
 function ensureStatusNodes() {
   if (statusNodes.phase) return;
-  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span class="ctx-stat">ctx <span data-part="ctxPercent"></span> of <span data-part="ctxLimit"></span></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
+  statusEl.innerHTML = '<span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span data-part="ctxPercent"></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span><span data-part="tasksWrap"><span class="sep">·</span><span data-part="tasks" style="color:var(--yellow)"></span></span>';
   for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
 }
 function minimumDisplayPhase(target) {
@@ -351,10 +355,13 @@ function renderTitle() {
   const prefix = isActivePhase((state.status || {}).phase) || state.backgroundTaskCount > 0 ? '● ' : '✓ ';
   if (title) {
     const value = prefix + title;
-    setText(pageTitle, value);
+    setText(brand, value);
+    brand.classList.add('session-title');
     if (document.title !== value) document.title = value;
   } else {
-    setText(pageTitle, '');
+    setText(brand, 'neo web');
+    brand.classList.remove('session-title');
+    if (document.title !== 'neo web') document.title = 'neo web';
   }
 }
 function sessionDisplayTitle(session) {
@@ -610,7 +617,7 @@ input.addEventListener('paste', (e) => { void handlePaste(e); });
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; updateScrollBottomAffordance(); }
 function phaseLabel(phase) { if (phase === 'calling_model') return 'model'; if (phase === 'thinking') return 'think'; if (phase === 'running_tools') return 'tools'; if (phase === 'injecting_context') return 'context'; return phase || 'ready'; }
 function isActivePhase(phase) { return ['running', 'preparing', 'calling_model', 'thinking', 'running_tools', 'compacting', 'injecting_context'].includes(phase); }
-function contextParts(metrics) { if (!metrics) return { used: '?', limit: '?', percent: '?' }; return { used: compactNumber(metrics.estimatedInputTokens), limit: metrics.contextWindowTokens ? compactNumber(metrics.contextWindowTokens) : '?', percent: metrics.contextUsageRatio === undefined ? '?' : (metrics.contextUsageRatio * 100).toFixed(1) + '%' }; }
+function contextParts(metrics) { if (!metrics) return { percent: '?' }; return { percent: metrics.contextUsageRatio === undefined ? '?' : (metrics.contextUsageRatio * 100).toFixed(1) + '%' }; }
 function contextColor(metrics) { const r = metrics && metrics.contextUsageRatio; if (r === undefined) return 'var(--muted)'; if (r >= .9) return 'var(--red)'; if (r >= .75) return 'var(--yellow)'; return 'var(--muted)'; }
 function compactNumber(value) { if (value === undefined || value === null) return '?'; const n = Math.max(0, Math.round(value)); if (n >= 1000000) return trimFixed(n / 1000000) + 'm'; if (n >= 10000) return Math.round(n / 1000) + 'k'; if (n >= 1000) return trimFixed(n / 1000) + 'k'; return String(n); }
 function trimFixed(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, ''); }

@@ -955,7 +955,8 @@ function InkRepl({ runtime }: { runtime: ReplRuntime }) {
       return;
     }
     if (command.type === "state") {
-      append(systemLine(formatReplData({ ...runtime.engine.snapshot(), communicationLog: runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
+      const contextMetrics = await runtime.engine.contextMetrics();
+      append(systemLine(formatReplData({ ...runtime.engine.snapshot(), contextMetrics, communicationLog: runtime.communicationLogger.snapshot() }, 12000), EXPANDED_SUMMARY_MAX_LINES));
       return;
     }
     if (command.type === "export") {
@@ -1831,7 +1832,7 @@ function renderCompactStatusSegments(
   const context = renderContextParts(status.metrics);
   const fixedText = [
     phaseText,
-    `ctx ${context.percent} of ${context.limit}`,
+    context.percent,
     `↑ ${inputValue}`,
     `↓ ${outputValue}`,
   ].join(STATUS_SEPARATOR);
@@ -1849,9 +1850,7 @@ function renderCompactStatusSegments(
     statusDividerSegment(),
     { text: model },
     statusDividerSegment(),
-    statusLabelSegment("ctx"),
-    { text: ` ${context.percent}`, color: contextColor(status.metrics) },
-    { text: ` of ${context.limit}` },
+    { text: context.percent, color: contextColor(status.metrics) },
     statusDividerSegment(),
     statusLabelSegment("↑", tokenInputColor),
     { text: ` ${inputValue}` },
@@ -3713,17 +3712,13 @@ function formatGrepContextLine(line: GrepContextLineLike, marker: "-" | "+"): st
 }
 
 interface RenderedContextParts {
-  used: string;
-  limit: string;
   percent: string;
 }
 
 function renderContextParts(metrics: ContextMetrics | undefined): RenderedContextParts {
-  if (!metrics) return { used: "?", limit: "?", percent: "?" };
-  const used = compactNumber(metrics.estimatedInputTokens);
-  const limit = metrics.contextWindowTokens ? compactNumber(metrics.contextWindowTokens) : "?";
+  if (!metrics) return { percent: "?" };
   const percent = metrics.contextUsageRatio === undefined ? "?" : `${(metrics.contextUsageRatio * 100).toFixed(1)}%`;
-  return { used, limit, percent };
+  return { percent };
 }
 
 function contextColor(metrics: ContextMetrics | undefined): string {
