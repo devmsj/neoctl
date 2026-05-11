@@ -27,7 +27,25 @@ export interface ImageGenerationResult {
   revisedPrompt?: string;
 }
 
-export interface ImageGenerationToolOutput {
+export interface ImageGenerationToolTiming {
+  /** Unix epoch milliseconds captured immediately before the OpenAI image request starts. */
+  startedAt: number;
+  /** ISO-8601 timestamp captured from startedAt for UI display. */
+  startedAtIso: string;
+  /** Unix epoch milliseconds captured when the tool finishes or fails. */
+  finishedAt: number;
+  /** ISO-8601 timestamp captured from finishedAt for UI display. */
+  finishedAtIso: string;
+  /** Total elapsed time in milliseconds. */
+  duration: number;
+  /** Alias of duration for consumers that expect elapsed milliseconds. */
+  elapsed: number;
+  /** Explicit millisecond aliases for consumers that prefer unit-suffixed names. */
+  durationMs: number;
+  elapsedMs: number;
+}
+
+export interface ImageGenerationToolOutput extends ImageGenerationToolTiming {
   provider: "openai";
   model: string;
   prompt: string;
@@ -130,6 +148,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
 
       callOptions.onProgress?.({ toolName: "image2", message: `Generating image with OpenAI ${model}` });
+      const startedAt = Date.now();
 
       try {
         const response = await callOpenAIImageGeneration({
@@ -140,7 +159,9 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           input: { ...input, model },
         });
         const images = extractGeneratedImages(response, input.outputFormat ?? "png");
+        const timing = imageGenerationTiming(startedAt);
         const output: ImageGenerationToolOutput = {
+          ...timing,
           provider: "openai",
           model,
           prompt: input.prompt,
@@ -155,12 +176,13 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         return {
           ok: images.length > 0,
           output,
-          summary: images.length ? `${images.length} image(s) generated` : "OpenAI returned no image data",
+          summary: images.length ? `${images.length} image(s) generated in ${timing.duration}ms` : `OpenAI returned no image data after ${timing.duration}ms`,
         };
       } catch (error) {
         return {
           ok: false,
           output: {
+            ...imageGenerationTiming(startedAt),
             provider: "openai",
             model,
             prompt: input.prompt,
@@ -229,6 +251,20 @@ function buildOpenAIImageRequestBody(input: ImageGenerationToolInput & { model: 
     background: input.background === "auto" ? undefined : input.background,
     moderation: input.moderation === "auto" ? undefined : input.moderation,
   });
+}
+
+function imageGenerationTiming(startedAt: number, finishedAt = Date.now()): ImageGenerationToolTiming {
+  const duration = Math.max(0, finishedAt - startedAt);
+  return {
+    startedAt,
+    startedAtIso: new Date(startedAt).toISOString(),
+    finishedAt,
+    finishedAtIso: new Date(finishedAt).toISOString(),
+    duration,
+    elapsed: duration,
+    durationMs: duration,
+    elapsedMs: duration,
+  };
 }
 
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {

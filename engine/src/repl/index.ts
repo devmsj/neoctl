@@ -3741,7 +3741,14 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
   const lines = [`generated ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
   if (details.length > 0) lines.push(details.join(" · "));
+  const duration = imageGenerationDuration(output);
+  if (duration !== undefined) lines.push(`duration: ${duration}ms`);
   return lines.join("\n");
+}
+
+function imageGenerationDuration(output: Record<string, unknown>): number | undefined {
+  const value = output.duration ?? output.elapsed ?? output.durationMs ?? output.elapsedMs;
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : undefined;
 }
 
 function formatListToolResult(output: Record<string, unknown>, ok: boolean): string {
