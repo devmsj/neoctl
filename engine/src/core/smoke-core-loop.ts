@@ -1,9 +1,25 @@
 import { QueryEngine } from "./query-engine.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
-import type { Tool } from "../tools/tool.js";
+import type { Tool, ToolResult } from "../tools/tool.js";
 import { createTextMessage, type MessageBlock } from "../types/messages.js";
 import { stripLeakedReasoningText } from "./assistant-output-filter.js";
+
+const neverSettlingToolStarted: { value: boolean } = { value: false };
+
+const neverSettlingTool: Tool<Record<string, never>> = {
+  name: "never_settling",
+  description: "Smoke test tool that never resolves until the caller aborts.",
+  inputSchema: { type: "object", additionalProperties: false },
+  metadata: { readOnly: true, concurrent: true, visible: true },
+  validate() {
+    return {};
+  },
+  async call() {
+    neverSettlingToolStarted.value = true;
+    return new Promise<ToolResult>(() => undefined);
+  },
+};
 
 const smokePassthroughTool: Tool<{ text: string }> = {
   name: "smoke_passthrough",
@@ -44,6 +60,16 @@ class FakeToolCallingGateway implements ModelGateway {
   }
 }
 
+class AbortDuringToolGateway implements ModelGateway {
+  readonly requests: ModelRequest[] = [];
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.requests.push(request);
+    yield { type: "tool_use", toolUse: { id: "call_never_settling", name: "never_settling", input: {} } };
+    yield { type: "response_completed", responseId: "abort_tools_1", stopReason: "tool_calls" };
+  }
+}
+
 class CapturingGateway implements ModelGateway {
   requests: ModelRequest[] = [];
 
@@ -68,6 +94,21 @@ async function main(): Promise<void> {
   const snapshot = engine.snapshot();
   const sanitized = stripLeakedReasoningText("目录内容：\n- `package-lock.json`We need answer in Chinese likely. Final maybe mention.");
 
+  const abortTools = new ToolRegistry();
+  abortTools.register(neverSettlingTool);
+  const abortController = new AbortController();
+  const abortEngine = new QueryEngine({ modelGateway: new AbortDuringToolGateway(), tools: abortTools, maxTurns: 2 });
+  const abortEvents: string[] = [];
+  const abortStartedAt = Date.now();
+  const abortRun = (async () => {
+    for await (const event of abortEngine.sendUserText("run never", { abortSignal: abortController.signal })) {
+      abortEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+      if (event.type === "tool.started") setTimeout(() => abortController.abort("smoke abort during tool"), 5);
+    }
+  })();
+  await abortRun;
+  const abortElapsedMs = Date.now() - abortStartedAt;
+
   const imageGateway = new CapturingGateway();
   const imageEngine = new QueryEngine({ model: "gpt-5.4", modelGateway: imageGateway, tools: new ToolRegistry(), maxTurns: 1 });
   const imageBlocks: MessageBlock[] = [
@@ -89,14 +130,21 @@ async function main(): Promise<void> {
     !finalBlocks.some((block) => block.type === "image") &&
     finalBlocks.some((block) => block.type === "text" && block.text.includes("[img#1]") && block.text.includes("does not support image input"));
 
+  const abortDuringToolsOk =
+    neverSettlingToolStarted.value &&
+    abortEvents.includes("tool.started") &&
+    abortEvents.includes("terminal:aborted_tools") &&
+    abortElapsedMs < 1000;
+
   const ok =
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
     events.includes("terminal:completed") &&
     sanitized === "目录内容：\n- `package-lock.json`" &&
     snapshot.messages >= 3 &&
+    abortDuringToolsOk &&
     historyImageDowngraded;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, downgradeEvents, historyImageDowngraded }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, downgradeEvents, historyImageDowngraded }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

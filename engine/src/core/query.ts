@@ -462,21 +462,22 @@ async function* executeToolsForTurn(
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
-  const result = await runTools(toolUses, context, { canUseTool: dependencies.canUseTool });
+  const result = await abortable(runTools(toolUses, context, { canUseTool: dependencies.canUseTool }), options.abortSignal);
+  if (!result.completed) return { terminal: "aborted_tools", messages: [], context };
 
-  for (const message of result.messages) {
+  for (const message of result.value.messages) {
     context.appState.appendMessage(message);
     yield { type: "message", message };
   }
 
   for (const toolUse of toolUses) {
-    const resultMessage = result.messages.find((message) =>
+    const resultMessage = result.value.messages.find((message) =>
       message.blocks.some((block) => block.type === "tool_result" && block.toolUseId === toolUse.id),
     );
     yield { type: "tool.finished", toolUse, ok: resultMessage ? toolResultOk(resultMessage) : false };
   }
 
-  return { messages: result.messages, context: result.context };
+  return { messages: result.value.messages, context: result.value.context };
 }
 
 function maybeRecoverWithoutTools(
@@ -499,6 +500,26 @@ function maybeRecoverWithoutTools(
     };
   }
   return undefined;
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<{ completed: true; value: T } | { completed: false }> {
+  if (!signal) return promise.then((value) => ({ completed: true, value }));
+  if (signal.aborted) return Promise.resolve({ completed: false });
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve({ completed: false });
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve({ completed: true, value });
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function buildNextTurnState(
