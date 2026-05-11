@@ -49,8 +49,8 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           : "Available tools are provided separately by the runtime.",
         "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
         hasImageGenerationTool
-          ? "When the user asks for drawing/image generation, use the image2 tool. It is backed by OpenAI's Images API."
-          : "This runtime has no drawing/image generation tool. If the user asks you to draw, create, render, or generate an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
+          ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API; use mode=generate for new images and mode=edit for modifying existing images."
+          : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
       ].join("\n"),
     },
     {
