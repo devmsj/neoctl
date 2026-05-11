@@ -138,7 +138,7 @@ export interface Tool<TInput = unknown> {
   call?(input: TInput, context: ToolUseContext, options: ToolCallOptions<TInput>): Promise<ToolResult>;
   mapResult?(result: ToolResult, request: ToolUseRequest): unknown;
   renderToolUseMessage?(input: TInput): Message | undefined;
-  renderToolResultMessage?(result: ToolResult): Message | undefined;
+  renderToolResultMessage?(result: ToolResult, request?: ToolUseRequest): Message | undefined;
   renderToolProgressMessage?(progress: ToolProgressEvent): Message | undefined;
 }
 

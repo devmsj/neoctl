@@ -20,6 +20,7 @@ import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-to
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
+import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -47,6 +48,7 @@ interface WebRuntime {
   agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
+  tools: ToolRegistry;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
@@ -220,6 +222,7 @@ async function createRuntime(): Promise<WebRuntime> {
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
+  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
@@ -263,6 +266,7 @@ async function createRuntime(): Promise<WebRuntime> {
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
+    tools,
     initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
@@ -285,6 +289,11 @@ function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSou
       taskStore.markNotified(taskId);
     },
   };
+}
+
+function syncImageGenerationTool(runtime: WebRuntime, provider: ModelProviderName | undefined): void {
+  runtime.tools.unregister("image2");
+  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
 function formatCreatedEnvNotice(dotEnvPath: string): string {
@@ -472,6 +481,7 @@ class WebRepl {
       this.runtime.modelGateway.setInner(innerGateway);
       this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
       this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
+      syncImageGenerationTool(this.runtime, config.provider);
       this.runtime.defaultReasoning = config.defaultReasoning;
       const metrics = await this.runtime.engine.contextMetrics();
       this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
@@ -1087,6 +1097,7 @@ async function handleModelCommand(command: Extract<ReturnType<typeof parseReplCo
           runtime.modelGateway.setInner(innerGateway);
           runtime.agentRuntime.modelGateway = runtime.modelGateway;
           runtime.engine.setModelProvider({ modelGateway: runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
+          syncImageGenerationTool(runtime, config.provider);
           runtime.defaultReasoning = config.defaultReasoning;
         }
       }

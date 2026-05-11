@@ -30,6 +30,16 @@ export class ToolRegistry {
     return canonical ? this.tools.get(canonical) : undefined;
   }
 
+  unregister(name: string): boolean {
+    const tool = this.tools.get(name);
+    if (!tool) return false;
+    this.tools.delete(name);
+    for (const alias of tool.aliases ?? []) {
+      if (this.aliases.get(alias) === name) this.aliases.delete(alias);
+    }
+    return true;
+  }
+
   definitions(context?: ToolUseContext, options: ToolPoolOptions = {}): ToolDefinition[] {
     return this.visibleTools(context, options).map((tool) => ({
       name: tool.name,

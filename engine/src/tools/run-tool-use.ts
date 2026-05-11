@@ -67,7 +67,7 @@ export async function runToolUse(
     });
 
     const output = await processToolOutput(tool, request, result, contextWithToolUseId);
-    const resultMessage = tool.renderToolResultMessage?.(result) ?? createToolResultMessage(request, result.ok, output);
+    const resultMessage = tool.renderToolResultMessage?.(result, request) ?? createToolResultMessage(request, result.ok, output);
     updates.push({ message: resultMessage, context: result.contextModifier?.(contextWithToolUseId) });
 
     for (const message of result.newMessages ?? []) {

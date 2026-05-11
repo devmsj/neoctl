@@ -22,6 +22,7 @@ import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-to
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
+import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -45,6 +46,7 @@ interface ReplRuntime {
   agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
+  tools: ToolRegistry;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
@@ -277,6 +279,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
+  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
@@ -324,11 +327,17 @@ async function createRuntime(): Promise<ReplRuntime> {
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
+    tools,
     initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
   };
+}
+
+function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderName | undefined): void {
+  runtime.tools.unregister("image2");
+  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
 function formatCreatedEnvNotice(path: string): string {
@@ -2303,6 +2312,7 @@ async function handleModelCommand(
             fallbackModel: config.fallbackModel,
             reasoning: config.defaultReasoning,
           });
+          syncImageGenerationTool(runtime, config.provider);
           runtime.defaultReasoning = config.defaultReasoning;
         }
       }
@@ -3004,6 +3014,7 @@ async function submitLoginForm(
       fallbackModel: config.fallbackModel,
       reasoning: config.defaultReasoning,
     });
+    syncImageGenerationTool(runtime, config.provider);
     runtime.defaultReasoning = config.defaultReasoning;
     const metrics = await runtime.engine.contextMetrics();
     setStatus((current) => ({
