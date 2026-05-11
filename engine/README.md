@@ -443,6 +443,28 @@ for await (const event of engine.sendUserText("Summarize this repository")) {
 }
 ```
 
+Vue 等前端项目如果通过 API 消费消息，可使用展示层投影工具把内部 `Message` 转为可直接渲染的 DTO。图片块会提供可赋给 `<img :src>` 的 `thumbnail.src`：
+
+```ts
+import { toDisplayMessages } from "neoctl";
+
+const displayMessages = toDisplayMessages(engine.getHistoryMessages(), {
+  imageMode: "data-url",
+  includeThinking: false,
+  includeToolUse: false,
+});
+```
+
+```vue
+<img
+  v-if="block.type === 'image' && block.thumbnail"
+  :src="block.thumbnail.src"
+  class="message-image-thumb"
+/>
+```
+
+也可以用 `imageMode: "metadata-only"` 只返回图片标签、MIME 与大小信息，避免在列表接口中内联 base64。
+
 除根入口外，发布包还通过 package `exports` 暴露 `dist` 下的编译后子路径，便于依赖方按需导入较底层模块：
 
 ```ts

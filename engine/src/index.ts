@@ -55,6 +55,7 @@ export * from "./tools/builtins/plan-tool.js";
 export * from "./tools/builtins/ripgrep-binary.js";
 export * from "./types/messages.js";
 export * from "./types/events.js";
+export * from "./ui/display-message.js";
 export * from "./app/app-state.js";
 export * from "./safety/audit.js";
 export * from "./safety/permissions.js";
