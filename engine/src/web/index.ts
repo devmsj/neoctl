@@ -1571,6 +1571,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   if (toolName === "read" && isRecord(output)) return { text: formatReadToolResult(output, ok) };
   if (toolName === "grep" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
   if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+  if (toolName === "image2" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
   if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true, bodyTitle: planToolBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
@@ -1663,6 +1664,21 @@ function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
   if (stdout) lines.push("stdout:", stdout);
   if (stderr) lines.push("stderr:", stderr);
   if (!stdout && !stderr) lines.push(ok ? "output: (none)" : "output: (not captured)");
+  return lines.join("\n");
+}
+
+function formatImageGenerationToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["image generation failed", error ?? formatReplData(output, 1200)].join("\n");
+  const provider = typeof output.provider === "string" ? output.provider : "openai";
+  const model = typeof output.model === "string" ? output.model : undefined;
+  const returnedImages = typeof output.returnedImages === "number" ? output.returnedImages : Array.isArray(output.images) ? output.images.length : undefined;
+  const size = typeof output.size === "string" ? output.size : undefined;
+  const quality = typeof output.quality === "string" ? output.quality : undefined;
+  const format = typeof output.outputFormat === "string" ? output.outputFormat : undefined;
+  const lines = [`generated ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
+  const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
+  if (details.length > 0) lines.push(details.join(" · "));
   return lines.join("\n");
 }
 

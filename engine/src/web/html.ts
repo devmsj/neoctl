@@ -53,7 +53,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     .kind-tool.collapsed .tool-body { max-height: calc(1.45em * 6); overflow: hidden; opacity: .72; mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); }
     .message-image { display: block; margin-top: 8px; max-width: min(100%, 760px); }
     .message-image img { display: block; max-width: 100%; max-height: 70vh; border: 1px solid #202635; border-radius: 10px; background: #0c1018; box-shadow: 0 10px 30px rgba(0,0,0,.28); object-fit: contain; }
-    .message-image figcaption { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .message-image figcaption { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; font-weight: 400; }
     .tool-toggle { position: absolute; top: 0; right: 0; opacity: 0; pointer-events: none; border: 1px solid #263043; border-radius: 999px; padding: 1px 8px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; line-height: 17px; cursor: pointer; transition: opacity .12s ease, color .12s ease, border-color .12s ease; }
     .kind-tool.collapsible:hover .tool-toggle, .kind-tool.collapsible:focus-within .tool-toggle { opacity: 1; pointer-events: auto; }
     .tool-toggle:hover { color: var(--cyan); border-color: #31556b; }
@@ -338,9 +338,8 @@ function renderText(text, format, markdown) {
 }
 function renderLineImage(image) {
   if (!image || !safeImageSrc(image.src)) return '';
-  const label = image.label || 'image';
-  const caption = [label, image.mimeType].filter(Boolean).join(' · ');
-  return '<figure class="message-image"><img src="' + esc(image.src) + '" alt="' + esc(label) + '" loading="lazy" decoding="async" />' + (caption ? '<figcaption>' + esc(caption) + '</figcaption>' : '') + '</figure>';
+  const label = image.label || 'generated image';
+  return '<figure class="message-image"><img src="' + esc(image.src) + '" alt="' + esc(label) + '" loading="lazy" decoding="async" /><figcaption>' + esc(label) + '</figcaption></figure>';
 }
 function renderDiffText(text) {
   const lines = String(text || '').split('\n');
