@@ -1,0 +1,26 @@
+{
+  "name": "maker",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:ui": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "neo": "neo",
+    "neo:web": "neo -web",
+    "neo:login": "neo -login",
+    "neo:help": "neo -help"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.3",
+    "neoctl": "^0.1.18",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "vite": "^5.4.21"
+  }
+}
