@@ -1,3 +1,4 @@
+import type { AgentEvent } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 
 export type DisplayImageMode = "data-url" | "metadata-only" | "omit";
@@ -60,8 +61,35 @@ export interface DisplayMessage {
   metadata?: Message["metadata"];
 }
 
+export type DisplayAgentEvent =
+  | Exclude<AgentEvent, { type: "message" }>
+  | { type: "message"; message: DisplayMessage };
+
+export interface DisplayImageAttachment {
+  messageId: string;
+  role: DisplayMessage["role"];
+  createdAt: string;
+  index: number;
+  label?: string;
+  mimeType: string;
+  sizeBytes?: number;
+  src?: string;
+  thumbnailSrc?: string;
+  originalSrc?: string;
+}
+
 export function imageBlockToDataUrl(block: Extract<MessageBlock, { type: "image" }>): string {
+  if (block.data.startsWith("data:")) return block.data;
   return `data:${block.mimeType};base64,${block.data}`;
+}
+
+export function toDisplayAgentEvent(event: AgentEvent, options: DisplayMessageOptions = {}): DisplayAgentEvent {
+  if (event.type !== "message") return event;
+  return { ...event, message: toDisplayMessage(event.message, options) };
+}
+
+export function toDisplayAgentEvents(events: readonly AgentEvent[], options: DisplayMessageOptions = {}): DisplayAgentEvent[] {
+  return events.map((event) => toDisplayAgentEvent(event, options));
 }
 
 export function toDisplayMessages(messages: readonly Message[], options: DisplayMessageOptions = {}): DisplayMessage[] {
@@ -112,7 +140,7 @@ export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image"
     type: "image",
     label: block.label,
     mimeType: block.mimeType,
-    sizeBytes: estimateBase64DecodedBytes(block.data),
+    sizeBytes: estimateBase64DecodedBytes(normalizeBase64ImageData(block.data)),
   };
 
   if (imageMode === "metadata-only") return base;
@@ -125,10 +153,41 @@ export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image"
   };
 }
 
+export function extractDisplayImages(messages: readonly DisplayMessage[]): DisplayImageAttachment[] {
+  const images: DisplayImageAttachment[] = [];
+  for (const message of messages) {
+    message.blocks.forEach((block, index) => {
+      if (block.type !== "image") return;
+      images.push({
+        messageId: message.id,
+        role: message.role,
+        createdAt: message.createdAt,
+        index,
+        label: block.label,
+        mimeType: block.mimeType,
+        sizeBytes: block.sizeBytes,
+        src: block.original?.src ?? block.thumbnail?.src,
+        thumbnailSrc: block.thumbnail?.src,
+        originalSrc: block.original?.src,
+      });
+    });
+  }
+  return images;
+}
+
+export function extractMessageImages(messages: readonly Message[], options: DisplayMessageOptions = {}): DisplayImageAttachment[] {
+  return extractDisplayImages(toDisplayMessages(messages, options));
+}
+
 export function estimateBase64DecodedBytes(data: string): number | undefined {
-  const normalized = data.trim().replace(/\s+/g, "");
+  const normalized = normalizeBase64ImageData(data).trim().replace(/\s+/g, "");
   if (!normalized) return 0;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 !== 0) return undefined;
   const padding = normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0;
   return Math.max(0, (normalized.length / 4) * 3 - padding);
+}
+
+function normalizeBase64ImageData(data: string): string {
+  const match = /^data:[^;]+;base64,(.*)$/i.exec(data.trim());
+  return match?.[1] ?? data;
 }

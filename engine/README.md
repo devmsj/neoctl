@@ -445,24 +445,41 @@ for await (const event of engine.sendUserText("Summarize this repository")) {
 }
 ```
 
-Vue 等前端项目如果通过 API 消费消息，可使用展示层投影工具把内部 `Message` 转为可直接渲染的 DTO。图片块会提供可赋给 `<img :src>` 的 `thumbnail.src`：
+Vue 等前端项目如果通过 API 消费消息，可使用展示层投影工具把内部 `Message` 转为可直接渲染的 DTO。`image2` 生成结果会被写入 `image` block；`imageMode: "data-url"` 时图片块会提供可直接赋给 `<img :src>` 的 `thumbnail.src` / `original.src`：
 
 ```ts
-import { toDisplayMessages } from "neoctl";
+import { extractDisplayImages, toDisplayAgentEvent, toDisplayMessages } from "neoctl";
 
 const displayMessages = toDisplayMessages(engine.getHistoryMessages(), {
   imageMode: "data-url",
   includeThinking: false,
   includeToolUse: false,
 });
+
+// 如果只想拿图片列表：
+const images = extractDisplayImages(displayMessages);
+// images[0]?.src 可直接返回给 Vue 的 <img :src>
 ```
 
 ```vue
-<img
-  v-if="block.type === 'image' && block.thumbnail"
-  :src="block.thumbnail.src"
-  class="message-image-thumb"
-/>
+<template v-for="message in displayMessages" :key="message.id">
+  <template v-for="(block, index) in message.blocks" :key="index">
+    <img
+      v-if="block.type === 'image' && block.thumbnail"
+      :src="block.thumbnail.src"
+      :alt="block.label || 'generated image'"
+      class="message-image-thumb"
+    />
+  </template>
+</template>
+```
+
+SSE/WebSocket 流式推送事件时，可以在后端把单个 `AgentEvent` 投影为 `DisplayAgentEvent`，这样 Vue 收到 `event.type === "message"` 时同样能直接渲染图片：
+
+```ts
+for await (const event of engine.sendUserText("画一张小猫")) {
+  sendSse(toDisplayAgentEvent(event, { imageMode: "data-url" }));
+}
 ```
 
 也可以用 `imageMode: "metadata-only"` 只返回图片标签、MIME 与大小信息，避免在列表接口中内联 base64。
@@ -491,20 +508,22 @@ const runtime = new SimpleSessionRuntime({
   sessionRootDir: `.agent/users/${userId}/sessions`,
 });
 
-runtime.onEvent((event, { sessionId }) => {
-  // 可在这里把事件广播给正在观看该 session 的 SSE/WebSocket 客户端。
+runtime.onDisplayEvent((event, { sessionId }) => {
+  // 可在这里把已投影的 DisplayAgentEvent 广播给正在观看该 session 的 SSE/WebSocket 客户端。
+  // image2 图片会以 message.blocks[].type === "image" 且 block.thumbnail.src 可直接渲染的形式出现。
   broadcast(sessionId, event);
-});
+}, { imageMode: "data-url", includeThinking: false, includeToolUse: false });
 
 for await (const event of runtime.sendUserText(sessionId, "Summarize this repository")) {
   console.log(event);
 }
 
 const displayMessages = await runtime.getDisplayMessages(sessionId, {
-  imageMode: "metadata-only",
+  imageMode: "data-url", // Vue <img :src> 用这个；列表页可改为 metadata-only
   includeThinking: false,
   includeToolUse: false,
 });
+const images = await runtime.getDisplayImages(sessionId, { imageMode: "data-url" });
 ```
 
 常用方法：
@@ -515,6 +534,7 @@ await runtime.resumeSession(sessionId);
 await runtime.listSessions(20);
 await runtime.getMessages(sessionId);
 await runtime.getDisplayMessages(sessionId, { imageMode: "metadata-only" });
+await runtime.getDisplayImages(sessionId, { imageMode: "data-url" });
 runtime.isBusy(sessionId);
 runtime.abort(sessionId);
 runtime.release(sessionId);

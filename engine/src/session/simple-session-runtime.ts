@@ -2,11 +2,12 @@ import type { QueryEngineOptions } from "../core/query-engine.js";
 import { QueryEngine } from "../core/query-engine.js";
 import type { AgentEvent } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
-import type { DisplayMessage, DisplayMessageOptions } from "../ui/display-message.js";
-import { toDisplayMessages } from "../ui/display-message.js";
+import type { DisplayAgentEvent, DisplayImageAttachment, DisplayMessage, DisplayMessageOptions } from "../ui/display-message.js";
+import { extractMessageImages, toDisplayAgentEvent, toDisplayMessages } from "../ui/display-message.js";
 import type { SessionStoreSnapshot, SessionSummary } from "./session-store.js";
 
 export type SimpleSessionRuntimeEventListener = (event: AgentEvent, context: SimpleSessionRuntimeEventContext) => void | Promise<void>;
+export type SimpleSessionRuntimeDisplayEventListener = (event: DisplayAgentEvent, context: SimpleSessionRuntimeEventContext) => void | Promise<void>;
 
 export interface SimpleSessionRuntimeEventContext {
   sessionId: string;
@@ -64,6 +65,7 @@ export class SimpleSessionRuntime {
   private readonly busy = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly listeners = new Set<SimpleSessionRuntimeEventListener>();
+  private readonly displayListeners = new Set<{ listener: SimpleSessionRuntimeDisplayEventListener; options: DisplayMessageOptions }>();
 
   constructor(private readonly options: SimpleSessionRuntimeOptions) {}
 
@@ -125,6 +127,10 @@ export class SimpleSessionRuntime {
     return toDisplayMessages(await this.getMessages(sessionId), options);
   }
 
+  async getDisplayImages(sessionId: string, options: DisplayMessageOptions = { imageMode: "data-url" }): Promise<DisplayImageAttachment[]> {
+    return extractMessageImages(await this.getMessages(sessionId), options);
+  }
+
   async *sendUserText(sessionId: string, text: string, options: SimpleSessionRuntimeSendOptions = {}): AsyncGenerator<AgentEvent> {
     const normalizedSessionId = normalizeSessionId(sessionId);
     if (this.busy.has(normalizedSessionId)) {
@@ -176,6 +182,12 @@ export class SimpleSessionRuntime {
     return () => this.listeners.delete(listener);
   }
 
+  onDisplayEvent(listener: SimpleSessionRuntimeDisplayEventListener, options: DisplayMessageOptions = { imageMode: "data-url" }): () => void {
+    const entry = { listener, options };
+    this.displayListeners.add(entry);
+    return () => this.displayListeners.delete(entry);
+  }
+
   release(sessionId: string): void {
     const normalizedSessionId = normalizeSessionId(sessionId);
     this.abort(normalizedSessionId);
@@ -206,6 +218,9 @@ export class SimpleSessionRuntime {
   private async emit(event: AgentEvent, context: SimpleSessionRuntimeEventContext): Promise<void> {
     for (const listener of this.listeners) {
       await listener(event, context);
+    }
+    for (const { listener, options } of this.displayListeners) {
+      await listener(toDisplayAgentEvent(event, options), context);
     }
   }
 }
