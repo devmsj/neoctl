@@ -350,14 +350,64 @@ REPL 当前注册的内置工具：
 
 ## Skill 模块
 
-`src/skills` 提供可复用 prompt workflow 的基础设施，但默认 REPL 运行时当前未注册任何 skill catalog。
+`src/skills` 提供可复用 prompt workflow 与插件化 catalog。设计参考：Claude Code 的 `SKILL.md` + frontmatter 目录形态、OpenAI Agents SDK 的 tools / agents-as-tools / guardrails 组合方式，以及 OpenClaw 的多目录、插件目录和 skill gating 思路。默认 REPL 运行时当前未注册 skill catalog，嵌入方可按需装配。
 
-- `InMemorySkillCatalog` 可保存 `SkillDescriptor`。
-- `createSkillTool()` 会创建 `skill` 工具。
-- inline skill 会向下一轮模型注入 meta user message，并可修改主循环模型/effort。
-- fork skill 会返回 `fork_required`，需要调用方用 AgentTool 承接。
+核心能力：
 
-这部分适合嵌入方在自定义 runtime 中按需注册。
+- `SkillDescriptor` 支持 `version`、`tags`、`inputSchema`、`outputSchema`、`permissions`、`examples`、`trustLevel`、`source` 等插件元数据。
+- `InMemorySkillCatalog` 适合测试和静态注入。
+- `FileSystemSkillCatalog` 支持 `.neo/skills/<skill-name>/SKILL.md` 风格目录，也可合并 workspace、user、plugin、remote mirror 等多个 root。
+- `CompositeSkillCatalog` 可按优先级合并多个 catalog。
+- `createSkillTool()` 会创建 `skill` 调用工具。
+- inline skill 会向下一轮模型注入 meta user message，并可修改主循环模型/effort，同时记录 `activeSkill`。
+- `createSkillAwareCanUseTool()` 可基于 active skill 的 `allowedTools` 做运行期工具 gating。
+- fork skill 会返回 `fork_required`，需要调用方用 AgentTool / 子 agent 编排承接。
+- `createSkillManagementTools()` 提供 `skill_list`、`skill_read`、`skill_validate`、`skill_create`、`skill_update`、`skill_delete`，方便父项目实现 agent 自动生成 skill。
+
+`SKILL.md` 示例：
+
+```md
+---
+name: review-code
+description: Review code changes for correctness and risk.
+version: 1.0.0
+execution: inline
+allowed-tools:
+  - read
+  - grep
+tags:
+  - code-review
+trust-level: workspace
+---
+
+Review the provided changes. Focus on correctness, security, tests, and migration risk.
+Return concise findings with file references when available.
+```
+
+父项目装配示例：
+
+```ts
+import {
+  FileSystemSkillCatalog,
+  createSkillTool,
+  createSkillManagementTools,
+  createSkillAwareCanUseTool,
+} from "neoctl";
+
+const skills = new FileSystemSkillCatalog({
+  roots: [
+    { root: ".neo/skills", kind: "workspace" },
+    { root: ".neo/plugins/acme/skills", kind: "plugin", plugin: "acme", readonly: true },
+  ],
+});
+
+tools.register(createSkillTool(skills));
+for (const tool of createSkillManagementTools(skills, { requireApproval: true })) tools.register(tool);
+
+const canUseTool = createSkillAwareCanUseTool(skills, parentCanUseTool);
+```
+
+建议：开放 `skill_create`/`skill_update` 给模型时保持 approval；对 remote/plugin skill 使用只读 root；生产环境使用 `createSkillAwareCanUseTool()` 或父级权限系统强制 `allowedTools`。
 
 ## 作为库使用
 

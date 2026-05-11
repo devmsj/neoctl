@@ -62,12 +62,21 @@ export interface ToolRegistryLike {
   getByAlias?(name: string): Tool | undefined;
 }
 
+export interface ActiveSkillRuntimeState {
+  name: string;
+  allowedTools?: readonly string[];
+  model?: string;
+  effort?: string;
+  source?: unknown;
+}
+
 export interface ToolRuntimeOptions {
   debug?: boolean;
   verbose?: boolean;
   mainLoopModel?: string;
   tools?: ToolRegistryLike;
   thinkingConfig?: unknown;
+  activeSkill?: ActiveSkillRuntimeState;
   isNonInteractiveSession?: boolean;
   refreshTools?: () => Promise<void> | void;
 }

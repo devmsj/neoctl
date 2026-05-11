@@ -15,6 +15,8 @@ export * from "./agents/team.js";
 export * from "./tasks/task-store.js";
 export * from "./tasks/task-tools.js";
 export * from "./skills/skill-tool.js";
+export * from "./skills/skill-filesystem.js";
+export * from "./skills/skill-management-tools.js";
 export * from "./model/model-gateway.js";
 export * from "./model/config.js";
 export * from "./model/communication-logger.js";
