@@ -361,7 +361,7 @@ REPL 当前注册的内置工具：
 
 ## 作为库使用
 
-`src/index.ts` 导出了核心模块，可在自己的程序中组合运行时：
+包入口会导出核心 agent 编排运行时、模型网关、上下文管理、任务/子代理、工具系统、session 与 safety 边界：
 
 ```ts
 import {
@@ -371,14 +371,16 @@ import {
   readFileTool,
   listDirectoryTool,
   grepTool,
-  echoTool,
+  execTool,
+  planTool,
 } from "neoctl";
 
 const tools = new ToolRegistry();
-tools.register(echoTool);
 tools.register(readFileTool);
 tools.register(listDirectoryTool);
 tools.register(grepTool);
+tools.register(execTool);
+tools.register(planTool);
 
 const engine = new QueryEngine({
   agentId: "main",
@@ -391,7 +393,14 @@ for await (const event of engine.sendUserText("Summarize this repository")) {
 }
 ```
 
-如果直接从源码运行，请使用 `.ts` 源文件路径或 `tsx`；发布包会通过 `dist` 导出编译后的 `.js` 模块。
+除根入口外，发布包还通过 package `exports` 暴露 `dist` 下的编译后子路径，便于依赖方按需导入较底层模块：
+
+```ts
+import { HttpTransport } from "neoctl/model/http-transport";
+import { createAgentTool } from "neoctl/agents/agent-tool";
+```
+
+如果直接从源码运行，请使用 `.ts` 源文件路径或 `tsx`；发布包会通过 `dist` 导出编译后的 `.js` 模块与 `.d.ts` 类型声明。
 
 ## 运行数据目录
 
