@@ -465,6 +465,65 @@ const displayMessages = toDisplayMessages(engine.getHistoryMessages(), {
 
 也可以用 `imageMode: "metadata-only"` 只返回图片标签、MIME 与大小信息，避免在列表接口中内联 base64。
 
+### 简单多会话 / Vue 后端集成
+
+如果 Vue 侧只需要“每个用户使用自己的会话”或“一个用户操作，其他用户旁观”，可以使用轻量的 `SimpleSessionRuntime`。它不会改变底层 `QueryEngine` / `SessionStore` 行为，只是在库侧封装：
+
+- 每个 `sessionId` 一个活动 `QueryEngine`。
+- 同一 session 默认只允许一个发送任务运行，避免并发写历史。
+- 支持读取 Vue 展示 DTO。
+- 支持 `abort()` 中断当前 session。
+- 支持 `onEvent()` 监听事件，便于服务端广播给 SSE/WebSocket 客户端。
+- 可通过 `sessionRootDir` 做简单用户隔离。
+
+```ts
+import { SimpleSessionRuntime, createModelGatewayFromEnv, ToolRegistry } from "neoctl";
+
+const tools = new ToolRegistry();
+
+const runtime = new SimpleSessionRuntime({
+  agentId: "main",
+  modelGateway: createModelGatewayFromEnv(),
+  tools,
+  // 简单多用户推荐：后端根据登录态为每个用户分配独立 session 目录。
+  sessionRootDir: `.agent/users/${userId}/sessions`,
+});
+
+runtime.onEvent((event, { sessionId }) => {
+  // 可在这里把事件广播给正在观看该 session 的 SSE/WebSocket 客户端。
+  broadcast(sessionId, event);
+});
+
+for await (const event of runtime.sendUserText(sessionId, "Summarize this repository")) {
+  console.log(event);
+}
+
+const displayMessages = await runtime.getDisplayMessages(sessionId, {
+  imageMode: "metadata-only",
+  includeThinking: false,
+  includeToolUse: false,
+});
+```
+
+常用方法：
+
+```ts
+await runtime.newSession();
+await runtime.resumeSession(sessionId);
+await runtime.listSessions(20);
+await runtime.getMessages(sessionId);
+await runtime.getDisplayMessages(sessionId, { imageMode: "metadata-only" });
+runtime.isBusy(sessionId);
+runtime.abort(sessionId);
+runtime.release(sessionId);
+```
+
+如果同一 session 正在运行，再次发送默认会抛出 `session is busy`。需要新请求打断旧请求时，可以使用：
+
+```ts
+runtime.sendUserText(sessionId, text, { busyBehavior: "interrupt" });
+```
+
 除根入口外，发布包还通过 package `exports` 暴露 `dist` 下的编译后子路径，便于依赖方按需导入较底层模块：
 
 ```ts
