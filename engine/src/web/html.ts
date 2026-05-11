@@ -51,6 +51,9 @@ export const WEB_HTML = String.raw`<!doctype html>
     .kind-tool.collapsible .content { padding-right: 78px; }
     .tool-body { position: relative; }
     .kind-tool.collapsed .tool-body { max-height: calc(1.45em * 6); overflow: hidden; opacity: .72; mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,.84) 42%, rgba(0,0,0,.42) 76%, rgba(0,0,0,0) 100%); }
+    .message-image { display: block; margin-top: 8px; max-width: min(100%, 760px); }
+    .message-image img { display: block; max-width: 100%; max-height: 70vh; border: 1px solid #202635; border-radius: 10px; background: #0c1018; box-shadow: 0 10px 30px rgba(0,0,0,.28); object-fit: contain; }
+    .message-image figcaption { margin-top: 5px; color: var(--muted); font-size: 12px; }
     .tool-toggle { position: absolute; top: 0; right: 0; opacity: 0; pointer-events: none; border: 1px solid #263043; border-radius: 999px; padding: 1px 8px; background: rgba(15, 23, 42, .92); color: var(--muted); font: inherit; font-size: 11px; line-height: 17px; cursor: pointer; transition: opacity .12s ease, color .12s ease, border-color .12s ease; }
     .kind-tool.collapsible:hover .tool-toggle, .kind-tool.collapsible:focus-within .tool-toggle { opacity: 1; pointer-events: auto; }
     .tool-toggle:hover { color: var(--cyan); border-color: #31556b; }
@@ -298,7 +301,7 @@ function updateLineElement(element, line) {
   const markdown = shouldRenderMarkdown(line);
   const cls = ['block', 'kind-' + kind, line.live ? 'live' : '', line.previewStyle === 'summary' ? 'summary-block' : '', collapsible ? 'collapsible' : '', collapsed ? 'collapsed' : '', expanded ? 'expanded' : ''].filter(Boolean).join(' ');
   const contentCls = ['content', markdown ? 'markdown' : 'plain', line.previewStyle === 'summary' ? 'summary' : ''].filter(Boolean).join(' ');
-  const body = '<div class="tool-body">' + bodyTitle + renderText(line.text || '', line.format, markdown) + '</div>';
+  const body = '<div class="tool-body">' + bodyTitle + renderText(line.text || '', line.format, markdown) + renderLineImage(line.image) + '</div>';
   const toggle = collapsible ? '<button class="tool-toggle" type="button" data-line-id="' + String(line.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' + (expanded ? 'collapse' : 'expand') + '</button>' : '';
   element.className = cls;
   element.innerHTML = '<div class="marker ' + markerCls + '">' + marker + '</div><div class="' + contentCls + '">' + title + body + toggle + '</div>';
@@ -307,7 +310,8 @@ function lineRenderKey(line) {
   const kind = line.kind || 'system';
   const expanded = state.expandedToolLines.has(line.id);
   const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
-  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0'].join('\u001f');
+  const image = line.image ? [line.image.src || '', line.image.label || '', line.image.mimeType || ''].join('\u001e') : '';
+  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0', image].join('\u001f');
 }
 function markerForLine(line, kind) {
   if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
@@ -331,6 +335,12 @@ function renderText(text, format, markdown) {
   if (format === 'diff') return renderDiffText(text);
   if (!markdown) return linkify(esc(text));
   return sanitizeMarkdownHtml(marked.parse(text || ''));
+}
+function renderLineImage(image) {
+  if (!image || !safeImageSrc(image.src)) return '';
+  const label = image.label || 'image';
+  const caption = [label, image.mimeType].filter(Boolean).join(' · ');
+  return '<figure class="message-image"><img src="' + esc(image.src) + '" alt="' + esc(label) + '" loading="lazy" decoding="async" />' + (caption ? '<figcaption>' + esc(caption) + '</figcaption>' : '') + '</figure>';
 }
 function renderDiffText(text) {
   const lines = String(text || '').split('\n');
@@ -827,6 +837,14 @@ function safeHref(value) {
   try {
     const url = new URL(value, window.location.href);
     return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:';
+  } catch { return false; }
+}
+function safeImageSrc(value) {
+  if (typeof value !== 'string') return false;
+  if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/i.test(value)) return true;
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch { return false; }
 }
 function esc(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }

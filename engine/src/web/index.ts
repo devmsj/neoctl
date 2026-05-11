@@ -113,6 +113,12 @@ function sumUsageTokens(left: number | undefined, right: number | undefined): nu
   return (left ?? 0) + (right ?? 0);
 }
 
+interface UiLineImage {
+  src: string;
+  label?: string;
+  mimeType: string;
+}
+
 interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
@@ -126,6 +132,7 @@ interface UiLine {
   live?: boolean;
   pendingReplacement?: boolean;
   collapsible?: boolean;
+  image?: UiLineImage;
 }
 
 interface UiStatus {
@@ -665,11 +672,13 @@ class WebRepl {
         }
       }
       if (replacedStreamingContent) {
+        renderMessageImages(event.message, (line) => this.append(line));
         this.broadcastSync();
         return;
       }
       if (event.message.role === "tool_result") {
         renderToolResultMessage(event.message, (line) => this.append(line), (id, patch) => this.replaceLine(id, patch), this.toolLineIds);
+        renderMessageImages(event.message, (line) => this.append(line));
         return;
       }
       if (event.message.role !== "assistant") {
@@ -1397,9 +1406,9 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       else append({ kind, text: block.text });
       rendered = true;
     } else if (block.type === "image") {
-      const kind = kindForRole(message.role);
-      if (kind === "meta") continue;
-      append({ kind, text: block.label ?? `[image ${block.mimeType}]` });
+      const line = imageLineForBlock(message.role, block);
+      if (!line) continue;
+      append(line);
       rendered = true;
     } else if (block.type === "thinking") {
       append(thinkingLine(block.text));
@@ -1429,6 +1438,37 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
     rendered = true;
   }
   return rendered;
+}
+
+function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
+  let rendered = false;
+  for (const block of message.blocks) {
+    if (block.type !== "image") continue;
+    const line = imageLineForBlock(message.role, block);
+    if (!line) continue;
+    append(line);
+    rendered = true;
+  }
+  return rendered;
+}
+
+function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>): Omit<UiLine, "id"> | undefined {
+  const kind = kindForRole(role);
+  if (kind === "meta") return undefined;
+  return {
+    kind,
+    text: block.label ?? `[image ${block.mimeType}]`,
+    image: {
+      src: imageBlockToDataUrl(block),
+      label: block.label,
+      mimeType: block.mimeType,
+    },
+  };
+}
+
+function imageBlockToDataUrl(block: Extract<MessageBlock, { type: "image" }>): string {
+  if (block.data.startsWith("data:")) return block.data;
+  return `data:${block.mimeType};base64,${block.data}`;
 }
 
 function assistantText(message: Message): string | undefined {
