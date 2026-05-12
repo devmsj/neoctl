@@ -419,6 +419,62 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   font-size: 11px;
   line-height: 1.45;
 }
+.image2-stage-wrap {
+  margin-top: 2px;
+}
+.image2-stage {
+  width: min(420px, 100%);
+  border: 1px solid var(--line);
+  background: #fff;
+  overflow: hidden;
+}
+.image2-skeleton {
+  position: relative;
+  height: 236px;
+  background: linear-gradient(110deg, #f4f4f7 8%, #ececf2 18%, #f7f7fa 33%);
+  background-size: 200% 100%;
+  animation: image2-shimmer 1.25s linear infinite;
+}
+.image2-skeleton::before {
+  content: '';
+  position: absolute;
+  inset: 24px;
+  border: 1px dashed #d7d7df;
+  background: rgba(255,255,255,.36);
+}
+.image2-skeleton span {
+  position: absolute;
+  display: block;
+  background: rgba(255,255,255,.72);
+  border: 1px solid rgba(0,0,0,.04);
+}
+.image2-skeleton span:nth-child(1) { left: 32px; right: 32px; top: 34px; height: 18px; }
+.image2-skeleton span:nth-child(2) { left: 32px; width: 48%; bottom: 40px; height: 16px; }
+.image2-skeleton span:nth-child(3) { right: 32px; width: 28%; bottom: 40px; height: 16px; }
+.image2-stage-text {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.image2-stage-text strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.image2-stage-text span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.image2-stage.failed .image2-skeleton {
+  animation: none;
+  background: #fff1f1;
+}
+.image2-output-images {
+  margin-top: 0;
+}
+@keyframes image2-shimmer {
+  to { background-position-x: -200%; }
+}
 .message-image-attachments {
   display: flex;
   flex-wrap: wrap;

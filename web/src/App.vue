@@ -210,6 +210,7 @@ const currentFeatureTip = computed(() => FEATURE_TIPS[state.featureTip.index % F
 const featureTipLabel = computed(() => FEATURE_TIP_REASONS[state.featureTip.reason] || FEATURE_TIP_REASONS.manual)
 const filteredSessions = computed(() => state.sessions || [])
 const activePanelLabel = computed(() => PANEL_LABELS[state.activePanel] || state.activePanel)
+const visibleLines = computed(() => (state.lines || []).filter((line) => !shouldHideLine(line)))
 
 watch(realSessionTitle, (title) => {
   document.title = title || 'neo runtime'
@@ -434,8 +435,24 @@ function lineTitle(line) {
   return '系统'
 }
 
+function isImage2Line(line) {
+  return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'image2'
+}
+
 function isImage2LiveLine(line) {
-  return line?.live && line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'image2'
+  return line?.live && isImage2Line(line)
+}
+
+function isImage2PendingReplacementLine(line) {
+  return isImage2Line(line) && line?.pendingReplacement === true
+}
+
+function shouldHideLine(line) {
+  return isGeneratedImageLine(line) && !isImage2Line(line)
+}
+
+function lineHasImage2Stage(line) {
+  return isImage2LiveLine(line) || isImage2ResultLine(line) || isImage2PendingReplacementLine(line)
 }
 
 function syncLiveToolTimers(lines) {
@@ -622,7 +639,37 @@ function renderDiff(text) {
 }
 
 function isImage2ResultLine(line) {
-  return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'image2' && /\b(ok|failed)\b/i.test(String(line?.text || ''))
+  return isImage2Line(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
+}
+
+function renderImage2Stage(line) {
+  const images = lineImagePreviews(line)
+  if (images.length) return renderImageGrid(images)
+  return renderImage2Skeleton(line)
+}
+
+function renderImage2Skeleton(line) {
+  const text = String(line?.text || '')
+  const failed = /\bfail(?:ed)?\b|image\s+(?:generate|edit)\s+failed/i.test(text)
+  const title = failed ? '图片生成失败' : isImage2PendingReplacementLine(line) ? '正在整理图片结果…' : '正在生成图片…'
+  const detail = failed ? firstNonEmptyLine(text, ['failed', 'image generate failed', 'image edit failed']) : '图片生成可能需要几十秒，请稍候'
+  return `<div class="image2-stage ${failed ? 'failed' : 'loading'}"><div class="image2-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="image2-stage-text"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></div></div>`
+}
+
+function firstNonEmptyLine(text, ignored = []) {
+  const ignoreSet = new Set(ignored.map((item) => item.toLowerCase()))
+  return String(text || '').split(/\r?\n/).map((line) => line.trim()).find((line) => line && !ignoreSet.has(line.toLowerCase())) || '请展开工具输出查看详情'
+}
+
+function renderImageGrid(images) {
+  const items = images.map((item, index) => {
+    const href = escapeHtml(item.originalUrl || item.previewUrl)
+    const src = escapeHtml(item.previewUrl)
+    const caption = escapeHtml(imageCaption(item, index))
+    const download = escapeHtml(imageDownloadName(item, index))
+    return `<figure class="message-image-attachment"><a href="${href}" target="_blank" rel="noreferrer noopener"><img src="${src}" alt="${caption}" /></a><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
+  }).join('')
+  return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
 
 function renderImage2Result(line) {
@@ -845,6 +892,7 @@ function cacheMessageImagePreviews(attachments) {
 }
 
 function lineImagePreviews(line) {
+  if (isImage2Line(line)) return image2LineImages(line)
   const images = []
   collectLineImageItems(line, images)
   for (const label of imageLabelsFromText(line?.text)) {
@@ -852,6 +900,30 @@ function lineImagePreviews(line) {
     if (cached) images.push(cached)
   }
   return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+}
+
+function image2LineImages(line) {
+  const images = []
+  collectLineImageItems(line, images)
+  for (const generatedLine of generatedImageLinesAfter(line)) collectLineImageItems(generatedLine, images)
+  return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+}
+
+function generatedImageLinesAfter(line) {
+  const lines = state.lines || []
+  const index = lines.findIndex((item) => item?.id === line?.id)
+  if (index < 0) return []
+  const result = []
+  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+    const next = lines[cursor]
+    if (isGeneratedImageLine(next) && !isImage2Line(next)) {
+      result.push(next)
+      continue
+    }
+    if (next?.kind === 'tool' || next?.kind === 'user') break
+    if (next?.kind === 'assistant' && String(next?.text || '').trim()) break
+  }
+  return result
 }
 
 function collectLineImageItems(line, images) {
@@ -926,7 +998,7 @@ function mimeExtension(mimeType) {
 
 function isGeneratedImageLine(line) {
   const title = String(line?.title || '').toLowerCase()
-  return title === 'image2' || line?.metadata?.tool === 'image2' || line?.metadata?.generatedImages === true
+  return title === 'image2' || line?.metadata?.tool === 'image2' || line?.metadata?.generatedImages === true || (line?.kind === 'tool' && /^Generated image \d+$/i.test(String(line?.text || '').trim()))
 }
 
 function removeOmittedImageDetails(line) {
@@ -1090,7 +1162,7 @@ function linkify(value) {
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
           <div ref="transcript" class="transcript">
-            <article v-for="line in state.lines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live }]">
+            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live }]">
               <div class="message-marker">{{ line.kind === 'tool' ? '◆' : line.kind === 'assistant' ? '●' : line.kind === 'user' ? '○' : '◇' }}</div>
               <div class="message-body">
                 <div class="message-head">
@@ -1099,17 +1171,20 @@ function linkify(value) {
                   <span v-if="line.live" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
-                <div v-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
-                <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
-                  <div v-if="images.length" class="message-image-attachments">
-                    <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
-                      <a :href="item.originalUrl || item.previewUrl" target="_blank" rel="noreferrer noopener">
-                        <img :src="item.previewUrl" :alt="imageCaption(item, index)" />
-                      </a>
-                      <figcaption>{{ imageCaption(item, index) }}</figcaption>
-                      <a class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
-                    </figure>
-                  </div>
+                <div v-if="lineHasImage2Stage(line)" class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
+                <template v-else>
+                  <div v-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
+                  <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
+                    <div v-if="images.length" class="message-image-attachments">
+                      <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
+                        <a :href="item.originalUrl || item.previewUrl" target="_blank" rel="noreferrer noopener">
+                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" />
+                        </a>
+                        <figcaption>{{ imageCaption(item, index) }}</figcaption>
+                        <a class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
+                      </figure>
+                    </div>
+                  </template>
                 </template>
                 <button v-if="line.kind === 'tool' && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
                   {{ state.expandedTools.has(line.id) ? '收起工具输出' : '展开完整工具输出' }}
