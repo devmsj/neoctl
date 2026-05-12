@@ -146,10 +146,10 @@ export class QueryEngine {
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = options.blocks
-      ? {
+      ? await this.persistMessageImages({
           ...createTextMessage("user", options.displayText ?? text),
-          blocks: await persistMessageImages(options.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId }),
-        }
+          blocks: options.blocks,
+        })
       : createTextMessage("user", text);
     this.userTurns += 1;
     this.history.push(userMessage);
@@ -201,8 +201,11 @@ export class QueryEngine {
     );
     for await (const event of stream) {
       if (event.type === "message") {
-        this.history.push(event.message);
-        this.sessionStore?.recordMessage(event.message);
+        const message = await this.persistMessageImages(event.message);
+        this.history.push(message);
+        this.sessionStore?.recordMessage(message);
+        yield { ...event, message };
+        continue;
       }
       if (event.type === "terminal") this.lastTerminalReason = event.reason;
       yield event;
@@ -369,6 +372,14 @@ export class QueryEngine {
     this.history.push(message);
     this.sessionStore?.recordMessage(message);
     this.options.exportToolCalls?.(missing);
+  }
+
+  private async persistMessageImages(message: Message): Promise<Message> {
+    if (!message.blocks.some((block) => block.type === "image")) return message;
+    return {
+      ...message,
+      blocks: await persistMessageImages(message.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId }),
+    };
   }
 
   private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {

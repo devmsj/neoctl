@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Tool, ToolResult } from "../tool.js";
 import type { Message } from "../../types/messages.js";
 
@@ -7,6 +8,7 @@ export type ImageGenerationFormat = "png" | "jpeg" | "webp";
 export type OpenAIImageGenerationResponseFormat = ImageGenerationFormat | "jpg";
 export type ImageGenerationBackground = "auto" | "transparent" | "opaque";
 export type ImageGenerationModeration = "auto" | "low";
+export type OpenAIImageModel = "gpt-image-1";
 export type ImageToolMode = "generate" | "edit";
 
 export interface ImageEditInputImage {
@@ -95,9 +97,12 @@ export interface CreateOpenAIImageGenerationToolOptions {
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
-const DEFAULT_IMAGE_MODEL = "gpt-image-1";
+export const DEFAULT_OPENAI_IMAGE_MODEL: OpenAIImageModel = "gpt-image-1";
+const DEFAULT_IMAGE_MODEL = DEFAULT_OPENAI_IMAGE_MODEL;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_IMAGES = 4;
+const SUPPORTED_IMAGE_MODELS: readonly OpenAIImageModel[] = [DEFAULT_OPENAI_IMAGE_MODEL];
+const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
 
 /**
  * OpenAI-only image generation tool backed by the Images API.
@@ -109,20 +114,19 @@ const MAX_IMAGES = 4;
 export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenerationToolOptions = {}): Tool<ImageGenerationToolInput> {
   return {
     name: "image2",
-    aliases: ["draw_image", "generate_image", "edit_image", "modify_image"],
-    description: "Generate or edit images with OpenAI's Images API. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.",
+    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image2. Defaults to model ${DEFAULT_IMAGE_MODEL}. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.`,
     inputSchema: {
       type: "object",
       properties: {
         mode: { type: "string", enum: ["generate", "edit"], description: "Operation mode. generate creates a new image; edit modifies existing image(s). Defaults to generate." },
         prompt: { type: "string", description: "Detailed image prompt/instruction. For edit mode, describe exactly how to modify the source image(s)." },
-        model: { type: "string", description: `Optional OpenAI image model. Defaults to OPENAI_IMAGE_MODEL or ${DEFAULT_IMAGE_MODEL}.` },
-        size: { type: "string", enum: ["auto", "1024x1024", "1536x1024", "1024x1536"], description: "Output image size. Use 1024x1024 for square, 1536x1024 for landscape, 1024x1536 for portrait. Defaults to auto." },
-        quality: { type: "string", enum: ["auto", "low", "medium", "high"], description: "Rendering quality. Defaults to auto." },
-        outputFormat: { type: "string", enum: ["png", "jpeg", "webp"], description: "Returned image format. Defaults to png." },
-        background: { type: "string", enum: ["auto", "transparent", "opaque"], description: "Background handling for supported models. Defaults to auto." },
-        moderation: { type: "string", enum: ["auto", "low"], description: "OpenAI image moderation setting for supported models. Defaults to auto." },
-        n: { type: "integer", description: `Number of output images, 1-${MAX_IMAGES}. Defaults to 1.` },
+        model: { type: "string", enum: [...SUPPORTED_IMAGE_MODELS], description: `Optional OpenAI Images API model. Defaults to OPENAI_IMAGE_MODEL or ${DEFAULT_IMAGE_MODEL}. Supported by this tool: ${SUPPORTED_MODEL_LIST}.` },
+        size: { type: "string", enum: ["auto", "1024x1024", "1536x1024", "1024x1536"], description: `${DEFAULT_IMAGE_MODEL} output image size. Supported values: auto, 1024x1024, 1536x1024, 1024x1536. Defaults to auto.` },
+        quality: { type: "string", enum: ["auto", "low", "medium", "high"], description: `${DEFAULT_IMAGE_MODEL} rendering quality. Supported values: auto, low, medium, high. Defaults to auto.` },
+        outputFormat: { type: "string", enum: ["png", "jpeg", "webp"], description: `${DEFAULT_IMAGE_MODEL} returned image format. Supported values: png, jpeg, webp. Defaults to png.` },
+        background: { type: "string", enum: ["auto", "transparent", "opaque"], description: `${DEFAULT_IMAGE_MODEL} background handling. Supported values: auto, transparent, opaque. Defaults to auto.` },
+        moderation: { type: "string", enum: ["auto", "low"], description: `${DEFAULT_IMAGE_MODEL} moderation setting. Supported values: auto, low. Defaults to auto.` },
+        n: { type: "integer", description: `${DEFAULT_IMAGE_MODEL} number of output images, 1-${MAX_IMAGES}. Defaults to 1.` },
         image: { type: "object", description: "Single source image for mode=edit. Provide base64/data/dataUrl plus mimeType when not using a dataUrl.", additionalProperties: true },
         images: { type: "array", description: "Multiple source images for mode=edit.", items: { type: "object", additionalProperties: true } },
         imageRefs: { type: "array", description: "Labels of prior conversation image blocks to edit, e.g. Generated image 1 or [img#1].", items: { type: "string" } },
@@ -156,19 +160,20 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       };
     },
     validateInput(input) {
-      if (!isImageToolMode(input.mode)) return { ok: false, message: "image2.mode must be generate or edit" };
-      if (!input.prompt.trim()) return { ok: false, message: "image2.prompt cannot be empty" };
-      if (input.model !== undefined && !input.model.trim()) return { ok: false, message: "image2.model cannot be empty" };
-      if (!isImageSize(input.size)) return { ok: false, message: "image2.size must be auto, 1024x1024, 1536x1024, or 1024x1536" };
-      if (!isImageQuality(input.quality)) return { ok: false, message: "image2.quality must be auto, low, medium, or high" };
-      if (!isImageFormat(input.outputFormat)) return { ok: false, message: "image2.outputFormat must be png, jpeg, or webp" };
-      if (!isImageBackground(input.background)) return { ok: false, message: "image2.background must be auto, transparent, or opaque" };
-      if (!isImageModeration(input.moderation)) return { ok: false, message: "image2.moderation must be auto or low" };
+      const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
+      if (!isImageToolMode(input.mode)) return { ok: false, message: image2ValidationError(model, "mode", "must be generate or edit") };
+      if (!input.prompt.trim()) return { ok: false, message: image2ValidationError(model, "prompt", "cannot be empty") };
+      if (!isSupportedImageModel(model)) return { ok: false, message: image2ValidationError(model, "model", `is not supported by image2. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
+      if (!isImageSize(input.size)) return { ok: false, message: image2ValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
+      if (!isImageQuality(input.quality)) return { ok: false, message: image2ValidationError(model, "quality", "must be auto, low, medium, or high") };
+      if (!isImageFormat(input.outputFormat)) return { ok: false, message: image2ValidationError(model, "outputFormat", "must be png, jpeg, or webp") };
+      if (!isImageBackground(input.background)) return { ok: false, message: image2ValidationError(model, "background", "must be auto, transparent, or opaque") };
+      if (!isImageModeration(input.moderation)) return { ok: false, message: image2ValidationError(model, "moderation", "must be auto or low") };
       const count = input.n ?? 1;
-      if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: `image2.n must be between 1 and ${MAX_IMAGES}` };
-      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: "image2.images must be a non-empty array when provided" };
-      if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: "image2.imageRefs must contain non-empty strings" };
-      return { ok: true, value: { ...input, n: count } };
+      if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: image2ValidationError(model, "n", `must be between 1 and ${MAX_IMAGES}`) };
+      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: image2ValidationError(model, "images", "must be a non-empty array when provided") };
+      if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: image2ValidationError(model, "imageRefs", "must contain non-empty strings") };
+      return { ok: true, value: { ...input, model, n: count } };
     },
     isConcurrencySafe() {
       return true;
@@ -186,7 +191,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       }
 
       const baseUrl = stripTrailingSlash(options.baseUrl?.trim() || process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL);
-      const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
+      const model = input.model?.trim() || DEFAULT_IMAGE_MODEL;
       const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
 
       const mode = input.mode ?? "generate";
@@ -228,7 +233,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           background: input.background ?? "auto",
           returnedImages: images.length,
           sourceImages: mode === "edit" ? editSources.length : undefined,
-          imageRefs: mode === "edit" ? editSources.map((source) => source.label).filter((label): label is string => Boolean(label)) : undefined,
+          imageRefs: mode === "edit" ? editSources.map((source) => formatSourceImageRef(source)).filter((label): label is string => Boolean(label)) : undefined,
           images,
           raw: compactRawResponse(response),
         };
@@ -276,6 +281,7 @@ interface ResolvedEditImage {
   mimeType: string;
   filename: string;
   label?: string;
+  storagePath?: string;
 }
 
 interface OpenAIImageEditRequestOptions extends OpenAIImageGenerationRequestOptions {
@@ -403,11 +409,41 @@ function resolveReferencedImages(messages: readonly Message[] | undefined, refs:
   if (!messages || refs.length === 0) return [];
   const imageBlocks = collectConversationImages(messages);
   return refs.map((ref, index) => {
-    const normalizedRef = normalizeImageRef(ref);
-    const found = imageBlocks.find((image) => normalizeImageRef(image.label ?? "") === normalizedRef || normalizeImageRef(image.filename) === normalizedRef || String(image.index + 1) === normalizedRef);
-    if (!found) throw new Error(`image2 could not find referenced image: ${ref}`);
+    const found = findReferencedImage(imageBlocks, ref);
+    if (!found) throw new Error(`image2 could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(imageBlocks)}`);
     return { ...found, filename: found.filename || imageFilename(found.mimeType, index) };
   });
+}
+
+function findReferencedImage(images: readonly ResolvedEditImage[], ref: string): ResolvedEditImage | undefined {
+  const normalizedRef = normalizeImageRef(ref);
+  if (!normalizedRef) return undefined;
+
+  // Labels can repeat across user turns (for example every tab/paste cycle can reuse [img#1]).
+  // Prefer the most recent matching label/filename so edits target the image the user likely means.
+  for (let i = images.length - 1; i >= 0; i -= 1) {
+    const image = images[i];
+    if (normalizeImageRef(image.label ?? "") === normalizedRef) return image;
+    if (normalizeImageRef(image.filename) === normalizedRef) return image;
+  }
+
+  const numericRef = parseImageRefNumber(normalizedRef);
+  if (numericRef !== undefined) return images[numericRef - 1];
+  return undefined;
+}
+
+function formatSourceImageRef(image: ResolvedEditImage): string | undefined {
+  const ref = image.label?.trim() || image.filename || String(image.index + 1);
+  return image.storagePath ? `${ref} (${image.storagePath})` : ref;
+}
+
+function formatAvailableImageRefs(images: readonly ResolvedEditImage[]): string {
+  if (images.length === 0) return "none";
+  return images
+    .map(formatSourceImageRef)
+    .filter((ref): ref is string => Boolean(ref))
+    .slice(-10)
+    .join(", ");
 }
 
 function latestConversationImage(messages: readonly Message[] | undefined): ResolvedEditImage | undefined {
@@ -423,13 +459,15 @@ function collectConversationImages(messages: readonly Message[] | undefined): Re
       if (block.type !== "image") continue;
       const parsed = parseImageData(block.data);
       const mimeType = block.mimeType || parsed.mimeType;
-      if (!parsed.base64 || !mimeType) continue;
+      const base64 = parsed.base64 || readStoredImageDataSync(block.storage?.path);
+      if (!base64 || !mimeType) continue;
       images.push({
         index: images.length,
-        base64: normalizeBase64ImageData(parsed.base64),
+        base64: normalizeBase64ImageData(base64),
         mimeType,
         filename: imageFilename(mimeType, images.length),
         label: block.label,
+        storagePath: block.storage?.path,
       });
     }
   }
@@ -441,6 +479,15 @@ function parseImageData(value: string | undefined): { base64?: string; mimeType?
   const match = /^data:([^;,]+);base64,(.*)$/su.exec(value.trim());
   if (match) return { mimeType: match[1], base64: match[2] };
   return { base64: value };
+}
+
+function readStoredImageDataSync(filepath: string | undefined): string | undefined {
+  if (!filepath) return undefined;
+  try {
+    return readFileSync(filepath, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeBase64ImageData(value: string): string {
@@ -458,7 +505,18 @@ function imageFilename(mimeType: string, index: number): string {
 }
 
 function normalizeImageRef(value: string): string {
-  return value.trim().toLowerCase();
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[。.!?]+$/gu, "")
+    .replace(/\s+/gu, " ");
+}
+
+function parseImageRefNumber(normalizedRef: string): number | undefined {
+  const match = /^(?:\[?img#?|image(?:\s+|-)?)?(\d+)\]?$/iu.exec(normalizedRef);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {
@@ -578,6 +636,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isImageToolMode(value: unknown): value is ImageToolMode {
   return value === "generate" || value === "edit";
+}
+
+function isSupportedImageModel(value: string): value is OpenAIImageModel {
+  return (SUPPORTED_IMAGE_MODELS as readonly string[]).includes(value);
+}
+
+function image2ValidationError(model: string, field: string, reason: string): string {
+  return `image2 validation failed for model ${model}: ${field} ${reason}.`;
 }
 
 function isImageSize(value: unknown): value is ImageGenerationSize {
