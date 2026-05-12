@@ -65,3 +65,4 @@ export * from "./safety/sandbox.js";
 export * from "./open-directory.js";
 export * from "./paths.js";
 export * from "./tips.js";
+export * from "./web/index.js";

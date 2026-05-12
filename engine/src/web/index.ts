@@ -41,7 +41,7 @@ const markedAssetPath = path.join(markedPackageDir, "lib", "marked.esm.js");
 const highlightAssetPath = path.join(highlightPackageDir, "highlight.min.js");
 const highlightThemeAssetPath = path.join(highlightPackageDir, "styles", "atom-one-dark.min.css");
 
-interface WebRuntime {
+export interface WebRuntime {
   engine: QueryEngine;
   communicationLogger: CommunicationLogger;
   modelGateway: LoggingModelGateway;
@@ -55,7 +55,7 @@ interface WebRuntime {
   envNotice?: string;
 }
 
-interface UsageTotals {
+export interface UsageTotals {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -65,7 +65,7 @@ interface UsageTotals {
   computedTotalTokens: boolean;
 }
 
-class SessionUsageTracker {
+export class SessionUsageTracker {
   private totals: UsageTotals = emptyUsageTotals();
   private lastUsage?: ModelUsage;
 
@@ -147,10 +147,33 @@ interface UiStatus {
   retryCooldownUntil?: number;
 }
 
-interface WebServerOptions {
+export interface WebServerOptions {
   host: string;
   port: number;
 }
+
+export interface CreateWebRuntimeOptions {
+  /** Override the initial session id for this runtime. */
+  sessionId?: string;
+  /** Override whether the initial session should resume transcript history. */
+  resume?: boolean;
+  /** Override the QueryEngine agent id. Defaults to main. */
+  agentId?: string;
+}
+
+export interface WebRuntimeScope {
+  /** Browser-tab or client-instance identifier. Omit for the legacy singleton runtime. */
+  tabId?: string;
+  /** Optional session id used when a scoped runtime is created after page refresh/process restart. */
+  sessionId?: string;
+}
+
+export interface WebRuntimeRouterOptions {
+  createRuntime?: (options?: CreateWebRuntimeOptions) => Promise<WebRuntime>;
+  createRepl?: (runtime: WebRuntime) => WebRepl;
+}
+
+const DEFAULT_WEB_RUNTIME_KEY = "__default__";
 
 type LoginProviderName = ModelProviderName;
 
@@ -192,9 +215,8 @@ interface WebBackgroundSessionRun {
 
 export async function runWebServer(argv = process.argv.slice(2)): Promise<void> {
   const options = parseWebArgs(argv);
-  const runtime = await createRuntime();
-  const repl = new WebRepl(runtime);
-  const server = http.createServer((req, res) => void route(req, res, repl));
+  const router = await createWebRuntimeRouter();
+  const server = http.createServer((req, res) => void route(req, res, router));
   await new Promise<void>((resolve) => server.listen(options.port, options.host, resolve));
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : options.port;
@@ -215,7 +237,7 @@ function parseWebArgs(argv: string[]): WebServerOptions {
   return { host, port: Math.round(port) };
 }
 
-async function createRuntime(): Promise<WebRuntime> {
+export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): Promise<WebRuntime> {
   const envLoad = loadDefaultDotEnvFiles({ override: true });
   const modelConfig = readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
@@ -247,7 +269,7 @@ async function createRuntime(): Promise<WebRuntime> {
   for (const tool of createTaskTools(taskStore, resumeHandler)) tools.register(tool);
 
   const engine = new QueryEngine({
-    agentId: "main",
+    agentId: options.agentId ?? "main",
     model: modelConfig?.model,
     fallbackModel: modelConfig?.fallbackModel,
     reasoning: modelConfig?.defaultReasoning,
@@ -258,9 +280,9 @@ async function createRuntime(): Promise<WebRuntime> {
     commands: replCommandDefinitions.map((command) => command.usage),
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
-      sessionId: process.env.AGENT_SESSION_ID,
+      sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
       rootDir: process.env.AGENT_SESSION_DIR,
-      resume: parseResumeFlag(process.env.AGENT_SESSION_RESUME),
+      resume: options.resume ?? parseResumeFlag(process.env.AGENT_SESSION_RESUME),
       toolResultThresholdChars: process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS ? Number(process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS) : undefined,
     },
   });
@@ -312,7 +334,51 @@ function parseResumeFlag(value: string | undefined): boolean {
   return ["1", "true", "yes", "latest"].includes(value.toLowerCase());
 }
 
-class WebRepl {
+export class WebRuntimeRouter {
+  private readonly repls = new Map<string, Promise<WebRepl>>();
+  private readonly createRuntime: (options?: CreateWebRuntimeOptions) => Promise<WebRuntime>;
+  private readonly createRepl: (runtime: WebRuntime) => WebRepl;
+
+  constructor(options: WebRuntimeRouterOptions = {}) {
+    this.createRuntime = options.createRuntime ?? createWebRuntime;
+    this.createRepl = options.createRepl ?? ((runtime) => new WebRepl(runtime));
+  }
+
+  get(scope: WebRuntimeScope = {}): Promise<WebRepl> {
+    const key = webRuntimeScopeKey(scope);
+    let repl = this.repls.get(key);
+    if (!repl) {
+      repl = this.createRuntime({ sessionId: scope.sessionId, resume: scope.sessionId ? true : scope.tabId ? false : undefined }).then((runtime) => this.createRepl(runtime));
+      this.repls.set(key, repl);
+      repl.catch(() => this.repls.delete(key));
+    }
+    return repl;
+  }
+
+  async snapshot(scope: WebRuntimeScope = {}, includeCatalog = true): Promise<ReturnType<WebRepl["snapshot"]>> {
+    return (await this.get(scope)).snapshot(includeCatalog);
+  }
+
+  activeScopes(): string[] {
+    return [...this.repls.keys()];
+  }
+}
+
+export async function createWebRuntimeRouter(options: WebRuntimeRouterOptions = {}): Promise<WebRuntimeRouter> {
+  const router = new WebRuntimeRouter(options);
+  await router.get();
+  return router;
+}
+
+function webRuntimeScopeKey(scope: WebRuntimeScope): string {
+  const tabId = scope.tabId?.trim();
+  if (tabId) return `tab:${tabId}`;
+  const sessionId = scope.sessionId?.trim();
+  if (sessionId) return `session:${sessionId}`;
+  return DEFAULT_WEB_RUNTIME_KEY;
+}
+
+export class WebRepl {
   private readonly subscribers = new Set<ServerResponse>();
   private lineId = 0;
   private assistantLineId: number | undefined;
@@ -901,13 +967,15 @@ function reqKeepAlive(res: ServerResponse): void {
   res.on("close", () => clearInterval(timer));
 }
 
-async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): Promise<void> {
+async function route(req: IncomingMessage, res: ServerResponse, router: WebRuntimeRouter): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);
     if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, markedAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, highlightAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, highlightThemeAssetPath, "text/css; charset=utf-8");
+    const scope = webRuntimeScopeFromUrl(url);
+    const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "POST" && url.pathname === "/api/submit") {
@@ -934,6 +1002,18 @@ async function route(req: IncomingMessage, res: ServerResponse, repl: WebRepl): 
   } catch (error) {
     sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
   }
+}
+
+function webRuntimeScopeFromUrl(url: URL): WebRuntimeScope {
+  return {
+    tabId: optionalSearchParam(url, "tabId"),
+    sessionId: optionalSearchParam(url, "sessionId"),
+  };
+}
+
+function optionalSearchParam(url: URL, key: string): string | undefined {
+  const value = url.searchParams.get(key)?.trim();
+  return value ? value : undefined;
 }
 
 function sendHtml(res: ServerResponse, body: string): void {
