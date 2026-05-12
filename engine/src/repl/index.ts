@@ -529,6 +529,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const backgroundSessionRunsRef = useRef(new Map<string, BackgroundSessionRun>());
   const suppressReattachedStreamingRef = useRef(new Set<QueryEngine>());
   const activePromptRunRef = useRef<Promise<void> | undefined>(undefined);
+  const foregroundRunTokenRef = useRef(0);
   const [animationTick, setAnimationTick] = useState(0);
   const [terminalTitlePrefix, setTerminalTitlePrefix] = useState(TERMINAL_TITLE_READY_PREFIX);
   const backgroundTaskCount = backgroundTasks.length;
@@ -704,6 +705,22 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     setBusy(next);
   };
 
+  const stopForegroundRun = (reason: string) => {
+    const controller = activeAbortController.current;
+    const runWasActive = busyRef.current || Boolean(controller && !controller.signal.aborted);
+    foregroundRunTokenRef.current += 1;
+    activePromptRunRef.current = undefined;
+    runtime.usage.reset();
+    if (controller && !controller.signal.aborted) controller.abort(reason);
+    activeAbortController.current = undefined;
+    interruptArmed.current = false;
+    setQueuedPromptState(undefined);
+    finalizeForegroundView();
+    setBusyState(false);
+    setStatus((current) => ({ ...current, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined }));
+    return runWasActive;
+  };
+
   const append = (line: Omit<UiLine, "id">) => {
     const id = ++lineId.current;
     const next: UiLine = { id, ...line };
@@ -858,6 +875,14 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     toolLineIds.current.clear();
   };
 
+  const finalizeForegroundView = () => {
+    finalizeLiveLine(assistantLineId.current);
+    finalizeThinkingLine();
+    finalizeActiveToolLines();
+    assistantLineId.current = undefined;
+    finalizedThinkingLineId.current = undefined;
+  };
+
   const handleEvent = (event: AgentEvent) => {
     setStatus((current) => reduceStatus(current, event));
     if (event.type === "usage") runtime.usage.add(event.usage);
@@ -951,8 +976,10 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       append({ kind: "error", text: "Current model does not support image input; image attachments were not added to the conversation." });
       return;
     }
-    if (busyRef.current) {
-      detachRunningForeground("new prompt");
+    const command = parseReplCommand(text);
+    const detachedForCommand = busyRef.current && (command.type === "new" || command.type === "sessions");
+    if (busyRef.current && !detachedForCommand) {
+      stopForegroundRun("Interrupted by new prompt");
     }
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
@@ -993,6 +1020,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (command.type === "compact") {
+      const runToken = ++foregroundRunTokenRef.current;
       const abortController = new AbortController();
       activeAbortController.current = abortController;
       interruptArmed.current = false;
@@ -1000,24 +1028,24 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       setStatus((current) => ({ ...current, phase: "compacting", detail: "manual compact", activityTick: current.activityTick + 1 }));
       try {
         const result = await runtime.engine.compact({ abortSignal: abortController.signal });
+        if (foregroundRunTokenRef.current !== runToken) return;
         const metrics = await runtime.engine.contextMetrics();
+        if (foregroundRunTokenRef.current !== runToken) return;
         append(systemLine(formatManualCompaction(result)));
         setStatus((current) => reduceStatus(current, { type: "context.metrics", metrics }));
       } catch (error) {
-        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+        if (foregroundRunTokenRef.current === runToken) append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       } finally {
+        if (foregroundRunTokenRef.current !== runToken) return;
         if (activeAbortController.current === abortController) activeAbortController.current = undefined;
         interruptArmed.current = false;
         setBusyState(false);
         setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
-        const queued = takeQueuedPromptState();
-        if (queued !== undefined) {
-          void submitLine(queued.text, queued.attachments);
-        }
       }
       return;
     }
     if (command.type === "pure") {
+      const runToken = ++foregroundRunTokenRef.current;
       const abortController = new AbortController();
       activeAbortController.current = abortController;
       interruptArmed.current = false;
@@ -1025,20 +1053,19 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       setStatus((current) => ({ ...current, phase: "compacting", detail: "pure compact", activityTick: current.activityTick + 1 }));
       try {
         const result = await runtime.engine.pureCompact({ abortSignal: abortController.signal });
+        if (foregroundRunTokenRef.current !== runToken) return;
         const metrics = await runtime.engine.contextMetrics();
+        if (foregroundRunTokenRef.current !== runToken) return;
         append(systemLine(formatPureCompaction(result)));
         setStatus((current) => reduceStatus(current, { type: "context.metrics", metrics }));
       } catch (error) {
-        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+        if (foregroundRunTokenRef.current === runToken) append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       } finally {
+        if (foregroundRunTokenRef.current !== runToken) return;
         if (activeAbortController.current === abortController) activeAbortController.current = undefined;
         interruptArmed.current = false;
         setBusyState(false);
         setStatus((current) => ({ ...current, phase: "ready", detail: undefined, activityTick: current.activityTick + 1 }));
-        const queued = takeQueuedPromptState();
-        if (queued !== undefined) {
-          void submitLine(queued.text, queued.attachments);
-        }
       }
       return;
     }
@@ -1097,6 +1124,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (command.type === "sessions") {
+      detachRunningForeground("session browser");
       await handleSessionsCommand(runtime, runningSessionIds(backgroundSessionRunsRef.current), setSessionsBrowser, (line) => append(line));
       return;
     }
@@ -1141,6 +1169,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     append({ kind: "user", text });
+    const runToken = ++foregroundRunTokenRef.current;
     const abortController = new AbortController();
     activeAbortController.current = abortController;
     interruptArmed.current = false;
@@ -1158,6 +1187,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     const engine = runtime.engine;
     const run = (async () => {
       for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: text })) {
+        if (foregroundRunTokenRef.current !== runToken) continue;
         if (runtime.engine !== engine) continue;
         if (suppressReattachedStreamingRef.current.has(engine)) {
           if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
@@ -1173,24 +1203,17 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     try {
       await run;
     } catch (error) {
-      if (runtime.engine === engine) {
-        finalizeLiveLine(assistantLineId.current);
-        finalizeThinkingLine();
-        finalizeActiveToolLines();
-        assistantLineId.current = undefined;
-        finalizedThinkingLineId.current = undefined;
+      if (foregroundRunTokenRef.current === runToken && runtime.engine === engine) {
+        finalizeForegroundView();
         append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
     } finally {
       if (activePromptRunRef.current === run) activePromptRunRef.current = undefined;
+      if (foregroundRunTokenRef.current !== runToken) return;
       if (runtime.engine !== engine) return;
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
-      finalizeLiveLine(assistantLineId.current);
-      finalizeThinkingLine();
-      finalizeActiveToolLines();
-      assistantLineId.current = undefined;
-      finalizedThinkingLineId.current = undefined;
+      finalizeForegroundView();
       setBusyState(false);
       setStatus((current) => ({
         ...current,
@@ -1201,10 +1224,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         retryCooldownUntil: undefined,
       }));
       if (!terminalFocusedRef.current) playReadySound();
-      const queued = takeQueuedPromptState();
-      if (queued !== undefined) {
-        void submitLine(queued.text, queued.attachments);
-      }
     }
   };
 
@@ -1289,12 +1308,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setPromptPlaceholder(EMPTY_CTRL_C_EXIT_PLACEHOLDER);
         resetSlashCompletionSelection();
         if (busyRef.current) {
-          const controller = activeAbortController.current;
-          if (controller && !controller.signal.aborted && !interruptArmed.current) {
-            interruptArmed.current = true;
-            controller.abort("Interrupted by Ctrl+C");
-            setStatus((current) => ({ ...current, phase: "stopped", detail: "interrupt requested" }));
-          }
+          stopForegroundRun("Interrupted by Ctrl+C");
         }
         return;
       }
@@ -2215,7 +2229,7 @@ function QueuedInputLine(
   { text: string; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const preview = fitToWidth(`queued next: ${text.replace(/\s+/g, " ").trim()}  (Esc to edit)`, width);
+  const preview = fitToWidth(`pending next: ${text.replace(/\s+/g, " ").trim()}  (Esc to edit)`, width);
   return e(
     Box,
     { width, height: 1, overflow: "hidden" },

@@ -510,7 +510,7 @@ function easeOutCubic(progress) {
 function renderQueued() {
   if (!state.queuedInput) { if (queuedEl.style.display !== 'none') queuedEl.style.display = 'none'; return; }
   if (queuedEl.style.display !== 'block') queuedEl.style.display = 'block';
-  setText(queuedEl, 'queued next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)');
+  setText(queuedEl, 'pending next: ' + state.queuedInput.replace(/\s+/g, ' ').trim() + '  (Esc/Ctrl+C to clear)');
 }
 function renderPanel() {
   document.getElementById('app').classList.toggle('sessions-page', sessionsPage());
@@ -685,6 +685,10 @@ async function submit() {
   state.historyIndex = undefined;
   input.value = '';
   state.attachments = [];
+  if (state.busy) {
+    state.busy = false;
+    state.queuedInput = undefined;
+  }
   autosize();
   renderCompletions();
   const res = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, attachments }) });

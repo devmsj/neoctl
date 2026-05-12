@@ -326,6 +326,7 @@ class WebRepl {
   private busy = false;
   private queuedInput: string | undefined;
   private foregroundRun: Promise<void> | undefined;
+  private foregroundRunToken = 0;
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
   private backgroundTaskCount: number;
@@ -376,12 +377,12 @@ class WebRepl {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
     const command = parseReplCommand(text);
-    const startsNewSessionWhileBusy = this.busy && command.type === "new";
-    if (this.busy && !startsNewSessionWhileBusy) {
-      if (this.queuedInput !== undefined) return { ok: false, error: "A queued prompt is already waiting. Press Esc/Ctrl+C in the web UI to clear it." };
-      this.queuedInput = text;
-      this.broadcastSync();
-      return { ok: true };
+    if (this.busy && command.type === "new") {
+      await this.detachRunningForeground("new session");
+    } else if (this.busy && command.type === "sessions") {
+      await this.detachRunningForeground("session browser");
+    } else if (this.busy) {
+      this.stopForegroundRun("Interrupted by new prompt");
     }
     const run = this.handleCommandOrPrompt(text, attachments).catch((error) => {
       this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -502,19 +503,8 @@ class WebRepl {
   }
 
   interrupt(): { ok: true; interrupted: boolean } {
-    if (this.queuedInput !== undefined) {
-      this.queuedInput = undefined;
-      this.broadcastSync();
-      return { ok: true, interrupted: false };
-    }
-    const controller = this.activeAbortController;
-    if (controller && !controller.signal.aborted && !this.interruptArmed) {
-      this.interruptArmed = true;
-      controller.abort("Interrupted from neo web");
-      this.setStatus({ ...this.status, phase: "stopped", detail: "interrupt requested" });
-      return { ok: true, interrupted: true };
-    }
-    return { ok: true, interrupted: false };
+    const interrupted = this.stopForegroundRun("Interrupted from neo web");
+    return { ok: true, interrupted };
   }
 
   private append(line: Omit<UiLine, "id">): number {
@@ -547,6 +537,31 @@ class WebRepl {
   private setStatus(next: UiStatus): void {
     this.status = next;
     this.broadcastSync();
+  }
+
+  private finalizeForegroundView(): void {
+    this.finalizeLiveLine(this.assistantLineId);
+    this.finalizeThinkingLine();
+    this.finalizeActiveToolLines();
+    this.assistantLineId = undefined;
+    this.finalizedThinkingLineId = undefined;
+  }
+
+  private stopForegroundRun(reason: string): boolean {
+    const controller = this.activeAbortController;
+    const runWasActive = this.busy || Boolean(controller && !controller.signal.aborted);
+    this.foregroundRunToken += 1;
+    this.foregroundRun = undefined;
+    this.runtime.usage.reset();
+    if (controller && !controller.signal.aborted) controller.abort(reason);
+    this.activeAbortController = undefined;
+    this.interruptArmed = false;
+    this.queuedInput = undefined;
+    this.finalizeForegroundView();
+    this.busy = false;
+    this.status = { ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
+    this.broadcastSync();
+    return runWasActive;
   }
 
   private backgroundTasks() {
@@ -809,6 +824,7 @@ class WebRepl {
       return;
     }
     this.append({ kind: "user", text: promptPayload.displayText });
+    const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
     this.interruptArmed = false;
@@ -817,6 +833,7 @@ class WebRepl {
     const engine = this.runtime.engine;
     try {
       for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
+        if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {
           if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
@@ -828,33 +845,24 @@ class WebRepl {
         this.handleEvent(event);
       }
     } catch (error) {
-      if (this.runtime.engine === engine) {
-        this.finalizeLiveLine(this.assistantLineId);
-        this.finalizeThinkingLine();
-        this.finalizeActiveToolLines();
-        this.assistantLineId = undefined;
-        this.finalizedThinkingLineId = undefined;
+      if (this.foregroundRunToken === runToken && this.runtime.engine === engine) {
+        this.finalizeForegroundView();
         this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
     } finally {
+      if (this.foregroundRunToken !== runToken) return;
       if (this.runtime.engine !== engine) return;
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
-      this.finalizeLiveLine(this.assistantLineId);
-      this.finalizeThinkingLine();
-      this.finalizeActiveToolLines();
-      this.assistantLineId = undefined;
-      this.finalizedThinkingLineId = undefined;
+      this.finalizeForegroundView();
       this.setBusy(false);
       this.setStatus({ ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
-      const queued = this.queuedInput;
-      this.queuedInput = undefined;
-      if (queued !== undefined) void this.handleCommandOrPrompt(queued);
       this.broadcastSync();
     }
   }
 
   private async runCompaction(type: "compact" | "pure"): Promise<void> {
+    const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
     this.interruptArmed = false;
@@ -864,19 +872,19 @@ class WebRepl {
       const result = type === "compact"
         ? await this.runtime.engine.compact({ abortSignal: abortController.signal })
         : await this.runtime.engine.pureCompact({ abortSignal: abortController.signal });
+      if (this.foregroundRunToken !== runToken) return;
       const metrics = await this.runtime.engine.contextMetrics();
+      if (this.foregroundRunToken !== runToken) return;
       this.append(systemLine(type === "compact" ? formatManualCompaction(result) : formatPureCompaction(result)));
       this.handleEvent({ type: "context.metrics", metrics });
     } catch (error) {
-      this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (this.foregroundRunToken === runToken) this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
+      if (this.foregroundRunToken !== runToken) return;
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
       this.setBusy(false);
       this.setStatus({ ...this.status, phase: "ready", detail: undefined, activityTick: this.status.activityTick + 1 });
-      const queued = this.queuedInput;
-      this.queuedInput = undefined;
-      if (queued !== undefined) void this.handleCommandOrPrompt(queued);
     }
   }
 

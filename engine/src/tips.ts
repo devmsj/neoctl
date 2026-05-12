@@ -37,10 +37,10 @@ export const appTips: AppTip[] = [
     detail: "Ctrl+C clears non-empty input, requests interruption while work is running, and exits after a second press on an empty prompt.",
   },
   {
-    id: "queue",
-    title: "Queue the next message",
-    placeholder: "Tip: You can type while the assistant is busy; Enter queues the next message",
-    detail: "When work is running, submit another prompt to queue it. If needed, press Esc to bring queued input back to the editor.",
+    id: "interrupt-next",
+    title: "Interrupt and send the next message",
+    placeholder: "Tip: You can type while the assistant is busy; Enter interrupts it and sends the next message",
+    detail: "When foreground work is running, submit another prompt to stop the current model/tool run and start the new prompt immediately. Background tasks and detached sessions keep running.",
   },
   {
     id: "paste",
