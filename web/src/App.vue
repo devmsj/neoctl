@@ -107,6 +107,34 @@ const LOGIN_FIELD_LABELS = {
   'Stream idle timeout ms': '流式空闲超时（毫秒）',
   'Max retries': '最大重试次数',
 }
+const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
+const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
+
+const runtimeTabId = getOrCreateRuntimeTabId()
+let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
+
+function getOrCreateRuntimeTabId() {
+  let id = sessionStorage.getItem(RUNTIME_TAB_ID_KEY)
+  if (!id) {
+    id = crypto.randomUUID()
+    sessionStorage.setItem(RUNTIME_TAB_ID_KEY, id)
+  }
+  return id
+}
+
+function runtimeUrl(url) {
+  const target = new URL(url, window.location.origin)
+  target.searchParams.set('tabId', runtimeTabId)
+  if (runtimeSessionId) target.searchParams.set('sessionId', runtimeSessionId)
+  return `${target.pathname}${target.search}${target.hash}`
+}
+
+function rememberRuntimeSession(session) {
+  const sessionId = session?.sessionId || ''
+  if (!sessionId || sessionId === runtimeSessionId) return
+  runtimeSessionId = sessionId
+  sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
+}
 
 const state = reactive({
   connected: false,
@@ -207,7 +235,7 @@ onBeforeUnmount(() => {
 
 async function fetchState() {
   try {
-    const res = await fetch('/api/state')
+    const res = await fetch(runtimeUrl('/api/state'))
     if (!res.ok) throw new Error(`state ${res.status}`)
     applySync(await res.json())
   } catch (error) {
@@ -218,7 +246,7 @@ async function fetchState() {
 function connectEvents() {
   if (es) es.close()
   state.connecting = true
-  es = new EventSource('/events')
+  es = new EventSource(runtimeUrl('/events'))
   es.addEventListener('open', () => {
     state.connected = true
     state.connecting = false
@@ -249,6 +277,7 @@ function applySync(payload) {
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
+  rememberRuntimeSession(payload.session)
   if (payload.catalog) state.catalog = payload.catalog
   if (payload.interactive) state.interactive = payload.interactive
   if (payload.tips) state.tips = payload.tips
@@ -286,7 +315,7 @@ async function submit() {
   state.attachments = []
   autosize()
   try {
-    const res = await fetch('/api/submit', {
+    const res = await fetch(runtimeUrl('/api/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: submitText, attachments }),
@@ -299,7 +328,7 @@ async function submit() {
 }
 
 async function interrupt() {
-  await fetch('/api/interrupt', { method: 'POST' })
+  await fetch(runtimeUrl('/api/interrupt'), { method: 'POST' })
 }
 
 async function retractQueuedInput() {
@@ -315,7 +344,7 @@ async function compressSession() {
 async function openSessions() {
   state.activePanel = 'sessions'
   try {
-    const res = await fetch('/api/sessions')
+    const res = await fetch(runtimeUrl('/api/sessions'))
     const body = await res.json()
     state.sessions = body.sessions || []
     state.runningSessionIds = body.runningSessionIds || []
@@ -348,7 +377,7 @@ async function openLogin(provider) {
   state.activePanel = 'settings'
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
-    const res = await fetch(`/api/login${query}`)
+    const res = await fetch(runtimeUrl(`/api/login${query}`))
     const body = await res.json()
     state.login = body
     loginProvider.value = body.provider
@@ -370,7 +399,7 @@ async function saveLogin() {
 
 async function postJson(url, body) {
   try {
-    const res = await fetch(url, {
+    const res = await fetch(runtimeUrl(url), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

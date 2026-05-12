@@ -62,7 +62,7 @@ npm run build
 本项目已安装 npm 依赖：
 
 ```bash
-neoctl@^0.1.13
+neoctl@^0.1.21
 ```
 
 可用脚本：
