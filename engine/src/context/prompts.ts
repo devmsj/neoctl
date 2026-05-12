@@ -20,6 +20,7 @@ export interface EffectiveSystemPromptOptions {
 
 export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = []): PromptSection[] {
   const hasImageGenerationTool = enabledTools.includes("image2");
+  const hasVisionTool = enabledTools.includes("vision");
   return [
     {
       name: "Agent Scaffold",
@@ -48,6 +49,9 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
           : "Available tools are provided separately by the runtime.",
         "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
+        hasVisionTool
+          ? "When the user asks you to inspect, describe, OCR, or answer questions about a prior/current image, use the vision tool with imageRefs such as [img#1]; it can resolve stored historical image paths and send the actual image to a vision-capable model."
+          : "This runtime has no vision inspection tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",
         hasImageGenerationTool
           ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to gpt-image-1, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",

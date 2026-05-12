@@ -74,8 +74,10 @@ export interface ToolRuntimeOptions {
   debug?: boolean;
   verbose?: boolean;
   mainLoopModel?: string;
+  modelGateway?: import("../model/model-gateway.js").ModelGateway;
   tools?: ToolRegistryLike;
   thinkingConfig?: unknown;
+  reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
   activeSkill?: ActiveSkillRuntimeState;
   isNonInteractiveSession?: boolean;
   refreshTools?: () => Promise<void> | void;

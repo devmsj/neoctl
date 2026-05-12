@@ -106,6 +106,11 @@ async function* queryLoop(
     abortSignal: options.abortSignal,
     tools: dependencies.tools,
     appState,
+    options: {
+      mainLoopModel: options.model,
+      modelGateway: dependencies.modelGateway,
+      reasoning: options.reasoning,
+    },
     toolResultMemory: dependencies.toolResultMemory,
     recordContentReplacements: dependencies.recordContentReplacements,
     emit: () => undefined,
@@ -116,7 +121,17 @@ async function* queryLoop(
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
     state = beginTurn(state);
-    toolContext = { ...toolContext, queryTracking: state.queryTracking, messages: state.messages };
+    toolContext = {
+      ...toolContext,
+      queryTracking: state.queryTracking,
+      messages: state.messages,
+      options: {
+        ...toolContext.options,
+        mainLoopModel: state.currentModel ?? options.model,
+        modelGateway: dependencies.modelGateway,
+        reasoning: options.reasoning,
+      },
+    };
     yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
 
     const context = await contextManager.build({
@@ -360,7 +375,7 @@ function adaptMessagesForModelCapabilities(messages: Message[], model: string | 
 
 function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string; storage?: { path: string; format: string } }): string {
   const label = block.label?.trim();
-  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the view/read tool if you need to inspect the stored base64.` : "";
+  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the vision tool with this image label/path on a vision-capable model for visual inspection, or view/read only for the stored base64 text.` : "";
   const suffix = `[image ${block.mimeType} omitted: current model does not support image input.${storage}]`;
   return label ? `${label} ${suffix}` : suffix;
 }

@@ -54,6 +54,7 @@ export * from "./tools/builtins/search-tool.js";
 export * from "./tools/builtins/search-providers.js";
 export * from "./tools/builtins/plan-tool.js";
 export * from "./tools/builtins/image-generation-tool.js";
+export * from "./tools/builtins/vision-tool.js";
 export * from "./tools/builtins/ripgrep-binary.js";
 export * from "./types/messages.js";
 export * from "./types/events.js";

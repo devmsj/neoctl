@@ -316,6 +316,11 @@ export class QueryEngine {
       toolResultMemory: this.sessionStore?.toolResultMemory,
       recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
       messages,
+      options: {
+        mainLoopModel: this.currentModel,
+        modelGateway: this.currentModelGateway,
+        reasoning: cloneReasoningConfig(this.currentReasoning),
+      },
       emit: () => undefined,
     };
     const contextManager = this.options.contextManager ?? new DefaultContextManager();

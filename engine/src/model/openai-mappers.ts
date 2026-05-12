@@ -251,7 +251,7 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
 function imageStorageText(block: { label?: string; storage?: { path: string; format: string } }): string | undefined {
   if (!block.storage?.path) return undefined;
   const label = block.label ? `${block.label} ` : "";
-  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the view/read tool on that path if you need the stored base64.`;
+  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the vision tool with this image label/path for visual inspection, or view/read only if you need the stored base64 text.`;
 }
 
 function imageDataUrl(block: { mimeType: string; data: string }): string {
