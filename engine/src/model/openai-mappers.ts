@@ -225,7 +225,11 @@ function responsesInputContentFromBlocks(blocks: readonly MessageBlock[]): Recor
   const content: Record<string, unknown>[] = [];
   for (const block of blocks) {
     if (block.type === "text" && block.text) content.push({ type: "input_text", text: block.text });
-    if (block.type === "image") content.push({ type: "input_image", image_url: imageDataUrl(block) });
+    if (block.type === "image") {
+      content.push({ type: "input_image", image_url: imageDataUrl(block) });
+      const storageText = imageStorageText(block);
+      if (storageText) content.push({ type: "input_text", text: storageText });
+    }
   }
   return content;
 }
@@ -234,10 +238,20 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
   const content: Record<string, unknown>[] = [];
   for (const block of blocks) {
     if (block.type === "text" && block.text) content.push({ type: "text", text: block.text });
-    if (block.type === "image") content.push({ type: "image_url", image_url: { url: imageDataUrl(block) } });
+    if (block.type === "image") {
+      content.push({ type: "image_url", image_url: { url: imageDataUrl(block) } });
+      const storageText = imageStorageText(block);
+      if (storageText) content.push({ type: "text", text: storageText });
+    }
   }
   if (content.every((part) => part.type === "text")) return content.map((part) => String(part.text ?? "")).join("\n");
   return content;
+}
+
+function imageStorageText(block: { label?: string; storage?: { path: string; format: string } }): string | undefined {
+  if (!block.storage?.path) return undefined;
+  const label = block.label ? `${block.label} ` : "";
+  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the view/read tool on that path if you need the stored base64.`;
 }
 
 function imageDataUrl(block: { mimeType: string; data: string }): string {

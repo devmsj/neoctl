@@ -38,6 +38,7 @@ export interface DisplayImageBlock {
   mimeType: string;
   /** Approximate original payload size decoded from base64, when available. */
   sizeBytes?: number;
+  storagePath?: string;
   thumbnail?: DisplayImageSource;
   original?: DisplayImageSource;
 }
@@ -73,6 +74,7 @@ export interface DisplayImageAttachment {
   label?: string;
   mimeType: string;
   sizeBytes?: number;
+  storagePath?: string;
   src?: string;
   thumbnailSrc?: string;
   originalSrc?: string;
@@ -141,6 +143,7 @@ export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image"
     label: block.label,
     mimeType: block.mimeType,
     sizeBytes: estimateBase64DecodedBytes(normalizeBase64ImageData(block.data)),
+    storagePath: block.storage?.path,
   };
 
   if (imageMode === "metadata-only") return base;
@@ -166,6 +169,7 @@ export function extractDisplayImages(messages: readonly DisplayMessage[]): Displ
         label: block.label,
         mimeType: block.mimeType,
         sizeBytes: block.sizeBytes,
+        storagePath: block.storagePath,
         src: block.original?.src ?? block.thumbnail?.src,
         thumbnailSrc: block.thumbnail?.src,
         originalSrc: block.original?.src,

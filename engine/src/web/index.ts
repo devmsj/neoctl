@@ -819,10 +819,6 @@ class WebRepl {
     }
 
     const promptPayload = buildWebPromptPayload(command.text, attachments);
-    if (promptPayload.blocks?.some((block) => block.type === "image") && !this.runtime.engine.canAcceptImageInput()) {
-      this.append({ kind: "error", text: "Current model does not support image input; image attachments were not added to the conversation." });
-      return;
-    }
     this.append({ kind: "user", text: promptPayload.displayText });
     const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();

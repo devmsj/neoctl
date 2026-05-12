@@ -2,9 +2,14 @@ import type { ModelUsage } from "../model/model-gateway.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool_result" | "progress" | "attachment" | "tombstone";
 
+export interface ImageStorageRef {
+  path: string;
+  format: "base64" | "data-url";
+}
+
 export type MessageBlock =
   | { type: "text"; text: string }
-  | { type: "image"; mimeType: string; data: string; label?: string }
+  | { type: "image"; mimeType: string; data: string; label?: string; storage?: ImageStorageRef }
   | { type: "thinking"; text: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; name: string; ok: boolean; output: unknown };

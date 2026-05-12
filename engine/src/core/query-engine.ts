@@ -12,6 +12,7 @@ import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
 import { appendSystemContext, prependUserContext } from "./message-pipeline.js";
+import { persistMessageImages } from "./image-storage.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
 import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
@@ -145,9 +146,11 @@ export class QueryEngine {
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = options.blocks
-      ? { ...createTextMessage("user", options.displayText ?? text), blocks: options.blocks }
+      ? {
+          ...createTextMessage("user", options.displayText ?? text),
+          blocks: await persistMessageImages(options.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId }),
+        }
       : createTextMessage("user", text);
-    this.assertUserMessageCapabilities(userMessage);
     this.userTurns += 1;
     this.history.push(userMessage);
     this.sessionStore?.recordMessage(userMessage);
@@ -213,12 +216,6 @@ export class QueryEngine {
 
   canAcceptImageInput(): boolean {
     return supportsImageInput(this.currentModel) !== false;
-  }
-
-  private assertUserMessageCapabilities(message: Message): void {
-    if (this.canAcceptImageInput()) return;
-    if (!message.blocks.some((block) => block.type === "image")) return;
-    throw new Error(`Model ${this.currentModel ?? "(default)"} does not support image input; image attachments were not added to the conversation.`);
   }
 
   setModelProvider(settings: { modelGateway: ModelGateway; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }): void {

@@ -358,9 +358,10 @@ function adaptMessagesForModelCapabilities(messages: Message[], model: string | 
   return changed ? adapted : messages;
 }
 
-function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string }): string {
+function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string; storage?: { path: string; format: string } }): string {
   const label = block.label?.trim();
-  const suffix = `[image ${block.mimeType} omitted: current model does not support image input]`;
+  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the view/read tool if you need to inspect the stored base64.` : "";
+  const suffix = `[image ${block.mimeType} omitted: current model does not support image input.${storage}]`;
   return label ? `${label} ${suffix}` : suffix;
 }
 

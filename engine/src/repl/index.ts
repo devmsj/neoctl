@@ -678,10 +678,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         return;
       }
       if (payload.type === "image") {
-        if (!runtime.engine.canAcceptImageInput()) {
-          setPasteStatusMessage("current model does not support image input; image was not added");
-          return;
-        }
         const id = ++imageAttachmentCounterRef.current;
         insertAttachmentLabel({ id, kind: "image", label: `[img#${id}]`, image: payload.image });
         setPasteStatusMessage(undefined);
@@ -972,10 +968,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const submitLine = async (text: string, submitAttachments = attachmentsForText(text, attachmentsRef.current)) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (submitAttachments.some((attachment) => attachment.kind === "image") && !runtime.engine.canAcceptImageInput()) {
-      append({ kind: "error", text: "Current model does not support image input; image attachments were not added to the conversation." });
-      return;
-    }
     const command = parseReplCommand(text);
     const detachedForCommand = busyRef.current && (command.type === "new" || command.type === "sessions");
     if (busyRef.current && !detachedForCommand) {
@@ -1164,10 +1156,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
 
     const promptPayload = buildPromptPayload(command.text, submitAttachments);
-    if (promptPayload.blocks?.some((block) => block.type === "image") && !runtime.engine.canAcceptImageInput()) {
-      append({ kind: "error", text: "Current model does not support image input; image attachments were not added to the conversation." });
-      return;
-    }
     append({ kind: "user", text });
     const runToken = ++foregroundRunTokenRef.current;
     const abortController = new AbortController();
