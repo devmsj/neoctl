@@ -252,7 +252,7 @@ REPL 当前注册的内置工具：
 | `edit` / `replace` | 基于唯一字符串替换修改文件，容忍 LF/CRLF 和直/弯引号差异 |
 | `exec` / `shell` / `bash` / `powershell` | 执行命令，支持 cwd、超时、输出截断和后台模式 |
 | `search` | 通过可插拔 provider 搜索 Web；OpenAI 模型提供者默认走 GPT web search，否则默认 Exa MCP；可显式切换 provider |
-| `image2` / `draw_image` / `generate_image` | 仅在 `MODEL_PROVIDER=openai` 时注册；通过 OpenAI Images API 生成图片并返回可展示的 data URL；非 OpenAI provider 不暴露绘图工具，系统提示会要求模型说明当前不具备绘图能力 |
+| `image2` | 仅在 `MODEL_PROVIDER=openai` 时注册；通过 OpenAI Images API 生成图片并返回可展示的 data URL；非 OpenAI provider 不暴露绘图工具，系统提示会要求模型说明当前不具备绘图能力 |
 | `plan` | 输出和更新当前任务计划 |
 | `agent` | 启动同步/后台/fork 子代理 |
 | `TaskOutput` | 读取后台任务输出，可阻塞等待完成 |
@@ -268,7 +268,7 @@ REPL 当前注册的内置工具：
 - `list` 默认跳过 `.git`、`node_modules`、`dist`、`build`、`coverage` 等重目录。
 - `grep` 不依赖系统 PATH，会调用 `vendor/ripgrep` 中的平台二进制；支持 glob、大小写模式、fixed strings、隐藏文件、上下文行、结果数和列宽限制。
 - `search` 默认优先使用显式 `SEARCH_PROVIDER` / `WEB_SEARCH_PROVIDER`；未显式配置且当前模型提供者为 OpenAI（`MODEL_PROVIDER=openai` 或存在 `OPENAI_API_KEY`）时走 OpenAI Responses API 的 GPT web search，否则走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。模型也可以在单次工具调用里通过 `provider` 字段切换后端，但工具提示会要求：除非用户明确要求特定 provider，或默认/当前搜索 provider 在重试后持续不可用，否则不要显式指定 `provider`，让系统默认选择生效。
-- `image2` 按 OpenAI 图片生成官方接口实现，底层请求 `POST /v1/images/generations`（可理解为项目里的 image2 绘图接口），默认模型 `gpt-image-1`，可用 `OPENAI_IMAGE_API_KEY` / `OPENAI_API_KEY`、`OPENAI_IMAGE_BASE_URL` / `OPENAI_BASE_URL`、`OPENAI_IMAGE_MODEL`、`OPENAI_IMAGE_TIMEOUT_MS` 配置。只有 `MODEL_PROVIDER=openai` 时 REPL/Web 运行时会注册该工具；切换到 DeepSeek/Kimi 等其他 provider 后会移除该工具，并在系统提示中要求模型告知用户当前模型/供应者不具备绘图工具。
+- `image2` 按 OpenAI 图片生成官方接口实现，底层请求 `POST /v1/images/generations`；底层 OpenAI 图片模型只允许 `gpt-image-2`，默认也是 `gpt-image-2`。可用 `OPENAI_IMAGE_API_KEY` / `OPENAI_API_KEY`、`OPENAI_IMAGE_BASE_URL` / `OPENAI_BASE_URL`、`OPENAI_IMAGE_MODEL`、`OPENAI_IMAGE_TIMEOUT_MS` 配置，其中 `OPENAI_IMAGE_MODEL` 若不是 `gpt-image-2` 会被 image2 校验拒绝。只有 `MODEL_PROVIDER=openai` 时 REPL/Web 运行时会注册该工具；切换到 DeepSeek/Kimi 等其他 provider 后会移除该工具，并在系统提示中要求模型告知用户当前模型/供应者不具备绘图工具。
 
 ### 命令执行
 

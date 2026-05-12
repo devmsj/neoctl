@@ -7,6 +7,7 @@ import { editTool, writeTool } from "./builtins/edit-tool.js";
 import { execTool } from "./builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
 import { grepTool } from "./builtins/grep-tool.js";
+import { createOpenAIImageGenerationTool } from "./builtins/image-generation-tool.js";
 import { createSearchTool } from "./builtins/search-tool.js";
 import type { SearchProvider } from "./builtins/search-providers.js";
 import { createSearchProvider } from "./builtins/search-providers.js";
@@ -255,6 +256,10 @@ async function main(): Promise<void> {
   const fallbackSearchProvider = createSearchProvider({}, {} as NodeJS.ProcessEnv);
   const searchToolDefinition = registry.get("search");
   const searchToolPrompt = JSON.stringify({ description: searchToolDefinition?.description, schema: searchToolDefinition?.inputSchema });
+  const imageTool = createOpenAIImageGenerationTool();
+  const imageToolPrompt = JSON.stringify({ name: imageTool.name, description: imageTool.description, schema: imageTool.inputSchema });
+  const imageDefaultValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke" }, context) ?? { prompt: "smoke" }, context);
+  const imageLegacyModelValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke", model: "gpt-image-1" }, context) ?? { prompt: "smoke", model: "gpt-image-1" }, context);
   const planOutput = toolOutput(plan[plan.length - 1]) as {
     summary?: string;
     completed?: number;
@@ -295,6 +300,9 @@ async function main(): Promise<void> {
     webSearchFallbackWithoutOpenAIConfig: fallbackSearchProvider.name === "exa",
     webSearchPromptAllowsProviderSwitch: searchToolPrompt.includes("switch providers") && searchToolPrompt.includes("provider field"),
     webSearchPromptDiscouragesExplicitProvider: searchToolPrompt.includes("do not explicitly set provider") && searchToolPrompt.includes("user requests") && searchToolPrompt.includes("persistently unavailable"),
+    image2OnlyToolName: imageTool.name === "image2" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
+    image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
+    image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
     planOk:
       toolOk(plan[plan.length - 1]) &&
       planOutput.summary === "1/3 completed" &&

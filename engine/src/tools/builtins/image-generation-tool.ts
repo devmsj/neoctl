@@ -8,7 +8,7 @@ export type ImageGenerationFormat = "png" | "jpeg" | "webp";
 export type OpenAIImageGenerationResponseFormat = ImageGenerationFormat | "jpg";
 export type ImageGenerationBackground = "auto" | "transparent" | "opaque";
 export type ImageGenerationModeration = "auto" | "low";
-export type OpenAIImageModel = "gpt-image-1";
+export type OpenAIImageModel = "gpt-image-2";
 export type ImageToolMode = "generate" | "edit";
 
 export interface ImageEditInputImage {
@@ -97,7 +97,7 @@ export interface CreateOpenAIImageGenerationToolOptions {
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
-export const DEFAULT_OPENAI_IMAGE_MODEL: OpenAIImageModel = "gpt-image-1";
+export const DEFAULT_OPENAI_IMAGE_MODEL: OpenAIImageModel = "gpt-image-2";
 const DEFAULT_IMAGE_MODEL = DEFAULT_OPENAI_IMAGE_MODEL;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_IMAGES = 4;

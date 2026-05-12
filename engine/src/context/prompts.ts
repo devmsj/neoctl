@@ -53,7 +53,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           ? "When the user asks you to inspect, describe, OCR, or answer questions about a prior/current image, use the vision tool with imageRefs such as [img#1]; it can resolve stored historical image paths and send the actual image to a vision-capable model."
           : "This runtime has no vision inspection tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",
         hasImageGenerationTool
-          ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to gpt-image-1, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
+          ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
       ].join("\n"),
     },
