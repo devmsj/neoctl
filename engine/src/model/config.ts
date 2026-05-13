@@ -1,6 +1,6 @@
 import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
 
-export type ModelProviderName = "openai" | "deepseek" | "kimi";
+export type ModelProviderName = "openai" | "anthropic" | "deepseek" | "kimi";
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
@@ -25,6 +25,13 @@ export interface OpenAIProviderConfig extends BaseModelProviderConfig {
   };
 }
 
+export interface AnthropicProviderConfig extends BaseModelProviderConfig {
+  provider: "anthropic";
+  anthropic?: {
+    version?: string;
+  };
+}
+
 export interface DeepSeekProviderConfig extends BaseModelProviderConfig {
   provider: "deepseek";
 }
@@ -33,9 +40,10 @@ export interface KimiProviderConfig extends BaseModelProviderConfig {
   provider: "kimi";
 }
 
-export type ModelProviderConfig = OpenAIProviderConfig | DeepSeekProviderConfig | KimiProviderConfig;
+export type ModelProviderConfig = OpenAIProviderConfig | AnthropicProviderConfig | DeepSeekProviderConfig | KimiProviderConfig;
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
 const DEFAULT_KIMI_MODEL = "kimi-k2.6";
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
@@ -46,6 +54,8 @@ export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): M
   switch (provider) {
     case "openai":
       return readOpenAIProviderConfig(env);
+    case "anthropic":
+      return readAnthropicProviderConfig(env);
     case "deepseek":
       return readDeepSeekProviderConfig(env);
     case "kimi":
@@ -88,6 +98,30 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
       firstNonEmpty(env.MODEL_REASONING_SUMMARY),
     ),
     openai: endpoint ? { endpoint } : undefined,
+  };
+}
+
+function readAnthropicProviderConfig(env: NodeJS.ProcessEnv): AnthropicProviderConfig | undefined {
+  const apiKey = firstNonEmpty(env.ANTHROPIC_API_KEY);
+  if (!apiKey) return undefined;
+
+  return {
+    provider: "anthropic",
+    apiKey,
+    baseUrl: firstNonEmpty(env.ANTHROPIC_BASE_URL),
+    model: firstNonEmpty(env.ANTHROPIC_MODEL) ?? DEFAULT_ANTHROPIC_MODEL,
+    fallbackModel: firstNonEmpty(env.ANTHROPIC_FALLBACK_MODEL),
+    timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
+    streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
+    maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
+    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)) ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    defaultReasoning: parseReasoning(
+      firstNonEmpty(env.MODEL_REASONING_EFFORT),
+      firstNonEmpty(env.MODEL_REASONING_SUMMARY),
+    ),
+    anthropic: {
+      version: firstNonEmpty(env.ANTHROPIC_VERSION),
+    },
   };
 }
 
@@ -144,7 +178,7 @@ function parseReasoningSummary(value: string | undefined): ReasoningSummary | un
 }
 
 function parseProvider(value: string): ModelProviderName {
-  if (value === "openai" || value === "deepseek" || value === "kimi") return value;
+  if (value === "openai" || value === "anthropic" || value === "deepseek" || value === "kimi") return value;
   throw new Error(`Unsupported MODEL_PROVIDER: ${value}`);
 }
 

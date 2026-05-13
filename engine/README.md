@@ -48,7 +48,7 @@ npm run standalone
 - Windows：`%APPDATA%\neo\.env`
 - macOS/Linux：`~/.config/neo/.env`
 
-可以运行 `/login` 交互式填写并保存，也可以手动编辑。推荐格式是：`MODEL_PROVIDER` 只选择当前供应者；供应者专属的 key、base URL、model 分别写在 `OPENAI_*` / `DEEPSEEK_*` / `KIMI_*` 下；跨供应者共用的运行参数保留 `MODEL_*`。
+可以运行 `/login` 交互式填写并保存，也可以手动编辑。推荐格式是：`MODEL_PROVIDER` 只选择当前供应者；供应者专属的 key、base URL、model 分别写在 `OPENAI_*` / `ANTHROPIC_*` / `DEEPSEEK_*` / `KIMI_*` 下；跨供应者共用的运行参数保留 `MODEL_*`。
 
 ```env
 # Active provider
@@ -60,6 +60,13 @@ OPENAI_BASE_URL=https://api.openai.com
 OPENAI_MODEL=gpt-5.5
 OPENAI_FALLBACK_MODEL=
 OPENAI_ENDPOINT=auto
+
+# Anthropic provider settings
+ANTHROPIC_API_KEY=your-anthropic-api-key
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_FALLBACK_MODEL=
+ANTHROPIC_VERSION=2023-06-01
 
 # DeepSeek provider settings
 DEEPSEEK_API_KEY=your-deepseek-api-key
@@ -101,6 +108,7 @@ npm run smoke:session   # 会话持久化冒烟测试
 npm run smoke:agents    # 子代理/任务冒烟测试
 npm run smoke:skills    # skill 模块冒烟测试
 npm run smoke:responses # OpenAI Responses mapper 冒烟测试
+npm run smoke:anthropic # Anthropic Messages mapper 冒烟测试
 npm run smoke:deepseek # DeepSeek Chat mapper 冒烟测试
 npm run smoke:openai -- "Say pong"
 ```
@@ -197,9 +205,11 @@ src/
 
 ## 模型层
 
-模型访问通过 `ModelGateway` 抽象。当前内置 provider 包括 OpenAI、DeepSeek 与 Kimi：
+模型访问通过 `ModelGateway` 抽象。当前内置 provider 包括 OpenAI、Anthropic、DeepSeek 与 Kimi：
 
 - `openai-adapter.ts`：端点选择、认证、超时、重试、Responses→Chat fallback。
+- `anthropic-adapter.ts`：Anthropic Messages API provider，默认 `https://api.anthropic.com/v1/messages`，使用 `x-api-key` 与 `anthropic-version` 请求头。
+- `anthropic-mapper.ts`：Anthropic Messages 请求、tool use / tool result、thinking、SSE 流事件归一化。
 - `deepseek-adapter.ts`：DeepSeek OpenAI 格式 Chat Completions，默认 `https://api.deepseek.com/chat/completions`，支持 `reasoning_content` 到 thinking 事件的归一化。
 - `kimi-adapter.ts`：Kimi/Moonshot OpenAI 兼容 Chat Completions，默认 `https://api.moonshot.cn/v1/chat/completions`，支持 `reasoning_content` 到 thinking 事件的归一化。
 - `openai-responses-mapper.ts`：Responses API 请求和流事件归一化。
@@ -212,12 +222,13 @@ src/
 
 | 变量 | 说明 |
 | --- | --- |
-| `MODEL_PROVIDER` | `openai`、`deepseek` 或 `kimi` |
-| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `KIMI_API_KEY` | 供应者专属 API Key；只读取当前 `MODEL_PROVIDER` 对应的一组变量；Kimi 也兼容 `MOONSHOT_API_KEY` |
-| `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `KIMI_BASE_URL` | 供应者专属服务地址；DeepSeek 默认 `https://api.deepseek.com`，Kimi 默认 `https://api.moonshot.cn/v1`；国际站 key 使用 `https://api.moonshot.ai/v1` |
-| `OPENAI_MODEL` / `DEEPSEEK_MODEL` / `KIMI_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.5`，DeepSeek 默认 `deepseek-chat`，Kimi 默认 `kimi-k2.6` |
-| `OPENAI_FALLBACK_MODEL` / `DEEPSEEK_FALLBACK_MODEL` / `KIMI_FALLBACK_MODEL` | 供应者专属 fallback model |
-| `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；DeepSeek 与 Kimi 固定使用 Chat Completions |
+| `MODEL_PROVIDER` | `openai`、`anthropic`、`deepseek` 或 `kimi` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `KIMI_API_KEY` | 供应者专属 API Key；只读取当前 `MODEL_PROVIDER` 对应的一组变量；Kimi 也兼容 `MOONSHOT_API_KEY` |
+| `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` / `DEEPSEEK_BASE_URL` / `KIMI_BASE_URL` | 供应者专属服务地址；Anthropic 默认 `https://api.anthropic.com`，DeepSeek 默认 `https://api.deepseek.com`，Kimi 默认 `https://api.moonshot.cn/v1`；国际站 key 使用 `https://api.moonshot.ai/v1` |
+| `OPENAI_MODEL` / `ANTHROPIC_MODEL` / `DEEPSEEK_MODEL` / `KIMI_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.5`，Anthropic 默认 `claude-sonnet-4-6`，DeepSeek 默认 `deepseek-chat`，Kimi 默认 `kimi-k2.6` |
+| `OPENAI_FALLBACK_MODEL` / `ANTHROPIC_FALLBACK_MODEL` / `DEEPSEEK_FALLBACK_MODEL` / `KIMI_FALLBACK_MODEL` | 供应者专属 fallback model |
+| `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；Anthropic 固定使用 Messages API；DeepSeek 与 Kimi 固定使用 Chat Completions |
+| `ANTHROPIC_VERSION` | Anthropic 专用 API version header，默认 `2023-06-01` |
 | `MODEL_REASONING_EFFORT` | 共享运行设置：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
 | `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
@@ -566,7 +577,7 @@ import { createAgentTool } from "neoctl/agents/agent-tool";
 
 ## 当前边界
 
-- 模型 provider 配置类型目前内置 OpenAI、DeepSeek 与 Kimi provider。
+- 模型 provider 配置类型目前内置 OpenAI、Anthropic、DeepSeek 与 Kimi provider。
 - `src/safety` 是 permission、sandbox、audit 的接口边界；默认 REPL 没有强制沙箱策略。
 - `src/skills` 已实现工具与 catalog，但默认 REPL 未装配 skill catalog。
 - `isolation=worktree/remote` 在 AgentTool schema 中保留为接口形态，当前本地实现主要通过 `cwd` 和独立消息上下文隔离。
