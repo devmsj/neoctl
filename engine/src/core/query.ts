@@ -390,7 +390,7 @@ function adaptMessagesForModelCapabilities(messages: Message[], model: string | 
 
 function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string; storage?: { path: string; format: string } }): string {
   const label = block.label?.trim();
-  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the vision tool with this image label/path on a vision-capable model for visual inspection, or view/read only for the stored base64 text.` : "";
+  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the load_image tool with this image label/id on a vision-capable model for visual inspection, or view/read only for the stored base64 text.` : "";
   const suffix = `[image ${block.mimeType} omitted: current model does not support image input.${storage}]`;
   return label ? `${label} ${suffix}` : suffix;
 }

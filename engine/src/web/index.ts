@@ -21,7 +21,7 @@ import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
-import { createVisionTool } from "../tools/builtins/vision-tool.js";
+import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -252,7 +252,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
-  tools.register(createVisionTool({ modelGateway, model: modelConfig?.model }));
+  tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
 
@@ -327,10 +327,6 @@ function syncImageGenerationTool(runtime: WebRuntime, provider: ModelProviderNam
   if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
-function syncVisionTool(runtime: WebRuntime, model: string | undefined): void {
-  runtime.tools.unregister("vision");
-  runtime.tools.register(createVisionTool({ modelGateway: runtime.modelGateway, model }));
-}
 
 function formatCreatedEnvNotice(dotEnvPath: string): string {
   return `Created default config file: ${dotEnvPath}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY or KIMI_API_KEY), then restart neo.`;
@@ -571,7 +567,6 @@ export class WebRepl {
       this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
       this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
       syncImageGenerationTool(this.runtime, config.provider);
-      syncVisionTool(this.runtime, config.model);
       this.runtime.defaultReasoning = config.defaultReasoning;
       const metrics = await this.runtime.engine.contextMetrics();
       this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
@@ -1227,7 +1222,6 @@ async function handleModelCommand(command: Extract<ReturnType<typeof parseReplCo
           runtime.agentRuntime.modelGateway = runtime.modelGateway;
           runtime.engine.setModelProvider({ modelGateway: runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
           syncImageGenerationTool(runtime, config.provider);
-          syncVisionTool(runtime, config.model);
           runtime.defaultReasoning = config.defaultReasoning;
         }
       }

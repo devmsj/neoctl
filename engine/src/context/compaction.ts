@@ -1,6 +1,7 @@
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
+import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, formatImageRegistryForContext, type ImageRegistry } from "../core/image-registry.js";
 
 export interface ContextBudgetOptions {
   snipMaxChars?: number;
@@ -196,7 +197,8 @@ export function snipCompactIfNeeded(messages: readonly Message[], options: Conte
   const tail = messages.slice(tailStart);
   const removed = messages.slice(head.length, tailStart);
   const summary = buildHistorySummary(removed, options.summaryMaxChars ?? 3000);
-  const boundary = createCompactionBoundaryMessage(`Snipped older conversation for context budget.\n\n${summary}`, "snip", false);
+  const imageRegistry = buildMergedImageRegistry(messages);
+  const boundary = createCompactionBoundaryMessage(`Snipped older conversation for context budget.\n\n${summary}`, "snip", false, imageRegistry);
   const compacted = [...head, boundary, ...tail];
 
   const freed = Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars(compacted));
@@ -332,10 +334,12 @@ function pureCompactWithSanitizedSummary(messages: readonly Message[], options: 
   if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
 
   const summary = buildPureSummary(messages, options.summaryMaxChars ?? 4000);
+  const imageRegistry = buildMergedImageRegistry(messages);
   const boundary = createCompactionBoundaryMessage(
     `Pure compacted conversation after a transport/WAF risk block.\n\n${summary}`,
     "purecompact",
     false,
+    imageRegistry,
   );
 
   const freed = Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars([boundary]));
@@ -405,7 +409,8 @@ function buildCompactionResult(
     ? `Persistent facts:\n${persistentFacts.join("\n")}\n\nWorking context:\n${summary}`
     : summary;
 
-  const boundary = createCompactionBoundaryMessage(`${label}\n\n${layeredSummary}`, reason, modelDriven);
+  const imageRegistry = buildMergedImageRegistry(originalMessages);
+  const boundary = createCompactionBoundaryMessage(`${label}\n\n${layeredSummary}`, reason, modelDriven, imageRegistry);
   const compacted = [boundary, ...recentMessages];
   const freed = Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted));
   return {
@@ -416,6 +421,14 @@ function buildCompactionResult(
     charsFreed: freed,
     tokensFreed: freed,
   };
+}
+
+function buildMergedImageRegistry(messages: readonly Message[]): ImageRegistry {
+  const previousRegistry = extractRegistryFromBoundary(messages);
+  const currentRegistry = buildImageRegistry(messages);
+  return previousRegistry
+    ? mergeImageRegistries(previousRegistry, currentRegistry)
+    : currentRegistry;
 }
 
 function mergeResults(results: readonly CompactionResult[], reason: CompactionReason | undefined): CompactionResult {
@@ -432,11 +445,19 @@ function mergeResults(results: readonly CompactionResult[], reason: CompactionRe
   };
 }
 
-function createCompactionBoundaryMessage(summary: string, reason: string, modelDriven: boolean): Message {
+function createCompactionBoundaryMessage(summary: string, reason: string, modelDriven: boolean, imageRegistry?: ImageRegistry): Message {
+  const registryText = imageRegistry && imageRegistry.images.length > 0
+    ? `\n\n${formatImageRegistryForContext(imageRegistry)}`
+    : "";
   return {
-    ...createTextMessage("system", renderInternalContinuationState(summary, reason)),
+    ...createTextMessage("system", renderInternalContinuationState(summary + registryText, reason)),
     isMeta: true,
-    metadata: { compactBoundary: true, compactionReason: reason, modelDriven },
+    metadata: {
+      compactBoundary: true,
+      compactionReason: reason,
+      modelDriven,
+      ...(imageRegistry && imageRegistry.images.length > 0 ? { imageRegistry } : {}),
+    },
   };
 }
 
@@ -546,6 +567,10 @@ function buildSmartMessageSummary(message: Message): string {
     if (block.type === "text") {
       const text = block.text.replace(/\s+/g, " ").trim();
       parts.push(text.length > 400 ? `${text.slice(0, 400)}...` : text);
+    } else if (block.type === "image") {
+      const label = block.label ? `"${block.label}"` : "unlabeled";
+      const stored = block.storage?.path ? `, stored at ${block.storage.path}` : "";
+      parts.push(`[image: ${label}, ${block.mimeType}${stored}]`);
     } else if (block.type === "tool_result") {
       parts.push(extractStructuredToolResult(block));
     } else if (block.type === "tool_use") {
@@ -685,7 +710,12 @@ function serializeMessageForSummary(message: Message): string {
 
 function serializeBlock(block: MessageBlock): string {
   if (block.type === "text") return block.text;
-  if (block.type === "image") return block.label ?? `[image ${block.mimeType}]`;
+  if (block.type === "image") {
+    const estimatedBytes = Math.floor(block.data.length * 0.75);
+    const tiles = Math.max(1, Math.ceil(estimatedBytes / 200_000));
+    const estimatedTokenEquivalentChars = tiles * 85 * 4;
+    return `${"x".repeat(estimatedTokenEquivalentChars)}`;
+  }
   if (block.type === "thinking") return `thinking: ${block.text}`;
   if (block.type === "tool_use") return `tool_use ${block.name}: ${JSON.stringify(block.input)}`;
   if (block.type === "tool_result") return `tool_result ${block.name}: ${serializeToolOutput(block.output)}`;

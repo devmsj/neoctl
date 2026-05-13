@@ -23,7 +23,7 @@ import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
-import { createVisionTool } from "../tools/builtins/vision-tool.js";
+import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -280,7 +280,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
-  tools.register(createVisionTool({ modelGateway, model: modelConfig?.model }));
+  tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
 
@@ -342,10 +342,6 @@ function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderNa
   if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
-function syncVisionTool(runtime: ReplRuntime, model: string | undefined): void {
-  runtime.tools.unregister("vision");
-  runtime.tools.register(createVisionTool({ modelGateway: runtime.modelGateway, model }));
-}
 
 function formatCreatedEnvNotice(path: string): string {
   return `Created default config file: ${path}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY or KIMI_API_KEY), then restart neo.`;
@@ -2332,7 +2328,6 @@ async function handleModelCommand(
             reasoning: config.defaultReasoning,
           });
           syncImageGenerationTool(runtime, config.provider);
-          syncVisionTool(runtime, config.model);
           runtime.defaultReasoning = config.defaultReasoning;
         }
       }
@@ -3035,7 +3030,6 @@ async function submitLoginForm(
       reasoning: config.defaultReasoning,
     });
     syncImageGenerationTool(runtime, config.provider);
-    syncVisionTool(runtime, config.model);
     runtime.defaultReasoning = config.defaultReasoning;
     const metrics = await runtime.engine.contextMetrics();
     setStatus((current) => ({

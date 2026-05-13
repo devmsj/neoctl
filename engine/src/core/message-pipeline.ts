@@ -1,4 +1,5 @@
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
+import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, type ImageRegistry } from "./image-registry.js";
 
 export interface ToolResultBudgetOptions {
   maxSerializedLength?: number;
@@ -137,6 +138,18 @@ function buildStableToolResultPreview(serialized: string, maxSerializedLength: n
 
 function serializeToolOutput(output: unknown): string {
   return typeof output === "string" ? output : JSON.stringify(output);
+}
+
+/**
+ * Build a complete ImageRegistry from the current message set,
+ * merging any registry persisted in a compact boundary with images from recent messages.
+ */
+export function getImageRegistryFromMessages(messages: readonly Message[]): ImageRegistry {
+  const boundaryRegistry = extractRegistryFromBoundary(messages);
+  const currentRegistry = buildImageRegistry(messages);
+  return boundaryRegistry
+    ? mergeImageRegistries(boundaryRegistry, currentRegistry)
+    : currentRegistry;
 }
 
 function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {

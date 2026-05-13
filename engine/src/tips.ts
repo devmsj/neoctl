@@ -51,7 +51,7 @@ export const appTips: AppTip[] = [
   {
     id: "image-paste",
     title: "Paste images",
-    placeholder: "Tip: With vision-capable models, paste screenshots and reference them as [img#1]",
+    placeholder: "Tip: With vision-capable models, paste screenshots and use load_image to inspect them later as [img#1]",
     detail: "If the current model supports image input, you can paste images or screenshots from the clipboard and submit them with your prompt.",
   },
   {

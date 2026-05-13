@@ -142,9 +142,23 @@ function serializeMessageForMetrics(message: Message): string {
   return `${message.role}: ${message.blocks.map(serializeBlockForMetrics).join("\n")}`;
 }
 
+/**
+ * Most vision APIs charge ~85 tokens per tile (typically 512x512).
+ * A typical base64 image of ~200KB decodes to roughly 150K pixels ≈ ~1 tile ≈ 85 tokens.
+ * Larger images get more tiles. We estimate based on base64 length as a proxy for pixel count.
+ */
+function estimateImageTokens(base64Length: number): number {
+  const estimatedBytes = Math.floor(base64Length * 0.75);
+  const tiles = Math.max(1, Math.ceil(estimatedBytes / 200_000));
+  return tiles * 85;
+}
+
 function serializeBlockForMetrics(block: MessageBlock): string {
   if (block.type === "text") return block.text;
-  if (block.type === "image") return `[image ${block.mimeType} ${block.data.length} base64 chars]`;
+  if (block.type === "image") {
+    const imageTokens = estimateImageTokens(block.data.length);
+    return `${"x".repeat(imageTokens * 4)}`;
+  }
   if (block.type === "thinking") return block.text;
   if (block.type === "tool_use") return `tool_use ${block.name} ${JSON.stringify(block.input)}`;
   return `tool_result ${block.name} ${JSON.stringify(block.output)}`;
