@@ -978,7 +978,12 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     const command = parseReplCommand(text);
     const detachedForCommand = busyRef.current && (command.type === "new" || command.type === "sessions");
     if (busyRef.current && !detachedForCommand) {
-      stopForegroundRun("Interrupted by new prompt");
+      setQueuedPromptState(text, submitAttachments);
+      history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
+      setHistorySelection(undefined);
+      setPromptState("", 0);
+      clearAttachments();
+      return;
     }
     history.current = [text, ...history.current.filter((entry) => entry !== text)].slice(0, 100);
     setHistorySelection(undefined);
@@ -1209,16 +1214,21 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       if (activeAbortController.current === abortController) activeAbortController.current = undefined;
       interruptArmed.current = false;
       finalizeForegroundView();
-      setBusyState(false);
-      setStatus((current) => ({
-        ...current,
-        phase: "ready",
-        detail: undefined,
-        inputTokenUpdatedAt: undefined,
-        outputTokenUpdatedAt: undefined,
-        retryCooldownUntil: undefined,
-      }));
-      if (!terminalFocusedRef.current) playReadySound();
+      const queued = takeQueuedPromptState();
+      if (queued) {
+        void handleCommandOrPrompt(queued.text, queued.attachments);
+      } else {
+        setBusyState(false);
+        setStatus((current) => ({
+          ...current,
+          phase: "ready",
+          detail: undefined,
+          inputTokenUpdatedAt: undefined,
+          outputTokenUpdatedAt: undefined,
+          retryCooldownUntil: undefined,
+        }));
+        if (!terminalFocusedRef.current) playReadySound();
+      }
     }
   };
 

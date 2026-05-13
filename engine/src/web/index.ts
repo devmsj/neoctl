@@ -398,6 +398,7 @@ export class WebRepl {
   private status: UiStatus;
   private busy = false;
   private queuedInput: string | undefined;
+  private queuedAttachments: WebAttachmentPayload[] | undefined;
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
@@ -455,8 +456,16 @@ export class WebRepl {
     } else if (this.busy && command.type === "sessions") {
       await this.detachRunningForeground("session browser");
     } else if (this.busy) {
-      this.stopForegroundRun("Interrupted by new prompt");
+      this.queuedInput = text;
+      this.queuedAttachments = attachments;
+      this.broadcastSync();
+      return { ok: true };
     }
+    this.startRun(text, attachments);
+    return { ok: true };
+  }
+
+  private startRun(text: string, attachments: WebAttachmentPayload[] = []): void {
     const run = this.handleCommandOrPrompt(text, attachments).catch((error) => {
       this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       this.setBusy(false);
@@ -466,7 +475,6 @@ export class WebRepl {
     run.finally(() => {
       if (this.foregroundRun === run) this.foregroundRun = undefined;
     }).catch(() => undefined);
-    return { ok: true };
   }
 
   async listSessions() {
@@ -581,6 +589,14 @@ export class WebRepl {
     return { ok: true, interrupted };
   }
 
+  cancelQueue(): { ok: true; cancelled: boolean } {
+    const had = this.queuedInput !== undefined;
+    this.queuedInput = undefined;
+    this.queuedAttachments = undefined;
+    if (had) this.broadcastSync();
+    return { ok: true, cancelled: had };
+  }
+
   private append(line: Omit<UiLine, "id">): number {
     const id = ++this.lineId;
     this.lines.push({ id, ...line });
@@ -631,6 +647,7 @@ export class WebRepl {
     this.activeAbortController = undefined;
     this.interruptArmed = false;
     this.queuedInput = undefined;
+    this.queuedAttachments = undefined;
     this.finalizeForegroundView();
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
@@ -676,6 +693,7 @@ export class WebRepl {
     this.activeAbortController = undefined;
     this.interruptArmed = false;
     this.queuedInput = undefined;
+    this.queuedAttachments = undefined;
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined };
     this.append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
@@ -925,9 +943,18 @@ export class WebRepl {
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
       this.finalizeForegroundView();
-      this.setBusy(false);
-      this.setStatus({ ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
-      this.broadcastSync();
+      const queuedText = this.queuedInput;
+      const queuedAttach = this.queuedAttachments;
+      this.queuedInput = undefined;
+      this.queuedAttachments = undefined;
+      if (queuedText !== undefined) {
+        this.startRun(queuedText, queuedAttach ?? []);
+        this.broadcastSync();
+      } else {
+        this.setBusy(false);
+        this.setStatus({ ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
+        this.broadcastSync();
+      }
     }
   }
 
@@ -991,6 +1018,7 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
       return sendJson(res, await repl.submit(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
+    if (req.method === "POST" && url.pathname === "/api/queue/cancel") return sendJson(res, repl.cancelQueue());
     if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions());
     if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
       const body = await readJsonBody<{ sessionId?: string }>(req);

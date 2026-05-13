@@ -686,8 +686,7 @@ async function submit() {
   input.value = '';
   state.attachments = [];
   if (state.busy) {
-    state.busy = false;
-    state.queuedInput = undefined;
+    state.queuedInput = text;
   }
   autosize();
   renderCompletions();
@@ -752,8 +751,8 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowUp' && !input.value) { e.preventDefault(); advanceTip(-1); return; }
   if (e.key === 'ArrowDown' && state.historyIndex !== undefined) { e.preventDefault(); state.historyIndex -= 1; if (state.historyIndex < 0) { state.historyIndex = undefined; input.value = ''; } else input.value = state.history[state.historyIndex] || ''; autosize(); return; }
   if (e.key === 'ArrowDown' && !input.value) { e.preventDefault(); advanceTip(); return; }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else fetch('/api/interrupt', { method: 'POST' }); }
-  if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) fetch('/api/interrupt', { method: 'POST' }); else renderCompletions(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else if (state.queuedInput) { state.queuedInput = undefined; scheduleRender(); fetch('/api/queue/cancel', { method: 'POST' }); } else fetch('/api/interrupt', { method: 'POST' }); }
+  if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) { state.queuedInput = undefined; scheduleRender(); fetch('/api/queue/cancel', { method: 'POST' }); } else renderCompletions(); }
 });
 document.addEventListener('keydown', (e) => {
   if (e.target === input || e.target.closest('input, textarea, select')) return;
