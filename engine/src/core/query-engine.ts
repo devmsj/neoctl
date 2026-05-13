@@ -3,7 +3,6 @@ import { DefaultContextManager, type ContextManager } from "../context/context-m
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
-import { supportsImageInput } from "../model/context-window.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { QueryOptions, TaskNotificationSource } from "./query.js";
@@ -62,7 +61,6 @@ export class QueryEngine {
   private currentFallbackModel?: string;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
-  private userTurns = 0;
   private titleSchedulerVersion = 0;
   private titleAgentRun?: { version: number; controller: AbortController };
   private readonly sessionTitleListeners = new Set<(snapshot: SessionStoreSnapshot | undefined) => void>();
@@ -104,14 +102,6 @@ export class QueryEngine {
     });
   }
 
-  async resumeSession(sessionId?: string): Promise<SessionStoreSnapshot> {
-    this.sessionInitialized = true;
-    await this.openSession({ sessionId, resume: true });
-    const snapshot = this.sessionStore?.snapshot();
-    if (!snapshot) throw new Error("session transcripts are disabled");
-    return snapshot;
-  }
-
   async newSession(): Promise<SessionStoreSnapshot> {
     this.sessionInitialized = true;
     await this.openSession({ resume: false });
@@ -151,7 +141,6 @@ export class QueryEngine {
           blocks: options.blocks,
         })
       : createTextMessage("user", text);
-    this.userTurns += 1;
     this.history.push(userMessage);
     this.sessionStore?.recordMessage(userMessage);
     this.scheduleSessionTitleCheck();
@@ -217,10 +206,6 @@ export class QueryEngine {
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 
-  canAcceptImageInput(): boolean {
-    return supportsImageInput(this.currentModel) !== false;
-  }
-
   setModelProvider(settings: { modelGateway: ModelGateway; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }): void {
     this.currentModelGateway = settings.modelGateway;
     this.currentModel = settings.model?.trim() || undefined;
@@ -238,7 +223,6 @@ export class QueryEngine {
 
   reset(): void {
     this.history.length = 0;
-    this.userTurns = 0;
     this.lastTerminalReason = undefined;
     this.cancelPendingTitleWork();
     this.sessionStore?.reset();
@@ -355,10 +339,6 @@ export class QueryEngine {
     };
   }
 
-  get toolResultMemory() {
-    return this.sessionStore?.toolResultMemory;
-  }
-
   private recordSyntheticToolCalls(calls: Array<{ id: string; name: string; input: unknown }>): void {
     const missing = calls.filter((call) =>
       !this.history.some((message) =>
@@ -400,7 +380,6 @@ export class QueryEngine {
     });
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
-    this.userTurns = countUserTurns(this.history);
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 
@@ -553,10 +532,6 @@ function resolveSessionTitleDelayMs(): number {
     if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   }
   return DEFAULT_SESSION_TITLE_DELAY_MS;
-}
-
-function countUserTurns(messages: readonly Message[]): number {
-  return messages.filter((message) => message.role === "user" && message.blocks.some((block) => block.type === "text")).length;
 }
 
 function cloneReasoningConfig(reasoning: ReasoningConfig | null | undefined): ReasoningConfig | null | undefined {

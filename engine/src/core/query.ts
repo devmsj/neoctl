@@ -35,8 +35,6 @@ export interface QueryOptions {
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
   maxTurns?: number;
-  skipCacheWrite?: boolean;
-  taskBudget?: { total: number };
   abortSignal?: AbortSignal;
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
