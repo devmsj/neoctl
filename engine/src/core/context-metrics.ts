@@ -3,19 +3,70 @@ import type { ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
 
-export function buildContextMetrics(input: {
+let _encode: ((text: string) => number[]) | undefined;
+let _encoderLoadFailed = false;
+
+function getEncoder(): ((text: string) => number[]) | undefined {
+  if (_encode || _encoderLoadFailed) return _encode;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("gpt-tokenizer");
+    _encode = mod.encode ?? mod.default?.encode;
+    if (!_encode) _encoderLoadFailed = true;
+  } catch {
+    _encoderLoadFailed = true;
+  }
+  return _encode;
+}
+
+const TOKEN_CACHE_MAX = 128;
+const _tokenCache = new Map<string, number>();
+
+function cachedTokenCount(text: string): number {
+  if (!text) return 0;
+  const cacheKey = text.length <= 4096 ? text : undefined;
+  if (cacheKey) {
+    const cached = _tokenCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+  }
+  const encode = getEncoder();
+  const count = encode ? encode(text).length : heuristicTokenCount(text);
+  if (cacheKey) {
+    if (_tokenCache.size >= TOKEN_CACHE_MAX) {
+      const first = _tokenCache.keys().next().value;
+      if (first !== undefined) _tokenCache.delete(first);
+    }
+    _tokenCache.set(cacheKey, count);
+  }
+  return count;
+}
+
+export interface BuildContextMetricsInput {
   model?: string;
   messages: readonly Message[];
   systemPrompt: string;
   tools: readonly ToolDefinition[];
-}): ContextMetrics {
-  const serialized = [
-    input.systemPrompt,
-    ...input.messages.map(serializeMessageForMetrics),
-    JSON.stringify(input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema }))),
-  ].join("\n");
-  const estimatedChars = serialized.length;
-  const estimatedInputTokens = estimateTextTokens(serialized);
+  cachedToolsAndPromptTokens?: number;
+}
+
+export function buildContextMetrics(input: BuildContextMetricsInput): ContextMetrics {
+  let estimatedInputTokens: number;
+  let estimatedChars: number;
+
+  if (input.cachedToolsAndPromptTokens !== undefined) {
+    const messageSerialized = input.messages.map(serializeMessageForMetrics).join("\n");
+    estimatedChars = input.systemPrompt.length + messageSerialized.length;
+    estimatedInputTokens = input.cachedToolsAndPromptTokens + estimateTextTokens(messageSerialized);
+  } else {
+    const serialized = [
+      input.systemPrompt,
+      ...input.messages.map(serializeMessageForMetrics),
+      JSON.stringify(input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema }))),
+    ].join("\n");
+    estimatedChars = serialized.length;
+    estimatedInputTokens = estimateTextTokens(serialized);
+  }
+
   const window = resolveContextWindowTokens(input.model);
   return {
     model: input.model,
@@ -41,6 +92,21 @@ export function buildContextMetrics(input: {
 }
 
 export function estimateTextTokens(text: string): number {
+  if (!text) return 0;
+  if (text.length <= 8192) return cachedTokenCount(text);
+  let total = 0;
+  for (let i = 0; i < text.length; i += 8192) {
+    total += cachedTokenCount(text.slice(i, i + 8192));
+  }
+  return total;
+}
+
+export function computeStaticTokens(systemPrompt: string, tools: readonly ToolDefinition[]): number {
+  const toolsSerialized = JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })));
+  return estimateTextTokens(systemPrompt) + estimateTextTokens(toolsSerialized);
+}
+
+function heuristicTokenCount(text: string): number {
   if (!text) return 0;
   let tokens = 0;
   let asciiRun = 0;

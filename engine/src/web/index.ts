@@ -1991,12 +1991,12 @@ function formatUsageTotals(totals: UsageTotals): string {
 
 function formatManualCompaction(result: CompactionResult): string {
   if (!result.changed) return "No context compaction was needed.";
-  return `context compacted: ${result.messages.length} message(s) retained, ${formatNumber(result.tokensFreed ?? 0)} chars removed`;
+  return `context compacted: ${result.messages.length} message(s) retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars removed`;
 }
 
 function formatPureCompaction(result: CompactionResult): string {
   if (!result.changed) return "No context available to purify.";
-  return `pure context compacted: ${result.messages.length} sanitized message(s) retained, ${formatNumber(result.tokensFreed ?? 0)} chars removed; raw command/log/code details omitted`;
+  return `pure context compacted: ${result.messages.length} sanitized message(s) retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars removed; raw command/log/code details omitted`;
 }
 
 function formatNumber(value: number | undefined): string {

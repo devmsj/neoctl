@@ -3323,12 +3323,12 @@ function formatUsageTotals(totals: UsageTotals): string {
 
 function formatManualCompaction(result: CompactionResult): string {
   if (!result.changed) return "No earlier context available to compact.";
-  return `manual context compacted: ${result.messages.length} messages retained, ${formatNumber(result.tokensFreed ?? 0)} chars freed`;
+  return `manual context compacted: ${result.messages.length} messages retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars freed`;
 }
 
 function formatPureCompaction(result: CompactionResult): string {
   if (!result.changed) return "No context available to purify.";
-  return `pure context compacted: ${result.messages.length} sanitized message(s) retained, ${formatNumber(result.tokensFreed ?? 0)} chars removed; raw command/log/code details omitted`;
+  return `pure context compacted: ${result.messages.length} sanitized message(s) retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars removed; raw command/log/code details omitted`;
 }
 
 function colorForKind(kind: UiLine["kind"]) {

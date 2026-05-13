@@ -44,11 +44,15 @@ export interface QueryState {
   fallbackModel?: string;
   queryTracking: QueryTracking;
   maxOutputTokensRecoveryCount: number;
+  /** @deprecated Use reactiveCompactAttempts instead */
   hasAttemptedReactiveCompact: boolean;
+  reactiveCompactAttempts: number;
   maxOutputTokensOverride?: number;
   turnCount: number;
   transition: LoopTransition;
 }
+
+export const MAX_REACTIVE_COMPACT_ATTEMPTS = 3;
 
 export function createInitialState(messages: Message[], options?: { model?: string; fallbackModel?: string }): QueryState {
   const chainId = cryptoId("chain");
@@ -65,6 +69,7 @@ export function createInitialState(messages: Message[], options?: { model?: stri
     },
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
+    reactiveCompactAttempts: 0,
     turnCount: 0,
     transition: { reason: "initial" },
   };

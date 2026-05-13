@@ -20,12 +20,13 @@ import {
 } from "./message-pipeline.js";
 import {
   createInitialState,
+  MAX_REACTIVE_COMPACT_ATTEMPTS,
   nextTracking,
   type QueryState,
   type TerminalReason,
 } from "./state.js";
 import { AssistantOutputFilter } from "./assistant-output-filter.js";
-import { buildContextMetrics } from "./context-metrics.js";
+import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
 
 export interface QueryOptions {
   agentId: string;
@@ -224,11 +225,15 @@ async function prepareMessagesForQuery(
   if (budgetResult.records.length) telemetry.toolUseContext?.recordContentReplacements?.(budgetResult.records);
   const budgeted = budgetResult.messages;
   const pairedBudgeted = ensureToolResultPairing(budgeted);
+
+  const staticTokens = computeStaticTokens(telemetry.systemPrompt, telemetry.toolDefinitions);
+
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,
     messages: prependUserContext(pairedBudgeted, context.userContext),
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
+    cachedToolsAndPromptTokens: staticTokens,
   });
   const compaction = await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
@@ -242,6 +247,7 @@ async function prepareMessagesForQuery(
     messages: messagesForQuery,
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
+    cachedToolsAndPromptTokens: staticTokens,
   });
   return {
     messagesForQuery,
@@ -300,7 +306,8 @@ async function* callModelForTurn(
       }
     }
   } catch (error) {
-    if (isContextLengthError(error) && !state.hasAttemptedReactiveCompact) {
+    const attempts = state.reactiveCompactAttempts ?? 0;
+    if (isContextLengthError(error) && attempts < MAX_REACTIVE_COMPACT_ATTEMPTS) {
       const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
       const normalized = error instanceof Error ? error : new Error(String(error));
       const reactiveMetrics = buildContextMetrics({
@@ -309,13 +316,22 @@ async function* callModelForTurn(
         systemPrompt: telemetry.systemPrompt,
         tools: telemetry.toolDefinitions,
       });
+
+      const escalationFactor = attempts + 1;
+      const baseKeep = dependencies.contextBudget?.keepRecentMessages ?? 8;
+      const escalatedKeep = Math.max(2, baseKeep - escalationFactor * 2);
+      const baseSummaryMax = dependencies.contextBudget?.summaryMaxChars ?? 6000;
+      const escalatedSummaryMax = Math.max(1000, baseSummaryMax - escalationFactor * 1500);
+
       const reactiveBudget: ContextBudgetOptions = {
         ...dependencies.contextBudget,
         estimatedInputTokens: reactiveMetrics.estimatedInputTokens,
         contextWindowTokens: reactiveMetrics.contextWindowTokens,
+        keepRecentMessages: escalatedKeep,
+        summaryMaxChars: escalatedSummaryMax,
       };
       const compacted = await (compactor.reactiveCompact?.(state.messages, normalized, reactiveBudget) ?? compactor.compact(state.messages, reactiveBudget));
-      yield { type: "state", phase: "compacting", detail: "reactive compact retry after prompt-too-long" };
+      yield { type: "state", phase: "compacting", detail: `reactive compact retry ${attempts + 1}/${MAX_REACTIVE_COMPACT_ATTEMPTS} after prompt-too-long (keepRecent=${escalatedKeep})` };
       for (const message of compacted.messages.filter((message) => message.metadata?.compactBoundary === true)) {
         yield { type: "message", message };
       }
@@ -324,9 +340,10 @@ async function* callModelForTurn(
           ...state,
           messages: compacted.messages,
           modelInputMessages: compacted.messages,
-          hasAttemptedReactiveCompact: true,
+          hasAttemptedReactiveCompact: attempts + 1 >= MAX_REACTIVE_COMPACT_ATTEMPTS,
+          reactiveCompactAttempts: attempts + 1,
           turnCount: state.turnCount + 1,
-          transition: { reason: "reactive_compact_retry", detail: normalized.message },
+          transition: { reason: "reactive_compact_retry", detail: `attempt ${attempts + 1}: ${normalized.message}` },
         },
       };
     }
@@ -554,6 +571,7 @@ function buildNextTurnState(
     turnCount: state.turnCount + 1,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
+    reactiveCompactAttempts: 0,
     maxOutputTokensOverride: undefined,
     transition: { reason: "next_turn" },
   };
@@ -594,7 +612,7 @@ function toolResultOk(message: Message): boolean {
 
 function formatCompactionDetail(compaction: CompactionResult): string {
   if (compaction.reason === "microcompact" && compaction.summary) return compaction.summary;
-  return `${compaction.reason ?? "compact"} reduced context by ${compaction.tokensFreed ?? 0} chars`;
+  return `${compaction.reason ?? "compact"} reduced context by ${compaction.charsFreed ?? compaction.tokensFreed ?? 0} chars`;
 }
 
 function terminalForModelError(error: unknown): TerminalReason {

@@ -1,5 +1,6 @@
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
+import { estimateTextTokens } from "../core/context-metrics.js";
 
 export interface ContextBudgetOptions {
   snipMaxChars?: number;
@@ -11,6 +12,7 @@ export interface ContextBudgetOptions {
   microCompactTriggerRatio?: number;
   snipCompactTriggerRatio?: number;
   keepRecentMessages?: number;
+  keepRecentTokenBudget?: number;
   keepRecentToolResults?: number;
   summaryMaxChars?: number;
   compactModel?: string;
@@ -24,6 +26,8 @@ export interface CompactionResult {
   summary?: string;
   changed: boolean;
   reason?: CompactionReason;
+  charsFreed?: number;
+  /** @deprecated Use charsFreed instead. Alias kept for backward compatibility. */
   tokensFreed?: number;
 }
 
@@ -80,9 +84,9 @@ export class ModelDrivenCompactor implements Compactor {
   }
 
   async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
-    const keepRecentMessages = options.keepRecentMessages ?? 8;
-    const recent = messages.slice(-keepRecentMessages);
-    const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+    const splitIndex = computeKeepRecentSplit(messages, options);
+    const recent = messages.slice(splitIndex);
+    const older = messages.slice(0, splitIndex);
     if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
 
     try {
@@ -99,9 +103,9 @@ export class ModelDrivenCompactor implements Compactor {
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     const micro = microCompactIfNeeded(messages, options);
-    const keepRecentMessages = options.keepRecentMessages ?? 8;
-    const recent = micro.messages.slice(-keepRecentMessages);
-    const older = micro.messages.slice(0, Math.max(0, micro.messages.length - keepRecentMessages));
+    const splitIndex = computeKeepRecentSplit(micro.messages, options);
+    const recent = micro.messages.slice(splitIndex);
+    const older = micro.messages.slice(0, splitIndex);
     try {
       const summary = await this.summarizeWithModel(older, buildReactiveCompactInstruction(error), options);
       const reactive = buildCompactionResult(micro.messages, recent, summary, "reactive_compact", true);
@@ -117,11 +121,10 @@ export class ModelDrivenCompactor implements Compactor {
       return { messages: [...messages], changed: false, reason: "none" };
     }
 
-    const maxChars = options.autoCompactMaxChars ?? 50000;
-
-    const keepRecentMessages = options.keepRecentMessages ?? 8;
-    const recent = messages.slice(-keepRecentMessages);
-    const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+    const splitIndex = computeKeepRecentSplit(messages, options);
+    const recent = messages.slice(splitIndex);
+    const older = messages.slice(0, splitIndex);
+    if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
 
     try {
       const summary = await this.summarizeWithModel(older, AUTO_COMPACT_INSTRUCTIONS, options);
@@ -188,21 +191,22 @@ export function snipCompactIfNeeded(messages: readonly Message[], options: Conte
   const triggerRatio = options.snipCompactTriggerRatio ?? 0.98;
   if (!shouldCompactForBudget(messages, options, maxChars, triggerRatio)) return { messages: [...messages], changed: false, reason: "none" };
 
-  const keepRecentMessages = options.keepRecentMessages ?? 6;
   const head = messages.slice(0, 1).filter((message) => !message.metadata?.compactBoundary);
-  const tailStart = Math.max(head.length, messages.length - keepRecentMessages);
+  const tailStart = Math.max(head.length, computeKeepRecentSplit(messages, options, options.keepRecentMessages ?? 6));
   const tail = messages.slice(tailStart);
   const removed = messages.slice(head.length, tailStart);
   const summary = buildHistorySummary(removed, options.summaryMaxChars ?? 3000);
   const boundary = createCompactionBoundaryMessage(`Snipped older conversation for context budget.\n\n${summary}`, "snip", false);
   const compacted = [...head, boundary, ...tail];
 
+  const freed = Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars(compacted));
   return {
     messages: compacted,
     summary,
     changed: true,
     reason: "snip",
-    tokensFreed: Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars(compacted)),
+    charsFreed: freed,
+    tokensFreed: freed,
   };
 }
 
@@ -244,12 +248,14 @@ export function microCompactIfNeeded(messages: readonly Message[], options: Cont
 
   if (!changed) return { messages: [...messages], changed: false, reason: "none" };
 
+  const freed = Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars(compacted));
   return {
     messages: compacted,
     summary: `Cleared ${cleared} older tool result content block(s); kept the latest ${keepRecentToolResults}.`,
     changed: true,
     reason: "microcompact",
-    tokensFreed: Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars(compacted)),
+    charsFreed: freed,
+    tokensFreed: freed,
   };
 }
 
@@ -257,11 +263,27 @@ export function autoCompactIfNeeded(messages: readonly Message[], options: Conte
   const maxChars = options.autoCompactMaxChars ?? 50000;
   if (!shouldCompactForBudget(messages, options, maxChars)) return { messages: [...messages], changed: false, reason: "none" };
 
-  const keepRecentMessages = options.keepRecentMessages ?? 8;
-  const recent = messages.slice(-keepRecentMessages);
-  const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+  const splitIndex = computeKeepRecentSplit(messages, options);
+  const recent = messages.slice(splitIndex);
+  const older = messages.slice(0, splitIndex);
+  if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
   const summary = buildHistorySummary(older, options.summaryMaxChars ?? 5000);
   return buildCompactionResult(messages, recent, summary, "autocompact", false);
+}
+
+function computeKeepRecentSplit(messages: readonly Message[], options: ContextBudgetOptions, fallbackCount?: number): number {
+  const tokenBudget = options.keepRecentTokenBudget;
+  const keepCount = fallbackCount ?? options.keepRecentMessages ?? 8;
+
+  if (!tokenBudget) return Math.max(0, messages.length - keepCount);
+
+  let tokens = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msgTokens = estimateTextTokens(serializeMessage(messages[i]));
+    if (tokens + msgTokens > tokenBudget && i < messages.length - 1) return i + 1;
+    tokens += msgTokens;
+  }
+  return 0;
 }
 
 function shouldCompactForBudget(messages: readonly Message[], options: ContextBudgetOptions, fallbackMaxChars: number, triggerRatioOverride?: number): boolean {
@@ -273,9 +295,9 @@ function shouldCompactForBudget(messages: readonly Message[], options: ContextBu
 }
 
 function manualCompactWithSummary(messages: readonly Message[], options: ContextBudgetOptions): CompactionResult {
-  const keepRecentMessages = options.keepRecentMessages ?? 8;
-  const recent = messages.slice(-keepRecentMessages);
-  const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+  const splitIndex = computeKeepRecentSplit(messages, options);
+  const recent = messages.slice(splitIndex);
+  const older = messages.slice(0, splitIndex);
   if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
 
   const summary = buildHistorySummary(older, options.summaryMaxChars ?? 6000);
@@ -293,9 +315,9 @@ function reactiveCompactWithSummary(
   heading: string,
   options: ContextBudgetOptions,
 ): CompactionResult {
-  const keepRecentMessages = options.keepRecentMessages ?? 8;
-  const recent = messages.slice(-keepRecentMessages);
-  const older = messages.slice(0, Math.max(0, messages.length - keepRecentMessages));
+  const splitIndex = computeKeepRecentSplit(messages, options);
+  const recent = messages.slice(splitIndex);
+  const older = messages.slice(0, splitIndex);
   const summary = buildHistorySummary(older, options.summaryMaxChars ?? 6000);
   return buildCompactionResult(
     messages,
@@ -316,13 +338,53 @@ function pureCompactWithSanitizedSummary(messages: readonly Message[], options: 
     false,
   );
 
+  const freed = Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars([boundary]));
   return {
     messages: [boundary],
     summary,
     changed: true,
     reason: "purecompact",
-    tokensFreed: Math.max(0, estimateMessagesChars(messages) - estimateMessagesChars([boundary])),
+    charsFreed: freed,
+    tokensFreed: freed,
   };
+}
+
+function extractPersistentFacts(messages: readonly Message[]): string[] {
+  const facts: string[] = [];
+  for (const message of messages) {
+    if (message.metadata?.compactBoundary) {
+      const text = extractText(message);
+      const existingFacts = text.match(/(?<=Persistent facts:\n)([\s\S]*?)(?=\n(?:Working context:|<\/compact_state>))/);
+      if (existingFacts) {
+        for (const line of existingFacts[1].split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed && trimmed !== "- ...summary truncated...") facts.push(trimmed);
+        }
+      }
+      continue;
+    }
+    for (const block of message.blocks) {
+      if (block.type === "text") {
+        const text = block.text;
+        if (message.role === "user") {
+          if (/\b(must|require|constraint|never|always|important|rule)\b/i.test(text)) {
+            facts.push(`- User constraint: ${text.replace(/\s+/g, " ").trim().slice(0, 200)}`);
+          }
+        }
+        if (/\b(error|fail|exception|bug)\b/i.test(text) && message.role !== "progress") {
+          const errorLine = text.split("\n").find((l) => /error|fail|exception|bug/i.test(l));
+          if (errorLine) facts.push(`- Error encountered: ${errorLine.trim().slice(0, 200)}`);
+        }
+        if (/\b(decide|chosen|approach|architecture|design|agreed)\b/i.test(text) && message.role === "assistant") {
+          facts.push(`- Decision: ${text.replace(/\s+/g, " ").trim().slice(0, 200)}`);
+        }
+      }
+      if (block.type === "tool_result" && !block.ok) {
+        facts.push(`- Failed tool: ${block.name} (${serializeToolOutput(block.output).slice(0, 150)})`);
+      }
+    }
+  }
+  return dedupeLines(facts).slice(0, 30);
 }
 
 function buildCompactionResult(
@@ -337,26 +399,36 @@ function buildCompactionResult(
     : reason === "manualcompact"
       ? "Manually compacted earlier conversation."
       : "Reactive compacted earlier conversation.";
-  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven);
+
+  const persistentFacts = extractPersistentFacts(originalMessages);
+  const layeredSummary = persistentFacts.length > 0
+    ? `Persistent facts:\n${persistentFacts.join("\n")}\n\nWorking context:\n${summary}`
+    : summary;
+
+  const boundary = createCompactionBoundaryMessage(`${label}\n\n${layeredSummary}`, reason, modelDriven);
   const compacted = [boundary, ...recentMessages];
+  const freed = Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted));
   return {
     messages: compacted,
-    summary,
+    summary: layeredSummary,
     changed: true,
     reason,
-    tokensFreed: Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted)),
+    charsFreed: freed,
+    tokensFreed: freed,
   };
 }
 
 function mergeResults(results: readonly CompactionResult[], reason: CompactionReason | undefined): CompactionResult {
   const changedResults = results.filter((result) => result.changed);
   const last = changedResults[changedResults.length - 1] ?? results[results.length - 1];
+  const freed = changedResults.reduce((total, result) => total + (result.charsFreed ?? result.tokensFreed ?? 0), 0);
   return {
     messages: last.messages,
     summary: changedResults.map((result) => result.summary).filter(Boolean).join("\n\n") || undefined,
     changed: changedResults.length > 0,
     reason,
-    tokensFreed: changedResults.reduce((total, result) => total + (result.tokensFreed ?? 0), 0),
+    charsFreed: freed,
+    tokensFreed: freed,
   };
 }
 
@@ -386,14 +458,104 @@ function normalizeSummaryForInternalState(summary: string): string {
     .trim();
 }
 
+function scoreMessageImportance(message: Message): number {
+  let score = 1;
+  if (message.metadata?.compactBoundary) return 0;
+  if (message.role === "user") score += 3;
+  if (message.role === "system") score += 2;
+
+  for (const block of message.blocks) {
+    if (block.type === "text") {
+      const text = block.text.toLowerCase();
+      if (/\b(error|fail|exception|panic|crash|bug)\b/.test(text)) score += 3;
+      if (/\b(must|require|constraint|important|critical|never|always)\b/.test(text)) score += 2;
+      if (/\b(decide|chosen|approach|plan|architecture|design)\b/.test(text)) score += 2;
+      if (/\b(todo|pending|remaining|next step|blocked)\b/.test(text)) score += 2;
+    }
+    if (block.type === "tool_result") {
+      if (!block.ok) score += 3;
+      const output = serializeToolOutput(block.output);
+      if (/\b(error|fail|permission denied|not found)\b/i.test(output)) score += 2;
+    }
+    if (block.type === "tool_use") score += 1;
+  }
+  return score;
+}
+
+function extractStructuredToolResult(block: { type: "tool_result"; toolUseId: string; name: string; ok: boolean; output: unknown }): string {
+  const output = serializeToolOutput(block.output);
+  const status = block.ok ? "ok" : "error";
+  const toolName = block.name;
+
+  if (toolName.includes("exec") || toolName.includes("shell") || toolName.includes("bash")) {
+    const exitMatch = output.match(/exit[_ ]?code[:\s]*(\d+)/i);
+    const exitCode = exitMatch ? exitMatch[1] : (block.ok ? "0" : "non-zero");
+    const errorLines = output.split("\n").filter((line) => /error|fail|warning|denied/i.test(line)).slice(0, 3);
+    const errorSummary = errorLines.length > 0 ? ` key_output: ${errorLines.join("; ").slice(0, 200)}` : "";
+    return `${toolName}(${status}, exit=${exitCode}${errorSummary})`;
+  }
+
+  if (toolName.includes("read") || toolName.includes("write") || toolName.includes("edit") || toolName.includes("file")) {
+    const pathMatch = output.match(/(?:path|file)[:\s]*["']?([^\s"']+)/i);
+    const path = pathMatch ? pathMatch[1] : "";
+    return `${toolName}(${status}${path ? `, path=${path}` : ""}, ${output.length} chars)`;
+  }
+
+  if (toolName.includes("search") || toolName.includes("grep") || toolName.includes("find")) {
+    const matchCount = (output.match(/\n/g) || []).length;
+    return `${toolName}(${status}, ~${matchCount} matches, ${output.length} chars)`;
+  }
+
+  if (output.length <= 200) return `${toolName}(${status}): ${output}`;
+  return `${toolName}(${status}, ${output.length} chars): ${output.slice(0, 150)}...`;
+}
+
 function buildHistorySummary(messages: readonly Message[], maxChars: number): string {
   if (messages.length === 0) return "";
-  const lines = messages.map((message) => {
-    const text = serializeMessageForSummary(message).replace(/\s+/g, " ").trim();
-    return `- ${message.role}: ${text.slice(0, 500)}`;
-  });
-  const joined = lines.join("\n");
+
+  const scored = messages.map((message) => ({
+    message,
+    importance: scoreMessageImportance(message),
+  }));
+  scored.sort((a, b) => b.importance - a.importance);
+
+  const highPriorityLines: string[] = [];
+  const lowPriorityLines: string[] = [];
+
+  for (const { message, importance } of scored) {
+    const line = buildSmartMessageSummary(message);
+    if (importance >= 4) highPriorityLines.push(line);
+    else lowPriorityLines.push(line);
+  }
+
+  const sections: string[] = [];
+  if (highPriorityLines.length > 0) {
+    sections.push("Key context:\n" + highPriorityLines.join("\n"));
+  }
+  if (lowPriorityLines.length > 0) {
+    sections.push("Other activity:\n" + lowPriorityLines.join("\n"));
+  }
+
+  const joined = sections.join("\n\n");
   return joined.length > maxChars ? `${joined.slice(0, maxChars)}\n- ...summary truncated...` : joined;
+}
+
+function buildSmartMessageSummary(message: Message): string {
+  const parts: string[] = [];
+  for (const block of message.blocks) {
+    if (block.type === "text") {
+      const text = block.text.replace(/\s+/g, " ").trim();
+      parts.push(text.length > 400 ? `${text.slice(0, 400)}...` : text);
+    } else if (block.type === "tool_result") {
+      parts.push(extractStructuredToolResult(block));
+    } else if (block.type === "tool_use") {
+      const input = typeof block.input === "string" ? block.input : JSON.stringify(block.input);
+      parts.push(`${block.name}(${input.slice(0, 120)})`);
+    } else if (block.type === "thinking") {
+      parts.push("[thinking omitted]");
+    }
+  }
+  return `- ${message.role}: ${parts.join(" | ")}`;
 }
 
 function buildPureSummary(messages: readonly Message[], maxChars: number): string {
