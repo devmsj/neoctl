@@ -1975,7 +1975,7 @@ function BackgroundTaskStatusLine(
     Box,
     { flexDirection: "column", width, overflow: "hidden" },
     e(Text, { color: "yellow" }, fitToWidth(summary, width)),
-    ...detailTasks.map((task) => e(Text, { key: task.taskId, color: "yellow" }, fitToWidth(`  ${task.type}:${truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, width - 30))} · ${task.status} · ${formatElapsed(Date.now() - new Date(task.createdAt).getTime())}`, width))),
+    ...detailTasks.map((task, index) => e(Text, { key: `bg-task-${task.taskId}-${index}`, color: "yellow" }, fitToWidth(`  ${task.type}:${truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, width - 30))} · ${task.status} · ${formatElapsed(Date.now() - new Date(task.createdAt).getTime())}`, width))),
   );
 }
 
@@ -3148,7 +3148,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
       e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: choose provider · saving to ${state.envPath}`, contentWidth)),
       ...state.providers.map((provider, index) => e(
         Text,
-        { key: provider, color: "white" },
+        { key: `provider-${provider}-${index}`, color: "white" },
         e(Text, { color: index === state.selectedProviderIndex ? "black" : "white", backgroundColor: index === state.selectedProviderIndex ? "cyan" : undefined }, `${index + 1}.`.padStart(3)),
         e(Text, { color: "gray" }, " "),
         e(Text, { color: "cyan" }, provider),
