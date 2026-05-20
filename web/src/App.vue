@@ -39,39 +39,6 @@ const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
-const LOCAL_TIPS = [
-  '可以让 Neo 制定计划、查找资料、检查文件、运行工具或继续工作流。',
-  '按 Ctrl/⌘ + K 可快速聚焦输入框。',
-  '输入 /sessions 管理历史会话，输入 /login 配置模型供应商。',
-  '粘贴图片后会作为附件随消息一起发送。',
-]
-const FEATURE_TIP_MIN_MS = 35_000
-const FEATURE_TIP_MAX_MS = 110_000
-const FEATURE_TIPS = [
-  { id: 'workflow', title: '把 Neo 当工作流助手', body: '可以先让它拆计划，再继续调研、检查文件、运行命令或调用工具。' },
-  { id: 'new-session', title: '换主题时新建会话', body: '项目、需求或方向切换时，新建会话能让上下文更干净，回答也更稳定。' },
-  { id: 'focus-input', title: '快速回到输入框', body: '按 Ctrl/⌘ + K 可以立即聚焦输入框，继续补充需求或追问。' },
-  { id: 'enter-send', title: '换行与发送', body: 'Enter 发送；需要多行说明时按 Shift + Enter 换行。' },
-  { id: 'interrupt', title: '随时中断任务', body: '任务方向不对或等待太久时，可以点“中断任务”；输入框为空时 Ctrl/⌘ + C 也能中断。' },
-  { id: 'sessions', title: '管理历史会话', body: '侧边栏“会话管理”或输入 /sessions 可以恢复、切换和整理历史会话。' },
-  { id: 'model-settings', title: '模型配置在这里', body: '需要换模型、接口或 API Key 时，打开“模型配置”，也可以输入 /login。' },
-  { id: 'image-attachments', title: '图片可直接粘贴', body: '把图片粘到输入框后会作为附件发送；涉及修图、重绘、换背景时会优先走图片工具。' },
-  { id: 'context-compress', title: '上下文过长先压缩', body: '当上下文接近或超过 100k 时，点输入框下方“压缩会话”可减少历史压力。' },
-  { id: 'queued-message', title: '忙碌时会排队', body: 'Neo 正在运行时继续发送会进入下一条队列；如果发错了，可以在输入框上方撤回。' },
-  { id: 'tool-output', title: '工具输出可展开', body: '较长的工具输出会自动折叠，需要细节时点“展开完整工具输出”。' },
-  { id: 'background-tasks', title: '后台任务看右侧', body: '后台 agent 或长任务会显示在右侧“后台任务”，完成、失败、停止状态都会同步。' },
-  { id: 'task-complete', title: '任务完成后继续推进', body: '得到结果后，可以直接让 Neo 生成下一步计划、提炼结论或检查遗漏。' },
-]
-const FEATURE_TIP_REASONS = {
-  welcome: '功能提示',
-  random: '灵感提示',
-  manual: '功能提示',
-  new_session: '新会话提示',
-  task_complete: '任务完成提示',
-  context: '上下文提示',
-  image: '图片提示',
-  queued: '排队提示',
-}
 const PANEL_LABELS = {
   chat: '对话工作台',
   sessions: '会话管理',
@@ -110,9 +77,54 @@ const LOGIN_FIELD_LABELS = {
 }
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
-
 const runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
+
+const DEFAULT_APP_PROMPT_LIBRARY = [
+  {
+    id: 'product-copilot',
+    title: '产品副驾',
+    content: '你当前承担应用层产品副驾角色。优先关注产品意图、用户目标、体验取舍、边界情况、上线风险与下一步决策。回答要清晰、结构化、以判断和推进为主。',
+  },
+  {
+    id: 'frontend-crafter',
+    title: '前端工匠',
+    content: '你当前承担应用层前端工匠角色。优先关注交互细节、布局清晰度、视觉层级、响应式表现和可落地的界面实现建议。提出 UI 方案时要具体、有审美，不要泛泛而谈。',
+  },
+  {
+    id: 'delivery-driver',
+    title: '交付推进',
+    content: '你当前承担应用层交付推进角色。优先追求执行速度、解除阻塞、减少绕路、快速验证和务实落地。除非用户明确要求分析，否则优先给出直接可执行的下一步。',
+  },
+]
+
+function createEmptyPromptDraft() {
+  return {
+    id: '',
+    title: '',
+    content: '',
+  }
+}
+
+function clonePromptItem(item) {
+  return { ...item }
+}
+
+function normalizePromptItem(item) {
+  if (!item || typeof item !== 'object') return null
+  const title = String(item.title || '').trim()
+  const content = String(item.content || '').trim()
+  if (!title || !content) return null
+  return {
+    id: String(item.id || createPromptId()).trim(),
+    title,
+    content,
+  }
+}
+
+function createPromptId() {
+  return `prompt-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function getOrCreateRuntimeTabId() {
   let id = sessionStorage.getItem(RUNTIME_TAB_ID_KEY)
@@ -153,6 +165,7 @@ const state = reactive({
   connecting: true,
   lines: [],
   status: { phase: 'ready', streamedOutputTokens: 0 },
+  appPrompt: { hasActivePrompt: false, activePrompt: undefined },
   busy: false,
   queuedInput: undefined,
   backgroundTaskCount: 0,
@@ -160,14 +173,20 @@ const state = reactive({
   backgroundSessionRunCount: 0,
   runningSessionIds: [],
   session: undefined,
+  sessionsLoading: false,
+  sessionResumeLoading: false,
+  pendingResumeSessionId: '',
   catalog: { commands: [], modelIds: [], reasoning: [] },
   interactive: {},
-  tips: [],
-  tipIndex: 0,
   sessions: [],
   login: undefined,
   activePanel: 'chat',
   expandedTools: new Set(),
+  promptLibrary: [],
+  promptLibraryLoading: true,
+  promptManagerOpen: false,
+  selectedPromptId: '',
+  composerDropActive: false,
   attachments: [],
   attachmentCounter: 0,
   messageImagePreviews: [],
@@ -178,7 +197,6 @@ const state = reactive({
     inputTokens: { display: 0, target: 0, bump: 0, initialized: false },
     outputTokens: { display: 0, target: 0, bump: 0, initialized: false },
   },
-  featureTip: { visible: true, index: 0, reason: 'welcome', dismissed: false },
   toast: '',
 })
 
@@ -187,11 +205,12 @@ const composer = ref(null)
 const transcript = ref(null)
 const loginProvider = ref('')
 const loginValues = reactive({})
+const promptDraft = reactive(createEmptyPromptDraft())
+const draggingPromptId = ref('')
 let es
 let toastTimer
 let scrollRaf = 0
 let clockTimer
-let featureTipTimer
 let metricsRaf = 0
 let previousBackgroundTaskStatuses = new Map()
 const renderedLineCache = new Map()
@@ -199,7 +218,8 @@ const renderedLineCache = new Map()
 const phaseLabel = computed(() => phaseText(state.status?.phase))
 
 const active = computed(() => isActivePhase(state.status?.phase))
-const showTranscriptLoading = computed(() => active.value || state.busy)
+const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading)
+const transcriptLoadingLabel = computed(() => state.sessionResumeLoading ? '正在加载会话' : `正在${phaseLabel.value}`)
 const realSessionTitle = computed(() => {
   const title = state.session?.title?.trim() || ''
   return title && title !== 'neo' ? title : ''
@@ -218,23 +238,26 @@ const composerInputTokens = computed(() => compactNumber(state.composerMetrics.i
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
 const currentContextTokens = computed(() => Number(state.status?.metrics?.estimatedInputTokens ?? state.status?.usage?.inputTokens ?? 0))
 const showCompressionWarning = computed(() => currentContextTokens.value > CONTEXT_COMPRESSION_WARNING_TOKENS)
-const visibleTip = computed(() => LOCAL_TIPS[state.tipIndex % LOCAL_TIPS.length])
-const currentFeatureTip = computed(() => FEATURE_TIPS[state.featureTip.index % FEATURE_TIPS.length])
-const featureTipLabel = computed(() => FEATURE_TIP_REASONS[state.featureTip.reason] || FEATURE_TIP_REASONS.manual)
 const filteredSessions = computed(() => state.sessions || [])
-const activePanelLabel = computed(() => PANEL_LABELS[state.activePanel] || state.activePanel)
-const visibleLines = computed(() => (state.lines || []).filter((line) => !shouldHideLine(line)))
+const activePanelLabel = computed(() => ({
+  chat: '对话工作台',
+  sessions: '会话管理',
+  prompts: '提示词管理',
+  settings: '模型配置',
+}[state.activePanel] || state.activePanel))
+const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
+const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
+const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
+const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
 
 watch(realSessionTitle, (title) => {
-  document.title = title || 'neo runtime'
+  document.title = title || '对话工作台'
 }, { immediate: true })
 
 onMounted(async () => {
-  await fetchState()
+  await Promise.all([fetchState(), fetchPromptLibrary()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
-  showFeatureTip('workflow', 'welcome')
-  scheduleFeatureTip()
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -243,7 +266,6 @@ onBeforeUnmount(() => {
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
   if (clockTimer) clearInterval(clockTimer)
-  if (featureTipTimer) clearTimeout(featureTipTimer)
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -254,6 +276,21 @@ async function fetchState() {
     applySync(await res.json())
   } catch (error) {
     notify(`运行时不可用：${error.message || error}`)
+  }
+}
+
+async function fetchPromptLibrary() {
+  state.promptLibraryLoading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/prompt-library'))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `prompt-library ${res.status}`)
+    syncPromptLibrary(Array.isArray(body.items) ? body.items : DEFAULT_APP_PROMPT_LIBRARY)
+  } catch (error) {
+    syncPromptLibrary([])
+    notify(error.message || String(error))
+  } finally {
+    state.promptLibraryLoading = false
   }
 }
 
@@ -276,10 +313,6 @@ function connectEvents() {
 
 function applySync(payload) {
   const shouldFollow = isTranscriptNearBottom()
-  const oldBusy = state.busy
-  const oldQueuedInput = state.queuedInput
-  const oldSessionId = state.session?.sessionId || ''
-  const oldTaskStatuses = new Map(previousBackgroundTaskStatuses)
   state.lines = payload.lines || []
   syncLiveToolTimers(state.lines)
   state.status = payload.status || state.status
@@ -291,17 +324,192 @@ function applySync(payload) {
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
+  state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session)
+  if (state.sessionResumeLoading) {
+    const sessionId = payload.session?.sessionId || ''
+    if (state.pendingResumeSessionId && sessionId === state.pendingResumeSessionId) {
+      state.sessionResumeLoading = false
+      state.pendingResumeSessionId = ''
+    }
+  }
   if (payload.catalog) state.catalog = payload.catalog
   if (payload.interactive) state.interactive = payload.interactive
   if (payload.tips) state.tips = payload.tips
   if (payload.tipIndex !== undefined && state.tipIndex === 0) state.tipIndex = payload.tipIndex
   state.connected = true
   state.connecting = false
-  maybeTriggerFeatureTips({ oldBusy, oldQueuedInput, oldSessionId, oldTaskStatuses })
   previousBackgroundTaskStatuses = backgroundTaskStatusMap(state.backgroundTasks)
   pruneRenderedLineCache()
   if (shouldFollow) scheduleTranscriptScrollBottom()
+}
+
+function syncPromptLibrary(items, preferredId = state.selectedPromptId) {
+  const nextItems = (items || []).map(normalizePromptItem).filter(Boolean)
+  state.promptLibrary = nextItems
+  const current = nextItems.find((item) => item.id === preferredId) || nextItems[0] || null
+  state.selectedPromptId = current?.id || ''
+  syncPromptDraft(current || createEmptyPromptDraft())
+}
+
+function syncPromptDraft(item) {
+  promptDraft.id = item?.id || ''
+  promptDraft.title = item?.title || ''
+  promptDraft.content = item?.content || ''
+}
+
+function togglePromptManager() {
+  openPromptManager()
+}
+
+function openPromptManager(promptId) {
+  state.activePanel = 'prompts'
+  state.promptManagerOpen = true
+  if (promptId) state.selectedPromptId = promptId
+  const current = state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || createEmptyPromptDraft()
+  state.selectedPromptId = current.id || ''
+  syncPromptDraft(current)
+}
+
+function editPromptItem(item) {
+  state.selectedPromptId = item.id
+  openPromptManager(item.id)
+}
+
+function newPromptItem() {
+  state.selectedPromptId = ''
+  syncPromptDraft(createEmptyPromptDraft())
+  state.activePanel = 'prompts'
+  state.promptManagerOpen = true
+}
+
+function selectPromptItem(item) {
+  state.selectedPromptId = item.id
+  syncPromptDraft(item)
+}
+
+async function savePromptItem() {
+  const normalized = normalizePromptItem({
+    id: promptDraft.id || createPromptId(),
+    title: promptDraft.title,
+    content: promptDraft.content,
+  })
+  if (!normalized) {
+    notify('标题和内容不能为空')
+    return
+  }
+  try {
+    const result = await postJson('/api/prompt-library', { item: normalized })
+    syncPromptLibrary(result.items, normalized.id)
+  } catch (error) {
+    notify(error.message || String(error))
+    return
+  }
+  notify('已保存提示词')
+}
+
+async function deletePromptItem() {
+  const id = String(promptDraft.id || '').trim()
+  if (!id) {
+    syncPromptDraft(createEmptyPromptDraft())
+    return
+  }
+  if (!confirm('确定删除这个提示词吗？')) return
+  const removed = state.promptLibrary.find((item) => item.id === id)
+  if (!removed) return
+  try {
+    const result = await postJson('/api/prompt-library/delete', { id })
+    syncPromptLibrary(result.items)
+  } catch (error) {
+    notify(error.message || String(error))
+    return
+  }
+  if (activeAppPrompt.value?.id === removed.id) void clearAppPrompt()
+  notify('已删除提示词')
+}
+
+async function applyPromptItem(item) {
+  const normalized = normalizePromptItem(item)
+  if (!normalized) {
+    notify('提示词无效')
+    return
+  }
+  try {
+    const result = await postJson('/api/app-prompt', {
+      id: normalized.id,
+      title: normalized.title,
+      source: 'sidebar-library',
+      content: normalized.content,
+    })
+    if (result?.ok !== false) {
+      state.appPrompt = result.appPrompt || { hasActivePrompt: true, activePrompt: normalized }
+      notify(`已应用：${normalized.title}`)
+    }
+  } catch (error) {
+    const message = String(error?.message || error || '')
+    if (message.toLowerCase() === 'not found') {
+      notify('当前运行中的 runtime 还不支持提示词接口，请重启开发服务。')
+      return
+    }
+    notify(message || '应用提示词失败')
+  }
+}
+
+async function clearAppPrompt() {
+  try {
+    const result = await postJson('/api/app-prompt', { clear: true })
+    if (result?.ok !== false) {
+      state.appPrompt = result.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
+      notify('已清空应用提示词')
+    }
+  } catch (error) {
+    const message = String(error?.message || error || '')
+    if (message.toLowerCase() === 'not found') {
+      notify('当前运行中的 runtime 还不支持提示词接口，请重启开发服务。')
+      return
+    }
+    notify(message || '清空提示词失败')
+  }
+}
+
+function handlePromptDragStart(event, item) {
+  draggingPromptId.value = item.id
+  if (!event?.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData('application/x-neoctl-prompt-id', item.id)
+  event.dataTransfer.setData('text/plain', item.title)
+}
+
+function handleComposerDragOver(event) {
+  const types = Array.from(event?.dataTransfer?.types || [])
+  if (!types.includes('application/x-neoctl-prompt-id')) return
+  event.preventDefault()
+  state.composerDropActive = true
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function handleComposerDragLeave(event) {
+  if (event?.currentTarget && event?.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return
+  state.composerDropActive = false
+}
+
+async function handleComposerDrop(event) {
+  const promptId = event?.dataTransfer?.getData('application/x-neoctl-prompt-id') || draggingPromptId.value
+  state.composerDropActive = false
+  if (!promptId) return
+  event.preventDefault()
+  const item = state.promptLibrary.find((entry) => entry.id === promptId)
+  draggingPromptId.value = ''
+  if (!item) {
+    notify('未找到提示词')
+    return
+  }
+  await applyPromptItem(item)
+}
+
+function handlePromptDragEnd() {
+  draggingPromptId.value = ''
+  state.composerDropActive = false
 }
 
 async function submit() {
@@ -357,6 +565,7 @@ async function compressSession() {
 
 async function openSessions() {
   state.activePanel = 'sessions'
+  state.sessionsLoading = true
   try {
     const res = await fetch(runtimeUrl('/api/sessions'))
     const body = await res.json()
@@ -364,12 +573,20 @@ async function openSessions() {
     state.runningSessionIds = body.runningSessionIds || []
   } catch (error) {
     notify(error.message || String(error))
+  } finally {
+    state.sessionsLoading = false
   }
 }
 
 async function resumeSession(sessionId) {
+  state.pendingResumeSessionId = sessionId
+  state.sessionResumeLoading = true
+  state.activePanel = 'chat'
   const result = await postJson('/api/sessions/resume', { sessionId })
-  if (result?.ok !== false) state.activePanel = 'chat'
+  if (result?.ok === false) {
+    state.sessionResumeLoading = false
+    state.pendingResumeSessionId = ''
+  }
 }
 
 async function newSession() {
@@ -377,7 +594,6 @@ async function newSession() {
   if (result?.ok !== false) {
     state.activePanel = 'chat'
     notify('已创建新会话')
-    showFeatureTip('new-session', 'new_session')
   }
 }
 
@@ -412,19 +628,14 @@ async function saveLogin() {
 }
 
 async function postJson(url, body) {
-  try {
-    const res = await fetch(runtimeUrl(url), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const value = await res.json()
-    if (!res.ok || value?.error || value?.ok === false) throw new Error(value.error || `request ${res.status}`)
-    return value
-  } catch (error) {
-    notify(error.message || String(error))
-    return { ok: false, error: error.message || String(error) }
-  }
+  const res = await fetch(runtimeUrl(url), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const value = await res.json().catch(() => ({}))
+  if (!res.ok || value?.error || value?.ok === false) throw new Error(value.error || `request ${res.status}`)
+  return value
 }
 
 function toggleTool(lineId) {
@@ -433,10 +644,25 @@ function toggleTool(lineId) {
 }
 
 function lineText(line) {
-  const text = stripImageOperationHint(stripImageLabels(line.text || ''))
+  const baseText = stripImageOperationHint(stripImageLabels(line.text || ''))
+  const text = line.kind === 'system' || line.kind === 'meta' ? localizeSystemText(baseText) : baseText
   if (line.kind !== 'tool') return text
   if (state.expandedTools.has(line.id) || text.length <= TOOL_COLLAPSED_CHARS) return text
   return `${text.slice(0, TOOL_COLLAPSED_CHARS)}\n…`
+}
+
+function localizeSystemText(text) {
+  return String(text || '')
+    .replace(/^Interactive web UI enabled\.\s*Type \/help for commands\.\s*/i, '工作台已连接。输入 `/help` 可查看命令说明。')
+    .replace(/\bSession:\s*/gi, '会话：')
+    .replace(/\bTip:\s*/gi, '提示：')
+    .replace(/Start fresh/gi, '重新开始')
+    .replace(/\/reset clears the visible conversation and adds a reset marker so you can start a fresh thread in the same session\./gi, '`/reset` 会清空当前可见对话，并插入一个重置标记，方便你在同一会话中重新开始。')
+    .replace(/^new session\s+/i, '已新建会话：')
+    .replace(/^deleted session\s+/i, '已删除会话：')
+    .replace(/^resumed session\s+(.+?):\s+(\d+)\s+messages?\s+from\s+(.+)$/i, '已恢复会话：$1，共载入 $2 条消息，来源：$3')
+    .replace(/\((\d+)\s+resumed messages\)/gi, '（已恢复 $1 条消息）')
+    .replace(/\bType \/help for commands\./gi, '输入 `/help` 可查看命令说明。')
 }
 
 function lineTitle(line) {
@@ -537,72 +763,8 @@ function metricBumpClass(key) {
   return `bump-${state.composerMetrics[key].bump % 2}`
 }
 
-function pickFeatureTipIndex(id) {
-  if (id) {
-    const found = FEATURE_TIPS.findIndex((tip) => tip.id === id)
-    if (found >= 0) return found
-  }
-  if (FEATURE_TIPS.length <= 1) return 0
-  let next = Math.floor(Math.random() * FEATURE_TIPS.length)
-  if (next === state.featureTip.index) next = (next + 1) % FEATURE_TIPS.length
-  return next
-}
-
-function showFeatureTip(id, reason = 'manual') {
-  if (state.featureTip.dismissed) return
-  state.featureTip.index = pickFeatureTipIndex(id)
-  state.featureTip.reason = reason
-  state.featureTip.visible = true
-}
-
-function nextFeatureTip() {
-  showFeatureTip(undefined, 'manual')
-}
-
-function closeFeatureTips() {
-  state.featureTip.visible = false
-  state.featureTip.dismissed = true
-  if (featureTipTimer) clearTimeout(featureTipTimer)
-}
-
-function scheduleFeatureTip() {
-  if (state.featureTip.dismissed) return
-  if (featureTipTimer) clearTimeout(featureTipTimer)
-  const span = FEATURE_TIP_MAX_MS - FEATURE_TIP_MIN_MS
-  const delay = FEATURE_TIP_MIN_MS + Math.floor(Math.random() * span)
-  featureTipTimer = setTimeout(() => {
-    showFeatureTip(undefined, 'random')
-    scheduleFeatureTip()
-  }, delay)
-}
-
 function backgroundTaskStatusMap(tasks = []) {
   return new Map(tasks.map((task) => [String(task.taskId || task.agentId || task.description || task.type), task.status]))
-}
-
-function maybeTriggerFeatureTips({ oldBusy, oldQueuedInput, oldSessionId, oldTaskStatuses }) {
-  if (state.featureTip.dismissed) return
-  const newSessionId = state.session?.sessionId || ''
-  if (oldSessionId && newSessionId && oldSessionId !== newSessionId) {
-    showFeatureTip('new-session', 'new_session')
-    return
-  }
-  if (showCompressionWarning.value && currentFeatureTip.value?.id !== 'context-compress') {
-    showFeatureTip('context-compress', 'context')
-    return
-  }
-  if (!oldQueuedInput && state.queuedInput) {
-    showFeatureTip('queued-message', 'queued')
-    return
-  }
-  const completedBackgroundTask = state.backgroundTasks.some((task) => {
-    const id = String(task.taskId || task.agentId || task.description || task.type)
-    const before = oldTaskStatuses.get(id)
-    return before && before !== task.status && ['completed', 'failed', 'killed', 'stopped'].includes(task.status)
-  })
-  if ((oldBusy && !state.busy) || completedBackgroundTask) {
-    showFeatureTip('task-complete', 'task_complete')
-  }
 }
 
 function phaseText(phase = 'ready') {
@@ -851,7 +1013,6 @@ async function handlePaste(event) {
     state.attachments.push({ kind: 'image', label, mimeType: payload.mimeType, data: payload.data, previewUrl: payload.previewUrl, name: file.name || `图片 ${id}` })
   }
   notify(`已添加 ${files.length} 张图片附件`)
-  showFeatureTip('image-attachments', 'image')
 }
 
 function textWithAttachmentLabels(text, attachments) {
@@ -1134,13 +1295,37 @@ function linkify(value) {
   <div class="shell">
     <aside class="sidebar">
       <div class="brand-row logo-only">
-        <img class="mark" src="/favicon.svg" alt="neo runtime" />
+        <img class="mark" src="/favicon.svg" alt="工作台" />
       </div>
 
       <nav class="nav">
-        <button :class="{ active: state.activePanel === 'chat' }" @click="state.activePanel = 'chat'">⌁ 对话工作台</button>
-        <button :class="{ active: state.activePanel === 'sessions' }" @click="openSessions">◇ 会话管理</button>
-        <button :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">⚙ 模型配置</button>
+        <button :class="{ active: state.activePanel === 'chat' }" @click="state.activePanel = 'chat'">
+          <span class="nav-button-content">
+            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 5.5h12M4 10h7M4 14.5h9" />
+              <path d="M14.5 12.5 17 10l-2.5-2.5" />
+            </svg>
+            <span>对话工作台</span>
+          </span>
+        </button>
+        <button :class="{ active: state.activePanel === 'sessions' }" @click="openSessions">
+          <span class="nav-button-content">
+            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M5 4.5h10a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 15 15.5H8l-3.5 2v-3.5A1.5 1.5 0 0 1 3 12.5V6A1.5 1.5 0 0 1 4.5 4.5Z" />
+              <path d="M6.75 8h6.5M6.75 11h4.5" />
+            </svg>
+            <span>会话管理</span>
+          </span>
+        </button>
+        <button :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
+          <span class="nav-button-content">
+            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 3.5v2M10 14.5v2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M3.5 10h2M14.5 10h2M5.4 14.6l1.4-1.4M13.2 6.8l1.4-1.4" />
+              <circle cx="10" cy="10" r="2.75" />
+            </svg>
+            <span>模型配置</span>
+          </span>
+        </button>
       </nav>
 
       <button class="sidebar-card session-entry" type="button" @click="state.activePanel = 'chat'">
@@ -1149,27 +1334,67 @@ function linkify(value) {
         <div class="muted">{{ currentSessionId }}</div>
       </button>
 
-      <section :class="['sidebar-card purple feature-tip-card', { hidden: !state.featureTip.visible }]" aria-live="polite">
-        <template v-if="state.featureTip.visible">
-          <div class="tip-head">
-            <span>{{ featureTipLabel }}</span>
-            <button class="close-card" type="button" aria-label="关闭功能提示" @click="closeFeatureTips">×</button>
+      <section class="sidebar-card prompt-stack">
+        <div class="prompt-stack-head">
+          <div>
+            <div class="eyebrow">应用提示词</div>
+            <strong>卡片拖到对话框生效</strong>
           </div>
-          <strong>{{ currentFeatureTip.title }}</strong>
-          <p>{{ currentFeatureTip.body }}</p>
-          <button class="tip-next" type="button" @click="nextFeatureTip">换一条提示</button>
-        </template>
+          <button type="button" class="mini-button" @click="openPromptManager()">管理</button>
+        </div>
+
+        <div class="prompt-list">
+          <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
+          <div v-else-if="!state.promptLibrary.length" class="prompt-list-empty">暂无提示词</div>
+          <article
+            v-else
+            v-for="item in state.promptLibrary"
+            :key="item.id"
+            :class="['prompt-card', { active: activeAppPrompt?.id === item.id }]"
+            draggable="true"
+            @dragstart="handlePromptDragStart($event, item)"
+            @dragend="handlePromptDragEnd"
+            @dblclick="applyPromptItem(item)"
+          >
+            <div class="prompt-card-body">
+              <strong>{{ item.title }}</strong>
+            </div>
+            <div class="prompt-card-actions">
+              <button type="button" class="mini-button" @click="applyPromptItem(item)">应用</button>
+              <button type="button" class="mini-button" @click="editPromptItem(item)">编辑</button>
+            </div>
+          </article>
+        </div>
       </section>
 
       <div class="sidebar-footer">
-        <button @click="newSession">＋ 新建会话</button>
-        <button @click="interrupt">⌘ 中断任务</button>
+        <button @click="newSession">
+          <span class="nav-button-content">
+            <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 4.5v11M4.5 10h11" />
+            </svg>
+            <span>新建会话</span>
+          </span>
+        </button>
+        <button @click="interrupt">
+          <span class="nav-button-content">
+            <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <rect x="5.5" y="5.5" width="9" height="9" rx="1.75" />
+            </svg>
+            <span>中断任务</span>
+          </span>
+        </button>
       </div>
     </aside>
 
     <main class="workspace">
       <header class="topbar">
-        <div class="crumb"><span>⌘</span> 工作空间 / {{ activePanelLabel }}</div>
+        <div class="crumb">
+          <svg class="ui-icon crumb-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M4.5 6.5h4v4h-4zM11.5 6.5h4v4h-4zM8.5 8.5h3M10 5.5v9M8.5 11.5h3M4.5 13.5h4v4h-4zM11.5 13.5h4v4h-4z" />
+          </svg>
+          <span>工作空间 / {{ activePanelLabel }}</span>
+        </div>
         <div class="top-actions">
           <button class="ghost" @click="openLogin()">配置模型</button>
           <button class="primary" @click="newSession">+ 新建</button>
@@ -1180,7 +1405,11 @@ function linkify(value) {
         <div class="chat-panel">
           <div ref="transcript" class="transcript">
             <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live }]">
-              <div class="message-marker">{{ line.kind === 'tool' ? '◆' : line.kind === 'assistant' ? '●' : line.kind === 'user' ? '○' : '◇' }}</div>
+              <div :class="['message-marker', { spinning: line.live }]">
+                <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" transform="rotate(45 10 10)" />
+                </svg>
+              </div>
               <div class="message-body">
                 <div class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
@@ -1211,7 +1440,7 @@ function linkify(value) {
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-marker" aria-hidden="true"><span></span><span></span><span></span></div>
               <div class="message-loading-body">
-                <div class="message-loading-label">Neo 正在{{ phaseLabel }}</div>
+                <div class="message-loading-label">{{ transcriptLoadingLabel }}</div>
                 <div class="message-loading-track" aria-hidden="true"><span></span></div>
               </div>
             </div>
@@ -1222,7 +1451,19 @@ function linkify(value) {
             <button type="button" @click="retractQueuedInput">撤回</button>
           </div>
 
-          <form class="composer" @submit.prevent="submit">
+          <form
+            :class="['composer', { 'drop-active': state.composerDropActive }]"
+            @submit.prevent="submit"
+            @dragover="handleComposerDragOver"
+            @dragleave="handleComposerDragLeave"
+            @drop="handleComposerDrop"
+          >
+            <div class="composer-drop-hint">{{ state.composerDropActive ? '松开即可替换应用提示词' : '拖入这里即可替换应用提示词' }}</div>
+            <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
+              <span class="composer-app-prompt-label">当前提示词</span>
+              <strong>{{ activeAppPromptTitle }}</strong>
+              <button type="button" class="mini-button danger" @click="clearAppPrompt">清空</button>
+            </div>
             <div v-if="state.attachments.length" class="attachments image-attachments">
               <figure v-for="(item, index) in state.attachments" :key="item.label" class="image-attachment">
                 <img :src="item.previewUrl" :alt="item.name || `图片 ${index + 1}`" />
@@ -1230,7 +1471,7 @@ function linkify(value) {
                 <button type="button" aria-label="移除图片" @click="removeAttachment(item.label)">×</button>
               </figure>
             </div>
-            <textarea ref="composer" v-model="input" placeholder="让 Neo 帮你调研、规划、检查文件、调用工具，或继续一个工作流…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
+            <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
             <div class="composer-footer">
               <div class="composer-metrics" aria-label="运行状态指标">
                 <span class="metric-chip model-chip"><em>模型</em><strong>{{ modelName }}</strong></span>
@@ -1274,10 +1515,11 @@ function linkify(value) {
       <section v-else-if="state.activePanel === 'sessions'" class="content-grid single">
         <div class="panel-page">
           <div class="page-head">
-            <div><h2>会话管理</h2><p>恢复、删除或新建 Neo 会话。正在运行的会话可以重新接入。</p></div>
+            <div><h2>会话管理</h2><p>恢复、删除或新建会话。正在运行的会话可以重新接入。</p></div>
             <button class="primary" @click="newSession">+ 新建会话</button>
           </div>
-          <div v-if="!filteredSessions.length" class="empty-state">暂无已保存会话。</div>
+          <div v-if="state.sessionsLoading" class="empty-state">正在加载会话…</div>
+          <div v-else-if="!filteredSessions.length" class="empty-state">暂无已保存会话。</div>
           <div class="session-list">
             <article v-for="session in filteredSessions" :key="session.sessionId" class="session-card">
               <div>
@@ -1287,10 +1529,70 @@ function linkify(value) {
               </div>
               <div class="session-actions">
                 <span v-if="state.runningSessionIds.includes(session.sessionId)" class="live-pill">运行中</span>
-                <button @click="resumeSession(session.sessionId)">打开</button>
-                <button class="danger" @click="deleteSession(session.sessionId)">删除</button>
+                <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session.sessionId)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>
+                <button class="danger" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)">删除</button>
               </div>
             </article>
+          </div>
+        </div>
+      </section>
+
+      <section v-else-if="state.activePanel === 'prompts'" class="content-grid single">
+        <div class="panel-page prompt-page">
+          <div class="page-head">
+            <div><h2>提示词管理</h2><p>在这里编辑、整理和应用应用层提示词。</p></div>
+            <div class="page-head-actions">
+              <button class="ghost" @click="state.activePanel = 'chat'">回到对话</button>
+              <button class="primary" @click="newPromptItem">+ 新建提示词</button>
+            </div>
+          </div>
+          <div class="prompt-workbench">
+            <aside class="prompt-library-panel">
+              <div class="prompt-library-head">
+                <strong>提示词列表</strong>
+                <span>{{ state.promptLibrary.length }} 个</span>
+              </div>
+              <div class="prompt-library-list">
+                <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
+                <div v-else-if="!state.promptLibrary.length" class="prompt-list-empty">暂无提示词</div>
+                <button
+                  v-else
+                  v-for="item in state.promptLibrary"
+                  :key="item.id"
+                  :class="['prompt-library-item', { active: selectedPrompt?.id === item.id, applied: activeAppPrompt?.id === item.id }]"
+                  type="button"
+                  @click="selectPromptItem(item)"
+                  @dblclick="applyPromptItem(item)"
+                >
+                  <strong>{{ item.title }}</strong>
+                </button>
+              </div>
+            </aside>
+
+            <section class="prompt-editor-panel">
+              <div class="prompt-editor-toolbar">
+                <div class="prompt-editor-current">
+                  <span class="prompt-editor-kicker">编辑中</span>
+                  <strong>{{ promptDraft.title || '新提示词' }}</strong>
+                </div>
+                <div class="prompt-editor-toolbar-actions">
+                  <button class="mini-button" type="button" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)">应用</button>
+                  <button class="mini-button" type="button" @click="savePromptItem">保存</button>
+                  <button class="mini-button danger" type="button" :disabled="!promptDraft.id" @click="deletePromptItem">删除</button>
+                </div>
+              </div>
+
+              <div class="prompt-editor-grid">
+                <label class="prompt-editor-field">
+                  <span>名称</span>
+                  <input v-model="promptDraft.title" type="text" placeholder="例如：代码评审" />
+                </label>
+                <label class="prompt-editor-field prompt-editor-field-full">
+                  <span>提示词内容</span>
+                  <textarea v-model="promptDraft.content" rows="14" placeholder="这里填写应用层 system prompt 内容"></textarea>
+                </label>
+              </div>
+            </section>
           </div>
         </div>
       </section>
@@ -1298,7 +1600,7 @@ function linkify(value) {
       <section v-else-if="state.activePanel === 'settings'" class="content-grid single">
         <div class="panel-page">
           <div class="page-head">
-            <div><h2>模型配置</h2><p>配置与 neo web 相同的模型供应商参数，并保存到 Neo 环境配置中。</p></div>
+            <div><h2>模型配置</h2><p>配置当前工作台使用的模型供应商参数，并保存到本地环境配置中。</p></div>
             <button class="primary" @click="saveLogin" :disabled="!state.login">保存</button>
           </div>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
