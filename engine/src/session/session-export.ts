@@ -13,6 +13,7 @@ export interface SessionPromptExportSnapshot {
   systemPrompt?: string;
   baseSystemPrompt?: string;
   promptSections?: unknown;
+  appPrompt?: unknown;
   userContext?: unknown;
   systemContext?: unknown;
   userContextPrompt?: string;
@@ -192,6 +193,7 @@ function renderPromptSnapshot(lines: string[], snapshot: SessionPromptExportSnap
   }
 
   renderJsonSection(lines, "Prompt Sections", snapshot.promptSections);
+  renderJsonSection(lines, "App Prompt", snapshot.appPrompt);
   renderJsonSection(lines, "System Context", snapshot.systemContext);
   renderJsonSection(lines, "User Context", snapshot.userContext);
   renderJsonSection(lines, "Tool Definitions", snapshot.toolDefinitions);

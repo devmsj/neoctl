@@ -63,6 +63,7 @@ export * from "./types/messages.js";
 export * from "./types/events.js";
 export * from "./ui/display-message.js";
 export * from "./app/app-state.js";
+export * from "./app/app-prompt.js";
 export * from "./safety/audit.js";
 export * from "./safety/permissions.js";
 export * from "./safety/sandbox.js";

@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { QueryEngine } from "../core/query-engine.js";
+import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptStore } from "../app/app-prompt.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import { loadDefaultDotEnvFiles } from "../model/env.js";
 import { readModelProviderConfig, type ModelProviderName } from "../model/config.js";
@@ -44,6 +45,7 @@ const highlightThemeAssetPath = path.join(highlightPackageDir, "styles", "atom-o
 
 export interface WebRuntime {
   engine: QueryEngine;
+  appPromptStore: AppPromptStore;
   communicationLogger: CommunicationLogger;
   modelGateway: LoggingModelGateway;
   agentRuntime: AgentToolRuntime;
@@ -204,6 +206,14 @@ interface WebAttachmentPayload {
   data: string;
 }
 
+interface WebSetAppPromptPayload {
+  content?: string;
+  id?: string;
+  title?: string;
+  source?: string;
+  clear?: boolean;
+}
+
 interface WebBackgroundSessionRun {
   sessionId: string;
   title?: string;
@@ -270,6 +280,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   };
   for (const tool of createTaskTools(taskStore, resumeHandler)) tools.register(tool);
 
+  const appPromptStore = new InMemoryAppPromptStore();
   const engine = new QueryEngine({
     agentId: options.agentId ?? "main",
     model: modelConfig?.model,
@@ -278,6 +289,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     queryOrigin: "web",
     modelGateway,
     tools,
+    appPromptStore,
     taskNotificationSource: createTaskNotificationSource(taskStore),
     commands: replCommandDefinitions.map((command) => command.usage),
     session: {
@@ -292,6 +304,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const initialMetrics = await engine.contextMetrics();
   return {
     engine,
+    appPromptStore,
     communicationLogger,
     modelGateway,
     agentRuntime,
@@ -436,6 +449,7 @@ export class WebRepl {
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
+      appPrompt: this.runtime.engine.getAppPrompt(),
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
       tips: includeCatalog ? appTips : undefined,
@@ -542,6 +556,29 @@ export class WebRepl {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.append({ kind: "error", text: message });
+      return { ok: false, error: message };
+    }
+  }
+
+  appPrompt() {
+    return this.runtime.engine.getAppPrompt();
+  }
+
+  setAppPrompt(payload: WebSetAppPromptPayload): { ok: true; appPrompt: ReturnType<QueryEngine["getAppPrompt"]> } | { ok: false; error: string } {
+    try {
+      const shouldClear = payload.clear === true || !payload.content?.trim();
+      const appPrompt = shouldClear
+        ? this.runtime.engine.clearAppPrompt()
+        : this.runtime.engine.setAppPrompt({
+            content: payload.content ?? "",
+            id: payload.id,
+            title: payload.title,
+            source: payload.source,
+          } satisfies AppPromptInput);
+      this.broadcastSync();
+      return { ok: true, appPrompt };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: message };
     }
   }
@@ -1008,6 +1045,11 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
+    if (req.method === "GET" && url.pathname === "/api/app-prompt") return sendJson(res, repl.appPrompt());
+    if (req.method === "POST" && url.pathname === "/api/app-prompt") {
+      const body = await readJsonBody<WebSetAppPromptPayload>(req);
+      return sendJson(res, repl.setAppPrompt(body));
+    }
     if (req.method === "POST" && url.pathname === "/api/submit") {
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
       return sendJson(res, await repl.submit(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));

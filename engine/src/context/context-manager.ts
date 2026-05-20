@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import type { AppPromptStore } from "../app/app-prompt.js";
 import type { ToolUseContext } from "../tools/tool.js";
 import type { Message } from "../types/messages.js";
 import {
@@ -55,6 +56,11 @@ export interface DefaultContextManagerOptions {
   currentDate?: () => string;
 }
 
+export interface AppPromptContextManagerOptions {
+  sectionName?: string;
+  cacheStable?: boolean;
+}
+
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
   private userContextCache?: UserContext;
@@ -105,6 +111,33 @@ export class DefaultContextManager implements ContextManager {
 
 export class NoopContextManager extends DefaultContextManager {}
 
+export class AppPromptContextManager implements ContextManager {
+  constructor(
+    private readonly base: ContextManager,
+    private readonly appPromptStore: AppPromptStore,
+    private readonly options: AppPromptContextManagerOptions = {},
+  ) {}
+
+  async build(input: ContextBuildInput): Promise<RuntimeContext> {
+    const runtimeContext = await this.base.build(input);
+    const activePrompt = this.appPromptStore.getAppPrompt();
+    if (!activePrompt) return runtimeContext;
+    const promptSections = [
+      ...runtimeContext.promptSections,
+      {
+        name: this.options.sectionName ?? formatAppPromptSectionName(activePrompt.title),
+        cacheStable: this.options.cacheStable ?? false,
+        content: activePrompt.content,
+      },
+    ];
+    return {
+      ...runtimeContext,
+      promptSections,
+      systemPrompt: buildEffectiveSystemPrompt(promptSections, input),
+    };
+  }
+}
+
 const DEFAULT_MEMORY_FILE_NAMES = [
   "AGENTS.md",
   "CLAUDE.md",
@@ -151,4 +184,8 @@ function stripProjectMemory(context: UserContext): UserContext {
 function stripGitContext(context: SystemContext): SystemContext {
   const { git: _git, ...rest } = context;
   return rest;
+}
+
+function formatAppPromptSectionName(title: string | undefined): string {
+  return title ? `Application Prompt: ${title}` : "Application Prompt";
 }

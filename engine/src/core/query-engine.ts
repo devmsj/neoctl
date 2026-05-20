@@ -1,5 +1,6 @@
 import { InMemoryAppState } from "../app/app-state.js";
-import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
+import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
+import { AppPromptContextManager, DefaultContextManager, type ContextManager } from "../context/context-manager.js";
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
@@ -41,6 +42,7 @@ export interface QueryEngineOptions {
   skills?: readonly string[];
   plugins?: readonly string[];
   exportToolCalls?: (calls: Array<{ id: string; name: string; input: unknown }>) => void;
+  appPromptStore?: AppPromptStore;
   session?: {
     enabled?: boolean;
     sessionId?: string;
@@ -64,6 +66,8 @@ export class QueryEngine {
   private titleSchedulerVersion = 0;
   private titleAgentRun?: { version: number; controller: AbortController };
   private readonly sessionTitleListeners = new Set<(snapshot: SessionStoreSnapshot | undefined) => void>();
+  private readonly appPromptStore: AppPromptStore;
+  private readonly contextManager: ContextManager;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
@@ -71,6 +75,10 @@ export class QueryEngine {
     this.currentFallbackModel = options.fallbackModel;
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
     this.currentModelGateway = options.modelGateway;
+    this.appPromptStore = options.appPromptStore ?? new InMemoryAppPromptStore();
+    this.contextManager = options.contextManager
+      ? new AppPromptContextManager(options.contextManager, this.appPromptStore)
+      : new AppPromptContextManager(new DefaultContextManager(), this.appPromptStore);
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
@@ -80,6 +88,7 @@ export class QueryEngine {
       fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       modelGateway: this.currentModelGateway,
+      appPromptStore: this.appPromptStore,
       session: this.options.session
         ? { ...this.options.session, sessionId, resume }
         : undefined,
@@ -180,6 +189,7 @@ export class QueryEngine {
       this.history,
       {
         ...this.options,
+        contextManager: this.contextManager,
         modelGateway: this.currentModelGateway,
         taskNotificationSource: this.options.taskNotificationSource,
         toolResultMemory: this.sessionStore?.toolResultMemory,
@@ -219,6 +229,22 @@ export class QueryEngine {
       fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
     };
+  }
+
+  getAppPrompt(): AppPromptSnapshot {
+    return this.appPromptStore.snapshot();
+  }
+
+  setAppPrompt(prompt: AppPromptInput | null | undefined): AppPromptSnapshot {
+    const activePrompt = this.appPromptStore.setAppPrompt(prompt);
+    this.sessionStore?.recordAppPrompt(activePrompt ?? null);
+    return this.appPromptStore.snapshot();
+  }
+
+  clearAppPrompt(): AppPromptSnapshot {
+    this.appPromptStore.clearAppPrompt();
+    this.sessionStore?.recordAppPrompt(null);
+    return this.appPromptStore.snapshot();
   }
 
   reset(): void {
@@ -307,9 +333,8 @@ export class QueryEngine {
       },
       emit: () => undefined,
     };
-    const contextManager = this.options.contextManager ?? new DefaultContextManager();
     const initialToolDefinitions = this.options.tools.definitions(toolContext);
-    const context = await contextManager.build({
+    const context = await this.contextManager.build({
       agentId: this.agentId,
       messages,
       enabledTools: initialToolDefinitions.map((tool) => tool.name),
@@ -336,6 +361,7 @@ export class QueryEngine {
       agents: [...(this.options.agents ?? [])],
       skills: [...(this.options.skills ?? [])],
       plugins: [...(this.options.plugins ?? [])],
+      appPrompt: this.appPromptStore.getAppPrompt(),
     };
   }
 
@@ -380,6 +406,7 @@ export class QueryEngine {
     });
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
+    this.appPromptStore.setAppPrompt(this.sessionStore.getAppPrompt());
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 

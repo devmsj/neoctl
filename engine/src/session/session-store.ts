@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AppPromptValue } from "../app/app-prompt.js";
 import type { Message } from "../types/messages.js";
 import { getNeoctlHome } from "../paths.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
@@ -12,6 +13,7 @@ export type SessionTranscriptEntry =
   | { type: "message"; sessionId: string; agentId: string; message: Message }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
+  | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
   | { type: "compact"; sessionId: string; agentId: string; createdAt: string }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
@@ -58,6 +60,7 @@ export interface SessionStoreSnapshot {
   hasTitleRefinement: boolean;
   resumedMessages: number;
   contentReplacements: number;
+  appPrompt?: AppPromptValue;
 }
 
 export interface SessionTitleState {
@@ -79,6 +82,7 @@ export class SessionStore {
   private titleKind?: SessionTitleKind;
   private hasInitialTitle = false;
   private hasTitleRefinement = false;
+  private appPrompt?: AppPromptValue;
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
@@ -91,6 +95,7 @@ export class SessionStore {
     this.titleKind = loaded.titleKind;
     this.hasInitialTitle = loaded.hasInitialTitle;
     this.hasTitleRefinement = loaded.hasTitleRefinement;
+    this.appPrompt = loaded.appPrompt;
     this.toolResultMemory = new FileToolResultMemory(
       {
         sessionDir: this.sessionDir,
@@ -204,6 +209,21 @@ export class SessionStore {
     };
   }
 
+  getAppPrompt(): AppPromptValue | undefined {
+    return this.appPrompt ? cloneAppPrompt(this.appPrompt) : undefined;
+  }
+
+  recordAppPrompt(appPrompt: AppPromptValue | null | undefined): void {
+    this.appPrompt = appPrompt ? cloneAppPrompt(appPrompt) : undefined;
+    this.appendEntry({
+      type: "app-prompt",
+      sessionId: this.sessionId,
+      agentId: this.agentId,
+      createdAt: new Date().toISOString(),
+      ...(this.appPrompt ? { appPrompt: this.appPrompt } : {}),
+    });
+  }
+
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
     if (replacements.length === 0) return;
     this.contentReplacements.push(...replacements);
@@ -236,6 +256,7 @@ export class SessionStore {
       hasTitleRefinement: this.hasTitleRefinement,
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
+      ...(this.appPrompt ? { appPrompt: cloneAppPrompt(this.appPrompt) } : {}),
     };
   }
 
@@ -253,6 +274,7 @@ interface LoadedTranscript {
   titleKind?: SessionTitleKind;
   hasInitialTitle: boolean;
   hasTitleRefinement: boolean;
+  appPrompt?: AppPromptValue;
 }
 
 interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
@@ -307,6 +329,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
           }
         }
       }
+      if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
     } catch {
       // Skip malformed lines so a partial write does not make the session unusable.
     }
@@ -345,4 +368,8 @@ function normalizeTitle(title: string | undefined): string | undefined {
 function normalizeRequestedSessionId(sessionId: string | undefined): string | undefined {
   const normalized = sessionId?.trim();
   return normalized ? normalized : undefined;
+}
+
+function cloneAppPrompt(appPrompt: AppPromptValue): AppPromptValue {
+  return { ...appPrompt };
 }
