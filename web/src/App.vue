@@ -37,7 +37,8 @@ hljs.registerLanguage('diff', diff)
 
 const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
-const IMAGE_OPERATION_HINT = '系统提示：用户已附加图片。如果本次请求涉及图片编辑、修改、重绘、换背景、调整风格、修复、去除或局部改动，请调用 image2 工具并使用 mode=edit；默认使用已附加/最近的图片作为源图。图片操作可能较慢，请默认等待最多 10 分钟，不要因为耗时较长就过早放弃；除非工具返回错误或用户撤回/中断。'
+const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
+const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
 const LOCAL_TIPS = [
   '可以让 Neo 制定计划、查找资料、检查文件、运行工具或继续工作流。',
   '按 Ctrl/⌘ + K 可快速聚焦输入框。',
@@ -116,10 +117,21 @@ let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
 function getOrCreateRuntimeTabId() {
   let id = sessionStorage.getItem(RUNTIME_TAB_ID_KEY)
   if (!id) {
-    id = crypto.randomUUID()
+    id = randomRuntimeId()
     sessionStorage.setItem(RUNTIME_TAB_ID_KEY, id)
   }
   return id
+}
+
+function randomRuntimeId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0'))
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`
 }
 
 function runtimeUrl(url) {
@@ -187,6 +199,7 @@ const renderedLineCache = new Map()
 const phaseLabel = computed(() => phaseText(state.status?.phase))
 
 const active = computed(() => isActivePhase(state.status?.phase))
+const showTranscriptLoading = computed(() => active.value || state.busy)
 const realSessionTitle = computed(() => {
   const title = state.session?.title?.trim() || ''
   return title && title !== 'neo' ? title : ''
@@ -310,7 +323,7 @@ async function submit() {
     return
   }
   const attachments = [...state.attachments]
-  const submitText = textWithAttachmentLabels(textWithImageOperationHint(text, attachments), attachments)
+  const submitText = textWithAttachmentLabels(textWithImageToolHint(text, attachments), attachments)
   cacheMessageImagePreviews(attachments)
   input.value = ''
   state.attachments = []
@@ -847,13 +860,17 @@ function textWithAttachmentLabels(text, attachments) {
   return text.trim() ? `${text.trim()}\n\n${suffix}` : suffix
 }
 
-function textWithImageOperationHint(text, attachments) {
-  if (!attachments.some((attachment) => attachment.kind === 'image')) return text
-  if (!looksLikeImageOperationRequest(text)) return text
-  return [
-    text.trim(),
-    IMAGE_OPERATION_HINT,
-  ].filter(Boolean).join('\n\n')
+function textWithImageToolHint(text, attachments) {
+  const hints = []
+  if (looksLikeImageGenerationRequest(text)) hints.push(IMAGE_GENERATION_HINT)
+  if (attachments.some((attachment) => attachment.kind === 'image') && looksLikeImageOperationRequest(text)) hints.push(IMAGE_OPERATION_HINT)
+  if (!hints.length) return text
+  return [text.trim(), ...hints].filter(Boolean).join('\n\n')
+}
+
+function looksLikeImageGenerationRequest(text) {
+  const value = String(text || '').toLowerCase()
+  return /绘制|画一张|画个|生成图片|生成一张图|做一张图|出图|配图|插画|海报|封面|头像|draw|illustrate|generate (?:an? )?image|create (?:an? )?image|make (?:an? )?image|render|poster|cover art|concept art|portrait|mascot/.test(value)
 }
 
 function looksLikeImageOperationRequest(text) {
@@ -866,7 +883,7 @@ function stripImageLabels(text) {
 }
 
 function stripImageOperationHint(text) {
-  return String(text).replace(IMAGE_OPERATION_HINT, '').replace(/[ \t]{2,}/g, ' ').trim()
+  return String(text).replace(IMAGE_GENERATION_HINT, '').replace(IMAGE_OPERATION_HINT, '').replace(/[ \t]{2,}/g, ' ').trim()
 }
 
 function imageLabelsFromText(text) {
@@ -1191,6 +1208,13 @@ function linkify(value) {
                 </button>
               </div>
             </article>
+            <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
+              <div class="message-loading-marker" aria-hidden="true"><span></span><span></span><span></span></div>
+              <div class="message-loading-body">
+                <div class="message-loading-label">Neo 正在{{ phaseLabel }}</div>
+                <div class="message-loading-track" aria-hidden="true"><span></span></div>
+              </div>
+            </div>
           </div>
 
           <div v-if="state.queuedInput" class="queued">
