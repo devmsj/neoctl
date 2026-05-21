@@ -1,18 +1,14 @@
-import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { runWebServer } from 'neoctl/web/index.js';
+import { fileURLToPath } from 'node:url';
 
-const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
-const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
-const upstreamPort = Number(process.env.NEO_RUNTIME_UPSTREAM_PORT || runtimePort + 1);
-const appHost = process.env.VITE_HOST || '127.0.0.1';
-const appPort = String(process.env.VITE_PORT || 5173);
-const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
-
-process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
-process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
+const host = process.env.APP_HOST || '0.0.0.0';
+const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
+const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
+const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(__dirname, '.neoctl-web', 'prompt-library.json'));
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -32,43 +28,36 @@ const DEFAULT_APP_PROMPT_LIBRARY = [
   },
 ];
 
-await runWebServer(['--host', host, '--port', String(upstreamPort)]);
-await startPromptLibraryProxy();
-
-const childEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([key, value]) => typeof value === 'string' && key && !key.includes('='))
-);
-
-const command = `npm run dev:ui -- --host ${appHost} --port ${appPort}`;
-const vite = process.platform === 'win32'
-  ? spawn('cmd.exe', ['/d', '/s', '/c', command], { stdio: 'inherit', env: childEnv })
-  : spawn('sh', ['-c', command], { stdio: 'inherit', env: childEnv });
-
-const shutdown = () => {
-  if (!vite.killed) vite.kill('SIGTERM');
-  process.exit();
+const mime = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
 };
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-vite.on('exit', (code) => process.exit(code ?? 0));
-vite.on('error', (error) => {
-  console.error(error);
-  process.exit(1);
-});
-
-async function startPromptLibraryProxy() {
-  const server = http.createServer((req, res) => {
-    void routeRequest(req, res);
-  });
-  await new Promise((resolve) => server.listen(runtimePort, host, resolve));
-  const address = server.address();
-  const actualPort = typeof address === 'object' && address ? address.port : runtimePort;
-  console.log(`neo web bridge listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}`);
+function shouldProxy(pathname) {
+  return pathname === '/events' || pathname.startsWith('/api/') || pathname === '/api' || pathname.startsWith('/vendor/');
 }
 
+const server = http.createServer((req, res) => {
+  void routeRequest(req, res);
+});
+
+server.keepAliveTimeout = 70_000;
+server.headersTimeout = 75_000;
+server.listen(port, host, () => {
+  console.log(`maker web listening on http://${host}:${port}, dist=${root}, runtime=${runtimeTarget.href}`);
+});
+
 async function routeRequest(req, res) {
-  const url = new URL(req.url ?? '/', `http://${host}:${runtimePort}`);
+  const url = new URL(req.url || '/', 'http://localhost');
   try {
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });
@@ -93,14 +82,21 @@ async function routeRequest(req, res) {
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
     }
-    return proxyToRuntime(req, res, url);
+    if (shouldProxy(url.pathname)) {
+      return proxy(req, res);
+    }
+    return serveStatic(res, url);
   } catch (error) {
     sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
   }
 }
 
-async function proxyToRuntime(req, res, originalUrl) {
-  const target = new URL(originalUrl.pathname + originalUrl.search, `http://${host}:${upstreamPort}`);
+async function proxy(req, res) {
+  const target = new URL(req.url || '/', runtimeTarget);
+  target.protocol = runtimeTarget.protocol;
+  target.hostname = runtimeTarget.hostname;
+  target.port = runtimeTarget.port;
+
   const method = req.method || 'GET';
   const requestBody = method === 'GET' || method === 'HEAD' ? undefined : await readRequestBody(req);
   const requestHeaders = new Headers();
@@ -109,6 +105,7 @@ async function proxyToRuntime(req, res, originalUrl) {
     if (['host', 'content-length', 'connection'].includes(key.toLowerCase())) continue;
     requestHeaders.set(key, Array.isArray(value) ? value.join(', ') : value);
   }
+
   let upstream;
   try {
     upstream = await fetch(target, {
@@ -147,9 +144,37 @@ async function proxyToRuntime(req, res, originalUrl) {
   }
 }
 
+async function serveStatic(res, url) {
+  let pathname = decodeURIComponent(url.pathname);
+  if (pathname === '/') pathname = '/index.html';
+  let filePath = path.resolve(root, `.${pathname}`);
+  if (!filePath.startsWith(root + path.sep) && filePath !== root) {
+    res.writeHead(403);
+    res.end('forbidden');
+    return;
+  }
+  try {
+    const stat = await fsp.stat(filePath);
+    if (stat.isDirectory()) filePath = path.join(filePath, 'index.html');
+  } catch {
+    filePath = path.join(root, 'index.html');
+  }
+
+  try {
+    const body = await fsp.readFile(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const cache = filePath.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : 'no-store';
+    res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream', 'Cache-Control': cache });
+    res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  }
+}
+
 async function readPromptLibrary() {
   try {
-    const raw = await readFile(promptLibraryFile, 'utf8');
+    const raw = await fsp.readFile(promptLibraryFile, 'utf8');
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) throw new Error('prompt library file must contain an array');
     return parsed.map(normalizePromptItem).filter(Boolean);
@@ -162,8 +187,8 @@ async function readPromptLibrary() {
 }
 
 async function writePromptLibrary(items) {
-  await mkdir(path.dirname(promptLibraryFile), { recursive: true });
-  await writeFile(promptLibraryFile, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
+  await fsp.mkdir(path.dirname(promptLibraryFile), { recursive: true });
+  await fsp.writeFile(promptLibraryFile, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
 }
 
 function normalizePromptItem(item) {
