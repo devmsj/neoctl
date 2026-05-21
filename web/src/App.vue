@@ -39,6 +39,8 @@ const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
+const ATTACHMENT_MANIFEST_START = '<<ATTACHMENT_MANIFEST>>'
+const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
   chat: '对话工作台',
   sessions: '会话管理',
@@ -189,6 +191,7 @@ const state = reactive({
   composerDropActive: false,
   attachments: [],
   attachmentCounter: 0,
+  uploadingFiles: false,
   messageImagePreviews: [],
   liveToolStartedAt: {},
   clockTick: Date.now(),
@@ -202,6 +205,7 @@ const state = reactive({
 
 const input = ref('')
 const composer = ref(null)
+const fileInput = ref(null)
 const transcript = ref(null)
 const loginProvider = ref('')
 const loginValues = reactive({})
@@ -531,8 +535,13 @@ async function submit() {
     return
   }
   const attachments = [...state.attachments]
-  const submitText = textWithAttachmentLabels(textWithImageToolHint(text, attachments), attachments)
-  cacheMessageImagePreviews(attachments)
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
+  const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
+  const submitText = appendHiddenAttachmentManifest(
+    textWithAttachmentLabels(textWithImageToolHint(text, imageAttachments), imageAttachments),
+    fileAttachments
+  )
+  cacheMessageImagePreviews(imageAttachments)
   input.value = ''
   state.attachments = []
   autosize()
@@ -540,7 +549,7 @@ async function submit() {
     const res = await fetch(runtimeUrl('/api/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: submitText, attachments }),
+      body: JSON.stringify({ text: submitText, attachments: imageAttachments }),
     })
     const body = await res.json()
     if (!res.ok || body?.error) throw new Error(body.error || `submit ${res.status}`)
@@ -644,7 +653,7 @@ function toggleTool(lineId) {
 }
 
 function lineText(line) {
-  const baseText = stripImageOperationHint(stripImageLabels(line.text || ''))
+  const baseText = stripHiddenAttachmentManifest(stripImageOperationHint(stripImageLabels(line.text || '')))
   const text = line.kind === 'system' || line.kind === 'meta' ? localizeSystemText(baseText) : baseText
   if (line.kind !== 'tool') return text
   if (state.expandedTools.has(line.id) || text.length <= TOOL_COLLAPSED_CHARS) return text
@@ -1015,10 +1024,69 @@ async function handlePaste(event) {
   notify(`已添加 ${files.length} 张图片附件`)
 }
 
+function triggerFilePicker() {
+  fileInput.value?.click()
+}
+
+async function handleFileInputChange(event) {
+  const files = Array.from(event?.target?.files || [])
+  if (!files.length) return
+  await uploadFiles(files)
+  if (event?.target) event.target.value = ''
+}
+
+async function uploadFiles(files) {
+  state.uploadingFiles = true
+  try {
+    const uploaded = []
+    for (const file of files) {
+      const payload = await fileToBase64Payload(file)
+      const result = await postJson('/api/uploads', {
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        data: payload.data,
+      })
+      if (!result?.file?.absolutePath) throw new Error('upload response missing path')
+      uploaded.push({
+        kind: 'file',
+        label: `[file#${++state.attachmentCounter}]`,
+        name: result.file.name || file.name || `附件 ${state.attachmentCounter}`,
+        mimeType: result.file.mimeType || file.type || 'application/octet-stream',
+        size: Number(result.file.size || file.size || 0),
+        absolutePath: result.file.absolutePath,
+        relativePath: result.file.relativePath || '',
+      })
+    }
+    state.attachments.push(...uploaded)
+    notify(`已上传 ${uploaded.length} 个附件`)
+  } catch (error) {
+    notify(error.message || String(error))
+  } finally {
+    state.uploadingFiles = false
+  }
+}
+
 function textWithAttachmentLabels(text, attachments) {
   if (!attachments.length) return text
   const suffix = attachments.map((attachment) => attachment.label).join(' ')
   return text.trim() ? `${text.trim()}\n\n${suffix}` : suffix
+}
+
+function appendHiddenAttachmentManifest(text, attachments) {
+  if (!attachments.length) return text
+  const manifest = [
+    ATTACHMENT_MANIFEST_START,
+    'The user uploaded files for this turn. These paths are hidden from the UI.',
+    'Use local tools such as exec to inspect them when helpful.',
+    ...attachments.map((attachment, index) => [
+      `- file${index + 1}: ${attachment.name || `attachment-${index + 1}`}`,
+      `  path: ${attachment.absolutePath}`,
+      `  mimeType: ${attachment.mimeType || 'application/octet-stream'}`,
+      `  size: ${Number(attachment.size || 0)} bytes`,
+    ].join('\n')),
+    ATTACHMENT_MANIFEST_END,
+  ].join('\n')
+  return [text.trim(), manifest].filter(Boolean).join('\n\n')
 }
 
 function textWithImageToolHint(text, attachments) {
@@ -1045,6 +1113,14 @@ function stripImageLabels(text) {
 
 function stripImageOperationHint(text) {
   return String(text).replace(IMAGE_GENERATION_HINT, '').replace(IMAGE_OPERATION_HINT, '').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
+function stripHiddenAttachmentManifest(text) {
+  return String(text || '')
+    .replace(new RegExp(`${escapeRegExp(ATTACHMENT_MANIFEST_START)}[\\s\\S]*?${escapeRegExp(ATTACHMENT_MANIFEST_END)}`, 'g'), '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function imageLabelsFromText(text) {
@@ -1187,6 +1263,42 @@ function removeAttachment(label) {
   state.attachments = state.attachments.filter((attachment) => attachment.label !== label)
 }
 
+function fileAttachments() {
+  return state.attachments.filter((attachment) => attachment.kind === 'file')
+}
+
+function imageAttachments() {
+  return state.attachments.filter((attachment) => attachment.kind === 'image')
+}
+
+function fileAttachmentLabel(item, index) {
+  return item?.name || `附件 ${index + 1}`
+}
+
+function fileAttachmentMeta(item) {
+  return `${fileAttachmentType(item)} · ${formatBytes(item?.size)}`
+}
+
+function fileAttachmentType(item) {
+  const mimeType = String(item?.mimeType || '').toLowerCase()
+  if (!mimeType) return '文件'
+  if (mimeType.includes('pdf')) return 'PDF'
+  if (mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType.includes('csv')) return '表格'
+  if (mimeType.includes('word') || mimeType.includes('document')) return '文档'
+  if (mimeType.startsWith('text/')) return '文本'
+  if (mimeType.startsWith('image/')) return '图片'
+  return '文件'
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0)
+  if (!Number.isFinite(size) || size <= 0) return '0 B'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0).replace(/\.0$/, '')} KB`
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0).replace(/\.0$/, '')} MB`
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '')} GB`
+}
+
 function insertAtCursor(value) {
   const el = composer.value
   const start = el?.selectionStart || input.value.length
@@ -1199,14 +1311,24 @@ function insertAtCursor(value) {
 }
 
 async function fileToDataUrlPayload(file) {
-  const dataUrl = await new Promise((resolve, reject) => {
+  const dataUrl = await readFileAsDataUrl(file)
+  const comma = dataUrl.indexOf(',')
+  return { mimeType: file.type || 'image/png', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl, previewUrl: dataUrl }
+}
+
+async function fileToBase64Payload(file) {
+  const dataUrl = await readFileAsDataUrl(file)
+  const comma = dataUrl.indexOf(',')
+  return { mimeType: file.type || 'application/octet-stream', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl }
+}
+
+async function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result || ''))
     reader.onerror = () => reject(reader.error || new Error('read failed'))
     reader.readAsDataURL(file)
   })
-  const comma = dataUrl.indexOf(',')
-  return { mimeType: file.type || 'image/png', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl, previewUrl: dataUrl }
 }
 
 function autosize() {
@@ -1464,13 +1586,23 @@ function linkify(value) {
               <strong>{{ activeAppPromptTitle }}</strong>
               <button type="button" class="mini-button danger" @click="clearAppPrompt">清空</button>
             </div>
-            <div v-if="state.attachments.length" class="attachments image-attachments">
-              <figure v-for="(item, index) in state.attachments" :key="item.label" class="image-attachment">
+            <div v-if="fileAttachments().length" class="attachments file-attachments">
+              <figure v-for="(item, index) in fileAttachments()" :key="item.label" class="file-attachment">
+                <figcaption>
+                  <strong>{{ fileAttachmentLabel(item, index) }}</strong>
+                  <span>{{ fileAttachmentMeta(item) }}</span>
+                </figcaption>
+                <button type="button" aria-label="移除附件" @click="removeAttachment(item.label)">×</button>
+              </figure>
+            </div>
+            <div v-if="imageAttachments().length" class="attachments image-attachments">
+              <figure v-for="(item, index) in imageAttachments()" :key="item.label" class="image-attachment">
                 <img :src="item.previewUrl" :alt="item.name || `图片 ${index + 1}`" />
                 <figcaption>图片 {{ index + 1 }}</figcaption>
                 <button type="button" aria-label="移除图片" @click="removeAttachment(item.label)">×</button>
               </figure>
             </div>
+            <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
             <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
             <div class="composer-footer">
               <div class="composer-metrics" aria-label="运行状态指标">
@@ -1484,8 +1616,9 @@ function linkify(value) {
                 </span>
               </div>
               <div>
+                <button type="button" class="ghost" :disabled="state.uploadingFiles" @click="triggerFilePicker">{{ state.uploadingFiles ? '上传中…' : '上传附件' }}</button>
                 <button type="button" class="ghost" @click="interrupt">停止</button>
-                <button type="submit" class="primary" :disabled="!input.trim() && !state.attachments.length">发送 ↵</button>
+                <button type="submit" class="primary" :disabled="state.uploadingFiles || (!input.trim() && !state.attachments.length)">发送 ↵</button>
               </div>
             </div>
           </form>

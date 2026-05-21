@@ -10,6 +10,8 @@ const upstreamPort = Number(process.env.NEO_RUNTIME_UPSTREAM_PORT || runtimePort
 const appHost = process.env.VITE_HOST || '127.0.0.1';
 const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
+const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
+const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
@@ -92,6 +94,11 @@ async function routeRequest(req, res) {
       const nextItems = items.filter((entry) => entry.id !== id);
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/uploads') {
+      const body = await readJsonBody(req);
+      const file = await storeUploadedFile(body);
+      return sendJson(res, { ok: true, file });
     }
     return proxyToRuntime(req, res, url);
   } catch (error) {
@@ -184,6 +191,41 @@ function clonePromptItem(item) {
 
 function createPromptId() {
   return `prompt-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function storeUploadedFile(payload) {
+  const name = sanitizeUploadName(payload?.name);
+  if (!name) throw new Error('invalid upload name');
+  const data = String(payload?.data || '').trim();
+  if (!data) throw new Error('missing upload data');
+  const buffer = Buffer.from(data, 'base64');
+  if (!buffer.length) throw new Error('empty upload data');
+  if (buffer.length > maxUploadBytes) throw new Error(`upload too large: max ${maxUploadBytes} bytes`);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const random = Math.random().toString(36).slice(2, 8);
+  const storedName = `${stamp}-${random}-${name}`;
+  await mkdir(uploadsDir, { recursive: true });
+  const absolutePath = path.join(uploadsDir, storedName);
+  await writeFile(absolutePath, buffer);
+  return {
+    id: `upload-${random}`,
+    name,
+    storedName,
+    size: buffer.length,
+    mimeType: normalizeMimeType(payload?.mimeType),
+    absolutePath,
+    relativePath: path.relative(process.cwd(), absolutePath) || storedName,
+  };
+}
+
+function sanitizeUploadName(value) {
+  const base = path.basename(String(value || '').trim()).replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-');
+  return base.replace(/\s+/g, ' ').trim().slice(0, 180);
+}
+
+function normalizeMimeType(value) {
+  const mimeType = String(value || '').trim();
+  return mimeType || 'application/octet-stream';
 }
 
 async function readJsonBody(req) {
