@@ -1694,7 +1694,8 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
-  return { kind: "tool", title: toolTitle(toolUse.name, "running"), text: formatReplData(toolUse.input, 1200), previewStyle: "summary", collapsible: true };
+  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
+  return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: description, text: formatReplData(toolUse.input, 1200), previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
@@ -1704,11 +1705,18 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Partial<UiLine> {
   const inputText = formatReplData(toolUse.input, 1200);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: true, pendingReplacement: true, collapsible: true };
+  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
+  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), bodyTitle: description, titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: true, pendingReplacement: true, collapsible: true };
 }
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {
   return toolName;
+}
+
+function execDescriptionFromInput(input: unknown): string | undefined {
+  if (!isRecord(input)) return undefined;
+  const description = typeof input.description === "string" ? input.description.trim() : "";
+  return description || undefined;
 }
 
 interface PlanToolPayloadLike extends Record<string, unknown> {
@@ -1821,6 +1829,7 @@ function diffLineMarker(line: string): "+" | "-" | " " | undefined {
 
 interface ExecOutputLike extends Record<string, unknown> {
   command: string;
+  description?: string;
   exitCode?: number;
   signal?: string;
   durationMs: number;
@@ -1835,7 +1844,8 @@ function isExecOutput(value: unknown): value is ExecOutputLike {
 
 function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
   const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
-  const lines = ["exec result", `status: ${status}`, `duration: ${output.durationMs}ms`, `command: ${output.command}`];
+  const description = typeof output.description === "string" ? output.description.trim() : "";
+  const lines = ["exec result", ...(description ? [`purpose: ${description}`] : []), `status: ${status}`, `duration: ${output.durationMs}ms`, `command: ${output.command}`];
   const stdout = typeof output.stdout === "string" ? output.stdout.replace(/\s+$/u, "") : "";
   const stderr = typeof output.stderr === "string" ? output.stderr.replace(/\s+$/u, "") : "";
   if (stdout) lines.push("stdout:", stdout);

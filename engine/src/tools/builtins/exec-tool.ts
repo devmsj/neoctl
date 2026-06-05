@@ -22,6 +22,7 @@ export interface ExecToolInput {
 
 interface ExecOutput {
   command: string;
+  description?: string;
   cwd: string;
   shell: ExecShell;
   exitCode: number | null;
@@ -123,11 +124,12 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
       options.onProgress?.({
         toolName: "exec",
         message: `Running command${input.description ? `: ${input.description}` : ""}`,
-        data: { cwd, shell: resolvedShell.displayName, command: input.command },
+        data: { cwd, shell: resolvedShell.displayName, command: input.command, description: input.description },
       });
 
       const output = await runCommand({
         command: input.command,
+        description: input.description,
         cwd,
         timeoutMs: input.timeoutMs,
         maxOutputChars: input.maxOutputChars,
@@ -173,6 +175,7 @@ function launchBackgroundExec(
 
   void runCommand({
     command: input.command,
+    description: input.description,
     cwd,
     timeoutMs: input.timeoutMs,
     maxOutputChars: input.maxOutputChars,
@@ -225,6 +228,7 @@ interface ResolvedShell {
 
 interface RunCommandOptions {
   command: string;
+  description?: string;
   cwd: string;
   timeoutMs: number;
   maxOutputChars: number;
@@ -276,6 +280,7 @@ function runCommand(options: RunCommandOptions): Promise<ExecOutput> {
       options.abortSignal?.removeEventListener("abort", abort);
       resolve({
         command: options.command,
+        description: options.description,
         cwd: options.cwd,
         shell: options.shell.requested,
         exitCode,

@@ -3716,9 +3716,11 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
     };
   }
 
+  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
   return {
     kind: "tool",
     title: toolTitle(toolUse.name, "running"),
+    bodyTitle: description,
     text: formatJson(toolUse.input, 1200),
     previewStyle: "summary",
   };
@@ -3746,9 +3748,11 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 
 function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Omit<UiLine, "id"> {
   const inputText = formatJson(toolUse.input, 1200);
+  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
   return {
     kind: ok ? "tool" : "error",
     title: toolTitle(toolUse.name, "finished"),
+    bodyTitle: description,
     titleStatus: ok ? "success" : "failure",
     text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed",
     previewStyle: "summary",
@@ -3760,6 +3764,12 @@ function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): 
 function toolTitle(toolName: string, phase: "running" | "finished"): string {
   if (toolName === "plan") return `${phase === "running" ? "◇" : "◆"} plan`;
   return `${phase === "running" ? "◇" : "◆"} ${toolName}`;
+}
+
+function execDescriptionFromInput(input: unknown): string | undefined {
+  if (!isRecord(input)) return undefined;
+  const description = typeof input.description === "string" ? input.description.trim() : "";
+  return description || undefined;
 }
 
 interface PlanToolPayloadLike extends Record<string, unknown> {
@@ -4004,6 +4014,7 @@ function dimAnsi(line: string): string {
 
 interface ExecResultLike {
   command: string;
+  description?: string;
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
@@ -4031,8 +4042,10 @@ function formatExecToolResult(output: ExecResultLike, ok: boolean): string {
     : output.exitCode === 0
       ? "exit 0"
       : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
+  const description = typeof output.description === "string" ? output.description.trim() : "";
   const lines = [
     "exec result",
+    ...(description ? [`purpose: ${description}`] : []),
     `status: ${status}`,
     `duration: ${output.durationMs}ms`,
     `command: ${output.command}`,
