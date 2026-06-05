@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getNeoctlHome } from "../paths.js";
@@ -9,6 +10,33 @@ export interface PersistMessageImagesOptions {
 }
 
 type ImageBlock = Extract<MessageBlock, { type: "image" }>;
+type ImageStorageLike = { path: string; format?: string };
+
+export function resolveStoredImageDataSync(storage: ImageStorageLike | undefined): string | undefined {
+  if (!storage?.path) return undefined;
+  try {
+    return readFileSync(storage.path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveImageBlockDataSync(block: { data: string; storage?: ImageStorageLike }): string | undefined {
+  const inline = block.data.trim();
+  if (inline) return inline;
+  return resolveStoredImageDataSync(block.storage);
+}
+
+export function resolveImageBlockDataLengthSync(block: { data: string; storage?: ImageStorageLike }): number {
+  const inline = block.data.trim();
+  if (inline) return inline.length;
+  if (!block.storage?.path) return 0;
+  try {
+    return statSync(block.storage.path).size;
+  } catch {
+    return 0;
+  }
+}
 
 export async function persistMessageImages(blocks: readonly MessageBlock[], options: PersistMessageImagesOptions = {}): Promise<MessageBlock[]> {
   let changed = false;
@@ -39,6 +67,7 @@ async function persistImageBlock(block: ImageBlock, imageIndex: number, options:
   await fs.writeFile(filePath, block.data, "utf8");
   return {
     ...block,
+    data: "",
     storage: {
       path: filePath,
       format: block.data.trimStart().startsWith("data:") ? "data-url" : "base64",

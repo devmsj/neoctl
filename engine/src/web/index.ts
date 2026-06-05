@@ -35,6 +35,7 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import { WEB_HTML } from "./html.js";
 import { appTips, formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 import { openDirectory } from "../open-directory.js";
+import { resolveImageBlockDataSync } from "../core/image-storage.js";
 
 const require = createRequire(import.meta.url);
 const markedPackageDir = path.dirname(require.resolve("marked/package.json"));
@@ -1637,8 +1638,10 @@ function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, {
 }
 
 function imageBlockToDataUrl(block: Extract<MessageBlock, { type: "image" }>): string {
-  if (block.data.startsWith("data:")) return block.data;
-  return `data:${block.mimeType};base64,${block.data}`;
+  const data = resolveImageBlockDataSync(block);
+  if (!data) return "";
+  if (data.startsWith("data:")) return data;
+  return `data:${block.mimeType};base64,${data}`;
 }
 
 function assistantText(message: Message): string | undefined {

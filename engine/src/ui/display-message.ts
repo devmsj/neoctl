@@ -1,5 +1,6 @@
 import type { AgentEvent } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
+import { resolveImageBlockDataSync } from "../core/image-storage.js";
 
 export type DisplayImageMode = "data-url" | "metadata-only" | "omit";
 
@@ -81,8 +82,10 @@ export interface DisplayImageAttachment {
 }
 
 export function imageBlockToDataUrl(block: Extract<MessageBlock, { type: "image" }>): string {
-  if (block.data.startsWith("data:")) return block.data;
-  return `data:${block.mimeType};base64,${block.data}`;
+  const data = resolveImageBlockDataSync(block);
+  if (!data) return "";
+  if (data.startsWith("data:")) return data;
+  return `data:${block.mimeType};base64,${data}`;
 }
 
 export function toDisplayAgentEvent(event: AgentEvent, options: DisplayMessageOptions = {}): DisplayAgentEvent {
@@ -142,7 +145,7 @@ export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image"
     type: "image",
     label: block.label,
     mimeType: block.mimeType,
-    sizeBytes: estimateBase64DecodedBytes(normalizeBase64ImageData(block.data)),
+    sizeBytes: estimateBase64DecodedBytes(normalizeBase64ImageData(resolveImageBlockDataSync(block) ?? "")),
     storagePath: block.storage?.path,
   };
 

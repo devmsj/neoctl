@@ -416,19 +416,26 @@ function resolveReferencedImages(messages: readonly Message[] | undefined, refs:
 }
 
 function findReferencedImage(images: readonly ResolvedEditImage[], ref: string): ResolvedEditImage | undefined {
-  const normalizedRef = normalizeImageRef(ref);
+  const normalizedRef = canonicalizeImageRef(ref);
   if (!normalizedRef) return undefined;
 
   // Labels can repeat across user turns (for example every tab/paste cycle can reuse [img#1]).
   // Prefer the most recent matching label/filename so edits target the image the user likely means.
   for (let i = images.length - 1; i >= 0; i -= 1) {
     const image = images[i];
-    if (normalizeImageRef(image.label ?? "") === normalizedRef) return image;
-    if (normalizeImageRef(image.filename) === normalizedRef) return image;
+    if (canonicalizeImageRef(image.label ?? "") === normalizedRef) return image;
+    if (canonicalizeImageRef(image.filename) === normalizedRef) return image;
   }
 
   const numericRef = parseImageRefNumber(normalizedRef);
-  if (numericRef !== undefined) return images[numericRef - 1];
+  if (numericRef !== undefined) {
+    for (let i = images.length - 1; i >= 0; i -= 1) {
+      const image = images[i];
+      if (parseImageRefNumber(canonicalizeImageRef(image.label ?? "")) === numericRef) return image;
+      if (parseImageRefNumber(canonicalizeImageRef(stripFileExtension(image.filename))) === numericRef) return image;
+    }
+    return images[numericRef - 1];
+  }
   return undefined;
 }
 
@@ -517,6 +524,18 @@ function parseImageRefNumber(normalizedRef: string): number | undefined {
   if (!match) return undefined;
   const value = Number(match[1]);
   return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function canonicalizeImageRef(value: string): string {
+  const normalized = normalizeImageRef(value).replace(/[。？！?!]+$/gu, "");
+  if (!normalized || /[./\\]/u.test(normalized)) return normalized;
+
+  const numericRef = parseImageRefNumber(normalized);
+  return numericRef !== undefined ? `[img#${numericRef}]` : normalized;
+}
+
+function stripFileExtension(filename: string): string {
+  return filename.replace(/\.[^.]+$/u, "");
 }
 
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {

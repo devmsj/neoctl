@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
 import type { SessionStoreSnapshot, SessionTranscriptEntry } from "./session-store.js";
+import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
 
 const DEFAULT_MAX_TOOL_RESULT_LINES = 500;
 
@@ -312,7 +313,7 @@ async function renderMessageBlock(lines: string[], block: MessageBlock, index: n
   if (block.type === "image") {
     lines.push(`- MIME type: ${block.mimeType}`);
     if (block.label) lines.push(`- Label: ${block.label}`);
-    lines.push(`- Data bytes (base64 chars): ${block.data.length}`);
+    lines.push(`- Data bytes (base64 chars): ${resolveImageBlockDataLengthSync(block)}`);
     lines.push("- Data omitted from markdown body for readability.");
     lines.push("");
   }

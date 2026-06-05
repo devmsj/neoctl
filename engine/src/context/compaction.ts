@@ -2,6 +2,7 @@ import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
 import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, formatImageRegistryForContext, type ImageRegistry } from "../core/image-registry.js";
+import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
 
 export interface ContextBudgetOptions {
   snipMaxChars?: number;
@@ -711,7 +712,7 @@ function serializeMessageForSummary(message: Message): string {
 function serializeBlock(block: MessageBlock): string {
   if (block.type === "text") return block.text;
   if (block.type === "image") {
-    const estimatedBytes = Math.floor(block.data.length * 0.75);
+    const estimatedBytes = Math.floor(resolveImageBlockDataLengthSync(block) * 0.75);
     const tiles = Math.max(1, Math.ceil(estimatedBytes / 200_000));
     const estimatedTokenEquivalentChars = tiles * 85 * 4;
     return `${"x".repeat(estimatedTokenEquivalentChars)}`;

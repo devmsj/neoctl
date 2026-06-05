@@ -260,6 +260,84 @@ async function main(): Promise<void> {
   const imageToolPrompt = JSON.stringify({ name: imageTool.name, description: imageTool.description, schema: imageTool.inputSchema });
   const imageDefaultValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke" }, context) ?? { prompt: "smoke" }, context);
   const imageLegacyModelValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke", model: "gpt-image-1" }, context) ?? { prompt: "smoke", model: "gpt-image-1" }, context);
+  const imageEditSmokeMessages: Message[] = [
+    {
+      id: "image-old",
+      role: "assistant",
+      createdAt: new Date(0).toISOString(),
+      blocks: [{
+        type: "image",
+        mimeType: "image/png",
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+        label: "[img#10]",
+      }],
+    },
+    {
+      id: "image-new",
+      role: "assistant",
+      createdAt: new Date(1).toISOString(),
+      blocks: [{
+        type: "image",
+        mimeType: "image/png",
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+        label: "[img#10]",
+      }],
+    },
+  ];
+  const imageEditContext: ToolUseContext = { ...context, messages: imageEditSmokeMessages };
+  const imageEditTool = createOpenAIImageGenerationTool({ apiKey: "test-key", baseUrl: "https://example.test" });
+  const originalFetch = globalThis.fetch;
+  const seenImageFilenames: string[] = [];
+  let imageEditRefOutput:
+    | {
+      imageRefs?: string[];
+      sourceImages?: number;
+    }
+    | undefined;
+  let imageEditNumberOutput:
+    | {
+      imageRefs?: string[];
+      sourceImages?: number;
+    }
+    | undefined;
+  globalThis.fetch = async (_input, init) => {
+    const body = init?.body;
+    if (!(body instanceof FormData)) throw new Error("Expected image edit request to use FormData");
+    const files = body.getAll("image[]");
+    seenImageFilenames.splice(0, seenImageFilenames.length, ...files.map((file) => file instanceof File ? file.name : String(file)));
+    return new Response(JSON.stringify({
+      data: [{
+        b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+      }],
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const imageEditRefResult = await imageEditTool.call?.({
+      mode: "edit",
+      prompt: "smoke edit",
+      imageRefs: ["img#10"],
+      useLatestImage: false,
+    }, imageEditContext, {});
+    imageEditRefOutput = imageEditRefResult?.output as {
+      imageRefs?: string[];
+      sourceImages?: number;
+    } | undefined;
+    const imageEditNumberResult = await imageEditTool.call?.({
+      mode: "edit",
+      prompt: "smoke edit",
+      imageRefs: ["10"],
+      useLatestImage: false,
+    }, imageEditContext, {});
+    imageEditNumberOutput = imageEditNumberResult?.output as {
+      imageRefs?: string[];
+      sourceImages?: number;
+    } | undefined;
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   const planOutput = toolOutput(plan[plan.length - 1]) as {
     summary?: string;
     completed?: number;
@@ -303,6 +381,13 @@ async function main(): Promise<void> {
     image2OnlyToolName: imageTool.name === "image2" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
     image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
     image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
+    image2EditAcceptsBareImgRef:
+      imageEditRefOutput?.sourceImages === 1 &&
+      imageEditRefOutput.imageRefs?.[0] === "[img#10]" &&
+      seenImageFilenames[0] === "image-2.png",
+    image2EditNumericFallbackPrefersLatestMatchingLabel:
+      imageEditNumberOutput?.sourceImages === 1 &&
+      imageEditNumberOutput.imageRefs?.[0] === "[img#10]",
     planOk:
       toolOk(plan[plan.length - 1]) &&
       planOutput.summary === "1/3 completed" &&

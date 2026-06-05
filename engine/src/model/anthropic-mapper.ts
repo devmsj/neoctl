@@ -5,6 +5,7 @@ import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./
 import type { ModelRequest, ModelStreamEvent, ModelUsage, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import { asNumber, asString, dropUndefined } from "./openai-mappers.js";
+import { resolveImageBlockDataSync } from "../core/image-storage.js";
 
 export interface AnthropicMapperOptions {
   model: string;
@@ -327,9 +328,9 @@ function anthropicUserContentFromBlocks(blocks: readonly MessageBlock[]): unknow
   return content;
 }
 
-function anthropicImageBlock(block: { mimeType: string; data: string }): Record<string, unknown> | undefined {
+function anthropicImageBlock(block: { mimeType: string; data: string; storage?: { path: string; format: string } }): Record<string, unknown> | undefined {
   const mediaType = block.mimeType.trim();
-  const base64 = base64Data(block.data);
+  const base64 = base64Data(resolveImageBlockDataSync(block) ?? "");
   if (!mediaType || !base64) return undefined;
   return {
     type: "image",

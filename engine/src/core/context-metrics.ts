@@ -2,6 +2,7 @@ import type { ToolDefinition } from "../tools/tool.js";
 import type { ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
+import { resolveImageBlockDataLengthSync } from "./image-storage.js";
 
 let _encode: ((text: string) => number[]) | undefined;
 let _encoderLoadFailed = false;
@@ -156,7 +157,7 @@ function estimateImageTokens(base64Length: number): number {
 function serializeBlockForMetrics(block: MessageBlock): string {
   if (block.type === "text") return block.text;
   if (block.type === "image") {
-    const imageTokens = estimateImageTokens(block.data.length);
+    const imageTokens = estimateImageTokens(resolveImageBlockDataLengthSync(block));
     return `${"x".repeat(imageTokens * 4)}`;
   }
   if (block.type === "thinking") return block.text;

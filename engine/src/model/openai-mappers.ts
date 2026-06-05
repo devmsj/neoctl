@@ -2,6 +2,7 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import type { ToolDefinition } from "../tools/tool.js";
 import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
+import { resolveImageBlockDataSync } from "../core/image-storage.js";
 
 export interface ToolBuffer {
   callId: string;
@@ -226,7 +227,8 @@ function responsesInputContentFromBlocks(blocks: readonly MessageBlock[]): Recor
   for (const block of blocks) {
     if (block.type === "text" && block.text) content.push({ type: "input_text", text: block.text });
     if (block.type === "image") {
-      content.push({ type: "input_image", image_url: imageDataUrl(block) });
+      const imageUrl = imageDataUrl(block);
+      if (imageUrl) content.push({ type: "input_image", image_url: imageUrl });
       const storageText = imageStorageText(block);
       if (storageText) content.push({ type: "input_text", text: storageText });
     }
@@ -239,7 +241,8 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
   for (const block of blocks) {
     if (block.type === "text" && block.text) content.push({ type: "text", text: block.text });
     if (block.type === "image") {
-      content.push({ type: "image_url", image_url: { url: imageDataUrl(block) } });
+      const imageUrl = imageDataUrl(block);
+      if (imageUrl) content.push({ type: "image_url", image_url: { url: imageUrl } });
       const storageText = imageStorageText(block);
       if (storageText) content.push({ type: "text", text: storageText });
     }
@@ -254,9 +257,11 @@ function imageStorageText(block: { label?: string; storage?: { path: string; for
   return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.`;
 }
 
-function imageDataUrl(block: { mimeType: string; data: string }): string {
-  if (block.data.startsWith("data:")) return block.data;
-  return `data:${block.mimeType};base64,${block.data}`;
+function imageDataUrl(block: { mimeType: string; data: string; storage?: { path: string; format: string } }): string {
+  const data = resolveImageBlockDataSync(block);
+  if (!data) return "";
+  if (data.startsWith("data:")) return data;
+  return `data:${block.mimeType};base64,${data}`;
 }
 
 function toResponsesFunctionCall(block: { type: "tool_use"; id: string; name: string; input: unknown }): Record<string, unknown> {

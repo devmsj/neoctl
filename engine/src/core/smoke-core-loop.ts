@@ -4,6 +4,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolResult } from "../tools/tool.js";
 import { createTextMessage, type MessageBlock } from "../types/messages.js";
 import { stripLeakedReasoningText } from "./assistant-output-filter.js";
+import { imageBlockToDataUrl } from "../ui/display-message.js";
 
 const neverSettlingToolStarted: { value: boolean } = { value: false };
 
@@ -118,6 +119,14 @@ async function main(): Promise<void> {
   for await (const _event of imageEngine.sendUserText("look [img#1]", { blocks: imageBlocks })) {
     // drain first turn so the image remains in history
   }
+  const firstImageRequest = imageGateway.requests[0];
+  const storedImageBlock = firstImageRequest?.messages
+    .flatMap((message) => message.blocks)
+    .find((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image");
+  const storedImageCompacted =
+    storedImageBlock?.data === "" &&
+    typeof storedImageBlock.storage?.path === "string" &&
+    imageBlockToDataUrl(storedImageBlock) === "data:image/png;base64,ZmFrZQ==";
   imageEngine.setModel("deepseek-chat");
   const downgradeEvents: string[] = [];
   for await (const event of imageEngine.sendUserText("continue")) {
@@ -143,8 +152,9 @@ async function main(): Promise<void> {
     sanitized === "目录内容：\n- `package-lock.json`" &&
     snapshot.messages >= 3 &&
     abortDuringToolsOk &&
+    storedImageCompacted &&
     historyImageDowngraded;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, downgradeEvents, historyImageDowngraded }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, storedImageCompacted, downgradeEvents, historyImageDowngraded }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
