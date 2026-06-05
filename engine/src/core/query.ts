@@ -12,11 +12,10 @@ import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, createThinkingMessage, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import {
-  appendSystemContext,
   applyToolResultBudget,
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
-  prependUserContext,
+  insertRuntimeContextBeforeLatestUser,
 } from "./message-pipeline.js";
 import {
   createInitialState,
@@ -27,6 +26,7 @@ import {
 } from "./state.js";
 import { AssistantOutputFilter } from "./assistant-output-filter.js";
 import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
+import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 
 export interface QueryOptions {
   agentId: string;
@@ -141,7 +141,7 @@ async function* queryLoop(
       toolUseContext: toolContext,
     });
     const toolDefinitions = dependencies.tools.definitions(toolContext);
-    const systemPrompt = appendSystemContext(context.systemPrompt, context.systemContext);
+    const systemPrompt = context.systemPrompt;
     const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
       model: state.currentModel ?? options.model,
       systemPrompt,
@@ -227,13 +227,20 @@ async function prepareMessagesForQuery(
   const pairedBudgeted = ensureToolResultPairing(budgeted);
 
   const staticTokens = computeStaticTokens(telemetry.systemPrompt, telemetry.toolDefinitions);
+  const pairedBudgetedWithRuntimeContext = insertRuntimeContextBeforeLatestUser(pairedBudgeted, context.userContext, context.systemContext);
 
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,
-    messages: prependUserContext(pairedBudgeted, context.userContext),
+    messages: pairedBudgetedWithRuntimeContext,
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
     cachedToolsAndPromptTokens: staticTokens,
+    cacheDiagnostics: buildPromptCacheDiagnostics({
+      systemPrompt: telemetry.systemPrompt,
+      promptSections: context.promptSections,
+      tools: telemetry.toolDefinitions,
+      messages: pairedBudgetedWithRuntimeContext,
+    }),
   });
   const compaction = await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
@@ -241,13 +248,19 @@ async function prepareMessagesForQuery(
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
   });
   const compactedMessages = ensureToolResultPairing(compaction.messages);
-  const messagesForQuery = prependUserContext(compactedMessages, context.userContext);
+  const messagesForQuery = insertRuntimeContextBeforeLatestUser(compactedMessages, context.userContext, context.systemContext);
   const metrics = buildContextMetrics({
     model: telemetry.model,
     messages: messagesForQuery,
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
     cachedToolsAndPromptTokens: staticTokens,
+    cacheDiagnostics: buildPromptCacheDiagnostics({
+      systemPrompt: telemetry.systemPrompt,
+      promptSections: context.promptSections,
+      tools: telemetry.toolDefinitions,
+      messages: messagesForQuery,
+    }),
   });
   return {
     messagesForQuery,

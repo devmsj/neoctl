@@ -2,6 +2,24 @@ import type { TerminalReason } from "../core/state.js";
 import type { ModelUsage } from "../model/model-gateway.js";
 import type { Message, ToolUseRequest } from "./messages.js";
 
+export interface PromptCacheSectionMetric {
+  name: string;
+  cacheStable: boolean;
+  estimatedTokens: number;
+  chars: number;
+  hash: string;
+}
+
+export interface PromptCacheDiagnostics {
+  systemPromptHash: string;
+  toolDefinitionsHash: string;
+  messagePrefixHash: string;
+  promptSections: PromptCacheSectionMetric[];
+  stablePromptTokens: number;
+  dynamicPromptTokens: number;
+  toolDefinitionTokens: number;
+}
+
 export interface ContextMetrics {
   model?: string;
   estimatedInputTokens: number;
@@ -11,6 +29,7 @@ export interface ContextMetrics {
   contextWindowTokens?: number;
   contextWindowSource: "env" | "known" | "unknown";
   contextUsageRatio?: number;
+  cacheDiagnostics?: PromptCacheDiagnostics;
   modelMetadata?: {
     id: string;
     provider: string;

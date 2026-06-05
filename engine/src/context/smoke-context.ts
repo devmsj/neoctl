@@ -1,7 +1,7 @@
 import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
-import { applyToolResultBudget, appendSystemContext, ensureToolResultPairing, hasValidToolResultPairing, prependUserContext } from "../core/message-pipeline.js";
+import { applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing, insertRuntimeContextBeforeLatestUser } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createToolResultMessage } from "../types/messages.js";
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
@@ -17,7 +17,7 @@ class ContextOverflowThenSuccessGateway implements ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     this.calls += 1;
     this.sawUserContext ||= request.messages.some((message) => message.metadata?.userContext === true);
-    this.sawSystemContext ||= Boolean(request.systemPrompt?.includes("## System Context"));
+    this.sawSystemContext ||= request.messages.some((message) => message.metadata?.systemContext === true);
 
     if (this.calls === 1) {
       throw new ModelAPIError({
@@ -58,11 +58,13 @@ async function main(): Promise<void> {
 
   const contextManager = new DefaultContextManager({ currentDate: () => "2026-05-05" });
   const runtime = await contextManager.build({ agentId: "main", messages: [createTextMessage("user", "hello")] });
+  const runtimeContextMessages = insertRuntimeContextBeforeLatestUser([], runtime.userContext, runtime.systemContext);
   const contextOk =
     runtime.userContext.currentDate === "2026-05-05" &&
     Boolean(runtime.systemContext.cwd) &&
-    appendSystemContext(runtime.systemPrompt, runtime.systemContext).includes("## System Context") &&
-    prependUserContext([], runtime.userContext)[0]?.metadata?.userContext === true;
+    !runtime.systemPrompt.includes("## System Context") &&
+    runtimeContextMessages[0]?.metadata?.userContext === true &&
+    runtimeContextMessages[0]?.metadata?.systemContext === true;
 
   const toolResult = createToolResultMessage({ id: "call_big", name: "big", input: {} }, true, "x".repeat(120));
   const budgeted = applyToolResultBudget([toolResult], { maxSerializedLength: 20 });
@@ -158,8 +160,16 @@ async function main(): Promise<void> {
   });
 
   const events: string[] = [];
+  let telemetryOk = false;
   for await (const event of engine.sendUserText("trigger reactive compact")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+    if (event.type === "context.metrics") {
+      telemetryOk ||= Boolean(
+        event.metrics.cacheDiagnostics?.systemPromptHash &&
+        event.metrics.cacheDiagnostics.toolDefinitionsHash &&
+        event.metrics.cacheDiagnostics.promptSections.length > 0,
+      );
+    }
   }
 
   const reactiveOk =
@@ -169,8 +179,8 @@ async function main(): Promise<void> {
     gateway.sawSystemContext &&
     events.includes("terminal:completed");
 
-  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && reactiveOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, reactiveOk, events, calls: gateway.calls }, null, 2));
+  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && reactiveOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, reactiveOk, telemetryOk, events, calls: gateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

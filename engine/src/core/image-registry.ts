@@ -92,9 +92,9 @@ export function formatImageRegistryForContext(registry: ImageRegistry): string {
   if (registry.images.length === 0) return "";
   const lines = registry.images.map((entry) => {
     const label = entry.label ? `"${entry.label}"` : `unlabeled`;
-    const origin = entry.origin !== "unknown" ? ` (${entry.origin})` : "";
-    const path = entry.storagePath ? ` [stored: ${entry.storagePath}]` : " [no storage]";
-    return `- ${entry.id}: ${label}, ${entry.mimeType}${origin}${path}`;
+    const origin = entry.origin !== "unknown" ? `, origin=${entry.origin}` : "";
+    const storage = entry.storagePath ? `, uri=neo://image/${entry.id}` : ", no stored payload";
+    return `- ${entry.id}: ${label}, ${entry.mimeType}${origin}${storage}`;
   });
   return [
     "Available images from conversation history (use load_image tool with the id to examine any image):",

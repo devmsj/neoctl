@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "../tools/tool.js";
-import type { ContextMetrics } from "../types/events.js";
+import type { ContextMetrics, PromptCacheDiagnostics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
 import { resolveImageBlockDataLengthSync } from "./image-storage.js";
@@ -48,6 +48,7 @@ export interface BuildContextMetricsInput {
   systemPrompt: string;
   tools: readonly ToolDefinition[];
   cachedToolsAndPromptTokens?: number;
+  cacheDiagnostics?: PromptCacheDiagnostics;
 }
 
 export function buildContextMetrics(input: BuildContextMetricsInput): ContextMetrics {
@@ -78,6 +79,7 @@ export function buildContextMetrics(input: BuildContextMetricsInput): ContextMet
     contextWindowTokens: window.tokens,
     contextWindowSource: window.source,
     contextUsageRatio: window.tokens ? estimatedInputTokens / window.tokens : undefined,
+    cacheDiagnostics: input.cacheDiagnostics,
     modelMetadata: window.model
       ? {
           id: window.model.id,

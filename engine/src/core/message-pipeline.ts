@@ -108,27 +108,71 @@ export function hasValidToolResultPairing(messages: readonly Message[]): boolean
 }
 
 export function prependUserContext<T extends object>(messages: readonly Message[], userContext: T): Message[] {
-  const entries = Object.entries(userContext).filter(([, value]) => value !== undefined);
-  if (entries.length === 0) return [...messages];
-  const contextText = entries
-    .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
-    .join("\n");
+  const contextMessage = createUserContextMessage(userContext);
+  if (!contextMessage) return [...messages];
+  return [contextMessage, ...messages];
+}
+
+export function insertUserContextBeforeLatestUser<T extends object>(messages: readonly Message[], userContext: T): Message[] {
+  const contextMessage = createUserContextMessage(userContext);
+  if (!contextMessage) return [...messages];
+  const latestUserIndex = findLastIndex(messages, (message) => message.role === "user" && !message.isMeta);
+  if (latestUserIndex < 0) return [...messages, contextMessage];
   return [
-    {
-      ...createTextMessage("user", `User context:\n${contextText}`),
-      metadata: { userContext: true },
-    },
-    ...messages,
+    ...messages.slice(0, latestUserIndex),
+    contextMessage,
+    ...messages.slice(latestUserIndex),
+  ];
+}
+
+export function createUserContextMessage<T extends object>(userContext: T): Message | undefined {
+  const entries = Object.entries(userContext).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) return undefined;
+  const contextText = renderObjectEntries(entries);
+  return {
+    ...createTextMessage("user", `User context:\n${contextText}`),
+    isMeta: true,
+    metadata: { userContext: true },
+  };
+}
+
+export function createRuntimeContextMessage<TUser extends object, TSystem extends object>(userContext: TUser, systemContext: TSystem): Message | undefined {
+  const parts: string[] = [];
+  const userEntries = Object.entries(userContext).filter(([, value]) => value !== undefined);
+  const systemEntries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
+  if (userEntries.length > 0) parts.push(`User context:\n${renderObjectEntries(userEntries)}`);
+  if (systemEntries.length > 0) parts.push(`System context:\n${renderObjectEntries(systemEntries)}`);
+  if (parts.length === 0) return undefined;
+  return {
+    ...createTextMessage("user", parts.join("\n\n")),
+    isMeta: true,
+    metadata: { runtimeContext: true, userContext: userEntries.length > 0, systemContext: systemEntries.length > 0 },
+  };
+}
+
+export function insertRuntimeContextBeforeLatestUser<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
+  const contextMessage = createRuntimeContextMessage(userContext, systemContext);
+  if (!contextMessage) return [...messages];
+  const latestUserIndex = findLastIndex(messages, (message) => message.role === "user" && !message.isMeta);
+  if (latestUserIndex < 0) return [...messages, contextMessage];
+  return [
+    ...messages.slice(0, latestUserIndex),
+    contextMessage,
+    ...messages.slice(latestUserIndex),
   ];
 }
 
 export function appendSystemContext<T extends object>(systemPrompt: string, systemContext: T): string {
   const entries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
   if (entries.length === 0) return systemPrompt;
-  const rendered = entries
+  const rendered = renderObjectEntries(entries);
+  return `${systemPrompt}\n\n## System Context\n${rendered}`;
+}
+
+function renderObjectEntries(entries: readonly [string, unknown][]): string {
+  return entries
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
     .join("\n");
-  return `${systemPrompt}\n\n## System Context\n${rendered}`;
 }
 
 function buildStableToolResultPreview(serialized: string, maxSerializedLength: number): string {

@@ -11,7 +11,7 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
-import { appendSystemContext, prependUserContext } from "./message-pipeline.js";
+import { insertRuntimeContextBeforeLatestUser } from "./message-pipeline.js";
 import { persistMessageImages } from "./image-storage.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
@@ -19,6 +19,8 @@ import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
 import type { TerminalReason } from "./state.js";
 import { SessionStore, type SessionStoreSnapshot, type SessionSummary, type SessionTitleKind } from "../session/session-store.js";
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
+import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
+import { computeStaticTokens } from "./context-metrics.js";
 
 const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 
@@ -305,11 +307,22 @@ export class QueryEngine {
     await this.initialize();
     const messages = this.getHistoryMessages();
     const promptSnapshot = await this.buildPromptExportSnapshot(messages);
+    const tools = Array.isArray(promptSnapshot.toolDefinitions) ? promptSnapshot.toolDefinitions : [];
+    const promptSections = Array.isArray(promptSnapshot.promptSections) ? promptSnapshot.promptSections : [];
+    const systemPrompt = promptSnapshot.systemPrompt ?? "";
+    const messagesForMetrics = insertRuntimeContextBeforeLatestUser(messages, promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
     return buildContextMetrics({
       model: this.currentModel,
-      messages: prependUserContext(messages, promptSnapshot.userContext ?? {}),
-      systemPrompt: promptSnapshot.systemPrompt ?? "",
-      tools: Array.isArray(promptSnapshot.toolDefinitions) ? promptSnapshot.toolDefinitions : [],
+      messages: messagesForMetrics,
+      systemPrompt,
+      tools,
+      cachedToolsAndPromptTokens: computeStaticTokens(systemPrompt, tools),
+      cacheDiagnostics: buildPromptCacheDiagnostics({
+        systemPrompt,
+        promptSections,
+        tools,
+        messages: messagesForMetrics,
+      }),
     });
   }
 
@@ -341,7 +354,7 @@ export class QueryEngine {
       toolUseContext: toolContext,
     });
     const toolDefinitions = this.options.tools.definitions(toolContext);
-    const messagesWithUserContext = prependUserContext([], context.userContext);
+    const messagesWithUserContext = insertRuntimeContextBeforeLatestUser([], context.userContext, {});
     const userContextPrompt = messagesWithUserContext[0]?.blocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text)
@@ -350,7 +363,7 @@ export class QueryEngine {
       model: this.currentModel,
       fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
-      systemPrompt: appendSystemContext(context.systemPrompt, context.systemContext),
+      systemPrompt: context.systemPrompt,
       baseSystemPrompt: context.systemPrompt,
       promptSections: context.promptSections,
       userContext: context.userContext,
