@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createTextMessage } from "../types/messages.js";
 import type { CanUseTool, JsonSchema, Tool, ToolRuntimeOptions } from "../tools/tool.js";
 
@@ -126,11 +128,13 @@ export function createSkillTool(catalog: SkillCatalog, options: CreateSkillToolO
       if (skill.disableModelInvocation) return { ok: false, message: `Skill ${name} cannot be invoked by the model` };
       return { ok: true, value: { ...input, skill: name } };
     },
-    async call(input) {
+    async call(input, context) {
       const name = normalizeSkillName(input.skill ?? input.name);
       const skill = name ? await catalog.get(name) : undefined;
       if (!name || !skill) return { ok: false, output: { error: `Unknown skill: ${name ?? "<empty>"}` } };
       if (skill.enabled === false) return { ok: false, output: { error: `Skill ${name} is disabled` } };
+      const structure = await inspectSkillSource(skill);
+      if (!structure.ok) return { ok: false, output: { error: structure.error, skill: name, source: skill.source } };
 
       if (skill.execution === "fork") {
         return {
@@ -146,6 +150,23 @@ export function createSkillTool(catalog: SkillCatalog, options: CreateSkillToolO
 
       const args = renderSkillArgs(input.args ?? input.input);
       const prompt = renderSkillPrompt(skill, args);
+      const structureKey = structure.path ?? skill.name;
+      const loadedStructures = context.options?.loadedSkillStructures;
+      const shouldInjectStructure = Boolean(structure.summary && !loadedStructures?.has(structureKey));
+      const newMessages = [
+        {
+          ...createTextMessage("user", prompt),
+          isMeta: true,
+          metadata: { skill: name, skillExecution: "inline" },
+        },
+      ];
+      if (shouldInjectStructure && structure.summary) {
+        newMessages.push({
+          ...createTextMessage("user", `Skill directory structure for ${name} (${structure.path}):\n${structure.summary}\nUse these paths only after normal tool/path validation.`),
+          isMeta: true,
+          metadata: { skill: name, skillExecution: "structure" },
+        });
+      }
 
       return {
         ok: true,
@@ -157,28 +178,27 @@ export function createSkillTool(catalog: SkillCatalog, options: CreateSkillToolO
           effort: skill.effort,
           descriptor: summarizeSkill(skill),
         },
-        newMessages: [
-          {
-            ...createTextMessage("user", prompt),
-            isMeta: true,
-            metadata: { skill: name, skillExecution: "inline" },
-          },
-        ],
-        contextModifier: (context) => ({
-          ...context,
-          options: {
-            ...context.options,
-            mainLoopModel: skill.model ?? context.options?.mainLoopModel,
-            thinkingConfig: skill.effort ? { effort: skill.effort } : context.options?.thinkingConfig,
-            activeSkill: {
-              name,
-              allowedTools: [...(skill.allowedTools ?? [])],
-              model: skill.model,
-              effort: skill.effort,
-              source: skill.source,
-            },
-          } satisfies ToolRuntimeOptions,
-        }),
+        newMessages,
+        contextModifier: (context) => {
+          const nextLoadedSkillStructures = new Set(context.options?.loadedSkillStructures ?? []);
+          if (shouldInjectStructure) nextLoadedSkillStructures.add(structureKey);
+          return {
+            ...context,
+            options: {
+              ...context.options,
+              mainLoopModel: skill.model ?? context.options?.mainLoopModel,
+              thinkingConfig: skill.effort ? { effort: skill.effort } : context.options?.thinkingConfig,
+              loadedSkillStructures: nextLoadedSkillStructures,
+              activeSkill: {
+                name,
+                allowedTools: [...(skill.allowedTools ?? [])],
+                model: skill.model,
+                effort: skill.effort,
+                source: skill.source,
+              },
+            } satisfies ToolRuntimeOptions,
+          };
+        },
       };
     },
   };
@@ -328,6 +348,46 @@ export function createSkillAwareCanUseTool(
     if (canonicalName === "skill" || allowedTools.includes(canonicalName) || allowedTools.includes(toolUse.name)) return delegated;
     return { allowed: false, reason: `Tool ${canonicalName} is not allowed while skill ${activeSkill.name} is active` };
   };
+}
+
+async function inspectSkillSource(skill: SkillDescriptor): Promise<{ ok: true; path?: string; summary?: string } | { ok: false; error: string }> {
+  const sourcePath = typeof skill.source?.path === "string" ? skill.source.path : undefined;
+  if (!sourcePath) return { ok: true };
+  const resolvedFile = path.resolve(sourcePath);
+  try {
+    const stat = await fs.stat(resolvedFile);
+    if (!stat.isFile()) return { ok: false, error: `Skill source is not a file: ${resolvedFile}` };
+  } catch (error) {
+    return { ok: false, error: `Skill source path is not accessible: ${resolvedFile} (${error instanceof Error ? error.message : String(error)})` };
+  }
+
+  const directory = path.dirname(resolvedFile);
+  return { ok: true, path: directory, summary: await renderShallowDirectoryTree(directory) };
+}
+
+async function renderShallowDirectoryTree(directory: string): Promise<string> {
+  try {
+    const lines: string[] = [];
+    await appendDirectoryEntries(lines, directory, ".", 0);
+    return lines.join("\n");
+  } catch (error) {
+    return `Unable to list shallow skill directory structure: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+async function appendDirectoryEntries(lines: string[], root: string, relative: string, depth: number): Promise<void> {
+  if (depth > 1) return;
+  const directory = relative === "." ? root : path.join(root, relative);
+  const entries = (await fs.readdir(directory, { withFileTypes: true }))
+    .filter((entry) => !entry.name.startsWith("."))
+    .sort((left, right) => Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name))
+    .slice(0, 40);
+  for (const entry of entries) {
+    const entryRelative = relative === "." ? entry.name : path.join(relative, entry.name);
+    const prefix = "  ".repeat(depth);
+    lines.push(`${prefix}${entry.isDirectory() ? "[dir]" : "[file]"} ${entryRelative}`);
+    if (entry.isDirectory()) await appendDirectoryEntries(lines, root, entryRelative, depth + 1);
+  }
 }
 
 function buildSkillToolDescription(options: CreateSkillToolOptions): string {

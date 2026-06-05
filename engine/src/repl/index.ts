@@ -31,6 +31,8 @@ import type { TaskNotificationSource } from "../core/query.js";
 import { cliHelpText, isModelReasoningArgument, isValidReplCommandLine, parseCliReplCommandArgs, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { CompactionResult } from "../context/compaction.js";
+import { DefaultContextManager, type ContextBuildInput, type ContextManager, type RuntimeContext } from "../context/context-manager.js";
+import { buildEffectiveSystemPrompt } from "../context/prompts.js";
 import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
@@ -38,6 +40,10 @@ import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
 import { formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 import { openDirectory } from "../open-directory.js";
 import { runWebServer } from "../web/index.js";
+import { getNeoctlHome } from "../paths.js";
+import { FileSystemSkillCatalog } from "../skills/skill-filesystem.js";
+import { createSkillAwareCanUseTool, createSkillTool, requireSkillName, type SkillCatalog, type SkillDescriptor } from "../skills/skill-tool.js";
+import { createSkillManagementTools } from "../skills/skill-management-tools.js";
 
 const e = React.createElement;
 interface ReplRuntime {
@@ -48,6 +54,8 @@ interface ReplRuntime {
   usage: SessionUsageTracker;
   taskStore: TaskStore;
   tools: ToolRegistry;
+  skills: SkillCatalog;
+  skillWorkspaceRoot: string;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
@@ -249,6 +257,45 @@ function binaryName(): string {
   return name === "index" ? "neo" : name;
 }
 
+class SkillCatalogContextManager implements ContextManager {
+  constructor(private readonly catalog: SkillCatalog, private readonly base: ContextManager = new DefaultContextManager()) {}
+
+  async build(input: ContextBuildInput): Promise<RuntimeContext> {
+    const runtimeContext = await this.base.build(input);
+    const skillSection = await buildSkillCatalogPromptSection(this.catalog);
+    if (!skillSection) return runtimeContext;
+    const promptSections = [...runtimeContext.promptSections, skillSection];
+    return {
+      ...runtimeContext,
+      promptSections,
+      systemPrompt: buildEffectiveSystemPrompt(promptSections, input),
+    };
+  }
+}
+
+async function buildSkillCatalogPromptSection(catalog: SkillCatalog): Promise<{ name: string; content: string; cacheStable: false } | undefined> {
+  const skills = await catalog.list();
+  if (skills.length === 0) return undefined;
+  const visible = skills.slice(0, 80);
+  const lines = visible.map((skill) => {
+    const tags = skill.tags?.length ? `; tags=${skill.tags.join(",")}` : "";
+    const tools = skill.allowedTools?.length ? `; allowedTools=${skill.allowedTools.join(",")}` : "";
+    return `- ${skill.name}: ${skill.description} (execution=${skill.execution}${tags}${tools})`;
+  });
+  if (skills.length > visible.length) lines.push(`- ... ${skills.length - visible.length} more skills available; use skill_list for the full catalog.`);
+  return {
+    name: "Available Skills",
+    cacheStable: false,
+    content: [
+      "Reusable skills are available through the `skill` tool and the `/skill` REPL command.",
+      "When the user's task matches a skill name, description, tags, or domain capability, proactively call the `skill` tool before doing the work directly.",
+      "Do not wait for the user to explicitly say 'use skill'. Use skill_list/skill_read if you need to inspect details.",
+      "Available skill catalog:",
+      ...lines,
+    ].join("\n"),
+  };
+}
+
 function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
   return {
     collectUnnotifiedCompletions() {
@@ -273,6 +320,14 @@ async function createRuntime(): Promise<ReplRuntime> {
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
+  const skillWorkspaceRoot = path.resolve(process.cwd(), ".neo", "skills");
+  const skills = new FileSystemSkillCatalog({
+    roots: [
+      { root: skillWorkspaceRoot, kind: "workspace" },
+      { root: path.resolve(getNeoctlHome(), "skills"), kind: "user" },
+    ],
+    createRoot: skillWorkspaceRoot,
+  });
   tools.register(editTool);
   tools.register(writeTool);
   tools.register(createExecTool({ taskStore }));
@@ -283,6 +338,8 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
+  tools.register(createSkillTool(skills));
+  for (const tool of createSkillManagementTools(skills, { requireApproval: true, allowDelete: false })) tools.register(tool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
@@ -308,6 +365,8 @@ async function createRuntime(): Promise<ReplRuntime> {
     reasoning: modelConfig?.defaultReasoning,
     modelGateway,
     tools,
+    contextManager: new SkillCatalogContextManager(skills),
+    canUseTool: createSkillAwareCanUseTool(skills),
     taskNotificationSource,
     commands: replCommandDefinitions.map((command) => command.usage),
     session: {
@@ -330,6 +389,8 @@ async function createRuntime(): Promise<ReplRuntime> {
     usage: new SessionUsageTracker(),
     taskStore,
     tools,
+    skills,
+    skillWorkspaceRoot,
     initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
@@ -553,6 +614,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const [pasteStatus, setPasteStatus] = useState<string | undefined>(undefined);
   const pasteStatusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
+  const [skillCompletions, setSkillCompletions] = useState<SkillCompletionInfo[]>([]);
   const [loginForm, setLoginForm] = useState<LoginFormState | undefined>(undefined);
   const loginFormRef = useRef<LoginFormState | undefined>(undefined);
 
@@ -633,6 +695,19 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     loginFormRef.current = next;
     setLoginForm(next);
   };
+
+  const refreshSkillCompletions = useCallback(async () => {
+    try {
+      const skills = await runtime.skills.list();
+      setSkillCompletions(skills.map((skill) => ({ name: skill.name, description: skill.description, execution: skill.execution, tags: skill.tags })));
+    } catch {
+      setSkillCompletions([]);
+    }
+  }, [runtime]);
+
+  useEffect(() => {
+    void refreshSkillCompletions();
+  }, [refreshSkillCompletions]);
 
   const syncAttachmentsForText = (text: string) => {
     const next = attachmentsRef.current.filter((attachment) => text.includes(attachment.label));
@@ -1007,6 +1082,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
 
   const handleCommandOrPrompt = async (text: string, submitAttachments: ClipboardAttachment[] = []) => {
     const command = parseReplCommand(text);
+    let promptText = command.type === "input" ? command.text : text;
     if (command.type === "exit") {
       app.exit();
       return;
@@ -1128,6 +1204,15 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       await handleSessionsCommand(runtime, runningSessionIds(backgroundSessionRunsRef.current), setSessionsBrowser, (line) => append(line));
       return;
     }
+    if (command.type === "skill") {
+      if (command.action !== "invoke" || !command.name || !command.args) {
+        append(await handleSkillCommand(command, runtime));
+        if (command.action === "import" || command.action === "delete") void refreshSkillCompletions();
+        return;
+      }
+      promptText = renderSkillInvocationPrompt(command.name, command.args);
+      text = `/skill ${command.name} ${command.args}`;
+    }
     if (command.type === "login") {
       setSessionsBrowser(undefined);
       setLoginFormState(createLoginFormState(runtime.envPath));
@@ -1158,12 +1243,12 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
 
-    if (text.trimStart().startsWith("/")) {
+    if (command.type !== "skill" && text.trimStart().startsWith("/")) {
       append({ kind: "error", text: `Unknown or incomplete command: ${text.trim()}\nType /help for commands.` });
       return;
     }
 
-    const promptPayload = buildPromptPayload(command.text, submitAttachments);
+    const promptPayload = buildPromptPayload(promptText, submitAttachments);
     append({ kind: "user", text });
     const runToken = ++foregroundRunTokenRef.current;
     const abortController = new AbortController();
@@ -1258,7 +1343,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const promptDisplayCursor = cursor;
   const promptLayoutText = activePlaceholder ? ` ${activePlaceholder}` : promptDisplayText;
   const promptLayoutCursor = activePlaceholder ? 0 : promptDisplayCursor;
-  const slashCompletions = inputLockedByQueue || (input.length === 0 && promptPlaceholder !== undefined) || loginForm ? [] : slashCommandCompletions(input, cursor);
+  const slashCompletions = inputLockedByQueue || (input.length === 0 && promptPlaceholder !== undefined) || loginForm ? [] : slashCommandCompletions(input, cursor, skillCompletions);
   const visibleSlashCompletionCount = slashCompletions.length;
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
@@ -1373,10 +1458,19 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (key.return) {
       const currentText = inputRef.current;
       const currentCursor = cursorRef.current;
-      const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current);
+      const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current, skillCompletions);
       if (completion !== undefined && completion.kind === "command" && completion.arguments !== "none") {
         const nextText = `${completion.insertText} ${currentText.slice(currentCursor)}`;
         setPromptState(nextText, completion.insertText.length + 1);
+        return;
+      }
+      if (currentText.trimEnd() === "/skill") {
+        void submitLine(currentText);
+        return;
+      }
+      if (completion !== undefined && completion.kind === "skill-action") {
+        const nextText = `${completion.insertText}${currentText.slice(currentCursor)}`;
+        setPromptState(nextText, completion.insertText.length);
         return;
       }
       if (currentText.trimEnd() === "/model" && completion?.kind !== "command") {
@@ -1399,7 +1493,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (key.leftArrow) {
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
       if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
@@ -1412,7 +1506,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (key.rightArrow) {
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
       if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
@@ -1439,7 +1533,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setTipIndex((current) => current - 1);
         return;
       }
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - 1) % completionCount);
         return;
@@ -1456,7 +1550,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setTipIndex((current) => current + 1);
         return;
       }
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + 1) % completionCount);
         return;
@@ -1480,7 +1574,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         return;
       }
       const currentCursor = cursorRef.current;
-      const completions = slashCommandCompletions(currentText, currentCursor);
+      const completions = slashCommandCompletions(currentText, currentCursor, skillCompletions);
       const completion = completions[Math.min(slashCompletionIndexRef.current, completions.length - 1)];
       if (completion !== undefined) {
         const nextText = `${completion.insertText}${currentText.slice(currentCursor)}`;
@@ -2056,16 +2150,27 @@ function fitStatusSegments(segments: StatusSegment[], width: number): StatusSegm
 const SLASH_COMPLETION_PAGE_SIZE = 10;
 const MODEL_REASONING_EFFORTS: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const MODEL_REASONING_CONTROL_CHOICES: ModelReasoningArgument[] = ["default", "off"];
+const SKILL_COMMAND_ACTIONS = [
+  { name: "import", description: "Import by linking a skill directory" },
+  { name: "delete", description: "Delete a workspace skill link/directory", aliases: ["remove", "rm"] },
+] as const;
+
+interface SkillCompletionInfo {
+  name: string;
+  description: string;
+  execution?: string;
+  tags?: readonly string[];
+}
 
 interface SlashCommandCompletion {
   value: string;
   insertText: string;
   description: string;
   arguments: ReplCommandArgumentSpec;
-  kind: "command" | "model" | "reasoning";
+  kind: "command" | "model" | "reasoning" | "skill" | "skill-action";
 }
 
-function slashCommandCompletions(text: string, cursor: number): SlashCommandCompletion[] {
+function slashCommandCompletions(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = []): SlashCommandCompletion[] {
   const safeCursor = Math.max(0, Math.min(cursor, text.length));
   const prefix = text.slice(0, safeCursor);
   if (!prefix.startsWith("/") || /\r|\n/.test(prefix)) return [];
@@ -2076,12 +2181,66 @@ function slashCommandCompletions(text: string, cursor: number): SlashCommandComp
   if (prefix.startsWith("/model") && (prefix.length === "/model".length || prefix["/model".length] === " ")) {
     return modelCommandCompletions(prefix);
   }
+  if (prefix.startsWith("/skill") && (prefix.length === "/skill".length || prefix["/skill".length] === " ")) {
+    return skillCommandCompletions(prefix, skills);
+  }
   if (prefix.length > 1 && !/^\/[\w-]*$/.test(prefix)) return [];
 
   const normalizedPrefix = prefix.toLowerCase();
   return replCommandDefinitions
     .flatMap((command) => [command.name, ...(command.aliases ?? [])].map((name) => ({ value: name, insertText: name, description: command.description, arguments: command.arguments, kind: "command" as const })))
     .filter((command) => command.value.toLowerCase().startsWith(normalizedPrefix));
+}
+
+function skillCommandCompletions(prefix: string, skills: readonly SkillCompletionInfo[]): SlashCommandCompletion[] {
+  const hasTrailingSpace = /\s$/.test(prefix);
+  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  const argumentTokens = tokens.slice(1);
+  if (!hasTrailingSpace && argumentTokens.length === 0 && !"/skill".startsWith(prefix.toLowerCase())) return [];
+
+  if (argumentTokens.length === 0) {
+    return [...skillActionCompletions(""), ...skillNameCompletions(skills, "")];
+  }
+
+  const [first = "", second = ""] = argumentTokens;
+  if (first === "import") return [];
+  if (first === "delete" || first === "remove" || first === "rm") {
+    if (argumentTokens.length > 1 && hasTrailingSpace) return [];
+    return skillNameCompletions(skills, hasTrailingSpace ? "" : second, "delete");
+  }
+  if (argumentTokens.length > 1) return [];
+  if (hasTrailingSpace) return [];
+  return [...skillActionCompletions(first), ...skillNameCompletions(skills, first)];
+}
+
+function skillActionCompletions(current: string): SlashCommandCompletion[] {
+  return SKILL_COMMAND_ACTIONS
+    .flatMap((action) => [action.name, ...("aliases" in action ? action.aliases ?? [] : [])].map((name) => ({ name, description: action.description })))
+    .filter((action) => action.name.startsWith(current.toLowerCase()))
+    .map((action) => ({
+      value: action.name,
+      insertText: `/skill ${action.name} `,
+      description: action.description,
+      arguments: "optional" as const,
+      kind: "skill-action" as const,
+    }));
+}
+
+function skillNameCompletions(skills: readonly SkillCompletionInfo[], current: string, action?: "delete"): SlashCommandCompletion[] {
+  return skills
+    .filter((skill) => skill.name.toLowerCase().includes(current.toLowerCase()))
+    .map((skill) => ({
+      value: skill.name,
+      insertText: action === "delete" ? `/skill delete ${skill.name}` : `/skill ${skill.name}`,
+      description: formatSkillCompletionDescription(skill),
+      arguments: "optional" as const,
+      kind: "skill" as const,
+    }));
+}
+
+function formatSkillCompletionDescription(skill: SkillCompletionInfo): string {
+  const tags = skill.tags?.length ? ` · ${skill.tags.join(",")}` : "";
+  return `${skill.description}${skill.execution ? ` · ${skill.execution}` : ""}${tags}`;
 }
 
 function modelCommandCompletions(prefix: string): SlashCommandCompletion[] {
@@ -2176,12 +2335,12 @@ function slashCompletionViewHeight(completions: SlashCommandCompletion[]): numbe
   return Math.min(completions.length, SLASH_COMPLETION_PAGE_SIZE) + 2;
 }
 
-function slashCompletionSelectableCount(text: string, cursor: number): number {
-  return slashCommandCompletions(text, cursor).length;
+function slashCompletionSelectableCount(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = []): number {
+  return slashCommandCompletions(text, cursor, skills).length;
 }
 
-function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number): SlashCommandCompletion | undefined {
-  const completions = slashCommandCompletions(text, cursor);
+function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number, skills: readonly SkillCompletionInfo[] = []): SlashCommandCompletion | undefined {
+  const completions = slashCommandCompletions(text, cursor, skills);
   if (completions.length === 0) return undefined;
   return completions[Math.max(0, Math.min(selectedIndex, completions.length - 1))];
 }
@@ -2298,6 +2457,132 @@ function SlashCompletionLines(
     e(Text, { color: "gray" }, " ".repeat(prompt.length)),
     line,
   ));
+}
+
+async function handleSkillCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "skill" }>,
+  runtime: ReplRuntime,
+): Promise<Omit<UiLine, "id">> {
+  if (command.action === "import") return handleSkillImportCommand(command, runtime);
+  if (command.action === "delete") return handleSkillDeleteCommand(command, runtime);
+
+  if (!command.name) {
+    const skills = await runtime.skills.list();
+    return systemLine(formatSkillList(skills), EXPANDED_SUMMARY_MAX_LINES);
+  }
+
+  const skill = await runtime.skills.get(command.name);
+  if (!skill) return { kind: "error", text: `Unknown skill: ${command.name}\nUse /skill to list available skills.` };
+  return systemLine(formatSkillDetails(skill), EXPANDED_SUMMARY_MAX_LINES);
+}
+
+async function handleSkillImportCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "skill" }>,
+  runtime: ReplRuntime,
+): Promise<Omit<UiLine, "id">> {
+  if (!command.path) return { kind: "error", text: "Usage: /skill import <path-to-skill-directory> [name]" };
+  const sourceDirectory = path.resolve(command.path);
+  const skillFile = path.join(sourceDirectory, "SKILL.md");
+  try {
+    const stat = await fs.stat(skillFile);
+    if (!stat.isFile()) return { kind: "error", text: `SKILL.md is not a file: ${skillFile}` };
+  } catch (error) {
+    return { kind: "error", text: `Invalid skill path: ${skillFile}\n${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  const name = requireSkillName(command.name ?? path.basename(sourceDirectory));
+  const linkPath = path.join(runtime.skillWorkspaceRoot, name);
+  const relativeTarget = path.relative(path.dirname(linkPath), sourceDirectory) || sourceDirectory;
+  try {
+    await fs.mkdir(runtime.skillWorkspaceRoot, { recursive: true });
+    const existing = await safeLstat(linkPath);
+    if (existing) return { kind: "error", text: `Skill already exists at ${linkPath}. Delete it first with /skill delete ${name}.` };
+    await fs.symlink(relativeTarget, linkPath, "junction");
+    const imported = await runtime.skills.get(name);
+    return systemLine(`Imported skill ${name}\nLink: ${linkPath}\nTarget: ${sourceDirectory}${imported ? `\nDescription: ${imported.description}` : ""}`);
+  } catch (error) {
+    return { kind: "error", text: `Failed to import skill ${name}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function handleSkillDeleteCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "skill" }>,
+  runtime: ReplRuntime,
+): Promise<Omit<UiLine, "id">> {
+  if (!command.name) return { kind: "error", text: "Usage: /skill delete <name>" };
+  const name = requireSkillName(command.name);
+  const skillPath = path.join(runtime.skillWorkspaceRoot, name);
+  const existing = await safeLstat(skillPath);
+  if (!existing) return { kind: "error", text: `No workspace skill named ${name} at ${skillPath}` };
+  try {
+    if (existing.isSymbolicLink()) await fs.unlink(skillPath);
+    else await fs.rm(skillPath, { recursive: true, force: true });
+    return systemLine(`Deleted workspace skill ${name}: ${skillPath}`);
+  } catch (error) {
+    return { kind: "error", text: `Failed to delete skill ${name}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function safeLstat(file: string): Promise<import("node:fs").Stats | undefined> {
+  try {
+    return await fs.lstat(file);
+  } catch {
+    return undefined;
+  }
+}
+
+function renderSkillInvocationPrompt(name: string, args: string): string {
+  return `Use skill ${JSON.stringify(name)} with these arguments:\n${args}`;
+}
+
+function formatSkillList(skills: readonly SkillDescriptor[]): string {
+  if (skills.length === 0) {
+    return [
+      "No skills found.",
+      "Skill roots:",
+      "  - .neo/skills/<name>/SKILL.md",
+      "  - ~/.neoctl/skills/<name>/SKILL.md",
+      "Create one with the skill_create tool or add a SKILL.md file.",
+    ].join("\n");
+  }
+
+  const width = Math.max(...skills.map((skill) => skill.name.length));
+  return [
+    "Available skills:",
+    ...skills.map((skill) => {
+      const tags = skill.tags?.length ? ` [${skill.tags.join(", ")}]` : "";
+      const execution = skill.execution ? ` (${skill.execution})` : "";
+      return `  ${skill.name.padEnd(width)}  ${skill.description}${execution}${tags}`;
+    }),
+    "",
+    "Usage:",
+    "  /skill <name>                 Show skill details",
+    "  /skill <name> <args>          Invoke skill with arguments",
+    "  /skill import <path> [name]   Import by linking a skill directory",
+    "  /skill delete <name>          Delete workspace skill link/directory",
+  ].join("\n");
+}
+
+function formatSkillDetails(skill: SkillDescriptor): string {
+  const lines = [
+    `Skill: ${skill.name}`,
+    skill.title ? `Title: ${skill.title}` : undefined,
+    `Description: ${skill.description}`,
+    `Execution: ${skill.execution}`,
+    skill.version ? `Version: ${skill.version}` : undefined,
+    skill.tags?.length ? `Tags: ${skill.tags.join(", ")}` : undefined,
+    skill.allowedTools?.length ? `Allowed tools: ${skill.allowedTools.join(", ")}` : undefined,
+    skill.model ? `Model: ${skill.model}` : undefined,
+    skill.effort ? `Effort: ${skill.effort}` : undefined,
+    skill.trustLevel ? `Trust: ${skill.trustLevel}` : undefined,
+    skill.source?.path ? `Path: ${skill.source.path}` : undefined,
+    "",
+    "Entrypoint:",
+    skill.entrypoint,
+    "",
+    `Invoke: /skill ${skill.name} <args>`,
+  ].filter((line): line is string => line !== undefined);
+  return lines.join("\n");
 }
 
 async function handleModelCommand(

@@ -217,7 +217,7 @@ async function discoverSkillLocations(root: SkillRoot): Promise<SkillLocation[]>
   const locations: SkillLocation[] = [];
   const normalizedRoot = { ...root, root: resolvedRoot };
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const directory = path.join(resolvedRoot, entry.name);
     const file = path.join(directory, SKILL_FILE_NAME);
     if (await pathExists(file)) locations.push({ root: normalizedRoot, directory, file });

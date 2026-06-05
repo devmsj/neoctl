@@ -79,6 +79,7 @@ export interface ToolRuntimeOptions {
   thinkingConfig?: unknown;
   reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
   activeSkill?: ActiveSkillRuntimeState;
+  loadedSkillStructures?: Set<string>;
   isNonInteractiveSession?: boolean;
   refreshTools?: () => Promise<void> | void;
 }

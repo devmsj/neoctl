@@ -14,6 +14,7 @@ export type ReplCommand =
   | { type: "new" }
   | { type: "reset" }
   | { type: "sessions" }
+  | { type: "skill"; action?: "list" | "show" | "invoke" | "import" | "delete"; name?: string; args?: string; path?: string }
   | { type: "state" }
   | { type: "input"; text: string };
 
@@ -40,6 +41,7 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
   { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
+  { name: "/skill", usage: "/skill [name|import|delete] [args]", description: "List, inspect, import, delete, or invoke reusable skills", arguments: "optional" },
   { name: "/state", usage: "/state", description: "Show query engine state", arguments: "none" },
   { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker", arguments: "none" },
   { name: "/exit", usage: "/exit", description: "Quit", arguments: "none", aliases: ["/quit"] },
@@ -66,6 +68,7 @@ export function parseReplCommand(line: string): ReplCommand {
   }
   if (name === "/reset") return { type: "reset" };
   if (name === "/sessions") return { type: "sessions" };
+  if (name === "/skill") return parseSkillCommand(argument);
   if (name === "/state") return { type: "state" };
   return { type: "input", text: line };
 }
@@ -76,6 +79,21 @@ export function isValidReplCommandLine(line: string): boolean {
 
 export function isModelReasoningArgument(value: string): value is ModelReasoningArgument {
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "default" || value === "off";
+}
+
+function parseSkillCommand(argument: string): Extract<ReplCommand, { type: "skill" }> {
+  const trimmed = argument.trim();
+  if (!trimmed) return { type: "skill", action: "list" };
+  const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  const first = match?.[1];
+  const rest = match?.[2]?.trim() || undefined;
+  if (first === "import") {
+    if (!rest) return { type: "skill", action: "import" };
+    const importMatch = /^(\S+)(?:\s+(\S+))?$/.exec(rest);
+    return { type: "skill", action: "import", path: importMatch?.[1], name: importMatch?.[2] };
+  }
+  if (first === "delete" || first === "remove" || first === "rm") return { type: "skill", action: "delete", name: rest };
+  return { type: "skill", action: rest ? "invoke" : "show", name: first, args: rest };
 }
 
 function parseModelCommand(argument: string): Extract<ReplCommand, { type: "model" }> | undefined {
