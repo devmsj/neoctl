@@ -11,7 +11,7 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
-import { insertRuntimeContextBeforeLatestUser } from "./message-pipeline.js";
+import { applyRuntimeContextForPromptCache } from "./message-pipeline.js";
 import { persistMessageImages } from "./image-storage.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
@@ -310,7 +310,7 @@ export class QueryEngine {
     const tools = Array.isArray(promptSnapshot.toolDefinitions) ? promptSnapshot.toolDefinitions : [];
     const promptSections = Array.isArray(promptSnapshot.promptSections) ? promptSnapshot.promptSections : [];
     const systemPrompt = promptSnapshot.systemPrompt ?? "";
-    const messagesForMetrics = insertRuntimeContextBeforeLatestUser(messages, promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
+    const messagesForMetrics = applyRuntimeContextForPromptCache(messages, promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
     return buildContextMetrics({
       model: this.currentModel,
       messages: messagesForMetrics,
@@ -354,7 +354,7 @@ export class QueryEngine {
       toolUseContext: toolContext,
     });
     const toolDefinitions = this.options.tools.definitions(toolContext);
-    const messagesWithUserContext = insertRuntimeContextBeforeLatestUser([], context.userContext, {});
+    const messagesWithUserContext = applyRuntimeContextForPromptCache([], context.userContext, {});
     const userContextPrompt = messagesWithUserContext[0]?.blocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text)

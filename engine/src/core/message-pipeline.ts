@@ -150,6 +150,18 @@ export function createRuntimeContextMessage<TUser extends object, TSystem extend
   };
 }
 
+export function prependRuntimeContext<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
+  const contextMessage = createRuntimeContextMessage(userContext, systemContext);
+  if (!contextMessage) return [...messages];
+  return [contextMessage, ...messages];
+}
+
+export function applyRuntimeContextForPromptCache<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
+  const { stableSystemContext, dynamicSystemContext } = splitSystemContextForPromptCache(systemContext);
+  const withStableContext = prependRuntimeContext(messages, userContext, stableSystemContext);
+  return insertRuntimeContextBeforeLatestUser(withStableContext, {}, dynamicSystemContext);
+}
+
 export function insertRuntimeContextBeforeLatestUser<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
   const contextMessage = createRuntimeContextMessage(userContext, systemContext);
   if (!contextMessage) return [...messages];
@@ -167,6 +179,28 @@ export function appendSystemContext<T extends object>(systemPrompt: string, syst
   if (entries.length === 0) return systemPrompt;
   const rendered = renderObjectEntries(entries);
   return `${systemPrompt}\n\n## System Context\n${rendered}`;
+}
+
+function splitSystemContextForPromptCache<TSystem extends object>(systemContext: TSystem): { stableSystemContext: Record<string, unknown>; dynamicSystemContext: Record<string, unknown> } {
+  const stableSystemContext: Record<string, unknown> = {};
+  const dynamicSystemContext: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(systemContext)) {
+    if (value === undefined) continue;
+    if (key === "git" && isRecord(value)) {
+      const { status, ...stableGit } = value;
+      if (Object.keys(stableGit).length > 0) stableSystemContext.git = stableGit;
+      if (status !== undefined) dynamicSystemContext.git = { status };
+      continue;
+    }
+    stableSystemContext[key] = value;
+  }
+
+  return { stableSystemContext, dynamicSystemContext };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function renderObjectEntries(entries: readonly [string, unknown][]): string {

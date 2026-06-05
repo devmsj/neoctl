@@ -147,7 +147,10 @@ export function normalizeUsage(raw: unknown): ModelUsage | undefined {
     outputTokens,
     totalTokens: asNumber(usage.total_tokens) ?? sum(inputTokens, outputTokens),
     reasoningTokens: asNumber((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens),
-    cachedTokens: asNumber((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens),
+    cachedTokens: asNumber(
+      (usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ??
+      (usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens,
+    ),
     raw,
   };
 }

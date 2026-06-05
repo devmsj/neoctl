@@ -64,7 +64,7 @@ export interface AppPromptContextManagerOptions {
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
   private userContextCache?: UserContext;
-  private systemContextCache?: SystemContext;
+  private stableSystemContextCache?: SystemContext;
 
   constructor(private readonly options: DefaultContextManagerOptions = {}) {
     this.cwd = resolve(options.cwd ?? process.cwd());
@@ -77,7 +77,7 @@ export class DefaultContextManager implements ContextManager {
       {
         name: "Runtime",
         cacheStable: false,
-        content: `agentId=${input.agentId}; messages=${input.messages.length}`,
+        content: `agentId=${input.agentId}`,
       },
     ];
 
@@ -99,13 +99,25 @@ export class DefaultContextManager implements ContextManager {
   }
 
   private getSystemContext(cwd: string): SystemContext {
-    if (this.systemContextCache) return this.systemContextCache;
-    this.systemContextCache = {
+    const stable = this.getStableSystemContext(cwd);
+    const status = readGitStatus(cwd);
+    const git = stable.git || status !== undefined
+      ? { ...stable.git, status: status ?? "clean" }
+      : undefined;
+    return {
+      ...stable,
+      ...(git ? { git } : {}),
+    };
+  }
+
+  private getStableSystemContext(cwd: string): SystemContext {
+    if (this.stableSystemContextCache) return this.stableSystemContextCache;
+    this.stableSystemContextCache = {
       cwd,
       platform: process.platform,
-      git: readGitContext(cwd),
+      git: readStableGitContext(cwd),
     };
-    return this.systemContextCache;
+    return this.stableSystemContextCache;
   }
 }
 
@@ -160,12 +172,15 @@ function readProjectMemory(cwd: string, memoryFileNames: readonly string[]): { c
   return parts.length ? { content: parts.join("\n\n"), files } : {};
 }
 
-function readGitContext(cwd: string): GitContext | undefined {
+function readStableGitContext(cwd: string): GitContext | undefined {
   const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const recentCommit = git(cwd, ["log", "-1", "--oneline"]);
-  const status = git(cwd, ["status", "--short"]);
-  if (!branch && !recentCommit && !status) return undefined;
-  return { branch, recentCommit, status: status || "clean" };
+  if (!branch && !recentCommit) return undefined;
+  return { branch, recentCommit };
+}
+
+function readGitStatus(cwd: string): string | undefined {
+  return git(cwd, ["status", "--short"]);
 }
 
 function git(cwd: string, args: readonly string[]): string | undefined {

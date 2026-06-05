@@ -15,7 +15,7 @@ import {
   applyToolResultBudget,
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
-  insertRuntimeContextBeforeLatestUser,
+  applyRuntimeContextForPromptCache,
 } from "./message-pipeline.js";
 import {
   createInitialState,
@@ -227,7 +227,7 @@ async function prepareMessagesForQuery(
   const pairedBudgeted = ensureToolResultPairing(budgeted);
 
   const staticTokens = computeStaticTokens(telemetry.systemPrompt, telemetry.toolDefinitions);
-  const pairedBudgetedWithRuntimeContext = insertRuntimeContextBeforeLatestUser(pairedBudgeted, context.userContext, context.systemContext);
+  const pairedBudgetedWithRuntimeContext = applyRuntimeContextForPromptCache(pairedBudgeted, context.userContext, context.systemContext);
 
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,
@@ -248,7 +248,7 @@ async function prepareMessagesForQuery(
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
   });
   const compactedMessages = ensureToolResultPairing(compaction.messages);
-  const messagesForQuery = insertRuntimeContextBeforeLatestUser(compactedMessages, context.userContext, context.systemContext);
+  const messagesForQuery = applyRuntimeContextForPromptCache(compactedMessages, context.userContext, context.systemContext);
   const metrics = buildContextMetrics({
     model: telemetry.model,
     messages: messagesForQuery,
