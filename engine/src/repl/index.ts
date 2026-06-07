@@ -65,11 +65,16 @@ interface ReplRuntime {
 
 class ReplForegroundExecDetachRegistry implements ForegroundExecDetachRegistry {
   private handle?: ForegroundExecDetachHandle;
+  private readonly subscribers = new Set<() => void>();
 
   set(handle: ForegroundExecDetachHandle): () => void {
     this.handle = handle;
+    this.notify();
     return () => {
-      if (this.handle === handle) this.handle = undefined;
+      if (this.handle === handle) {
+        this.handle = undefined;
+        this.notify();
+      }
     };
   }
 
@@ -77,10 +82,21 @@ class ReplForegroundExecDetachRegistry implements ForegroundExecDetachRegistry {
     return this.handle;
   }
 
+  subscribe(listener: () => void): () => void {
+    this.subscribers.add(listener);
+    return () => {
+      this.subscribers.delete(listener);
+    };
+  }
+
   detachCurrent(): ReturnType<ForegroundExecDetachHandle["detach"]> {
     const handle = this.handle;
     if (!handle) return { ok: false, message: "No foreground exec command is currently running" };
     return handle.detach();
+  }
+
+  private notify(): void {
+    for (const listener of this.subscribers) listener();
   }
 }
 
@@ -613,6 +629,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTasks, setBackgroundTasks] = useState(() => activeBackgroundTasks(runtime));
+  const [foregroundExecDetachHandle, setForegroundExecDetachHandle] = useState<ForegroundExecDetachHandle | undefined>(() => runtime.foregroundExecDetach.current());
+  const [showForegroundExecDetachHint, setShowForegroundExecDetachHint] = useState(false);
   const [backgroundSessionRuns, setBackgroundSessionRuns] = useState<BackgroundSessionRun[]>([]);
   const backgroundSessionRunsRef = useRef(new Map<string, BackgroundSessionRun>());
   const suppressReattachedStreamingRef = useRef(new Set<QueryEngine>());
@@ -662,6 +680,27 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     updateBackgroundTasks();
     return runtime.taskStore.subscribe(updateBackgroundTasks);
   }, [runtime]);
+
+  useEffect(() => {
+    const updateForegroundExecDetachHandle = () => setForegroundExecDetachHandle(runtime.foregroundExecDetach.current());
+    updateForegroundExecDetachHandle();
+    return runtime.foregroundExecDetach.subscribe(updateForegroundExecDetachHandle);
+  }, [runtime]);
+
+  useEffect(() => {
+    if (!foregroundExecDetachHandle) {
+      setShowForegroundExecDetachHint(false);
+      return undefined;
+    }
+    const elapsedMs = Date.now() - foregroundExecDetachHandle.startedAt;
+    if (elapsedMs >= FOREGROUND_EXEC_DETACH_HINT_DELAY_MS) {
+      setShowForegroundExecDetachHint(true);
+      return undefined;
+    }
+    setShowForegroundExecDetachHint(false);
+    const timer = setTimeout(() => setShowForegroundExecDetachHint(true), FOREGROUND_EXEC_DETACH_HINT_DELAY_MS - elapsedMs);
+    return () => clearTimeout(timer);
+  }, [foregroundExecDetachHandle]);
 
   useEffect(() => {
     if (!terminalTitleWorking) {
@@ -1383,7 +1422,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     const blockIndex = staticLines.length + i;
     return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
   }, 0);
-  const statusRenderRows = STATUS_BAR_RENDER_ROWS + backgroundTaskStatusRenderRows(backgroundTasks.length);
+  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + backgroundTaskStatusRenderRows(backgroundTasks.length);
   const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
@@ -1627,6 +1666,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
+    showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
     backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
@@ -2087,6 +2127,16 @@ function StatusBar(
 function backgroundTaskStatusRenderRows(taskCount: number): number {
   if (taskCount <= 0) return 0;
   return 1 + Math.min(taskCount, 2);
+}
+
+function ForegroundExecDetachHintLine(
+  { handle, width: terminalWidth }:
+  { handle: ForegroundExecDetachHandle; width: number },
+) {
+  const width = statusBarWidth(terminalWidth);
+  const label = handle.description?.trim() || handle.command;
+  const text = `↳ exec still running · Ctrl+B to detach · ${truncateMiddle(label, Math.max(12, width - 38))}`;
+  return e(Text, { color: "yellow" }, fitToWidth(text, width));
 }
 
 function BackgroundTaskStatusLine(
@@ -4564,6 +4614,8 @@ const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " · ";
 const STATUS_BAR_RENDER_ROWS = 2;
+const FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS = 1;
+const FOREGROUND_EXEC_DETACH_HINT_DELAY_MS = 2000;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const QUEUED_INPUT_RENDER_ROWS = 1;
 const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";

@@ -51,6 +51,7 @@ export interface ForegroundExecDetachHandle {
   command: string;
   description?: string;
   cwd: string;
+  startedAt: number;
   detach(): ForegroundExecDetachResult;
 }
 
@@ -356,6 +357,7 @@ function runCommand(options: RunCommandOptions): Promise<ExecOutput | ExecDetach
         command: options.command,
         description: options.description,
         cwd: options.cwd,
+        startedAt: started,
         detach: () => {
           if (settled) return { ok: false, message: "exec command already finished" };
           if (detached) return { ok: false, message: "exec command already detached" };
