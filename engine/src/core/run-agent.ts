@@ -7,6 +7,7 @@ import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
 import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
+import { AGENT_REPORT_TOOL_NAME, createAgentReportTool } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { query } from "./query.js";
 
@@ -104,6 +105,10 @@ export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinit
     registry.register(tool);
   }
 
+  if (agent.agentType !== FORK_AGENT.agentType && !registry.get(AGENT_REPORT_TOOL_NAME)) {
+    registry.register(createAgentReportTool());
+  }
+
   return registry;
 }
 
@@ -187,6 +192,9 @@ function resolveAgentModel(agent: AgentDefinition, override?: string): string | 
 }
 
 function extractFinalText(messages: readonly Message[]): string {
+  const submittedReport = extractSubmittedAgentReport(messages);
+  if (submittedReport) return submittedReport;
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role !== "assistant") continue;
     const text = messages[index].blocks
@@ -197,6 +205,20 @@ function extractFinalText(messages: readonly Message[]): string {
     if (text) return text;
   }
   return "";
+}
+
+function extractSubmittedAgentReport(messages: readonly Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    for (const block of message.blocks) {
+      if (block.type !== "tool_result" || block.name !== AGENT_REPORT_TOOL_NAME || !block.ok) continue;
+      const output = block.output;
+      if (!output || typeof output !== "object") continue;
+      const report = (output as { report?: unknown }).report;
+      if (typeof report === "string" && report.trim()) return report.trim();
+    }
+  }
+  return undefined;
 }
 
 function validateExploreFinalText(content: string, toolUseCount: number): string | undefined {

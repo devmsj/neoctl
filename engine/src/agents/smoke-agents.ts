@@ -65,7 +65,11 @@ class ParentAndSubagentGateway implements ModelGateway {
         .map((block) => block.text)
         .join("\n") ?? "";
       const isExploreSmoke = allPromptText.includes("map readonly paths");
-      if (isExploreSmoke && !request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"))) {
+      const hasToolResult = request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"));
+      const hasAgentReportResult = request.messages.some((message) =>
+        message.blocks.some((block) => block.type === "tool_result" && block.name === "agent_report"),
+      );
+      if (isExploreSmoke && !hasToolResult) {
         yield {
           type: "tool_use",
           toolUse: {
@@ -77,13 +81,14 @@ class ParentAndSubagentGateway implements ModelGateway {
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
         return;
       }
-
-      const content = request.tools.length === 0 && lastPrompt.includes("Previous title:")
-        ? "Refined Delegate Smoke Title"
-        : request.tools.length === 0 && lastPrompt.includes("short title")
-          ? "Delegate Once Smoke Title"
-          : isExploreSmoke
-            ? [
+      if (isExploreSmoke && !hasAgentReportResult) {
+        yield {
+          type: "tool_use",
+          toolUse: {
+            id: "call_explore_report",
+            name: "agent_report",
+            input: {
+              content: [
                 "## Scope",
                 "Map readonly paths.",
                 "",
@@ -98,7 +103,22 @@ class ParentAndSubagentGateway implements ModelGateway {
                 "",
                 "## Suggested next steps",
                 "- Run the real explore agent against a repository fixture.",
-              ].join("\n")
+              ].join("\n"),
+              status: "completed",
+            },
+          },
+        };
+        yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
+        return;
+      }
+
+      const isTitleRequest = request.tools.every((tool) => tool.name === "agent_report");
+      const content = isTitleRequest && lastPrompt.includes("Previous title:")
+        ? "Refined Delegate Smoke Title"
+        : isTitleRequest && lastPrompt.includes("short title")
+          ? "Delegate Once Smoke Title"
+          : isExploreSmoke
+            ? "我将继续做只读检查，重新获取关键文件内容以避免依赖已清理的上下文。"
             : `worker result: ${lastPrompt.slice(0, 24)}`;
       yield { type: "assistant_message", message: createTextMessage("assistant", content) };
       yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
@@ -142,7 +162,7 @@ async function main(): Promise<void> {
   }));
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
-    ["list", "read", "grep", "search", "plan"].every((name) => exploreToolNames.has(name)) &&
+    ["list", "read", "grep", "search", "plan", "agent_report"].every((name) => exploreToolNames.has(name)) &&
     ["edit", "write", "exec", "agent", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
