@@ -1160,7 +1160,7 @@ function restoredHistoryLines(runtime: WebRuntime): Omit<UiLine, "id">[] {
     lines.push(line);
     return lines.length;
   };
-  for (const message of runtime.engine.getHistoryMessages()) renderMessage(message, append, undefined, { includeToolUseBlocks: true });
+  for (const message of runtime.engine.getHistoryMessages()) renderMessage(message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: false });
   return lines;
 }
 
@@ -1531,7 +1531,7 @@ function formatReasoningSetting(reasoning: ReasoningConfig | null | undefined): 
   return reasoning?.effort ?? "default";
 }
 
-function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number, options: { includeToolUseBlocks?: boolean } = {}): boolean {
+function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number, options: { includeToolUseBlocks?: boolean; includeThinkingBlocks?: boolean } = {}): boolean {
   if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) return false;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) return true;
@@ -1549,6 +1549,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       append(line);
       rendered = true;
     } else if (block.type === "thinking") {
+      if (options.includeThinkingBlocks === false) continue;
       append(thinkingLine(block.text));
       rendered = true;
     } else if (block.type === "tool_use" && options.includeToolUseBlocks) {

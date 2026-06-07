@@ -2976,7 +2976,7 @@ function renderMessage(
   message: Message,
   append: (line: Omit<UiLine, "id">) => number,
   activeAssistantId?: number,
-  options: { includeToolUseBlocks?: boolean } = {},
+  options: { includeToolUseBlocks?: boolean; includeThinkingBlocks?: boolean } = {},
 ): boolean {
   if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) return false;
@@ -3000,6 +3000,7 @@ function renderMessage(
       rendered = true;
     }
     if (block.type === "thinking") {
+      if (options.includeThinkingBlocks === false) continue;
       append(thinkingLine(block.text));
       rendered = true;
     }
@@ -3254,7 +3255,7 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
     return lines.length;
   };
   for (const message of runtime.engine.getHistoryMessages()) {
-    renderMessage(message, append, undefined, { includeToolUseBlocks: true });
+    renderMessage(message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: false });
   }
   return lines;
 }
