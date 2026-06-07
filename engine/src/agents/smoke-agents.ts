@@ -55,15 +55,51 @@ class ParentAndSubagentGateway implements ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     if (request.queryOrigin === "subagent") {
       this.subagentCalls += 1;
+      const allPromptText = request.messages
+        .flatMap((message) => message.blocks)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n");
       const lastPrompt = request.messages.at(-1)?.blocks
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n") ?? "";
+      const isExploreSmoke = allPromptText.includes("map readonly paths");
+      if (isExploreSmoke && !request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"))) {
+        yield {
+          type: "tool_use",
+          toolUse: {
+            id: "call_explore_list",
+            name: "list",
+            input: {},
+          },
+        };
+        yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
+        return;
+      }
+
       const content = request.tools.length === 0 && lastPrompt.includes("Previous title:")
         ? "Refined Delegate Smoke Title"
         : request.tools.length === 0 && lastPrompt.includes("short title")
           ? "Delegate Once Smoke Title"
-          : `worker result: ${lastPrompt.slice(0, 24)}`;
+          : isExploreSmoke
+            ? [
+                "## Scope",
+                "Map readonly paths.",
+                "",
+                "## Relevant files inspected",
+                "- src/agents/agent-definition.ts: explore agent definition.",
+                "",
+                "## Key findings",
+                "- src/agents/agent-definition.ts defines the explore agent as read-only.",
+                "",
+                "## Risks / unknowns",
+                "- Smoke gateway uses synthetic tool output only.",
+                "",
+                "## Suggested next steps",
+                "- Run the real explore agent against a repository fixture.",
+              ].join("\n")
+            : `worker result: ${lastPrompt.slice(0, 24)}`;
       yield { type: "assistant_message", message: createTextMessage("assistant", content) };
       yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
       return;
@@ -174,9 +210,24 @@ async function main(): Promise<void> {
   }, context);
   const exploreResult = explore.flatMap((update) => update.message.blocks).find((block) => block.type === "tool_result");
   const exploreOutput = exploreResult?.type === "tool_result" && typeof exploreResult.output === "object" && exploreResult.output
-    ? exploreResult.output as { agent_type?: string; status?: string }
+    ? exploreResult.output as { agent_type?: string; status?: string; content?: string; total_tool_use_count?: number }
     : undefined;
-  const exploreOk = exploreResult?.type === "tool_result" && exploreResult.ok === true && exploreOutput?.status === "completed" && exploreOutput.agent_type === EXPLORE_AGENT.agentType;
+  const exploreContent = exploreOutput?.content ?? "";
+  const exploreReportOk =
+    exploreContent.includes("## Scope") &&
+    exploreContent.includes("## Relevant files inspected") &&
+    exploreContent.includes("## Key findings") &&
+    exploreContent.includes("## Risks / unknowns") &&
+    exploreContent.includes("## Suggested next steps");
+  const exploreNoProgressOnly = !/(?:接下来|继续读取|继续探索|I will continue|next I will)/i.test(exploreContent);
+  const exploreOk =
+    exploreResult?.type === "tool_result" &&
+    exploreResult.ok === true &&
+    exploreOutput?.status === "completed" &&
+    exploreOutput.agent_type === EXPLORE_AGENT.agentType &&
+    (exploreOutput.total_tool_use_count ?? 0) > 0 &&
+    exploreReportOk &&
+    exploreNoProgressOnly;
 
   const task = taskId ? taskStore.get(taskId) : undefined;
   const outputText = JSON.stringify(output.map((update) => update.message.blocks));
@@ -186,7 +237,7 @@ async function main(): Promise<void> {
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
   const ok = syncOk && asyncOk && exploreToolsOk && exploreOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, exploreReportOk, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

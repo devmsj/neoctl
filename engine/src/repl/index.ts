@@ -2182,33 +2182,25 @@ function SubagentLivePanel(
     return e(Text, { color: "yellow" }, fitToWidth(`${header} | ${compactAgentSummary(selected, width - header.length - 3)}`, width));
   }
 
-  const summaryRows = Math.min(Math.max(0, rows - 4), Math.min(sorted.length, 3));
-  const detailRows = Math.max(0, rows - 2 - summaryRows);
-  const recentTimeline = selected.timeline.slice(-detailRows);
-  const spinner = selected.status === "running" ? spinnerFrame(animationTick) : statusGlyph(selected.status);
+  const detailLines = buildSubagentDetailLines(selected, sorted, animationTick);
 
   return e(
     Box,
     { flexDirection: "column", width, overflow: "hidden" },
     e(Text, { color: "yellow" }, fitToWidth(header, width)),
-    ...sorted.slice(0, summaryRows).map((activity, index) => e(Text, {
-      key: `agent-summary-${activity.agentId}`,
-      color: index === 0 ? "yellow" : "gray",
-    }, fitToWidth(`${index === 0 ? "*" : " "}${index + 1}. ${compactAgentSummary(activity, width - 4)}`, width))),
-    e(Text, { color: statusColor(selected.status) }, fitToWidth(`┌─ ${spinner} ${truncateMiddle(selected.description || selected.agentId, Math.max(12, width - 38))} · ${agentModeLabel(selected)} · ${selected.agentType} · ${selected.status} · ${formatElapsed(Date.now() - new Date(selected.startedAt).getTime())}`, width)),
-    ...recentTimeline.map((entry) => e(Text, {
-      key: entry.id,
-      color: timelineColor(entry),
-    }, fitToWidth(`│ ${timelinePrefix(entry)} ${formatTimelineEntry(entry, width - 4)}`, width))),
-    e(Text, { color: "gray" }, fitToWidth("└" + "─".repeat(Math.max(0, width - 1)), width)),
+    ...detailLines.map((line, index) => e(Text, {
+      key: `agent-detail-${selected.agentId}-${index}`,
+      color: line.color,
+    }, fitToWidth(line.text, width))),
   );
 }
+
+const SUBAGENT_DETAIL_ROWS = 3;
 
 function subagentLivePanelRenderRows(activities: AgentActivity[], terminalRows: number): number {
   if (activities.length === 0) return 0;
   if (terminalRows < 18) return 1;
-  if (terminalRows < 26) return 4;
-  return Math.min(8, Math.max(5, Math.floor(terminalRows * 0.24)));
+  return 1 + SUBAGENT_DETAIL_ROWS;
 }
 
 function sortAgentActivitiesForPanel(activities: AgentActivity[]): AgentActivity[] {
@@ -2219,6 +2211,37 @@ function sortAgentActivitiesForPanel(activities: AgentActivity[]): AgentActivity
     return 3;
   };
   return [...activities].sort((left, right) => rank(left.status) - rank(right.status) || right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function buildSubagentDetailLines(
+  selected: AgentActivity,
+  sorted: AgentActivity[],
+  animationTick: number,
+): { text: string; color: string }[] {
+  const spinner = selected.status === "running" ? spinnerFrame(animationTick) : statusGlyph(selected.status);
+  const elapsed = formatElapsed(Date.now() - new Date(selected.startedAt).getTime());
+  const headerLine = `${spinner} ${selected.description || selected.agentId} · ${agentModeLabel(selected)} · ${selected.agentType} · ${selected.status} · ${elapsed}`;
+  const currentLine = selected.currentTool
+    ? `→ ${selected.currentTool.name}${selected.currentTool.inputPreview ? ` · ${selected.currentTool.inputPreview}` : ""}`
+    : selected.error
+      ? `✖ ${selected.error}`
+      : selected.resultPreview
+        ? `✓ ${selected.resultPreview}`
+        : selected.lastText
+          ? `• ${selected.lastText}`
+          : `• ${selected.prompt}`;
+  const recent = selected.timeline.slice(-2).map((entry) => `${timelinePrefix(entry)} ${formatTimelineEntry(entry, 240)}`);
+  const otherRunning = sorted
+    .filter((activity) => activity.agentId !== selected.agentId && (activity.status === "running" || activity.status === "pending"))
+    .slice(0, 2)
+    .map((activity) => compactAgentSummary(activity, 180));
+  const tail = [...recent, ...otherRunning.map((summary) => `· ${summary}`)].find((line) => line.trim()) ?? `tools:${selected.totalToolUseCount}`;
+
+  return [
+    { text: headerLine, color: statusColor(selected.status) },
+    { text: currentLine, color: selected.error ? "red" : selected.currentTool ? "#d4b04c" : "yellow" },
+    { text: tail, color: "gray" },
+  ];
 }
 
 function compactAgentSummary(activity: AgentActivity, maxLength: number): string {

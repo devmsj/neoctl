@@ -250,10 +250,64 @@ function previewText(value: string): string {
 }
 
 function previewValue(value: unknown): string {
-  if (typeof value === "string") return previewText(value);
-  try {
-    return previewText(JSON.stringify(value));
-  } catch {
-    return previewText(String(value));
+  return previewText(formatPreviewValue(value));
+}
+
+function formatPreviewValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const items = value.slice(0, 3).map(formatPreviewValue).filter(Boolean);
+    return `[${items.join(", ")}${value.length > 3 ? `, +${value.length - 3} more` : ""}]`;
   }
+  if (typeof value === "object") return formatObjectPreview(value as Record<string, unknown>);
+  return String(value);
+}
+
+function formatObjectPreview(value: Record<string, unknown>): string {
+  const preferredKeys = [
+    "status",
+    "description",
+    "agent_type",
+    "agent_id",
+    "task_id",
+    "name",
+    "path",
+    "query",
+    "command",
+    "cwd",
+    "error",
+    "content",
+    "output",
+    "total_tool_use_count",
+  ];
+  const keys = [...preferredKeys.filter((key) => key in value), ...Object.keys(value).filter((key) => !preferredKeys.includes(key))];
+  const parts: string[] = [];
+  for (const key of keys.slice(0, 6)) {
+    const formatted = formatPreviewField(value[key]);
+    if (!formatted) continue;
+    parts.push(`${humanizePreviewKey(key)}=${formatted}`);
+  }
+  const extra = keys.length > 6 ? `, +${keys.length - 6} fields` : "";
+  return parts.length ? parts.join(" · ") + extra : "{}";
+}
+
+function formatPreviewField(value: unknown): string {
+  if (typeof value === "string") return quoteIfNeeded(value.replace(/\s+/g, " ").trim());
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (typeof value === "object") return `${Object.keys(value as Record<string, unknown>).length} fields`;
+  return String(value);
+}
+
+function humanizePreviewKey(key: string): string {
+  return key.replace(/_/g, "-");
+}
+
+function quoteIfNeeded(value: string): string {
+  if (!value) return "\"\"";
+  return /[\s,=]/.test(value) ? `"${value}"` : value;
 }

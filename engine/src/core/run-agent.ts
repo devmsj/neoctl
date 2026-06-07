@@ -6,7 +6,7 @@ import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
-import { buildForkChildPrompt, FORK_AGENT } from "../agents/agent-definition.js";
+import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { query } from "./query.js";
 
@@ -51,6 +51,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   const agentMessages: Message[] = [];
   let terminalReason: string | undefined;
   let lastUsage: ModelUsage | undefined;
+  let totalToolUseCount = 0;
 
   const dependencies = {
     modelGateway: options.dependencies.modelGateway,
@@ -72,6 +73,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     workspaceCwd: options.workspaceCwd,
   })) {
     if (event.type === "message") agentMessages.push(event.message);
+    if (event.type === "tool.started") totalToolUseCount += 1;
     if (event.type === "usage") lastUsage = event.usage;
     if (event.type === "terminal") terminalReason = event.reason;
     yield event;
@@ -84,6 +86,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       messages: agentMessages,
       durationMs: Date.now() - startedAt,
       usage: lastUsage,
+      totalToolUseCount,
     }),
     messages: agentMessages,
     terminalReason,
@@ -110,16 +113,27 @@ export function finalizeAgentTool(input: {
   messages: readonly Message[];
   durationMs: number;
   usage?: ModelUsage;
+  totalToolUseCount?: number;
 }): AgentToolResult {
+  const content = extractFinalText(input.messages);
+  const totalToolUseCount = input.totalToolUseCount ?? countToolUses(input.messages);
+  const validationError = input.agentType === EXPLORE_AGENT.agentType
+    ? validateExploreFinalText(content, totalToolUseCount)
+    : undefined;
+
   return {
     agent_id: input.agentId,
     agent_type: input.agentType,
-    content: extractFinalText(input.messages),
+    content: validationError ? formatIncompleteExploreResult(validationError, content) : content,
     total_duration_ms: input.durationMs,
     total_tokens: input.usage?.totalTokens,
-    total_tool_use_count: countToolUses(input.messages),
+    total_tool_use_count: totalToolUseCount,
     usage: input.usage,
   };
+}
+
+function shouldAppendAgentPrompt(agent: AgentDefinition): boolean {
+  return agent.agentType === FORK_AGENT.agentType || agent.agentType === EXPLORE_AGENT.agentType;
 }
 
 function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
@@ -149,7 +163,7 @@ function createAgentContextManager(options: RunAgentOptions): ContextManager {
         cwd: options.workspaceCwd ?? input.cwd,
         omitProjectMemory: options.agent.omitProjectMemory ?? input.omitProjectMemory,
         agentPrompt: options.agent.buildSystemPrompt?.(options.parentContext),
-        agentPromptMode: options.agent.agentType === FORK_AGENT.agentType ? "proactive_append" : "replace",
+        agentPromptMode: shouldAppendAgentPrompt(options.agent) ? "proactive_append" : "replace",
       });
       return runtime;
     },
@@ -183,6 +197,50 @@ function extractFinalText(messages: readonly Message[]): string {
     if (text) return text;
   }
   return "";
+}
+
+function validateExploreFinalText(content: string, toolUseCount: number): string | undefined {
+  const text = content.trim();
+  if (!text) return "Explore agent returned empty content.";
+  if (toolUseCount === 0) return "Explore agent completed without using any read-only inspection tools.";
+  if (isProgressOnlyExploreText(text)) return "Explore agent returned progress-only text instead of a final report.";
+
+  const requiredSections = [
+    /(?:^|\n)##\s*Scope\b/i,
+    /(?:^|\n)##\s*Relevant files inspected\b/i,
+    /(?:^|\n)##\s*Key findings\b/i,
+    /(?:^|\n)##\s*Risks\s*\/\s*unknowns\b/i,
+    /(?:^|\n)##\s*Suggested next steps\b/i,
+  ];
+  if (!requiredSections.every((pattern) => pattern.test(text))) {
+    return "Explore agent final report is missing required sections.";
+  }
+
+  return undefined;
+}
+
+function isProgressOnlyExploreText(text: string): boolean {
+  const progressPatterns = [
+    /接下来/,
+    /继续(?:读取|探索|检查|补齐)/,
+    /我(?:会|将)继续/,
+    /先补齐/,
+    /I\s+will\s+continue/i,
+    /next\s+I\s+will/i,
+    /I\s+have\s+started/i,
+    /continu(?:e|ing)\s+(?:to|with)/i,
+  ];
+  return progressPatterns.some((pattern) => pattern.test(text));
+}
+
+function formatIncompleteExploreResult(error: string, content: string): string {
+  const lastOutput = content.trim() || "<empty>";
+  return [
+    `INCOMPLETE: ${error}`,
+    "",
+    "Last assistant output:",
+    lastOutput,
+  ].join("\n");
 }
 
 function countToolUses(messages: readonly Message[]): number {
