@@ -214,11 +214,9 @@ async function main(): Promise<void> {
     : undefined;
   const exploreContent = exploreOutput?.content ?? "";
   const exploreReportOk =
-    exploreContent.includes("## Scope") &&
-    exploreContent.includes("## Relevant files inspected") &&
-    exploreContent.includes("## Key findings") &&
-    exploreContent.includes("## Risks / unknowns") &&
-    exploreContent.includes("## Suggested next steps");
+    countMarkdownSections(exploreContent) >= 3 &&
+    hasListItem(exploreContent) &&
+    hasLikelyFilePath(exploreContent);
   const exploreNoProgressOnly = !/(?:接下来|继续读取|继续探索|I will continue|next I will)/i.test(exploreContent);
   const exploreOk =
     exploreResult?.type === "tool_result" &&
@@ -239,6 +237,18 @@ async function main(): Promise<void> {
   const ok = syncOk && asyncOk && exploreToolsOk && exploreOk;
   console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, exploreReportOk, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
+}
+
+function countMarkdownSections(text: string): number {
+  return text.match(/(?:^|\n)#{2,6}\s+\S/g)?.length ?? 0;
+}
+
+function hasListItem(text: string): boolean {
+  return /(?:^|\n)\s*[-*]\s+\S/.test(text);
+}
+
+function hasLikelyFilePath(text: string): boolean {
+  return /(?:^|\n)\s*[-*]\s+(?:[A-Za-z]:)?[^\n:]{0,160}(?:[\\/][^\n:]+|\.[A-Za-z0-9]{1,12})(?::|\s+-|\s+—|\s+–|\s|$)/.test(text);
 }
 
 async function waitFor<T>(read: () => Promise<T | undefined>, timeoutMs = 1000): Promise<T> {

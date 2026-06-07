@@ -205,18 +205,29 @@ function validateExploreFinalText(content: string, toolUseCount: number): string
   if (toolUseCount === 0) return "Explore agent completed without using any read-only inspection tools.";
   if (isProgressOnlyExploreText(text)) return "Explore agent returned progress-only text instead of a final report.";
 
-  const requiredSections = [
-    /(?:^|\n)##\s*Scope\b/i,
-    /(?:^|\n)##\s*Relevant files inspected\b/i,
-    /(?:^|\n)##\s*Key findings\b/i,
-    /(?:^|\n)##\s*Risks\s*\/\s*unknowns\b/i,
-    /(?:^|\n)##\s*Suggested next steps\b/i,
-  ];
-  if (!requiredSections.every((pattern) => pattern.test(text))) {
-    return "Explore agent final report is missing required sections.";
+  if (countMarkdownSections(text) < 3) {
+    return "Explore agent final report is not structured with enough markdown sections.";
+  }
+  if (!hasListItem(text)) {
+    return "Explore agent final report is missing list-based details.";
+  }
+  if (!hasLikelyFilePath(text)) {
+    return "Explore agent final report is missing file path evidence.";
   }
 
   return undefined;
+}
+
+function countMarkdownSections(text: string): number {
+  return text.match(/(?:^|\n)#{2,6}\s+\S/g)?.length ?? 0;
+}
+
+function hasListItem(text: string): boolean {
+  return /(?:^|\n)\s*[-*]\s+\S/.test(text);
+}
+
+function hasLikelyFilePath(text: string): boolean {
+  return /(?:^|\n)\s*[-*]\s+(?:[A-Za-z]:)?[^\n:]{0,160}(?:[\\/][^\n:]+|\.[A-Za-z0-9]{1,12})(?::|\s+-|\s+—|\s+–|\s|$)/.test(text);
 }
 
 function isProgressOnlyExploreText(text: string): boolean {

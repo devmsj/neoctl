@@ -461,6 +461,24 @@ function activeBackgroundTasks(runtime: ReplRuntime) {
   return runtime.taskStore.list().filter((task) => !runtime.taskStore.isTerminal(task));
 }
 
+function debounceVoid(callback: () => void, delayMs: number): { run: () => void; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return {
+    run: () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        callback();
+      }, delayMs);
+    },
+    cancel: () => {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
 function activeAgentActivities(runtime: ReplRuntime): AgentActivity[] {
   const now = Date.now();
   return runtime.agentActivityStore.list().filter((activity) => {
@@ -700,8 +718,13 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
 
   useEffect(() => {
     const updateAgentActivities = () => setAgentActivities(activeAgentActivities(runtime));
+    const debouncedUpdateAgentActivities = debounceVoid(updateAgentActivities, SUBAGENT_ACTIVITY_UPDATE_DEBOUNCE_MS);
     updateAgentActivities();
-    return runtime.agentActivityStore.subscribe(updateAgentActivities);
+    const unsubscribe = runtime.agentActivityStore.subscribe(debouncedUpdateAgentActivities.run);
+    return () => {
+      unsubscribe();
+      debouncedUpdateAgentActivities.cancel();
+    };
   }, [runtime]);
 
   useEffect(() => {
@@ -4774,6 +4797,7 @@ const TERMINAL_TITLE_WORKING_PREFIX = "● ";
 const TERMINAL_TITLE_READY_PREFIX = "✓ ";
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
+const SUBAGENT_ACTIVITY_UPDATE_DEBOUNCE_MS = 180;
 const SUBAGENT_COMPLETED_LINGER_MS = 8000;
 const TOKEN_PULSE_MS = 900;
 const ANIMATED_NUMBER_INTERVAL_MS = 50;
