@@ -17,7 +17,7 @@ import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
-import { createExecTool } from "../tools/builtins/exec-tool.js";
+import { createExecTool, type ForegroundExecDetachHandle, type ForegroundExecDetachRegistry } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
@@ -53,6 +53,7 @@ interface ReplRuntime {
   agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
+  foregroundExecDetach: ReplForegroundExecDetachRegistry;
   tools: ToolRegistry;
   skills: SkillCatalog;
   skillWorkspaceRoot: string;
@@ -60,6 +61,27 @@ interface ReplRuntime {
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
   envNotice?: string;
+}
+
+class ReplForegroundExecDetachRegistry implements ForegroundExecDetachRegistry {
+  private handle?: ForegroundExecDetachHandle;
+
+  set(handle: ForegroundExecDetachHandle): () => void {
+    this.handle = handle;
+    return () => {
+      if (this.handle === handle) this.handle = undefined;
+    };
+  }
+
+  current(): ForegroundExecDetachHandle | undefined {
+    return this.handle;
+  }
+
+  detachCurrent(): ReturnType<ForegroundExecDetachHandle["detach"]> {
+    const handle = this.handle;
+    if (!handle) return { ok: false, message: "No foreground exec command is currently running" };
+    return handle.detach();
+  }
 }
 
 interface UsageTotals {
@@ -319,6 +341,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   const communicationLogger = new CommunicationLogger();
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
+  const foregroundExecDetach = new ReplForegroundExecDetachRegistry();
   const tools = new ToolRegistry();
   const skillWorkspaceRoot = path.resolve(process.cwd(), ".neo", "skills");
   const skills = new FileSystemSkillCatalog({
@@ -330,7 +353,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   });
   tools.register(editTool);
   tools.register(writeTool);
-  tools.register(createExecTool({ taskStore }));
+  tools.register(createExecTool({ taskStore, foregroundDetachRegistry: foregroundExecDetach }));
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(grepTool);
@@ -388,6 +411,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
+    foregroundExecDetach,
     tools,
     skills,
     skillWorkspaceRoot,
@@ -1382,6 +1406,13 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
     if (isPasteShortcut(value, key)) {
       void handleClipboardPaste();
+      return;
+    }
+    if (key.ctrl && value.toLowerCase() === "b") {
+      const result = runtime.foregroundExecDetach.detachCurrent();
+      append(result.ok
+        ? systemLine(`Detached foreground exec to background task ${result.taskId ?? "unknown"}.`)
+        : systemLine(result.message));
       return;
     }
     if (key.ctrl && value === "c") {

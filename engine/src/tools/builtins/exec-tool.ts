@@ -39,8 +39,28 @@ interface ExecOutput {
   };
 }
 
+export interface ForegroundExecDetachResult {
+  ok: boolean;
+  message: string;
+  taskId?: string;
+  agentId?: string;
+}
+
+export interface ForegroundExecDetachHandle {
+  toolUseId?: string;
+  command: string;
+  description?: string;
+  cwd: string;
+  detach(): ForegroundExecDetachResult;
+}
+
+export interface ForegroundExecDetachRegistry {
+  set(handle: ForegroundExecDetachHandle): () => void;
+}
+
 export interface ExecToolRuntime {
   taskStore?: TaskStore;
+  foregroundDetachRegistry?: ForegroundExecDetachRegistry;
 }
 
 export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
@@ -137,7 +157,23 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
         shell: resolvedShell,
         env: input.env,
         abortSignal: context.abortSignal,
+        detach: runtime?.foregroundDetachRegistry && runtime?.taskStore
+          ? {
+              toolUseId: context.toolUseId,
+              input,
+              taskStore: runtime.taskStore,
+              registry: runtime.foregroundDetachRegistry,
+            }
+          : undefined,
       });
+
+      if (isDetachedExecOutput(output)) {
+        return {
+          ok: true,
+          output,
+          summary: `detached to background task ${output.task_id}`,
+        };
+      }
 
       const ok = output.exitCode === 0 && !output.timedOut;
       return {
@@ -184,6 +220,7 @@ function launchBackgroundExec(
     env: input.env,
     abortSignal: abortController.signal,
   }).then((output) => {
+    if (isDetachedExecOutput(output)) return;
     const ok = output.exitCode === 0 && !output.timedOut;
     taskStore.complete(taskId, {
       agent_id: agentId,
@@ -227,6 +264,25 @@ interface ResolvedShell {
   args: string[];
 }
 
+interface ExecDetachedOutput {
+  status: "async_launched";
+  detachedFromForeground: true;
+  task_id: string;
+  agent_id: string;
+  description: string;
+  command: string;
+  output_file: string;
+  message: string;
+}
+
+interface RunCommandDetachOptions {
+  toolUseId?: string;
+  input: ExecToolInput;
+  taskStore: TaskStore;
+  registry: ForegroundExecDetachRegistry;
+  taskId?: string;
+}
+
 interface RunCommandOptions {
   command: string;
   description?: string;
@@ -236,14 +292,17 @@ interface RunCommandOptions {
   shell: ResolvedShell;
   env: Record<string, string>;
   abortSignal?: AbortSignal;
+  detach?: RunCommandDetachOptions;
 }
 
-function runCommand(options: RunCommandOptions): Promise<ExecOutput> {
+function runCommand(options: RunCommandOptions): Promise<ExecOutput | ExecDetachedOutput> {
   const started = Date.now();
   const stdout = new OutputAccumulator(options.maxOutputChars);
   const stderr = new OutputAccumulator(options.maxOutputChars);
   let timedOut = false;
   let settled = false;
+  let detached = false;
+  let detachCleanup: (() => void) | undefined;
 
   return new Promise((resolve, reject) => {
     const child = spawn(options.shell.file, [...options.shell.args, options.command], {
@@ -266,39 +325,143 @@ function runCommand(options: RunCommandOptions): Promise<ExecOutput> {
     };
     options.abortSignal?.addEventListener("abort", abort, { once: true });
 
+    const buildOutput = (exitCode: number | null, signal: NodeJS.Signals | null): ExecOutput => ({
+      command: options.command,
+      description: options.description,
+      cwd: options.cwd,
+      shell: options.shell.requested,
+      exitCode,
+      signal,
+      timedOut,
+      durationMs: Date.now() - started,
+      stdout: stdout.value(),
+      stderr: stderr.value(),
+      stdoutTruncated: stdout.truncated,
+      stderrTruncated: stderr.truncated,
+      outputBytes: {
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+      },
+    });
+
+    const backgroundAbortController = new AbortController();
+    const backgroundAbort = () => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    };
+
+    if (options.detach) {
+      detachCleanup = options.detach.registry.set({
+        toolUseId: options.detach.toolUseId,
+        command: options.command,
+        description: options.description,
+        cwd: options.cwd,
+        detach: () => {
+          if (settled) return { ok: false, message: "exec command already finished" };
+          if (detached) return { ok: false, message: "exec command already detached" };
+          detached = true;
+          options.abortSignal?.removeEventListener("abort", abort);
+          backgroundAbortController.signal.addEventListener("abort", backgroundAbort, { once: true });
+          const launched = createDetachedExecTask(options.detach!, backgroundAbortController);
+          detachCleanup?.();
+          detachCleanup = undefined;
+          resolve(launched.output);
+          return { ok: true, message: launched.output.message, taskId: launched.taskId, agentId: launched.agentId };
+        },
+      });
+    }
+
     child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString("utf8")));
     child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
 
     child.on("error", (error) => {
+      settled = true;
       clearTimeout(timeout);
+      detachCleanup?.();
       options.abortSignal?.removeEventListener("abort", abort);
+      backgroundAbortController.signal.removeEventListener("abort", backgroundAbort);
+      if (detached && options.detach) {
+        options.detach.taskStore.fail(resolveDetachedTaskId(options.detach), error instanceof Error ? error.message : String(error));
+        return;
+      }
       reject(error);
     });
 
     child.on("close", (exitCode, signal) => {
       settled = true;
       clearTimeout(timeout);
+      detachCleanup?.();
       options.abortSignal?.removeEventListener("abort", abort);
-      resolve({
-        command: options.command,
-        description: options.description,
-        cwd: options.cwd,
-        shell: options.shell.requested,
-        exitCode,
-        signal,
-        timedOut,
-        durationMs: Date.now() - started,
-        stdout: stdout.value(),
-        stderr: stderr.value(),
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
-        outputBytes: {
-          stdout: stdout.bytes,
-          stderr: stderr.bytes,
-        },
-      });
+      backgroundAbortController.signal.removeEventListener("abort", backgroundAbort);
+      const output = buildOutput(exitCode, signal);
+      if (detached && options.detach) {
+        completeDetachedExecTask(options.detach.taskStore, resolveDetachedTaskId(options.detach), output);
+        return;
+      }
+      resolve(output);
     });
   });
+}
+
+function createDetachedExecTask(
+  detach: RunCommandDetachOptions,
+  abortController: AbortController,
+): { taskId: string; agentId: string; output: ExecDetachedOutput } {
+  const taskId = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `bg_exec_${Date.now().toString(36)}`;
+  const description = detach.input.description ?? `exec: ${detach.input.command.slice(0, 80)}`;
+  detach.taskId = taskId;
+  const task = createLocalAgentTask({
+    taskId,
+    agentId,
+    description,
+    prompt: detach.input.command,
+    type: "exec",
+    abortController,
+  });
+  detach.taskStore.upsert(task);
+  detach.taskStore.markRunning(taskId);
+  const output: ExecDetachedOutput = {
+    status: "async_launched",
+    detachedFromForeground: true,
+    task_id: taskId,
+    agent_id: agentId,
+    description,
+    command: detach.input.command,
+    output_file: task.outputFile,
+    message: "Foreground command detached to background. Use TaskOutput or TaskGet to check status.",
+  };
+  return { taskId, agentId, output };
+}
+
+function resolveDetachedTaskId(detach: RunCommandDetachOptions): string {
+  if (!detach.taskId) throw new Error("Detached exec task was not initialized");
+  return detach.taskId;
+}
+
+function completeDetachedExecTask(taskStore: TaskStore, taskId: string, output: ExecOutput): void {
+  const ok = output.exitCode === 0 && !output.timedOut;
+  taskStore.complete(taskId, {
+    agent_id: taskStore.get(taskId)?.agentId ?? "bg_exec",
+    agent_type: "exec",
+    content: summarizeExecOutput(output),
+    total_duration_ms: output.durationMs,
+    total_tool_use_count: 0,
+  });
+  const finished = taskStore.get(taskId);
+  if (finished) {
+    finished.messages.push(
+      createTextMessage("user",
+        `<task-notification agent_id="${finished.agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(output)}\nstdout: ${output.stdout.slice(0, 2000)}\nstderr: ${output.stderr.slice(0, 2000)}\n</task-notification>`,
+      ),
+    );
+    finished.notified = false;
+    taskStore.upsert(finished);
+  }
+}
+
+function isDetachedExecOutput(output: ExecOutput | ExecDetachedOutput): output is ExecDetachedOutput {
+  return "status" in output && output.status === "async_launched" && output.detachedFromForeground === true;
 }
 
 class OutputAccumulator {
