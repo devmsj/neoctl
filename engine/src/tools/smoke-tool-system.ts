@@ -155,8 +155,8 @@ async function main(): Promise<void> {
       input: {
         title: "Smoke plan",
         items: [
-          { description: "Register plan tool", status: "completed" },
-          { description: "Render plan", status: "in_progress" },
+          { description: "Register plan tool", status: "completed", subitems: [{ description: "Expose subitems schema", status: "completed" }] },
+          { description: "Render plan", status: "in_progress", subitems: [{ description: "Indent nested plan rows", status: "pending" }] },
           { description: "Validate smoke", status: "pending" },
         ],
       },
@@ -369,7 +369,8 @@ async function main(): Promise<void> {
     completed?: number;
     inProgress?: number;
     pending?: number;
-    items?: Array<{ status?: string }>;
+    total?: number;
+    items?: Array<{ status?: string; subitems?: Array<{ status?: string }> }>;
   };
   const writeOutput = toolOutput(write[write.length - 1]) as {
     operation?: string;
@@ -416,11 +417,15 @@ async function main(): Promise<void> {
       imageEditNumberOutput.imageRefs?.[0] === "[img#10]",
     planOk:
       toolOk(plan[plan.length - 1]) &&
-      planOutput.summary === "1/3 completed" &&
-      planOutput.completed === 1 &&
+      planOutput.summary === "2/5 completed" &&
+      planOutput.total === 5 &&
+      planOutput.completed === 2 &&
       planOutput.inProgress === 1 &&
-      planOutput.pending === 1 &&
-      planOutput.items?.[0]?.status === "completed",
+      planOutput.pending === 2 &&
+      planOutput.items?.[0]?.status === "completed" &&
+      planOutput.items?.[0]?.subitems?.[0]?.status === "completed" &&
+      String(planTool.description).includes("split it into subitems") &&
+      JSON.stringify(planTool.inputSchema).includes("subitems"),
     truncatedGrepCounts:
       truncatedGrepOutput.returnedMatches === 1 &&
       truncatedGrepOutput.totalMatchesKnown === null &&

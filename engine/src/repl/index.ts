@@ -3807,17 +3807,20 @@ interface PlanToolPayloadLike extends Record<string, unknown> {
 interface PlanItemLike {
   description: string;
   status: "pending" | "in_progress" | "completed";
+  subitems?: PlanItemLike[];
 }
 
 function isPlanToolPayload(value: unknown): value is PlanToolPayloadLike {
   if (!isRecord(value) || !Array.isArray(value.items)) return false;
-  return value.items.every((item) => {
-    if (!isRecord(item)) return false;
-    return (
-      typeof item.description === "string" &&
-      (item.status === "pending" || item.status === "in_progress" || item.status === "completed")
-    );
-  });
+  return value.items.every(isPlanItemLike);
+}
+
+function isPlanItemLike(item: unknown): item is PlanItemLike {
+  if (!isRecord(item)) return false;
+  if (typeof item.description !== "string") return false;
+  if (item.status !== "pending" && item.status !== "in_progress" && item.status !== "completed") return false;
+  if (item.subitems === undefined) return true;
+  return Array.isArray(item.subitems) && item.subitems.every(isPlanItemLike);
 }
 
 function planToolBodyTitle(payload: PlanToolPayloadLike): string | undefined {
@@ -3829,15 +3832,25 @@ function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
   const sections: string[] = [];
   if (payload.summary?.trim()) sections.push(payload.summary.trim());
   if (payload.note?.trim()) sections.push(payload.note.trim());
-  sections.push(payload.items.map(formatPlanItem).join("\n"));
+  sections.push(payload.items.flatMap((item) => formatPlanItem(item)).join("\n"));
   return sections.filter(Boolean).join("\n");
 }
 
-function formatPlanItem(item: PlanItemLike): string {
+function formatPlanItem(item: PlanItemLike, depth = 0): string[] {
+  const indent = "  ".repeat(Math.max(0, depth));
   const text = escapePlanMarkdown(item.description.trim());
-  if (item.status === "completed") return `- ~~${text}~~`;
-  if (item.status === "in_progress") return `- ▶ ${text}`;
-  return `- ${text}`;
+  const marker = planItemMarker(item.status);
+  const line = item.status === "completed"
+    ? `${indent}- ${marker} ~~${text}~~`
+    : `${indent}- ${marker} ${text}`;
+  const subitems = item.subitems?.flatMap((subitem) => formatPlanItem(subitem, depth + 1)) ?? [];
+  return [line, ...subitems];
+}
+
+function planItemMarker(status: PlanItemLike["status"]): string {
+  if (status === "completed") return "✓";
+  if (status === "in_progress") return "▶";
+  return "○";
 }
 
 function escapePlanMarkdown(text: string): string {
