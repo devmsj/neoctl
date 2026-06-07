@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "think" } },
     { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "echo", input: {} } },
     { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"text":"pong"}' } },
-    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { input_tokens: 5, output_tokens: 7 } },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { input_tokens: 0, output_tokens: 7 } },
     { type: "message_stop" },
   ]);
 
@@ -39,7 +39,11 @@ async function main(): Promise<void> {
   assertEqual(events.some((event) => event.type === "thinking_delta" && event.text === "think"), true, "thinking delta emitted");
   assertEqual(events.some((event) => event.type === "tool_call_delta" && event.callId === "toolu_1"), true, "tool call delta emitted");
   assertEqual(events.some((event) => event.type === "tool_use" && event.toolUse.id === "toolu_1" && (event.toolUse.input as { text: string }).text === "pong"), true, "tool use emitted");
-  assertEqual(events.some((event) => event.type === "response_completed" && event.responseId === "msg_1"), true, "response completed");
+  const usageEvents = events.filter((event) => event.type === "usage");
+  const lastUsageEvent = usageEvents[usageEvents.length - 1];
+  assertEqual(lastUsageEvent?.type === "usage" ? lastUsageEvent.usage.inputTokens : undefined, 5, "stream usage preserves input tokens when delta reports zero");
+  assertEqual(lastUsageEvent?.type === "usage" ? lastUsageEvent.usage.outputTokens : undefined, 7, "stream usage updates output tokens");
+  assertEqual(events.some((event) => event.type === "response_completed" && event.responseId === "msg_1" && event.usage?.inputTokens === 5 && event.usage.outputTokens === 7), true, "response completed with merged usage");
 
   const objectEvents = [...normalizeAnthropicObject({
     status: 200,

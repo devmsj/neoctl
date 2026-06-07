@@ -405,7 +405,7 @@ function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderNa
 
 
 function formatCreatedEnvNotice(path: string): string {
-  return `Created default config file: ${path}\nSet MODEL_PROVIDER and the matching provider section (for example OPENAI_API_KEY, ANTHROPIC_API_KEY, or KIMI_API_KEY), then restart neo.`;
+  return `Created default config file: ${path}\nSet MODEL_PROVIDER and the matching provider section (OPENAI_API_KEY or ANTHROPIC_API_KEY), then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -2674,10 +2674,8 @@ function currentModelProvider(): LoginProviderName {
   return parseLoginProvider(process.env.MODEL_PROVIDER) ?? (process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai");
 }
 
-function modelEnvKeyForProvider(provider: LoginProviderName): "OPENAI_MODEL" | "ANTHROPIC_MODEL" | "DEEPSEEK_MODEL" | "KIMI_MODEL" {
+function modelEnvKeyForProvider(provider: LoginProviderName): "OPENAI_MODEL" | "ANTHROPIC_MODEL" {
   if (provider === "anthropic") return "ANTHROPIC_MODEL";
-  if (provider === "deepseek") return "DEEPSEEK_MODEL";
-  if (provider === "kimi") return "KIMI_MODEL";
   return "OPENAI_MODEL";
 }
 
@@ -3045,7 +3043,7 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
   return lines;
 }
 
-const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "anthropic", "deepseek", "kimi"];
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "anthropic"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
@@ -3073,20 +3071,6 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
     { key: "version", label: "Anthropic version", envKey: "ANTHROPIC_VERSION", scope: "provider", placeholder: "2023-06-01" },
     ...SHARED_LOGIN_FIELDS,
   ],
-  deepseek: [
-    { key: "apiKey", label: "API key", envKey: "DEEPSEEK_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "DEEPSEEK_BASE_URL", scope: "provider", placeholder: "https://api.deepseek.com" },
-    { key: "model", label: "Model", envKey: "DEEPSEEK_MODEL", scope: "provider", required: true, placeholder: "deepseek-chat" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "DEEPSEEK_FALLBACK_MODEL", scope: "provider" },
-    ...SHARED_LOGIN_FIELDS,
-  ],
-  kimi: [
-    { key: "apiKey", label: "API key", envKey: "KIMI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "KIMI_BASE_URL", scope: "provider", placeholder: "https://api.moonshot.cn/v1" },
-    { key: "model", label: "Model", envKey: "KIMI_MODEL", scope: "provider", required: true, placeholder: "kimi-k2.6" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "KIMI_FALLBACK_MODEL", scope: "provider" },
-    ...SHARED_LOGIN_FIELDS,
-  ],
 };
 
 const DEPRECATED_MODEL_ENV_KEYS = [
@@ -3108,24 +3092,6 @@ const DEPRECATED_MODEL_ENV_KEYS = [
   "ANTHROPIC_TIMEOUT_MS",
   "ANTHROPIC_STREAM_IDLE_TIMEOUT_MS",
   "ANTHROPIC_MAX_RETRIES",
-  "DEEPSEEK_REASONING_EFFORT",
-  "DEEPSEEK_REASONING_SUMMARY",
-  "DEEPSEEK_MAX_OUTPUT_TOKENS",
-  "DEEPSEEK_TIMEOUT_MS",
-  "DEEPSEEK_STREAM_IDLE_TIMEOUT_MS",
-  "DEEPSEEK_MAX_RETRIES",
-  "KIMI_REASONING_EFFORT",
-  "KIMI_REASONING_SUMMARY",
-  "KIMI_MAX_OUTPUT_TOKENS",
-  "KIMI_TIMEOUT_MS",
-  "KIMI_STREAM_IDLE_TIMEOUT_MS",
-  "KIMI_MAX_RETRIES",
-  "MOONSHOT_REASONING_EFFORT",
-  "MOONSHOT_REASONING_SUMMARY",
-  "MOONSHOT_MAX_OUTPUT_TOKENS",
-  "MOONSHOT_TIMEOUT_MS",
-  "MOONSHOT_STREAM_IDLE_TIMEOUT_MS",
-  "MOONSHOT_MAX_RETRIES",
 ];
 
 function sessionsPageCount(state: SessionsBrowserState): number {
@@ -3382,12 +3348,6 @@ function loginValuesForProvider(provider: LoginProviderName, env: Record<string,
   for (const field of LOGIN_FIELD_DEFINITIONS[provider]) {
     values[field.key] = env[field.envKey] ?? "";
   }
-  if (provider === "kimi") {
-    values.apiKey ||= env.MOONSHOT_API_KEY ?? process.env.MOONSHOT_API_KEY ?? "";
-    values.baseUrl ||= env.MOONSHOT_BASE_URL ?? process.env.MOONSHOT_BASE_URL ?? "";
-    values.model ||= env.MOONSHOT_MODEL ?? process.env.MOONSHOT_MODEL ?? "";
-    values.fallbackModel ||= env.MOONSHOT_FALLBACK_MODEL ?? process.env.MOONSHOT_FALLBACK_MODEL ?? "";
-  }
   if (!values.baseUrl) values.baseUrl = defaultBaseUrlForLoginProvider(provider);
   if (!values.model) values.model = defaultModelForLoginProvider(provider);
   if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
@@ -3395,28 +3355,22 @@ function loginValuesForProvider(provider: LoginProviderName, env: Record<string,
 }
 
 function parseLoginProvider(value: string | undefined): LoginProviderName | undefined {
-  if (value === "openai" || value === "anthropic" || value === "deepseek" || value === "kimi") return value;
+  if (value === "openai" || value === "anthropic") return value;
   return undefined;
 }
 
 function guessLoginProvider(env: Record<string, string>): LoginProviderName {
-  if (env.KIMI_API_KEY ?? env.MOONSHOT_API_KEY ?? process.env.KIMI_API_KEY ?? process.env.MOONSHOT_API_KEY) return "kimi";
-  if (env.DEEPSEEK_API_KEY ?? process.env.DEEPSEEK_API_KEY) return "deepseek";
   if (env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY) return "anthropic";
   return "openai";
 }
 
 function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
   if (provider === "anthropic") return "https://api.anthropic.com";
-  if (provider === "deepseek") return "https://api.deepseek.com";
-  if (provider === "kimi") return "https://api.moonshot.cn/v1";
   return "https://api.openai.com";
 }
 
 function defaultModelForLoginProvider(provider: LoginProviderName): string {
   if (provider === "anthropic") return "claude-sonnet-4-6";
-  if (provider === "deepseek") return "deepseek-chat";
-  if (provider === "kimi") return "kimi-k2.6";
   return "gpt-5.5";
 }
 
@@ -3463,7 +3417,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
       );
     }),
     e(Text, { color: "gray" }, fitToWidth("↑/↓ field · ←/→ cursor · type edit · Tab cycle choices · Enter save · Esc back/cancel", contentWidth)),
-    e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_* / ANTHROPIC_* / DEEPSEEK_* / KIMI_*; shared runtime fields save as MODEL_*.", contentWidth)),
+    e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_* / ANTHROPIC_*; shared runtime fields save as MODEL_*.", contentWidth)),
   );
 }
 
@@ -3492,12 +3446,6 @@ function envEntriesForLoginForm(state: LoginFormState): Record<string, string | 
     const value = (state.values[field.key] ?? "").trim();
     entries[field.envKey] = value || undefined;
   }
-  if (state.provider === "kimi") {
-    entries.MOONSHOT_API_KEY = undefined;
-    entries.MOONSHOT_BASE_URL = undefined;
-    entries.MOONSHOT_MODEL = undefined;
-    entries.MOONSHOT_FALLBACK_MODEL = undefined;
-  }
   return entries;
 }
 
@@ -3523,20 +3471,16 @@ function updateEnvContent(content: string, updates: Record<string, string | unde
     appendEnvGroup(updatedLines, "# Neo active provider", grouped.active);
     appendEnvGroup(updatedLines, "# OpenAI provider settings", grouped.openai);
     appendEnvGroup(updatedLines, "# Anthropic provider settings", grouped.anthropic);
-    appendEnvGroup(updatedLines, "# DeepSeek provider settings", grouped.deepseek);
-    appendEnvGroup(updatedLines, "# Kimi provider settings", grouped.kimi);
     appendEnvGroup(updatedLines, "# Shared model runtime settings", grouped.shared);
   }
   return `${updatedLines.join("\n").replace(/\n*$/u, "")}\n`;
 }
 
-function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "anthropic" | "deepseek" | "kimi" | "shared", Array<[string, string]>> {
+function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "anthropic" | "shared", Array<[string, string]>> {
   return {
     active: entries.filter(([key]) => key === "MODEL_PROVIDER"),
     openai: entries.filter(([key]) => key.startsWith("OPENAI_")),
     anthropic: entries.filter(([key]) => key.startsWith("ANTHROPIC_")),
-    deepseek: entries.filter(([key]) => key.startsWith("DEEPSEEK_")),
-    kimi: entries.filter(([key]) => key.startsWith("KIMI_") || key.startsWith("MOONSHOT_")),
     shared: entries.filter(([key]) => key.startsWith("MODEL_") && key !== "MODEL_PROVIDER"),
   };
 }

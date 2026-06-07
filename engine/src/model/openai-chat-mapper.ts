@@ -1,6 +1,5 @@
 import { createTextMessage, createThinkingMessage } from "../types/messages.js";
 import type { HttpJsonResponse } from "./http-transport.js";
-import { findModelMetadata } from "./context-window.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import {
@@ -42,20 +41,12 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
   });
 }
 
-function chatReasoningEffortOption(model: string, reasoning: ReasoningConfig | undefined): string | undefined {
-  const metadata = findModelMetadata(model);
-  if (metadata?.provider === "deepseek" && metadata.reasoning === false) return undefined;
-  if (metadata?.provider === "kimi") return undefined;
+function chatReasoningEffortOption(_model: string, reasoning: ReasoningConfig | undefined): string | undefined {
   return reasoning?.effort;
 }
 
-function chatThinkingOption(model: string, reasoning: ReasoningConfig | undefined, reasoningDisabled: boolean): Record<string, string> | undefined {
-  const metadata = findModelMetadata(model);
-  if (metadata?.provider !== "deepseek" && metadata?.provider !== "kimi") return undefined;
-  if (reasoningDisabled) return { type: "disabled" };
-  if (metadata.reasoning === false) return metadata.provider === "deepseek" ? { type: "disabled" } : undefined;
-  if (!reasoning?.effort) return undefined;
-  return { type: reasoning.effort === "none" ? "disabled" : "enabled" };
+function chatThinkingOption(_model: string, _reasoning: ReasoningConfig | undefined, _reasoningDisabled: boolean): Record<string, string> | undefined {
+  return undefined;
 }
 
 export async function* normalizeChatStream(
@@ -72,7 +63,7 @@ export async function* normalizeChatStream(
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
     yield { type: "provider_event", event };
-    if (type === "error") throw normalizeOpenAIStreamError(event, options.providerName ?? (options.includeReasoningContent ? "deepseek" : "openai"));
+    if (type === "error") throw normalizeOpenAIStreamError(event, options.providerName ?? "openai");
     responseId = asString(event.id) ?? responseId;
     const chunkUsage = normalizeUsage(event.usage);
     if (chunkUsage) {

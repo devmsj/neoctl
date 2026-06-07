@@ -1,6 +1,6 @@
 import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
 
-export type ModelProviderName = "openai" | "anthropic" | "deepseek" | "kimi";
+export type ModelProviderName = "openai" | "anthropic";
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
@@ -32,20 +32,10 @@ export interface AnthropicProviderConfig extends BaseModelProviderConfig {
   };
 }
 
-export interface DeepSeekProviderConfig extends BaseModelProviderConfig {
-  provider: "deepseek";
-}
-
-export interface KimiProviderConfig extends BaseModelProviderConfig {
-  provider: "kimi";
-}
-
-export type ModelProviderConfig = OpenAIProviderConfig | AnthropicProviderConfig | DeepSeekProviderConfig | KimiProviderConfig;
+export type ModelProviderConfig = OpenAIProviderConfig | AnthropicProviderConfig;
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
-const DEFAULT_KIMI_MODEL = "kimi-k2.6";
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
 
 export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): ModelProviderConfig | undefined {
@@ -56,10 +46,6 @@ export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): M
       return readOpenAIProviderConfig(env);
     case "anthropic":
       return readAnthropicProviderConfig(env);
-    case "deepseek":
-      return readDeepSeekProviderConfig(env);
-    case "kimi":
-      return readKimiProviderConfig(env);
   }
 }
 
@@ -125,48 +111,6 @@ function readAnthropicProviderConfig(env: NodeJS.ProcessEnv): AnthropicProviderC
   };
 }
 
-function readDeepSeekProviderConfig(env: NodeJS.ProcessEnv): DeepSeekProviderConfig | undefined {
-  const apiKey = firstNonEmpty(env.DEEPSEEK_API_KEY);
-  if (!apiKey) return undefined;
-
-  return {
-    provider: "deepseek",
-    apiKey,
-    baseUrl: firstNonEmpty(env.DEEPSEEK_BASE_URL),
-    model: firstNonEmpty(env.DEEPSEEK_MODEL) ?? DEFAULT_DEEPSEEK_MODEL,
-    fallbackModel: firstNonEmpty(env.DEEPSEEK_FALLBACK_MODEL),
-    timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
-    streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
-    maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
-    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    defaultReasoning: parseReasoning(
-      firstNonEmpty(env.MODEL_REASONING_EFFORT),
-      firstNonEmpty(env.MODEL_REASONING_SUMMARY),
-    ),
-  };
-}
-
-function readKimiProviderConfig(env: NodeJS.ProcessEnv): KimiProviderConfig | undefined {
-  const apiKey = firstNonEmpty(env.KIMI_API_KEY, env.MOONSHOT_API_KEY);
-  if (!apiKey) return undefined;
-
-  return {
-    provider: "kimi",
-    apiKey,
-    baseUrl: firstNonEmpty(env.KIMI_BASE_URL, env.MOONSHOT_BASE_URL),
-    model: firstNonEmpty(env.KIMI_MODEL, env.MOONSHOT_MODEL) ?? DEFAULT_KIMI_MODEL,
-    fallbackModel: firstNonEmpty(env.KIMI_FALLBACK_MODEL, env.MOONSHOT_FALLBACK_MODEL),
-    timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
-    streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
-    maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
-    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    defaultReasoning: parseReasoning(
-      firstNonEmpty(env.MODEL_REASONING_EFFORT),
-      firstNonEmpty(env.MODEL_REASONING_SUMMARY),
-    ),
-  };
-}
-
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
   if (value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") return value;
   return undefined;
@@ -178,7 +122,7 @@ function parseReasoningSummary(value: string | undefined): ReasoningSummary | un
 }
 
 function parseProvider(value: string): ModelProviderName {
-  if (value === "openai" || value === "anthropic" || value === "deepseek" || value === "kimi") return value;
+  if (value === "openai" || value === "anthropic") return value;
   throw new Error(`Unsupported MODEL_PROVIDER: ${value}`);
 }
 

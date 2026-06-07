@@ -26,17 +26,12 @@ MODEL_PROVIDER=openai
 # OPENAI_FALLBACK_MODEL=
 # OPENAI_ENDPOINT=auto
 
-# DeepSeek provider settings
-# DEEPSEEK_API_KEY=your-deepseek-api-key
-# DEEPSEEK_BASE_URL=https://api.deepseek.com
-# DEEPSEEK_MODEL=deepseek-chat
-# DEEPSEEK_FALLBACK_MODEL=
-
-# Kimi provider settings
-# KIMI_API_KEY=your-kimi-api-key
-# KIMI_BASE_URL=https://api.moonshot.cn/v1
-# KIMI_MODEL=kimi-k2.6
-# KIMI_FALLBACK_MODEL=
+# Anthropic provider settings
+# ANTHROPIC_API_KEY=your-anthropic-api-key
+# ANTHROPIC_BASE_URL=https://api.anthropic.com
+# ANTHROPIC_MODEL=claude-sonnet-4-6
+# ANTHROPIC_FALLBACK_MODEL=
+# ANTHROPIC_VERSION=2023-06-01
 
 # Shared model runtime settings
 # MODEL_REASONING_EFFORT=high

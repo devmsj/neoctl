@@ -44,7 +44,6 @@
     "smoke:skills": "tsx src/skills/smoke-skills.ts",
     "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",
     "smoke:anthropic": "tsx src/model/smoke-anthropic-mapper.ts",
-    "smoke:deepseek": "tsx src/model/smoke-deepseek-mapper.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {

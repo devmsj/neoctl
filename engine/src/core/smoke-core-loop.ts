@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     storedImageBlock?.data === "" &&
     typeof storedImageBlock.storage?.path === "string" &&
     imageBlockToDataUrl(storedImageBlock) === "data:image/png;base64,ZmFrZQ==";
-  imageEngine.setModel("deepseek-chat");
+  imageEngine.setModel("gpt-4");
   const downgradeEvents: string[] = [];
   for await (const event of imageEngine.sendUserText("continue")) {
     downgradeEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);

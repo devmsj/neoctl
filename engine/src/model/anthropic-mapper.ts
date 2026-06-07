@@ -61,7 +61,7 @@ export async function* normalizeAnthropicStream(
       const message = asRecord(event.message);
       responseId = asString(message?.id) ?? responseId;
       if (responseId) yield { type: "response_started", responseId };
-      const nextUsage = normalizeAnthropicUsage(message?.usage);
+      const nextUsage = mergeAnthropicUsage(usage, message?.usage);
       if (nextUsage) {
         usage = nextUsage;
         yield { type: "usage", usage };
@@ -121,7 +121,7 @@ export async function* normalizeAnthropicStream(
     if (type === "message_delta") {
       const delta = asRecord(event.delta);
       stopReason = asString(delta?.stop_reason) ?? stopReason;
-      const nextUsage = normalizeAnthropicUsage(event.usage);
+      const nextUsage = mergeAnthropicUsage(usage, event.usage);
       if (nextUsage) {
         usage = nextUsage;
         yield { type: "usage", usage };
@@ -392,6 +392,31 @@ function normalizeAnthropicUsage(raw: unknown): ModelUsage | undefined {
     cachedTokens: sum(cacheCreationTokens, cacheReadTokens),
     raw,
   };
+}
+
+function mergeAnthropicUsage(previous: ModelUsage | undefined, raw: unknown): ModelUsage | undefined {
+  const next = normalizeAnthropicUsage(raw);
+  if (!next) return undefined;
+  if (!previous) return next;
+
+  const inputTokens = mergeAnthropicUsageValue(previous.inputTokens, next.inputTokens);
+  const outputTokens = mergeAnthropicUsageValue(previous.outputTokens, next.outputTokens);
+  const cachedTokens = mergeAnthropicUsageValue(previous.cachedTokens, next.cachedTokens);
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: sum(inputTokens, outputTokens),
+    reasoningTokens: mergeAnthropicUsageValue(previous.reasoningTokens, next.reasoningTokens),
+    cachedTokens,
+    raw,
+  };
+}
+
+function mergeAnthropicUsageValue(previous: number | undefined, next: number | undefined): number | undefined {
+  if (next === undefined) return previous;
+  if (previous !== undefined && previous > 0 && next === 0) return previous;
+  return next;
 }
 
 function normalizeStopReason(reason: string): string {

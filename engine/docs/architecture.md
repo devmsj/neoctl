@@ -38,7 +38,6 @@ This map translates the parent README into source modules without implementing e
 | Provider adapter contract | `src/model/provider-adapter.ts` |
 | OpenAI provider facade | `src/model/openai-adapter.ts` |
 | Anthropic provider facade | `src/model/anthropic-adapter.ts`, `src/model/anthropic-mapper.ts` |
-| DeepSeek provider facade | `src/model/deepseek-adapter.ts` |
 | OpenAI compatibility export | `src/model/openai-responses-adapter.ts` |
 | OpenAI Responses mapper | `src/model/openai-responses-mapper.ts` |
 | OpenAI Chat fallback mapper | `src/model/openai-chat-mapper.ts` |

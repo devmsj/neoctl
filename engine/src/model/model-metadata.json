@@ -12,16 +12,10 @@
     "anthropic-models": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
     "anthropic-context-windows": "https://docs.anthropic.com/en/docs/build-with-claude/context-windows",
     "gemini-models": "https://ai.google.dev/gemini-api/docs/models",
-    "deepseek-pricing": "https://api-docs.deepseek.com/quick_start/pricing/",
-    "deepseek-models": "https://api-docs.deepseek.com/quick_start/parameter_settings/",
     "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations",
     "anthropic-vision": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
     "mistral-vision": "https://docs.mistral.ai/capabilities/vision",
-    "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
-    "deepseek-thinking-mode": "https://api-docs.deepseek.com/guides/thinking_mode",
-    "kimi-overview": "https://platform.kimi.com/docs/api/overview",
-    "kimi-chat": "https://platform.kimi.com/docs/api/chat",
-    "kimi-thinking": "https://platform.moonshot.ai/docs/guide/kimi-k2-5-quickstart"
+    "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning"
   },
   "models": [
     {
@@ -591,114 +585,6 @@
       "reasoning": true,
       "imageInput": true,
       "source": "gemini-models"
-    },
-    {
-      "id": "deepseek-v4-pro",
-      "provider": "deepseek",
-      "modelIds": [
-        "deepseek-v4-pro"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "reasoning": true,
-      "imageInput": false,
-      "source": "deepseek-pricing",
-      "reasoningEfforts": [
-        "high",
-        "max"
-      ]
-    },
-    {
-      "id": "deepseek-v4-flash",
-      "provider": "deepseek",
-      "modelIds": [
-        "deepseek-v4-flash"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "reasoning": true,
-      "imageInput": false,
-      "source": "deepseek-pricing",
-      "reasoningEfforts": [
-        "high",
-        "max"
-      ]
-    },
-    {
-      "id": "deepseek-chat",
-      "provider": "deepseek",
-      "modelIds": [
-        "deepseek-chat"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "reasoning": false,
-      "imageInput": false,
-      "source": "deepseek-pricing",
-      "notes": "Compatibility alias for non-thinking mode of deepseek-v4-flash."
-    },
-    {
-      "id": "deepseek-reasoner",
-      "provider": "deepseek",
-      "modelIds": [
-        "deepseek-reasoner"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "reasoning": true,
-      "imageInput": false,
-      "source": "deepseek-pricing",
-      "notes": "Compatibility alias for thinking mode of deepseek-v4-flash.",
-      "reasoningEfforts": [
-        "high",
-        "max"
-      ]
-    },
-    {
-      "id": "kimi-k2.6",
-      "provider": "kimi",
-      "modelIds": [
-        "kimi-k2.6"
-      ],
-      "contextWindowTokens": 256000,
-      "reasoning": true,
-      "imageInput": true,
-      "source": "kimi-chat",
-      "notes": "Default Kimi API Chat Completions model per Kimi quickstart; OpenAI-compatible endpoint https://api.moonshot.cn/v1/chat/completions."
-    },
-    {
-      "id": "kimi-k2.5",
-      "provider": "kimi",
-      "modelIds": [
-        "kimi-k2.5"
-      ],
-      "contextWindowTokens": 256000,
-      "reasoning": true,
-      "imageInput": true,
-      "source": "kimi-thinking"
-    },
-    {
-      "id": "kimi-k2-thinking",
-      "provider": "kimi",
-      "modelIds": [
-        "kimi-k2-thinking"
-      ],
-      "contextWindowTokens": 256000,
-      "reasoning": true,
-      "imageInput": false,
-      "source": "kimi-thinking",
-      "notes": "Thinking model responses may include reasoning_content, normalized to thinking events."
-    },
-    {
-      "id": "kimi-k2-0905-preview",
-      "provider": "kimi",
-      "modelIds": [
-        "kimi-k2-0905-preview"
-      ],
-      "contextWindowTokens": 256000,
-      "reasoning": false,
-      "imageInput": false,
-      "source": "kimi-chat"
     },
     {
       "id": "mistral-large-latest",
