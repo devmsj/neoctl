@@ -16,7 +16,7 @@ export interface ExecToolInput {
   maxOutputChars: number;
   shell: ExecShell;
   env: Record<string, string>;
-  description?: string;
+  description: string;
   background?: boolean;
 }
 
@@ -48,7 +48,7 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
     name: "exec",
     aliases: ["shell", "bash", "powershell"],
     description:
-      "Execute a shell command in the local workspace with full permissions. Use cwd to choose the working directory and timeoutMs/maxOutputChars to bound long commands. Set background=true to run long-lived commands asynchronously and receive a task_id for later polling.",
+      "Execute a shell command in the local workspace with full permissions. The required description field is shown to the user and should explain what the command is doing. Use cwd to choose the working directory and timeoutMs/maxOutputChars to bound long commands. Set background=true to run long-lived commands asynchronously and receive a task_id for later polling.",
     inputSchema: {
       type: "object",
       properties: {
@@ -66,10 +66,10 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
           description: "Additional environment variables for the child process.",
           additionalProperties: true,
         },
-        description: { type: "string", description: "Short human-readable description of the command purpose." },
+        description: { type: "string", description: "Required user-facing description of what this command is doing and why it is being run." },
         background: { type: "boolean", description: "If true, run the command in the background and return immediately with a task_id." },
       },
-      required: ["command"],
+      required: ["command", "description"],
       additionalProperties: false,
     },
     metadata: {
@@ -90,12 +90,13 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
         maxOutputChars: record.maxOutputChars ?? 40000,
         shell: record.shell ?? "auto",
         env: normalizeEnv(record.env),
-        description: record.description,
+        description: record.description ?? "",
         background: record.background ?? false,
       };
     },
     validateInput(input) {
       if (!input.command.trim()) return { ok: false, message: "exec.command cannot be empty" };
+      if (!input.description.trim()) return { ok: false, message: "exec.description is required and cannot be empty" };
       if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 600000) {
         return { ok: false, message: "exec.timeoutMs must be between 1 and 600000" };
       }

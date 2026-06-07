@@ -175,11 +175,11 @@ async function main(): Promise<void> {
     context,
   );
   const exec = await runToolUseToMessages(
-    { id: "exec", name: "exec", input: { command: "node -e \"console.log(process.cwd()); console.error('warn')\"", timeoutMs: 10000, maxOutputChars: 4000 } },
+    { id: "exec", name: "exec", input: { command: "node -e \"console.log(process.cwd()); console.error('warn')\"", description: "Verify exec captures stdout, stderr, and cwd", timeoutMs: 10000, maxOutputChars: 4000 } },
     context,
   );
   const execFailure = await runToolUseToMessages(
-    { id: "exec-fail", name: "exec", input: { command: "node -e \"process.exit(7)\"", timeoutMs: 10000 } },
+    { id: "exec-fail", name: "exec", input: { command: "node -e \"process.exit(7)\"", description: "Verify exec reports non-zero exit status", timeoutMs: 10000 } },
     context,
   );
   const editCreate = await runToolUseToMessages(
