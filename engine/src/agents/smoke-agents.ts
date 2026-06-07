@@ -5,14 +5,30 @@ import path from "node:path";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
+import { resolveAgentTools } from "../core/run-agent.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { runToolUse } from "../tools/run-tool-use.js";
 import type { Tool, ToolUseContext } from "../tools/tool.js";
 import { createTextMessage } from "../types/messages.js";
 import { createAgentTool } from "./agent-tool.js";
-import { StaticAgentCatalog, GENERAL_PURPOSE_AGENT } from "./agent-definition.js";
+import { StaticAgentCatalog, EXPLORE_AGENT, GENERAL_PURPOSE_AGENT } from "./agent-definition.js";
 import { createTaskTools } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
+
+function makeSmokeTool(name: string, readOnly: boolean): Tool<Record<string, never>> {
+  return {
+    name,
+    description: `Smoke test ${name} tool.`,
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    metadata: { readOnly, concurrent: true, visible: true },
+    validate() {
+      return {};
+    },
+    async call() {
+      return { ok: true, output: name };
+    },
+  };
+}
 
 const smokePassthroughTool: Tool<{ text: string }> = {
   name: "smoke_passthrough",
@@ -78,14 +94,20 @@ async function main(): Promise<void> {
   const sessionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-title-smoke-"));
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
+  for (const name of ["list", "read", "grep", "search", "plan"]) tools.register(makeSmokeTool(name, true));
+  for (const name of ["edit", "write", "exec"]) tools.register(makeSmokeTool(name, false));
   tools.register(smokePassthroughTool);
   for (const tool of createTaskTools(taskStore)) tools.register(tool);
   tools.register(createAgentTool({
     modelGateway: gateway,
     tools,
     taskStore,
-    agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]),
+    agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]),
   }));
+  const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
+  const exploreToolsOk =
+    ["list", "read", "grep", "search", "plan"].every((name) => exploreToolNames.has(name)) &&
+    ["edit", "write", "exec", "agent", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
@@ -145,6 +167,17 @@ async function main(): Promise<void> {
   }, context);
   const list = await runToolUse({ id: "call_list", name: "TaskList", input: {} }, context);
 
+  const explore = await runToolUse({
+    id: "call_agent_explore",
+    name: "agent",
+    input: { prompt: "map readonly paths", description: "explore worker", mode: "explore" },
+  }, context);
+  const exploreResult = explore.flatMap((update) => update.message.blocks).find((block) => block.type === "tool_result");
+  const exploreOutput = exploreResult?.type === "tool_result" && typeof exploreResult.output === "object" && exploreResult.output
+    ? exploreResult.output as { agent_type?: string; status?: string }
+    : undefined;
+  const exploreOk = exploreResult?.type === "tool_result" && exploreResult.ok === true && exploreOutput?.status === "completed" && exploreOutput.agent_type === EXPLORE_AGENT.agentType;
+
   const task = taskId ? taskStore.get(taskId) : undefined;
   const outputText = JSON.stringify(output.map((update) => update.message.blocks));
   const sendOk = send.at(-1)?.message.blocks.some((block) => block.type === "tool_result" && block.ok) ?? false;
@@ -152,8 +185,8 @@ async function main(): Promise<void> {
   const outputFileOk = Boolean(task?.outputFile && existsSync(task.outputFile));
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
-  const ok = syncOk && asyncOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, outputFile: task?.outputFile }, null, 2));
+  const ok = syncOk && asyncOk && exploreToolsOk && exploreOk;
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

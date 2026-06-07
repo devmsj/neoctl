@@ -50,6 +50,22 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   ].join("\n"),
 };
 
+export const EXPLORE_AGENT: AgentDefinition = {
+  agentType: "explore",
+  whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
+  tools: ["list", "read", "grep", "search", "plan"],
+  disallowedTools: ["edit", "write", "exec", "agent"],
+  permissionMode: "readonly",
+  maxTurns: 20,
+  buildSystemPrompt: () => [
+    "You are a read-only codebase exploration subagent inside the same neo runtime.",
+    "Your job is to inspect the repository, locate relevant files/symbols, trace behavior, and summarize findings.",
+    "Do not modify files, write files, run shell commands, spawn subagents, or perform implementation.",
+    "Use only available read-only tools for file discovery, reading, grep/search, and planning.",
+    "Return a concise structured report with: Relevant files, Key findings, Risks/unknowns, Suggested next steps.",
+  ].join("\n"),
+};
+
 export interface AgentCatalog {
   resolve(agentType?: string): AgentDefinition;
   list(): AgentDefinition[];
@@ -58,7 +74,7 @@ export interface AgentCatalog {
 export class StaticAgentCatalog implements AgentCatalog {
   private readonly definitions = new Map<string, AgentDefinition>();
 
-  constructor(definitions: readonly AgentDefinition[] = [GENERAL_PURPOSE_AGENT]) {
+  constructor(definitions: readonly AgentDefinition[] = [GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]) {
     for (const definition of definitions) this.definitions.set(definition.agentType, definition);
   }
 

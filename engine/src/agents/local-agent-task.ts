@@ -18,6 +18,7 @@ export interface LocalAgentTask {
   id: string;
   taskId: string;
   agentId: string;
+  agentType?: string;
   type: LocalAgentTaskType;
   status: LocalAgentTaskStatus;
   description: string;
@@ -49,6 +50,7 @@ export interface AgentToolResult {
 export function createLocalAgentTask(input: {
   taskId: string;
   agentId: string;
+  agentType?: string;
   description: string;
   prompt: string;
   type?: LocalAgentTaskType;
@@ -61,6 +63,7 @@ export function createLocalAgentTask(input: {
     id: input.taskId,
     taskId: input.taskId,
     agentId: input.agentId,
+    agentType: input.agentType,
     type: input.type ?? "agent",
     status: "pending",
     description: input.description,
@@ -100,6 +103,7 @@ export function renderLocalAgentTaskOutput(task: LocalAgentTask): string {
   return [
     `task_id: ${task.taskId}`,
     `agent_id: ${task.agentId}`,
+    task.agentType ? `agent_type: ${task.agentType}` : undefined,
     `status: ${task.status}`,
     `description: ${task.description}`,
     `created_at: ${task.createdAt}`,

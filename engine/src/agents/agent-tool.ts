@@ -7,6 +7,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
 import { createLocalAgentTask, updateProgressFromMessage } from "./local-agent-task.js";
 import {
+  EXPLORE_AGENT,
   FORK_AGENT,
   GENERAL_PURPOSE_AGENT,
   StaticAgentCatalog,
@@ -17,6 +18,7 @@ import {
   type AgentPermissionMode,
 } from "./agent-definition.js";
 import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
+import { globalAgentActivityStore, type AgentActivityStore } from "./agent-activity.js";
 import path from "node:path";
 
 export const AGENT_TOOL_NAME = "agent";
@@ -25,6 +27,7 @@ export const AGENT_TOOL_PROMPT_RULES = [
   "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
   "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
   "Background agents return an output file and task notification; do not fabricate results before the task completes.",
+  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents cannot edit/write/exec or spawn subagents.",
   "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
   "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
   "Launch independent agents in the same model turn when parallel work is useful.",
@@ -41,7 +44,7 @@ export interface AgentToolInput {
   parallel?: boolean;
   name?: string;
   team_name?: string;
-  mode?: AgentPermissionMode | "sync" | "background" | "fork";
+  mode?: AgentPermissionMode | "sync" | "background" | "fork" | "explore";
   isolation?: AgentIsolation;
   /** Working directory for this subagent's tools (resolved against parent cwd when relative). */
   cwd?: string;
@@ -55,6 +58,7 @@ export interface AgentToolRuntime {
   contextBudget?: ContextBudgetOptions;
   taskStore?: TaskStore;
   agentCatalog?: AgentCatalog;
+  agentActivityStore?: AgentActivityStore;
 }
 
 export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput> {
@@ -76,7 +80,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         run_in_background: { type: "boolean" },
         name: { type: "string", description: "Optional stable name for later SendMessage routing." },
         team_name: { type: "string" },
-        mode: { type: "string" },
+        mode: { type: "string", description: "Execution/special mode: sync, background, fork, explore, or permission aliases." },
         isolation: { type: "string", enum: ["shared", "worktree", "remote"] },
         cwd: { type: "string", description: "Working directory for child tools (list/read/exec); resolved against parent cwd if relative." },
         parallel: { type: "boolean", description: "Set true when launching multiple independent agents in the same turn so they run concurrently." },
@@ -98,19 +102,20 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       return value;
     },
     isConcurrencySafe(input) {
-      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.parallel === true);
+      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.mode === "explore" || input.parallel === true);
     },
     async call(input, context, options) {
       if (!runtime) {
         return { ok: false, output: { error: "AgentTool runtime is not configured" } };
       }
-      if ((input.mode === "fork" || (!input.subagent_type && input.run_in_background)) && isForkChildContext(context)) {
+      if ((input.mode === "fork" || input.mode === "explore" || input.subagent_type === EXPLORE_AGENT.agentType || (!input.subagent_type && input.run_in_background)) && isForkChildContext(context)) {
         return { ok: false, output: { error: "Fork child agents cannot spawn additional subagents" } };
       }
 
-      const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]);
+      const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
       const fork = input.mode === "fork";
-      const agent = fork ? FORK_AGENT : catalog.resolve(input.subagent_type);
+      const explore = input.mode === "explore";
+      const agent = fork ? FORK_AGENT : catalog.resolve(explore ? EXPLORE_AGENT.agentType : input.subagent_type);
       const description = input.description ?? input.prompt.slice(0, 80);
       const background = Boolean(input.run_in_background || input.mode === "background" || fork || agent.background);
       const agentId = makeAgentId(input.name ?? agent.agentType);
@@ -149,6 +154,16 @@ async function runSyncAgent(input: {
 }): Promise<ToolResult> {
   const agentMessages: Message[] = [];
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
+  activityStore.start({
+    agentId: input.agentId,
+    agentType: input.agent.agentType,
+    description: input.description,
+    prompt: input.input.prompt,
+    mode: resolveAgentActivityMode(input.input, input.fork, "sync"),
+    cwd: workspaceCwd,
+    model: input.input.model,
+  });
   const wall = mergeAbortWithWallClock(input.context.abortSignal, resolveSubagentWallTimeoutMs());
   try {
     const stream = runAgent({
@@ -166,9 +181,11 @@ async function runSyncAgent(input: {
 
     let completed = await stream.next();
     while (!completed.done) {
+      activityStore.recordEvent(input.agentId, completed.value);
       if (completed.value.type === "message") agentMessages.push(completed.value.message);
       completed = await stream.next();
     }
+    activityStore.complete(input.agentId, completed.value.result);
 
     return {
       ok: true,
@@ -181,6 +198,7 @@ async function runSyncAgent(input: {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    activityStore.fail(input.agentId, message);
     return {
       ok: false,
       output: { error: message, description: input.description },
@@ -206,6 +224,7 @@ function launchAsyncAgent(input: {
   const task = createLocalAgentTask({
     taskId,
     agentId: input.agentId,
+    agentType: input.agent.agentType,
     description: input.description,
     prompt: input.input.prompt,
     abortController,
@@ -248,6 +267,18 @@ async function runAsyncAgentLifecycle(input: {
   input.taskStore.markRunning(input.taskId);
   const task = input.taskStore.get(input.taskId);
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
+  const mode = resolveAgentActivityMode(input.input, input.fork, "background");
+  activityStore.start({
+    agentId: input.agentId,
+    taskId: input.taskId,
+    agentType: input.agent.agentType,
+    description: input.description,
+    prompt: input.input.prompt,
+    mode,
+    cwd: workspaceCwd,
+    model: input.input.model,
+  });
   const wall = mergeAbortWithWallClock(input.abortController.signal, resolveSubagentWallTimeoutMs());
   try {
     const stream = runAgent({
@@ -267,8 +298,12 @@ async function runAsyncAgentLifecycle(input: {
     let completed = await stream.next();
     while (!completed.done) {
       const event = completed.value;
+      activityStore.recordEvent(input.agentId, event);
       const current = input.taskStore.get(input.taskId);
-      if (!current || current.status === "killed") return;
+      if (!current || current.status === "killed") {
+        activityStore.fail(input.agentId, "Task killed", "killed");
+        return;
+      }
       if (event.type === "message") {
         current.messages.push(event.message);
         updateProgressFromMessage(current, event.message);
@@ -295,8 +330,12 @@ async function runAsyncAgentLifecycle(input: {
       let remaining = await stream.next();
       while (!remaining.done) {
         const event = remaining.value;
+        activityStore.recordEvent(input.agentId, event);
         const current = input.taskStore.get(input.taskId);
-        if (!current || current.status === "killed") return;
+        if (!current || current.status === "killed") {
+          activityStore.fail(input.agentId, "Task killed", "killed");
+          return;
+        }
         if (event.type === "message") {
           current.messages.push(event.message);
           updateProgressFromMessage(current, event.message);
@@ -308,6 +347,7 @@ async function runAsyncAgentLifecycle(input: {
     }
 
     input.taskStore.complete(input.taskId, completed.value.result);
+    activityStore.complete(input.agentId, completed.value.result);
     const finished = input.taskStore.get(input.taskId);
     if (finished) {
       finished.messages.push(createTaskNotification(finished.agentId, finished.taskId, finished.status, completed.value.result.content));
@@ -315,7 +355,9 @@ async function runAsyncAgentLifecycle(input: {
     }
     if (task) task.notified = false;
   } catch (error) {
-    input.taskStore.fail(input.taskId, error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    input.taskStore.fail(input.taskId, message);
+    activityStore.fail(input.agentId, message);
   } finally {
     wall?.dispose();
   }
@@ -332,8 +374,8 @@ export function resumeAgentTask(
   if (!task) return Promise.resolve({ ok: false, error: `Unknown task: ${taskId}` });
   if (task.type !== "agent") return Promise.resolve({ ok: false, error: `Only agent tasks can be resumed` });
 
-  const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]);
-  const agent = catalog.resolve(undefined);
+  const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
+  const agent = catalog.resolve(task.agentType);
   const abortController = new AbortController();
 
   task.status = "pending";
@@ -375,6 +417,12 @@ function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependenc
 
 function createTaskNotification(agentId: string, taskId: string, status: string, content: string): Message {
   return createTextMessage("user", `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${status}">\n${content}\n</task-notification>`);
+}
+
+function resolveAgentActivityMode(input: AgentToolInput, fork: boolean, fallback: "sync" | "background") {
+  if (input.mode === "explore" || input.subagent_type === EXPLORE_AGENT.agentType) return "explore";
+  if (fork) return "fork";
+  return fallback;
 }
 
 function makeAgentId(prefix: string): string {

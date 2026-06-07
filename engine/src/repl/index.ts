@@ -25,6 +25,7 @@ import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
+import { AgentActivityStore, type AgentActivity, type AgentTimelineEntry } from "../agents/agent-activity.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
@@ -53,6 +54,7 @@ interface ReplRuntime {
   agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
+  agentActivityStore: AgentActivityStore;
   foregroundExecDetach: ReplForegroundExecDetachRegistry;
   tools: ToolRegistry;
   skills: SkillCatalog;
@@ -357,6 +359,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   const communicationLogger = new CommunicationLogger();
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
+  const agentActivityStore = new AgentActivityStore();
   const foregroundExecDetach = new ReplForegroundExecDetachRegistry();
   const tools = new ToolRegistry();
   const skillWorkspaceRoot = path.resolve(process.cwd(), ".neo", "skills");
@@ -380,7 +383,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(createSkillTool(skills));
   for (const tool of createSkillManagementTools(skills, { requireApproval: true, allowDelete: false })) tools.register(tool);
 
-  const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
+  const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore, agentActivityStore };
   tools.register(createAgentTool(agentRuntime));
 
   const resumeHandler: TaskResumeHandler = async (taskId, directive) => {
@@ -427,6 +430,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
+    agentActivityStore,
     foregroundExecDetach,
     tools,
     skills,
@@ -455,6 +459,15 @@ function parseResumeFlag(value: string | undefined): boolean {
 
 function activeBackgroundTasks(runtime: ReplRuntime) {
   return runtime.taskStore.list().filter((task) => !runtime.taskStore.isTerminal(task));
+}
+
+function activeAgentActivities(runtime: ReplRuntime): AgentActivity[] {
+  const now = Date.now();
+  return runtime.agentActivityStore.list().filter((activity) => {
+    if (activity.status === "running" || activity.status === "pending") return true;
+    const completedAt = activity.completedAt ? new Date(activity.completedAt).getTime() : new Date(activity.updatedAt).getTime();
+    return Number.isFinite(completedAt) && now - completedAt < SUBAGENT_COMPLETED_LINGER_MS;
+  });
 }
 
 function runningSessionIds(runs: Map<string, BackgroundSessionRun>): string[] {
@@ -629,6 +642,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTasks, setBackgroundTasks] = useState(() => activeBackgroundTasks(runtime));
+  const [agentActivities, setAgentActivities] = useState(() => runtime.agentActivityStore.list());
   const [foregroundExecDetachHandle, setForegroundExecDetachHandle] = useState<ForegroundExecDetachHandle | undefined>(() => runtime.foregroundExecDetach.current());
   const [showForegroundExecDetachHint, setShowForegroundExecDetachHint] = useState(false);
   const [backgroundSessionRuns, setBackgroundSessionRuns] = useState<BackgroundSessionRun[]>([]);
@@ -670,15 +684,24 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   }, []);
 
   useEffect(() => {
-    if (!busy && backgroundTaskCount === 0 && backgroundSessionRuns.length === 0) return undefined;
-    const interval = setInterval(() => setAnimationTick((current) => current + 1), REPL_ANIMATION_INTERVAL_MS);
+    if (!busy && backgroundTaskCount === 0 && backgroundSessionRuns.length === 0 && agentActivities.length === 0) return undefined;
+    const interval = setInterval(() => {
+      setAnimationTick((current) => current + 1);
+      setAgentActivities(activeAgentActivities(runtime));
+    }, REPL_ANIMATION_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [busy, backgroundTaskCount, backgroundSessionRuns.length]);
+  }, [busy, backgroundTaskCount, backgroundSessionRuns.length, agentActivities.length, runtime]);
 
   useEffect(() => {
     const updateBackgroundTasks = () => setBackgroundTasks(activeBackgroundTasks(runtime));
     updateBackgroundTasks();
     return runtime.taskStore.subscribe(updateBackgroundTasks);
+  }, [runtime]);
+
+  useEffect(() => {
+    const updateAgentActivities = () => setAgentActivities(activeAgentActivities(runtime));
+    updateAgentActivities();
+    return runtime.agentActivityStore.subscribe(updateAgentActivities);
   }, [runtime]);
 
   useEffect(() => {
@@ -1422,7 +1445,9 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     const blockIndex = staticLines.length + i;
     return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
   }, 0);
-  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + backgroundTaskStatusRenderRows(backgroundTasks.length);
+  const subagentRows = subagentLivePanelRenderRows(agentActivities, terminalSize.rows);
+  const nonAgentBackgroundTasks = backgroundTasks.filter((task) => task.type !== "agent");
+  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + subagentRows + backgroundTaskStatusRenderRows(subagentRows > 0 ? nonAgentBackgroundTasks.length : backgroundTasks.length);
   const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
   const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
@@ -1667,7 +1692,9 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
-    backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
+    agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, terminalRows: terminalSize.rows, animationTick }) : null,
+    agentActivities.length === 0 && backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
+    agentActivities.length > 0 && nonAgentBackgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: nonAgentBackgroundTasks, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
     queuedInput !== undefined ? e(QueuedInputLine, { text: queuedInput, width }) : null,
     e(PromptLine, { text: promptDisplayText, cursor: promptDisplayCursor, busy, locked: inputLockedByQueue, placeholder: input.length === 0 && promptPlaceholder !== undefined, ghostText: activePlaceholder, width, prompt, slashCompletions, selectedSlashCompletionIndex, attachments }),
@@ -2137,6 +2164,114 @@ function ForegroundExecDetachHintLine(
   const label = handle.description?.trim() || handle.command;
   const text = `↳ exec still running · Ctrl+B to detach · ${truncateMiddle(label, Math.max(12, width - 38))}`;
   return e(Text, { color: "yellow" }, fitToWidth(text, width));
+}
+
+function SubagentLivePanel(
+  { activities, width: terminalWidth, terminalRows, animationTick }:
+  { activities: AgentActivity[]; width: number; terminalRows: number; animationTick: number },
+) {
+  const width = statusBarWidth(terminalWidth);
+  const rows = subagentLivePanelRenderRows(activities, terminalRows);
+  if (rows <= 0) return null;
+  const sorted = sortAgentActivitiesForPanel(activities);
+  const selected = sorted[0];
+  if (!selected) return null;
+  const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "pending").length;
+  const header = `◇ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""} | auto: latest activity`;
+  if (rows <= 1) {
+    return e(Text, { color: "yellow" }, fitToWidth(`${header} | ${compactAgentSummary(selected, width - header.length - 3)}`, width));
+  }
+
+  const summaryRows = Math.min(Math.max(0, rows - 4), Math.min(sorted.length, 3));
+  const detailRows = Math.max(0, rows - 2 - summaryRows);
+  const recentTimeline = selected.timeline.slice(-detailRows);
+  const spinner = selected.status === "running" ? spinnerFrame(animationTick) : statusGlyph(selected.status);
+
+  return e(
+    Box,
+    { flexDirection: "column", width, overflow: "hidden" },
+    e(Text, { color: "yellow" }, fitToWidth(header, width)),
+    ...sorted.slice(0, summaryRows).map((activity, index) => e(Text, {
+      key: `agent-summary-${activity.agentId}`,
+      color: index === 0 ? "yellow" : "gray",
+    }, fitToWidth(`${index === 0 ? "*" : " "}${index + 1}. ${compactAgentSummary(activity, width - 4)}`, width))),
+    e(Text, { color: statusColor(selected.status) }, fitToWidth(`┌─ ${spinner} ${truncateMiddle(selected.description || selected.agentId, Math.max(12, width - 38))} · ${agentModeLabel(selected)} · ${selected.agentType} · ${selected.status} · ${formatElapsed(Date.now() - new Date(selected.startedAt).getTime())}`, width)),
+    ...recentTimeline.map((entry) => e(Text, {
+      key: entry.id,
+      color: timelineColor(entry),
+    }, fitToWidth(`│ ${timelinePrefix(entry)} ${formatTimelineEntry(entry, width - 4)}`, width))),
+    e(Text, { color: "gray" }, fitToWidth("└" + "─".repeat(Math.max(0, width - 1)), width)),
+  );
+}
+
+function subagentLivePanelRenderRows(activities: AgentActivity[], terminalRows: number): number {
+  if (activities.length === 0) return 0;
+  if (terminalRows < 18) return 1;
+  if (terminalRows < 26) return 4;
+  return Math.min(8, Math.max(5, Math.floor(terminalRows * 0.24)));
+}
+
+function sortAgentActivitiesForPanel(activities: AgentActivity[]): AgentActivity[] {
+  const rank = (status: AgentActivity["status"]) => {
+    if (status === "running") return 0;
+    if (status === "pending") return 1;
+    if (status === "failed" || status === "killed") return 2;
+    return 3;
+  };
+  return [...activities].sort((left, right) => rank(left.status) - rank(right.status) || right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function compactAgentSummary(activity: AgentActivity, maxLength: number): string {
+  const current = activity.currentTool
+    ? `${activity.currentTool.name}${activity.currentTool.inputPreview ? ` ${activity.currentTool.inputPreview}` : ""}`
+    : activity.lastText ?? activity.resultPreview ?? activity.error ?? activity.prompt;
+  return truncateMiddle(`${activity.description || activity.agentId} · ${agentModeLabel(activity)} · ${activity.status} · tools:${activity.totalToolUseCount} · ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
+}
+
+function agentModeLabel(activity: AgentActivity): string {
+  if (activity.mode === "explore") return "explore";
+  return activity.mode;
+}
+
+function formatTimelineEntry(entry: AgentTimelineEntry, maxLength: number): string {
+  const detail = entry.detail ? ` · ${entry.detail.replace(/\s+/g, " ")}` : "";
+  return truncateMiddle(`${entry.title}${detail}`, Math.max(8, maxLength));
+}
+
+function timelinePrefix(entry: AgentTimelineEntry): string {
+  if (entry.kind === "tool_start") return "→";
+  if (entry.kind === "tool_result") return entry.status === "failed" ? "✖" : "←";
+  if (entry.kind === "thinking") return "◆";
+  if (entry.kind === "error") return "✖";
+  if (entry.kind === "status") return "•";
+  return "assistant:";
+}
+
+function timelineColor(entry: AgentTimelineEntry): string {
+  if (entry.status === "failed" || entry.kind === "error") return "red";
+  if (entry.kind === "tool_start" || entry.kind === "tool_result") return "#d4b04c";
+  if (entry.kind === "thinking") return THINKING_COLOR;
+  if (entry.kind === "status") return "gray";
+  return "green";
+}
+
+function statusGlyph(status: AgentActivity["status"]): string {
+  if (status === "completed") return "✓";
+  if (status === "failed") return "✖";
+  if (status === "killed") return "■";
+  if (status === "pending") return "…";
+  return "●";
+}
+
+function statusColor(status: AgentActivity["status"]): string {
+  if (status === "completed") return "green";
+  if (status === "failed" || status === "killed") return "red";
+  if (status === "pending") return "gray";
+  return "yellow";
+}
+
+function spinnerFrame(tick: number): string {
+  return ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][tick % 10] ?? "●";
 }
 
 function BackgroundTaskStatusLine(
@@ -4615,6 +4750,7 @@ const TERMINAL_TITLE_WORKING_PREFIX = "● ";
 const TERMINAL_TITLE_READY_PREFIX = "✓ ";
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
+const SUBAGENT_COMPLETED_LINGER_MS = 8000;
 const TOKEN_PULSE_MS = 900;
 const ANIMATED_NUMBER_INTERVAL_MS = 50;
 const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
