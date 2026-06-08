@@ -62,6 +62,8 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     contextBudget: options.dependencies.contextBudget,
     canUseTool: options.dependencies.canUseTool,
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,
+    secrets: options.parentContext?.secrets,
+    secretRedactions: options.parentContext?.secretRedactions,
   };
 
   const runQuery = async function* (messages: Message[], maxTurns?: number): AsyncGenerator<AgentEvent, void, void> {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
+import type { SecretRedactionRegistry } from "../../secrets/secret-types.js";
 import { createLocalAgentTask } from "../../agents/local-agent-task.js";
 import { globalTaskStore, type TaskStore } from "../../tasks/task-store.js";
 import { createTextMessage } from "../../types/messages.js";
@@ -16,6 +17,7 @@ export interface ExecToolInput {
   maxOutputChars: number;
   shell: ExecShell;
   env: Record<string, string>;
+  envSecrets: Record<string, string>;
   description: string;
   background?: boolean;
 }
@@ -87,6 +89,11 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
           description: "Additional environment variables for the child process.",
           additionalProperties: true,
         },
+        envSecrets: {
+          type: "object",
+          description: "Environment variables whose values are resolved from secret keys at tool runtime. The agent sees keys only; values are never returned.",
+          additionalProperties: true,
+        },
         description: { type: "string", description: "Required user-facing description of what this command is doing and why it is being run." },
         background: { type: "boolean", description: "If true, run the command in the background and return immediately with a task_id." },
       },
@@ -111,6 +118,7 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
         maxOutputChars: record.maxOutputChars ?? 40000,
         shell: record.shell ?? "auto",
         env: normalizeEnv(record.env),
+        envSecrets: normalizeEnv((record as Partial<ExecToolInput>).envSecrets),
         description: record.description ?? "",
         background: record.background ?? false,
       };
@@ -138,8 +146,11 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
       if (!cwdStat) return { ok: false, output: { error: `exec.cwd does not exist: ${cwd}` } };
       if (!cwdStat.isDirectory()) return { ok: false, output: { error: `exec.cwd is not a directory: ${cwd}` } };
 
+      const env = await resolveEnvSecrets(input.env, input.envSecrets, context);
+      const resolvedInput = { ...input, env };
+
       if (input.background) {
-        return launchBackgroundExec(input, cwd, runtime?.taskStore ?? globalTaskStore);
+        return launchBackgroundExec(resolvedInput, cwd, runtime?.taskStore ?? globalTaskStore, context.secretRedactions);
       }
 
       const resolvedShell = resolveShell(input.shell);
@@ -156,7 +167,7 @@ export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
         timeoutMs: input.timeoutMs,
         maxOutputChars: input.maxOutputChars,
         shell: resolvedShell,
-        env: input.env,
+        env,
         abortSignal: context.abortSignal,
         detach: runtime?.foregroundDetachRegistry && runtime?.taskStore
           ? {
@@ -192,6 +203,7 @@ function launchBackgroundExec(
   input: ExecToolInput,
   cwd: string,
   taskStore: TaskStore,
+  secretRedactions?: SecretRedactionRegistry,
 ): ToolResult {
   const taskId = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const agentId = `bg_exec_${Date.now().toString(36)}`;
@@ -222,19 +234,20 @@ function launchBackgroundExec(
     abortSignal: abortController.signal,
   }).then((output) => {
     if (isDetachedExecOutput(output)) return;
-    const ok = output.exitCode === 0 && !output.timedOut;
+    const safeOutput = secretRedactions?.redact(output) ?? output;
+    const ok = safeOutput.exitCode === 0 && !safeOutput.timedOut;
     taskStore.complete(taskId, {
       agent_id: agentId,
       agent_type: "exec",
-      content: summarizeExecOutput(output),
-      total_duration_ms: output.durationMs,
+      content: summarizeExecOutput(safeOutput),
+      total_duration_ms: safeOutput.durationMs,
       total_tool_use_count: 0,
     });
     const finished = taskStore.get(taskId);
     if (finished) {
       finished.messages.push(
         createTextMessage("user",
-          `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(output)}\nstdout: ${output.stdout.slice(0, 2000)}\nstderr: ${output.stderr.slice(0, 2000)}\n</task-notification>`,
+          `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(safeOutput)}\nstdout: ${safeOutput.stdout.slice(0, 2000)}\nstderr: ${safeOutput.stderr.slice(0, 2000)}\n</task-notification>`,
         ),
       );
       finished.notified = false;
@@ -517,6 +530,17 @@ function resolveCwd(cwd: string | undefined, context: ToolUseContext): string {
   const root = path.resolve(context.appState.snapshot().cwd ?? process.cwd());
   if (!cwd?.trim()) return root;
   return path.isAbsolute(cwd) ? path.normalize(cwd) : path.resolve(root, cwd);
+}
+
+async function resolveEnvSecrets(env: Record<string, string>, envSecrets: Record<string, string>, context: ToolUseContext): Promise<Record<string, string>> {
+  const resolved = { ...env };
+  for (const [envName, secretKey] of Object.entries(envSecrets)) {
+    if (!context.secrets) throw new Error(`Secret store is not available; cannot resolve envSecrets.${envName}`);
+    const value = await context.secrets.resolve(secretKey);
+    context.secretRedactions?.record(secretKey, value);
+    resolved[envName] = value;
+  }
+  return resolved;
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {

@@ -24,6 +24,10 @@ import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
+import { createSecretTools } from "../tools/builtins/secret-tools.js";
+import { SecretStore } from "../secrets/secret-store.js";
+import { InMemorySecretRedactionRegistry } from "../secrets/secret-redaction.js";
+import type { SecretMetadata } from "../secrets/secret-types.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { AgentActivityStore, type AgentActivity, type AgentTimelineEntry } from "../agents/agent-activity.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
@@ -58,6 +62,7 @@ interface ReplRuntime {
   foregroundExecDetach: ReplForegroundExecDetachRegistry;
   tools: ToolRegistry;
   skills: SkillCatalog;
+  secretStore: SecretStore;
   skillWorkspaceRoot: string;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig | null;
@@ -204,12 +209,24 @@ interface UiStatus {
   retryCooldownUntil?: number;
 }
 
-interface SessionsBrowserState {
-  sessions: SessionSummary[];
-  runningSessionIds: string[];
+interface PagedBrowserState<TItem> {
+  items: TItem[];
   pageSize: number;
   pageIndex: number;
   selectedIndex: number;
+}
+
+interface SessionsBrowserState extends PagedBrowserState<SessionSummary> {
+  sessions: SessionSummary[];
+  runningSessionIds: string[];
+}
+
+interface SkillsBrowserState extends PagedBrowserState<SkillDescriptor> {
+  skills: SkillDescriptor[];
+}
+
+interface SecretsBrowserState extends PagedBrowserState<SecretMetadata> {
+  secrets: SecretMetadata[];
 }
 
 interface BackgroundSessionRun {
@@ -361,6 +378,8 @@ async function createRuntime(): Promise<ReplRuntime> {
   const taskStore = new TaskStore();
   const agentActivityStore = new AgentActivityStore();
   const foregroundExecDetach = new ReplForegroundExecDetachRegistry();
+  const secretStore = await SecretStore.open();
+  const secretRedactions = new InMemorySecretRedactionRegistry();
   const tools = new ToolRegistry();
   const skillWorkspaceRoot = path.resolve(process.cwd(), ".neo", "skills");
   const skills = new FileSystemSkillCatalog({
@@ -380,6 +399,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
+  for (const tool of createSecretTools()) tools.register(tool);
   tools.register(createSkillTool(skills));
   for (const tool of createSkillManagementTools(skills, { requireApproval: true, allowDelete: false })) tools.register(tool);
 
@@ -391,6 +411,8 @@ async function createRuntime(): Promise<ReplRuntime> {
       agentId: "main",
       tools,
       appState: new (await import("../app/app-state.js")).InMemoryAppState("main"),
+      secrets: secretStore,
+      secretRedactions,
       emit: () => undefined,
     };
     return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
@@ -409,6 +431,8 @@ async function createRuntime(): Promise<ReplRuntime> {
     tools,
     contextManager: new SkillCatalogContextManager(skills),
     canUseTool: createSkillAwareCanUseTool(skills),
+    secrets: secretStore,
+    secretRedactions,
     taskNotificationSource,
     commands: replCommandDefinitions.map((command) => command.usage),
     session: {
@@ -434,6 +458,7 @@ async function createRuntime(): Promise<ReplRuntime> {
     foregroundExecDetach,
     tools,
     skills,
+    secretStore,
     skillWorkspaceRoot,
     initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
@@ -673,6 +698,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const backgroundTaskCount = backgroundTasks.length;
   const terminalTitleWorking = isActivePhase(status.phase) || backgroundTaskCount > 0 || backgroundSessionRuns.length > 0;
   const [sessionsBrowser, setSessionsBrowser] = useState<SessionsBrowserState | undefined>(undefined);
+  const [skillsBrowser, setSkillsBrowser] = useState<SkillsBrowserState | undefined>(undefined);
+  const [secretsBrowser, setSecretsBrowser] = useState<SecretsBrowserState | undefined>(undefined);
   const inputRef = useRef(input);
   const queuedInputRef = useRef<string | undefined>(undefined);
   const cursorRef = useRef(cursor);
@@ -689,6 +716,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const pasteStatusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [slashCompletionIndex, setSlashCompletionIndex] = useState(0);
   const [skillCompletions, setSkillCompletions] = useState<SkillCompletionInfo[]>([]);
+  const [secretCompletions, setSecretCompletions] = useState<SecretCompletionInfo[]>([]);
   const [loginForm, setLoginForm] = useState<LoginFormState | undefined>(undefined);
   const loginFormRef = useRef<LoginFormState | undefined>(undefined);
 
@@ -814,9 +842,22 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
   }, [runtime]);
 
+  const refreshSecretCompletions = useCallback(async () => {
+    try {
+      const secrets = await runtime.secretStore.list();
+      setSecretCompletions(secrets.map((secret) => ({ key: secret.key, status: secret.status, length: secret.length, requestReason: secret.requestReason })));
+    } catch {
+      setSecretCompletions([]);
+    }
+  }, [runtime]);
+
   useEffect(() => {
     void refreshSkillCompletions();
   }, [refreshSkillCompletions]);
+
+  useEffect(() => {
+    void refreshSecretCompletions();
+  }, [refreshSecretCompletions]);
 
   const syncAttachmentsForText = (text: string) => {
     const next = attachmentsRef.current.filter((attachment) => text.includes(attachment.label));
@@ -1310,10 +1351,33 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
     if (command.type === "sessions") {
       detachRunningForeground("session browser");
+      setSkillsBrowser(undefined);
+      setSecretsBrowser(undefined);
       await handleSessionsCommand(runtime, runningSessionIds(backgroundSessionRunsRef.current), setSessionsBrowser, (line) => append(line));
       return;
     }
+    if (command.type === "secret") {
+      try {
+        if (command.action === "list") {
+          setSessionsBrowser(undefined);
+          setSkillsBrowser(undefined);
+          await handleSecretsCommand(runtime, setSecretsBrowser, (line) => append(line));
+        } else {
+          append(await handleSecretCommand(command, runtime));
+          void refreshSecretCompletions();
+        }
+      } catch (error) {
+        append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (command.type === "skill") {
+      if (command.action === "list") {
+        setSessionsBrowser(undefined);
+        setSecretsBrowser(undefined);
+        await handleSkillsCommand(runtime, setSkillsBrowser, (line) => append(line));
+        return;
+      }
       if (command.action !== "invoke" || !command.name || !command.args) {
         append(await handleSkillCommand(command, runtime));
         if (command.action === "import" || command.action === "delete") void refreshSkillCompletions();
@@ -1324,6 +1388,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
     if (command.type === "login") {
       setSessionsBrowser(undefined);
+      setSkillsBrowser(undefined);
+      setSecretsBrowser(undefined);
       setLoginFormState(createLoginFormState(runtime.envPath));
       append(systemLine("Opening provider login. Use ↑/↓ to choose, Enter to continue/save, Esc to cancel."));
       return;
@@ -1432,6 +1498,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
     setSessionsBrowser(undefined);
+    setSkillsBrowser(undefined);
+    setSecretsBrowser(undefined);
     setLoginFormState(undefined);
     setQueuedPromptState(undefined);
     setPromptState("", 0);
@@ -1452,7 +1520,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const promptDisplayCursor = cursor;
   const promptLayoutText = activePlaceholder ? ` ${activePlaceholder}` : promptDisplayText;
   const promptLayoutCursor = activePlaceholder ? 0 : promptDisplayCursor;
-  const slashCompletions = inputLockedByQueue || (input.length === 0 && promptPlaceholder !== undefined) || loginForm ? [] : slashCommandCompletions(input, cursor, skillCompletions);
+  const slashCompletions = inputLockedByQueue || (input.length === 0 && promptPlaceholder !== undefined) || loginForm ? [] : slashCommandCompletions(input, cursor, skillCompletions, secretCompletions);
   const visibleSlashCompletionCount = slashCompletions.length;
   const selectedSlashCompletionIndex = visibleSlashCompletionCount === 0
     ? 0
@@ -1471,9 +1539,15 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const subagentRows = subagentLivePanelRenderRows(agentActivities, terminalSize.rows);
   const nonAgentBackgroundTasks = backgroundTasks.filter((task) => task.type !== "agent");
   const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + subagentRows + backgroundTaskStatusRenderRows(subagentRows > 0 ? nonAgentBackgroundTasks.length : backgroundTasks.length);
-  const sessionsBrowserHeight = sessionsBrowser ? sessionsBrowserViewHeight(sessionsBrowser) : 0;
+  const managementBrowserHeight = sessionsBrowser
+    ? sessionsBrowserViewHeight(sessionsBrowser)
+    : skillsBrowser
+      ? skillsBrowserViewHeight(skillsBrowser)
+      : secretsBrowser
+        ? secretsBrowserViewHeight(secretsBrowser)
+        : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - sessionsBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - managementBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
 
   useInput((value, key) => {
     if (isTerminalFocusInSequence(value)) {
@@ -1573,20 +1647,124 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       }
       return;
     }
+    if (skillsBrowser) {
+      if (key.escape) {
+        setSkillsBrowser(undefined);
+        return;
+      }
+      if (key.upArrow) {
+        setSkillsBrowser((current) => current ? movePagedSelection(current, -1) as SkillsBrowserState : current);
+        return;
+      }
+      if (key.downArrow) {
+        setSkillsBrowser((current) => current ? movePagedSelection(current, 1) as SkillsBrowserState : current);
+        return;
+      }
+      if (key.leftArrow || key.pageUp) {
+        setSkillsBrowser((current) => current ? movePagedPage(current, -1) as SkillsBrowserState : current);
+        return;
+      }
+      if (key.rightArrow || key.pageDown) {
+        setSkillsBrowser((current) => current ? movePagedPage(current, 1) as SkillsBrowserState : current);
+        return;
+      }
+      const selected = skillsBrowser.skills[pagedAbsoluteIndex(skillsBrowser)];
+      if (key.return && selected) {
+        setSkillsBrowser(undefined);
+        append(systemLine(formatSkillDetails(selected), EXPANDED_SUMMARY_MAX_LINES));
+        return;
+      }
+      if (value.toLowerCase() === "i" && selected) {
+        setSkillsBrowser(undefined);
+        setPromptState(`/skill ${selected.name} `, selected.name.length + 8);
+        return;
+      }
+      if ((key.delete || key.backspace || value.toLowerCase() === "d") && selected) {
+        void handleSkillDeleteByName(selected.name, runtime).then((line) => {
+          append(line);
+          void refreshSkillCompletions();
+          void handleSkillsCommand(runtime, setSkillsBrowser, (nextLine) => append(nextLine));
+        });
+        return;
+      }
+      if (value.toLowerCase() === "a") {
+        setSkillsBrowser(undefined);
+        setPromptState("/skill import ", 14);
+        return;
+      }
+      return;
+    }
+    if (secretsBrowser) {
+      if (key.escape) {
+        setSecretsBrowser(undefined);
+        return;
+      }
+      if (key.upArrow) {
+        setSecretsBrowser((current) => current ? movePagedSelection(current, -1) as SecretsBrowserState : current);
+        return;
+      }
+      if (key.downArrow) {
+        setSecretsBrowser((current) => current ? movePagedSelection(current, 1) as SecretsBrowserState : current);
+        return;
+      }
+      if (key.leftArrow || key.pageUp) {
+        setSecretsBrowser((current) => current ? movePagedPage(current, -1) as SecretsBrowserState : current);
+        return;
+      }
+      if (key.rightArrow || key.pageDown) {
+        setSecretsBrowser((current) => current ? movePagedPage(current, 1) as SecretsBrowserState : current);
+        return;
+      }
+      const selected = secretsBrowser.secrets[pagedAbsoluteIndex(secretsBrowser)];
+      if (key.return && selected) {
+        setSecretsBrowser(undefined);
+        void handleSecretCommand({ type: "secret", action: "info", key: selected.key }, runtime).then((line) => append(line));
+        return;
+      }
+      if (value.toLowerCase() === "s" && selected) {
+        setSecretsBrowser(undefined);
+        setPromptState(`/secret set ${selected.key} `, selected.key.length + 13);
+        return;
+      }
+      if (value.toLowerCase() === "r" && selected) {
+        setSecretsBrowser(undefined);
+        setPromptState(`/secret rename ${selected.key} `, selected.key.length + 16);
+        return;
+      }
+      if ((key.delete || key.backspace || value.toLowerCase() === "d") && selected) {
+        void handleSecretCommand({ type: "secret", action: "delete", key: selected.key }, runtime).then((line) => {
+          append(line);
+          void refreshSecretCompletions();
+          void handleSecretsCommand(runtime, setSecretsBrowser, (nextLine) => append(nextLine));
+        }).catch((error) => append({ kind: "error", text: error instanceof Error ? error.message : String(error) }));
+        return;
+      }
+      if (value.toLowerCase() === "a") {
+        setSecretsBrowser(undefined);
+        setPromptState("/secret set ", 12);
+        return;
+      }
+      if (value.toLowerCase() === "e") {
+        setSecretsBrowser(undefined);
+        setPromptState("/secret request ", 16);
+        return;
+      }
+      return;
+    }
     if (key.return) {
       const currentText = inputRef.current;
       const currentCursor = cursorRef.current;
-      const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current, skillCompletions);
+      const completion = selectedSlashCommandCompletion(currentText, currentCursor, slashCompletionIndexRef.current, skillCompletions, secretCompletions);
       if (completion !== undefined && completion.kind === "command" && completion.arguments !== "none") {
         const nextText = `${completion.insertText} ${currentText.slice(currentCursor)}`;
         setPromptState(nextText, completion.insertText.length + 1);
         return;
       }
-      if (currentText.trimEnd() === "/skill") {
+      if (currentText.trimEnd() === "/skill" || currentText.trimEnd() === "/secret") {
         void submitLine(currentText);
         return;
       }
-      if (completion !== undefined && completion.kind === "skill-action") {
+      if (completion !== undefined && (completion.kind === "skill-action" || completion.kind === "secret-action")) {
         const nextText = `${completion.insertText}${currentText.slice(currentCursor)}`;
         setPromptState(nextText, completion.insertText.length);
         return;
@@ -1611,7 +1789,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (key.leftArrow) {
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
@@ -1624,7 +1802,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (key.rightArrow) {
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > SLASH_COMPLETION_PAGE_SIZE) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
@@ -1651,7 +1829,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setTipIndex((current) => current - 1);
         return;
       }
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - 1) % completionCount);
         return;
@@ -1668,7 +1846,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setTipIndex((current) => current + 1);
         return;
       }
-      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions);
+      const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + 1) % completionCount);
         return;
@@ -1692,7 +1870,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         return;
       }
       const currentCursor = cursorRef.current;
-      const completions = slashCommandCompletions(currentText, currentCursor, skillCompletions);
+      const completions = slashCommandCompletions(currentText, currentCursor, skillCompletions, secretCompletions);
       const completion = completions[Math.min(slashCompletionIndexRef.current, completions.length - 1)];
       if (completion !== undefined) {
         const nextText = `${completion.insertText}${currentText.slice(currentCursor)}`;
@@ -1712,6 +1890,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
     e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
+    skillsBrowser ? e(SkillsBrowser, { state: skillsBrowser, width }) : null,
+    secretsBrowser ? e(SecretsBrowser, { state: secretsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
@@ -2413,8 +2593,18 @@ const SLASH_COMPLETION_PAGE_SIZE = 10;
 const MODEL_REASONING_EFFORTS: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const MODEL_REASONING_CONTROL_CHOICES: ModelReasoningArgument[] = ["default", "off"];
 const SKILL_COMMAND_ACTIONS = [
+  { name: "list", description: "Open the skill management browser", aliases: ["ls"] },
   { name: "import", description: "Import by linking a skill directory" },
   { name: "delete", description: "Delete a workspace skill link/directory", aliases: ["remove", "rm"] },
+] as const;
+const SECRET_COMMAND_ACTIONS = [
+  { name: "list", description: "List secret keys/status/length; add --show to print values" },
+  { name: "get", description: "Print one secret value in the REPL" },
+  { name: "set", description: "Set a plaintext secret value" },
+  { name: "request", description: "Create an empty placeholder secret", aliases: ["empty"] },
+  { name: "info", description: "Show one secret's metadata" },
+  { name: "rename", description: "Rename a secret key", aliases: ["mv"] },
+  { name: "delete", description: "Delete a secret", aliases: ["remove", "rm"] },
 ] as const;
 
 interface SkillCompletionInfo {
@@ -2424,15 +2614,22 @@ interface SkillCompletionInfo {
   tags?: readonly string[];
 }
 
+interface SecretCompletionInfo {
+  key: string;
+  status: string;
+  length: number;
+  requestReason?: string;
+}
+
 interface SlashCommandCompletion {
   value: string;
   insertText: string;
   description: string;
   arguments: ReplCommandArgumentSpec;
-  kind: "command" | "model" | "reasoning" | "skill" | "skill-action";
+  kind: "command" | "model" | "reasoning" | "skill" | "skill-action" | "secret-action" | "secret-key";
 }
 
-function slashCommandCompletions(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = []): SlashCommandCompletion[] {
+function slashCommandCompletions(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = [], secrets: readonly SecretCompletionInfo[] = []): SlashCommandCompletion[] {
   const safeCursor = Math.max(0, Math.min(cursor, text.length));
   const prefix = text.slice(0, safeCursor);
   if (!prefix.startsWith("/") || /\r|\n/.test(prefix)) return [];
@@ -2445,6 +2642,9 @@ function slashCommandCompletions(text: string, cursor: number, skills: readonly 
   }
   if (prefix.startsWith("/skill") && (prefix.length === "/skill".length || prefix["/skill".length] === " ")) {
     return skillCommandCompletions(prefix, skills);
+  }
+  if (prefix.startsWith("/secret") && (prefix.length === "/secret".length || prefix["/secret".length] === " ")) {
+    return secretCommandCompletions(prefix, secrets);
   }
   if (prefix.length > 1 && !/^\/[\w-]*$/.test(prefix)) return [];
 
@@ -2460,19 +2660,16 @@ function skillCommandCompletions(prefix: string, skills: readonly SkillCompletio
   const argumentTokens = tokens.slice(1);
   if (!hasTrailingSpace && argumentTokens.length === 0 && !"/skill".startsWith(prefix.toLowerCase())) return [];
 
-  if (argumentTokens.length === 0) {
-    return [...skillActionCompletions(""), ...skillNameCompletions(skills, "")];
-  }
+  if (argumentTokens.length === 0) return skillActionCompletions("");
 
   const [first = "", second = ""] = argumentTokens;
-  if (first === "import") return [];
+  if (first === "list" || first === "ls" || first === "import") return [];
   if (first === "delete" || first === "remove" || first === "rm") {
     if (argumentTokens.length > 1 && hasTrailingSpace) return [];
     return skillNameCompletions(skills, hasTrailingSpace ? "" : second, "delete");
   }
-  if (argumentTokens.length > 1) return [];
-  if (hasTrailingSpace) return [];
-  return [...skillActionCompletions(first), ...skillNameCompletions(skills, first)];
+  if (argumentTokens.length > 1 || hasTrailingSpace) return [];
+  return skillActionCompletions(first);
 }
 
 function skillActionCompletions(current: string): SlashCommandCompletion[] {
@@ -2481,7 +2678,7 @@ function skillActionCompletions(current: string): SlashCommandCompletion[] {
     .filter((action) => action.name.startsWith(current.toLowerCase()))
     .map((action) => ({
       value: action.name,
-      insertText: `/skill ${action.name} `,
+      insertText: action.name === "list" || action.name === "ls" ? `/skill ${action.name}` : `/skill ${action.name} `,
       description: action.description,
       arguments: "optional" as const,
       kind: "skill-action" as const,
@@ -2503,6 +2700,84 @@ function skillNameCompletions(skills: readonly SkillCompletionInfo[], current: s
 function formatSkillCompletionDescription(skill: SkillCompletionInfo): string {
   const tags = skill.tags?.length ? ` · ${skill.tags.join(",")}` : "";
   return `${skill.description}${skill.execution ? ` · ${skill.execution}` : ""}${tags}`;
+}
+
+function secretCommandCompletions(prefix: string, secrets: readonly SecretCompletionInfo[]): SlashCommandCompletion[] {
+  const hasTrailingSpace = /\s$/.test(prefix);
+  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  const argumentTokens = tokens.slice(1);
+  if (!hasTrailingSpace && argumentTokens.length === 0 && !"/secret".startsWith(prefix.toLowerCase())) return [];
+
+  if (argumentTokens.length === 0) return secretActionCompletions("");
+
+  const [action = "", key = "", newKey = ""] = argumentTokens;
+  const normalizedAction = secretCanonicalAction(action);
+  if (!normalizedAction) {
+    if (argumentTokens.length > 1 || hasTrailingSpace) return [];
+    return secretActionCompletions(action);
+  }
+
+  if (normalizedAction === "list") {
+    if (argumentTokens.length === 1 && hasTrailingSpace) return [{ value: "--show", insertText: "/secret list --show", description: "Print plaintext values in the REPL", arguments: "optional", kind: "secret-action" }];
+    if (argumentTokens.length === 2 && !hasTrailingSpace) return "--show".startsWith(key) ? [{ value: "--show", insertText: "/secret list --show", description: "Print plaintext values in the REPL", arguments: "optional", kind: "secret-action" }] : [];
+    return [];
+  }
+
+  if (normalizedAction === "set" || normalizedAction === "request") {
+    if (argumentTokens.length <= 1 && hasTrailingSpace) return [];
+    return [];
+  }
+
+  if (normalizedAction === "rename") {
+    if (argumentTokens.length <= 1) return hasTrailingSpace ? secretKeyCompletions(secrets, "", normalizedAction) : [];
+    if (argumentTokens.length === 2 && !hasTrailingSpace) return secretKeyCompletions(secrets, key, normalizedAction);
+    if (argumentTokens.length === 2 && hasTrailingSpace) return [];
+    if (argumentTokens.length === 3 && !hasTrailingSpace && newKey) return [];
+    return [];
+  }
+
+  if (normalizedAction === "get" || normalizedAction === "info" || normalizedAction === "delete") {
+    if (argumentTokens.length <= 1) return hasTrailingSpace ? secretKeyCompletions(secrets, "", normalizedAction) : [];
+    if (argumentTokens.length === 2 && !hasTrailingSpace) return secretKeyCompletions(secrets, key, normalizedAction);
+    return [];
+  }
+
+  return [];
+}
+
+function secretCanonicalAction(action: string): "list" | "get" | "set" | "request" | "info" | "rename" | "delete" | undefined {
+  const lower = action.toLowerCase();
+  if (lower === "ls") return "list";
+  if (lower === "show") return "get";
+  if (lower === "empty") return "request";
+  if (lower === "mv") return "rename";
+  if (lower === "remove" || lower === "rm") return "delete";
+  return ["list", "get", "set", "request", "info", "rename", "delete"].includes(lower) ? lower as ReturnType<typeof secretCanonicalAction> : undefined;
+}
+
+function secretActionCompletions(current: string): SlashCommandCompletion[] {
+  return SECRET_COMMAND_ACTIONS
+    .flatMap((action) => [action.name, ...("aliases" in action ? action.aliases ?? [] : [])].map((name) => ({ name, description: action.description })))
+    .filter((action) => action.name.startsWith(current.toLowerCase()))
+    .map((action) => ({
+      value: action.name,
+      insertText: `/secret ${action.name} `,
+      description: action.description,
+      arguments: "optional" as const,
+      kind: "secret-action" as const,
+    }));
+}
+
+function secretKeyCompletions(secrets: readonly SecretCompletionInfo[], current: string, action: "get" | "info" | "rename" | "delete"): SlashCommandCompletion[] {
+  return secrets
+    .filter((secret) => secret.key.toLowerCase().includes(current.toLowerCase()))
+    .map((secret) => ({
+      value: secret.key,
+      insertText: `/secret ${action} ${secret.key}${action === "rename" ? " " : ""}`,
+      description: `${secret.status} · length=${secret.length}${secret.requestReason ? ` · ${secret.requestReason}` : ""}`,
+      arguments: "optional" as const,
+      kind: "secret-key" as const,
+    }));
 }
 
 function modelCommandCompletions(prefix: string): SlashCommandCompletion[] {
@@ -2597,12 +2872,12 @@ function slashCompletionViewHeight(completions: SlashCommandCompletion[]): numbe
   return Math.min(completions.length, SLASH_COMPLETION_PAGE_SIZE) + 2;
 }
 
-function slashCompletionSelectableCount(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = []): number {
-  return slashCommandCompletions(text, cursor, skills).length;
+function slashCompletionSelectableCount(text: string, cursor: number, skills: readonly SkillCompletionInfo[] = [], secrets: readonly SecretCompletionInfo[] = []): number {
+  return slashCommandCompletions(text, cursor, skills, secrets).length;
 }
 
-function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number, skills: readonly SkillCompletionInfo[] = []): SlashCommandCompletion | undefined {
-  const completions = slashCommandCompletions(text, cursor, skills);
+function selectedSlashCommandCompletion(text: string, cursor: number, selectedIndex: number, skills: readonly SkillCompletionInfo[] = [], secrets: readonly SecretCompletionInfo[] = []): SlashCommandCompletion | undefined {
+  const completions = slashCommandCompletions(text, cursor, skills, secrets);
   if (completions.length === 0) return undefined;
   return completions[Math.max(0, Math.min(selectedIndex, completions.length - 1))];
 }
@@ -2721,6 +2996,73 @@ function SlashCompletionLines(
   ));
 }
 
+async function handleSecretCommand(
+  command: Extract<ReturnType<typeof parseReplCommand>, { type: "secret" }>,
+  runtime: ReplRuntime,
+): Promise<Omit<UiLine, "id">> {
+  const usage = "Usage: /secret <list|get|set|request|delete|rename|info> ...";
+  const action = command.action ?? "list";
+  const requireKey = () => {
+    if (!command.key) throw new Error(usage);
+    return command.key;
+  };
+
+  if (action === "list") {
+    const entries = await runtime.secretStore.list();
+    if (entries.length === 0) return systemLine("No secrets stored.");
+    const lines = await Promise.all(entries.map(async (entry) => {
+      if (command.show) {
+        const value = entry.status === "set" ? await runtime.secretStore.getPlaintext(entry.key) : "";
+        return `${entry.key} = ${value}`;
+      }
+      const reason = entry.requestReason ? ` reason=${JSON.stringify(entry.requestReason)}` : "";
+      return `${entry.key}\t${entry.status}\tlength=${entry.length}${reason}`;
+    }));
+    return systemLine(lines.join("\n"), EXPANDED_SUMMARY_MAX_LINES);
+  }
+
+  if (action === "get") {
+    const key = requireKey();
+    const info = await runtime.secretStore.info(key);
+    if (!info) return systemLine(`Secret "${key}" does not exist.`);
+    const value = await runtime.secretStore.getPlaintext(key);
+    return systemLine(info.status === "empty" ? `Secret "${key}" is empty.` : value, EXPANDED_SUMMARY_MAX_LINES);
+  }
+
+  if (action === "set") {
+    const key = requireKey();
+    const meta = await runtime.secretStore.setPlaintext(key, command.value ?? "");
+    return systemLine(`Secret "${meta.key}" saved, status=${meta.status}, length=${meta.length}.`);
+  }
+
+  if (action === "request" || action === "empty") {
+    const key = requireKey();
+    const meta = await runtime.secretStore.requestEmpty(key, { reason: command.reason, requestedBy: "user" });
+    return systemLine(`Secret "${meta.key}" is ${meta.status}. Fill it with: /secret set ${meta.key} <value>`);
+  }
+
+  if (action === "delete") {
+    const key = requireKey();
+    const deleted = await runtime.secretStore.delete(key);
+    return systemLine(deleted ? `Secret "${key}" deleted.` : `Secret "${key}" did not exist.`);
+  }
+
+  if (action === "rename") {
+    const key = requireKey();
+    if (!command.newKey) throw new Error("Usage: /secret rename <oldKey> <newKey>");
+    const meta = await runtime.secretStore.rename(key, command.newKey);
+    return systemLine(`Secret renamed to "${meta.key}".`);
+  }
+
+  if (action === "info") {
+    const key = requireKey();
+    const info = await runtime.secretStore.info(key);
+    return systemLine(info ? formatReplData(info, 4000) : `Secret "${key}" does not exist.`, EXPANDED_SUMMARY_MAX_LINES);
+  }
+
+  return systemLine(usage);
+}
+
 async function handleSkillCommand(
   command: Extract<ReturnType<typeof parseReplCommand>, { type: "skill" }>,
   runtime: ReplRuntime,
@@ -2772,7 +3114,11 @@ async function handleSkillDeleteCommand(
   runtime: ReplRuntime,
 ): Promise<Omit<UiLine, "id">> {
   if (!command.name) return { kind: "error", text: "Usage: /skill delete <name>" };
-  const name = requireSkillName(command.name);
+  return handleSkillDeleteByName(command.name, runtime);
+}
+
+async function handleSkillDeleteByName(nameInput: string, runtime: ReplRuntime): Promise<Omit<UiLine, "id">> {
+  const name = requireSkillName(nameInput);
   const skillPath = path.join(runtime.skillWorkspaceRoot, name);
   const existing = await safeLstat(skillPath);
   if (!existing) return { kind: "error", text: `No workspace skill named ${name} at ${skillPath}` };
@@ -3204,7 +3550,35 @@ async function handleSessionsCommand(
     append(systemLine("No saved sessions found."));
     return;
   }
-  setBrowser({ sessions, runningSessionIds, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
+  setBrowser({ items: sessions, sessions, runningSessionIds, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
+}
+
+async function handleSkillsCommand(
+  runtime: ReplRuntime,
+  setBrowser: (state: SkillsBrowserState | undefined) => void,
+  append: (line: Omit<UiLine, "id">) => number,
+) {
+  const skills = await runtime.skills.list();
+  if (skills.length === 0) {
+    setBrowser(undefined);
+    append(systemLine(formatSkillList(skills), EXPANDED_SUMMARY_MAX_LINES));
+    return;
+  }
+  setBrowser({ items: skills, skills, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
+}
+
+async function handleSecretsCommand(
+  runtime: ReplRuntime,
+  setBrowser: (state: SecretsBrowserState | undefined) => void,
+  append: (line: Omit<UiLine, "id">) => number,
+) {
+  const secrets = await runtime.secretStore.list();
+  if (secrets.length === 0) {
+    setBrowser(undefined);
+    append(systemLine("No secrets stored. Press /secret set <key> <value> to add one, or /secret request <key> to create an empty placeholder."));
+    return;
+  }
+  setBrowser({ items: secrets, secrets, pageSize: SESSIONS_DEFAULT_PAGE_SIZE, pageIndex: 0, selectedIndex: 0 });
 }
 
 async function handleExportCommand(
@@ -3264,6 +3638,7 @@ async function handleDeleteSessionCommand(
       const pageLength = nextSessions.slice(pageIndex * current.pageSize, pageIndex * current.pageSize + current.pageSize).length;
       setBrowser({
         ...current,
+        items: nextSessions,
         sessions: nextSessions,
         runningSessionIds: current.runningSessionIds.filter((id) => id !== sessionId),
         pageIndex,
@@ -3357,40 +3732,64 @@ const DEPRECATED_MODEL_ENV_KEYS = [
   "ANTHROPIC_MAX_RETRIES",
 ];
 
-function sessionsPageCount(state: SessionsBrowserState): number {
-  return Math.max(1, Math.ceil(state.sessions.length / state.pageSize));
+function pagedPageCount(state: PagedBrowserState<unknown>): number {
+  return Math.max(1, Math.ceil(state.items.length / state.pageSize));
 }
 
-function sessionsPageItems(state: SessionsBrowserState): SessionSummary[] {
+function pagedPageItems<TItem>(state: PagedBrowserState<TItem>): TItem[] {
   const start = state.pageIndex * state.pageSize;
-  return state.sessions.slice(start, start + state.pageSize);
+  return state.items.slice(start, start + state.pageSize);
 }
 
-function sessionAbsoluteIndex(state: SessionsBrowserState): number {
+function pagedAbsoluteIndex(state: PagedBrowserState<unknown>): number {
   return state.pageIndex * state.pageSize + state.selectedIndex;
 }
 
-function moveSessionsSelection(state: SessionsBrowserState, delta: number): SessionsBrowserState {
-  const pageLength = sessionsPageItems(state).length;
+function movePagedSelection<TState extends PagedBrowserState<unknown>>(state: TState, delta: number): TState {
+  const pageLength = pagedPageItems(state).length;
   if (pageLength <= 0) return state;
   const selectedIndex = (state.selectedIndex + delta + pageLength) % pageLength;
   return { ...state, selectedIndex };
 }
 
-function moveSessionsPage(state: SessionsBrowserState, delta: number): SessionsBrowserState {
-  const pageCount = sessionsPageCount(state);
+function movePagedPage<TState extends PagedBrowserState<unknown>>(state: TState, delta: number): TState {
+  const pageCount = pagedPageCount(state);
   if (pageCount <= 1) return state;
   const pageIndex = (state.pageIndex + delta + pageCount) % pageCount;
-  const pageLength = state.sessions.slice(pageIndex * state.pageSize, pageIndex * state.pageSize + state.pageSize).length;
+  const pageLength = state.items.slice(pageIndex * state.pageSize, pageIndex * state.pageSize + state.pageSize).length;
   return { ...state, pageIndex, selectedIndex: Math.min(state.selectedIndex, Math.max(0, pageLength - 1)) };
+}
+
+function sessionsPageItems(state: SessionsBrowserState): SessionSummary[] {
+  return pagedPageItems(state);
+}
+
+function sessionAbsoluteIndex(state: SessionsBrowserState): number {
+  return pagedAbsoluteIndex(state);
+}
+
+function moveSessionsSelection(state: SessionsBrowserState, delta: number): SessionsBrowserState {
+  return movePagedSelection(state, delta);
+}
+
+function moveSessionsPage(state: SessionsBrowserState, delta: number): SessionsBrowserState {
+  return movePagedPage(state, delta);
 }
 
 function sessionsBrowserViewHeight(state: SessionsBrowserState): number {
   return sessionsPageItems(state).length + 3;
 }
 
+function skillsBrowserViewHeight(state: SkillsBrowserState): number {
+  return pagedPageItems(state).length + 3;
+}
+
+function secretsBrowserViewHeight(state: SecretsBrowserState): number {
+  return pagedPageItems(state).length + 3;
+}
+
 function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width: number }) {
-  const pageCount = sessionsPageCount(state);
+  const pageCount = pagedPageCount(state);
   const pageItems = sessionsPageItems(state);
   const showPagination = pageCount > 1;
   const contentWidth = Math.max(20, width);
@@ -3417,6 +3816,83 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
           backgroundColor: selected ? "cyan" : undefined,
         }, row.numberPrefix),
         row.rest,
+      );
+    }),
+    e(Text, { color: "gray" }, fitToWidth(footer, contentWidth)),
+  );
+}
+
+function SkillsBrowser({ state, width }: { state: SkillsBrowserState; width: number }) {
+  const pageCount = pagedPageCount(state);
+  const pageItems = pagedPageItems(state);
+  const showPagination = pageCount > 1;
+  const contentWidth = Math.max(20, width);
+  const header = showPagination
+    ? `Skills (${state.skills.length}) · page ${state.pageIndex + 1}/${pageCount}`
+    : `Skills (${state.skills.length})`;
+  const footer = showPagination
+    ? "↑/↓ select · ←/→ page · Enter details · i invoke · a import · d/Delete remove · Esc close"
+    : "↑/↓ select · Enter details · i invoke · a import · d/Delete remove · Esc close";
+  const nameWidth = Math.min(28, Math.max(...pageItems.map((skill) => skill.name.length)));
+
+  return e(
+    Box,
+    { flexDirection: "column", marginTop: 1 },
+    e(Text, { color: "cyan", bold: true }, fitToWidth(header, contentWidth)),
+    ...pageItems.map((skill, index) => {
+      const selected = index === state.selectedIndex;
+      const absoluteIndex = state.pageIndex * state.pageSize + index;
+      const prefix = `${absoluteIndex + 1}.`.padStart(String(state.skills.length).length + 1);
+      const tags = skill.tags?.length ? ` [${skill.tags.join(",")}]` : "";
+      const execution = skill.execution ? ` (${skill.execution})` : "";
+      const restWidth = Math.max(0, contentWidth - prefix.length - nameWidth - 4);
+      const rest = fitToWidth(`${skill.description}${execution}${tags}`, restWidth);
+      return e(
+        Text,
+        { key: skill.name, color: "white" },
+        e(Text, { color: selected ? "black" : "white", backgroundColor: selected ? "cyan" : undefined }, prefix),
+        e(Text, { color: "gray" }, " "),
+        e(Text, { color: "cyan" }, fitToWidth(skill.name, nameWidth).padEnd(nameWidth)),
+        e(Text, { color: "gray" }, "  "),
+        e(Text, { color: selected ? "white" : "gray" }, rest),
+      );
+    }),
+    e(Text, { color: "gray" }, fitToWidth(footer, contentWidth)),
+  );
+}
+
+function SecretsBrowser({ state, width }: { state: SecretsBrowserState; width: number }) {
+  const pageCount = pagedPageCount(state);
+  const pageItems = pagedPageItems(state);
+  const showPagination = pageCount > 1;
+  const contentWidth = Math.max(20, width);
+  const header = showPagination
+    ? `Secrets (${state.secrets.length}) · page ${state.pageIndex + 1}/${pageCount}`
+    : `Secrets (${state.secrets.length})`;
+  const footer = showPagination
+    ? "↑/↓ select · ←/→ page · Enter info · s set · r rename · a add · e empty · d/Delete remove · Esc close"
+    : "↑/↓ select · Enter info · s set · r rename · a add · e empty · d/Delete remove · Esc close";
+  const keyWidth = Math.min(32, Math.max(...pageItems.map((secret) => secret.key.length)));
+
+  return e(
+    Box,
+    { flexDirection: "column", marginTop: 1 },
+    e(Text, { color: "cyan", bold: true }, fitToWidth(header, contentWidth)),
+    ...pageItems.map((secret, index) => {
+      const selected = index === state.selectedIndex;
+      const absoluteIndex = state.pageIndex * state.pageSize + index;
+      const prefix = `${absoluteIndex + 1}.`.padStart(String(state.secrets.length).length + 1);
+      const reason = secret.requestReason ? ` reason=${JSON.stringify(secret.requestReason)}` : "";
+      const restWidth = Math.max(0, contentWidth - prefix.length - keyWidth - 4);
+      const rest = fitToWidth(`${secret.status} · length=${secret.length}${reason}`, restWidth);
+      return e(
+        Text,
+        { key: secret.key, color: "white" },
+        e(Text, { color: selected ? "black" : "white", backgroundColor: selected ? "cyan" : undefined }, prefix),
+        e(Text, { color: "gray" }, " "),
+        e(Text, { color: secret.status === "set" ? "green" : "yellow" }, fitToWidth(secret.key, keyWidth).padEnd(keyWidth)),
+        e(Text, { color: "gray" }, "  "),
+        e(Text, { color: selected ? "white" : "gray" }, rest),
       );
     }),
     e(Text, { color: "gray" }, fitToWidth(footer, contentWidth)),

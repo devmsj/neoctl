@@ -38,6 +38,8 @@ export interface QueryEngineOptions {
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
+  secrets?: ToolUseContext["secrets"];
+  secretRedactions?: ToolUseContext["secretRedactions"];
   taskNotificationSource?: TaskNotificationSource;
   commands?: readonly string[];
   agents?: readonly string[];
@@ -337,6 +339,8 @@ export class QueryEngine {
       tools: this.options.tools,
       appState: new InMemoryAppState(this.agentId),
       toolResultMemory: this.sessionStore?.toolResultMemory,
+      secrets: this.options.secrets,
+      secretRedactions: this.options.secretRedactions,
       recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
       messages,
       options: {

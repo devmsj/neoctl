@@ -21,6 +21,7 @@ export interface EffectiveSystemPromptOptions {
 export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = []): PromptSection[] {
   const hasImageGenerationTool = enabledTools.includes("image2");
   const hasLoadImageTool = enabledTools.includes("load_image");
+  const hasSecretTools = enabledTools.includes("secret_list") || enabledTools.includes("secret_request");
   return [
     {
       name: "Agent Scaffold",
@@ -55,6 +56,9 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
         hasImageGenerationTool
           ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
+        hasSecretTools
+          ? "Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>. Do not ask users to paste secret values into the conversation; pass secret keys to tools that accept secret references such as exec.envSecrets."
+          : "",
       ].join("\n"),
     },
     {

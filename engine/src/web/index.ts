@@ -942,6 +942,10 @@ export class WebRepl {
       this.append({ kind: "error", text: "/skill is currently available in the interactive REPL only." });
       return;
     }
+    if (command.type === "secret") {
+      this.append({ kind: "error", text: "/secret is currently available in the interactive REPL only." });
+      return;
+    }
     if (text.trimStart().startsWith("/")) {
       this.append({ kind: "error", text: `Unknown or incomplete command: ${text.trim()}\nType /help for commands.` });
       return;

@@ -1,5 +1,6 @@
 import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
 import { validateJsonSchema } from "./schema.js";
+import { redactWithRegistry } from "../secrets/secret-redaction.js";
 import type {
   CanUseTool,
   Tool,
@@ -66,8 +67,9 @@ export async function runToolUse(
       onProgress,
     });
 
-    const output = await processToolOutput(tool, request, result, contextWithToolUseId);
-    const resultMessage = tool.renderToolResultMessage?.(result, request) ?? createToolResultMessage(request, result.ok, output);
+    const output = redactWithRegistry(contextWithToolUseId.secretRedactions, await processToolOutput(tool, request, result, contextWithToolUseId));
+    const safeResult = { ...result, output: redactWithRegistry(contextWithToolUseId.secretRedactions, result.output), summary: redactWithRegistry(contextWithToolUseId.secretRedactions, result.summary) };
+    const resultMessage = tool.renderToolResultMessage?.(safeResult, request) ?? createToolResultMessage(request, safeResult.ok, output);
     updates.push({ message: resultMessage, context: result.contextModifier?.(contextWithToolUseId) });
 
     for (const message of result.newMessages ?? []) {

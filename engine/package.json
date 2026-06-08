@@ -1,6 +1,6 @@
 {
   "name": "neoctl",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
   "type": "module",
   "main": "./dist/index.js",
@@ -42,6 +42,7 @@
     "smoke:session": "tsx src/session/smoke-session.ts",
     "smoke:agents": "tsx src/agents/smoke-agents.ts",
     "smoke:skills": "tsx src/skills/smoke-skills.ts",
+    "smoke:secrets": "tsx src/secrets/smoke-secrets.ts",
     "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",
     "smoke:anthropic": "tsx src/model/smoke-anthropic-mapper.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"

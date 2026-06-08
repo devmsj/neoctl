@@ -15,6 +15,7 @@ export type ReplCommand =
   | { type: "reset" }
   | { type: "sessions" }
   | { type: "skill"; action?: "list" | "show" | "invoke" | "import" | "delete"; name?: string; args?: string; path?: string }
+  | { type: "secret"; action?: "list" | "get" | "set" | "request" | "empty" | "delete" | "rename" | "info"; key?: string; value?: string; newKey?: string; show?: boolean; reason?: string }
   | { type: "state" }
   | { type: "input"; text: string };
 
@@ -41,7 +42,8 @@ export const replCommandDefinitions: ReplCommandDefinition[] = [
   { name: "/log", usage: "/log <dir>", description: "Write model communication logs to an absolute directory", arguments: "required" },
   { name: "/log off", usage: "/log off", description: "Disable model communication logs", arguments: "none" },
   { name: "/sessions", usage: "/sessions", description: "Browse saved sessions", arguments: "none" },
-  { name: "/skill", usage: "/skill [name|import|delete] [args]", description: "List, inspect, import, delete, or invoke reusable skills", arguments: "optional" },
+  { name: "/skill", usage: "/skill [list|name|import|delete] [args]", description: "Manage reusable skills in a browser; inspect, import, delete, or invoke", arguments: "optional" },
+  { name: "/secret", usage: "/secret [list|get|set|request|delete|rename|info] ...", description: "Manage encrypted local secrets in a browser; values are plaintext in REPL and hidden from agents", arguments: "optional" },
   { name: "/state", usage: "/state", description: "Show query engine state", arguments: "none" },
   { name: "/reset", usage: "/reset", description: "Clear current transcript and add a reset marker", arguments: "none" },
   { name: "/exit", usage: "/exit", description: "Quit", arguments: "none", aliases: ["/quit"] },
@@ -69,6 +71,7 @@ export function parseReplCommand(line: string): ReplCommand {
   if (name === "/reset") return { type: "reset" };
   if (name === "/sessions") return { type: "sessions" };
   if (name === "/skill") return parseSkillCommand(argument);
+  if (name === "/secret") return parseSecretCommand(argument);
   if (name === "/state") return { type: "state" };
   return { type: "input", text: line };
 }
@@ -81,12 +84,38 @@ export function isModelReasoningArgument(value: string): value is ModelReasoning
   return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "default" || value === "off";
 }
 
+function parseSecretCommand(argument: string): Extract<ReplCommand, { type: "secret" }> {
+  const trimmed = argument.trim();
+  if (!trimmed) return { type: "secret", action: "list" };
+  const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  const action = match?.[1]?.toLowerCase();
+  const rest = match?.[2]?.trim() ?? "";
+  if (action === "list" || action === "ls") return { type: "secret", action: "list", show: /(?:^|\s)--show(?:\s|$)/.test(rest) };
+  if (action === "get" || action === "show") return { type: "secret", action: "get", key: rest || undefined };
+  if (action === "set") {
+    const setMatch = /^(\S+)(?:\s+([\s\S]*))?$/.exec(rest);
+    return { type: "secret", action: "set", key: setMatch?.[1], value: setMatch?.[2] ?? "" };
+  }
+  if (action === "request" || action === "empty") {
+    const requestMatch = /^(\S+)(?:\s+([\s\S]*))?$/.exec(rest);
+    return { type: "secret", action: action === "empty" ? "empty" : "request", key: requestMatch?.[1], reason: requestMatch?.[2]?.trim() };
+  }
+  if (action === "delete" || action === "remove" || action === "rm") return { type: "secret", action: "delete", key: rest || undefined };
+  if (action === "info") return { type: "secret", action: "info", key: rest || undefined };
+  if (action === "rename" || action === "mv") {
+    const tokens = rest.split(/\s+/).filter(Boolean);
+    return { type: "secret", action: "rename", key: tokens[0], newKey: tokens[1] };
+  }
+  return { type: "secret", action: "info", key: action };
+}
+
 function parseSkillCommand(argument: string): Extract<ReplCommand, { type: "skill" }> {
   const trimmed = argument.trim();
   if (!trimmed) return { type: "skill", action: "list" };
   const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
   const first = match?.[1];
   const rest = match?.[2]?.trim() || undefined;
+  if (first === "list" || first === "ls") return { type: "skill", action: "list" };
   if (first === "import") {
     if (!rest) return { type: "skill", action: "import" };
     const importMatch = /^(\S+)(?:\s+(\S+))?$/.exec(rest);

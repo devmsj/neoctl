@@ -1,6 +1,7 @@
 import type { AppStatePort } from "../app/app-state.js";
 import type { Message, ToolUseRequest } from "../types/messages.js";
 import type { ContentReplacementRecord, ToolResultMemory } from "../session/tool-result-memory.js";
+import type { SecretRedactionRegistry, SecretResolver } from "../secrets/secret-types.js";
 
 export interface JsonSchema {
   type?: string;
@@ -96,6 +97,8 @@ export interface ToolUseContext {
   requestPrompt?: string;
   options?: ToolRuntimeOptions;
   toolResultMemory?: ToolResultMemory;
+  secrets?: SecretResolver;
+  secretRedactions?: SecretRedactionRegistry;
   emit(event: ToolProgressEvent): void;
   recordContentReplacements?(records: ContentReplacementRecord[]): void;
   appendSystemMessage?(message: Message): void;

@@ -16,3 +16,5 @@ model-call-*.final.txt
 .DS_Store
 .agent/tmp/
 .agent/*
+
+.neo/

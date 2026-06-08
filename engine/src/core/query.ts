@@ -53,6 +53,8 @@ export interface QueryDependencies {
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
   toolResultMemory?: ToolUseContext["toolResultMemory"];
+  secrets?: ToolUseContext["secrets"];
+  secretRedactions?: ToolUseContext["secretRedactions"];
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
   taskNotificationSource?: TaskNotificationSource;
   exportToolCalls?: (calls: ToolUseRequest[]) => void;
@@ -114,6 +116,8 @@ async function* queryLoop(
       reasoning: options.reasoning,
     },
     toolResultMemory: dependencies.toolResultMemory,
+    secrets: dependencies.secrets,
+    secretRedactions: dependencies.secretRedactions,
     recordContentReplacements: dependencies.recordContentReplacements,
     emit: () => undefined,
   };
