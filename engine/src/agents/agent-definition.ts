@@ -54,8 +54,8 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
 export const EXPLORE_AGENT: AgentDefinition = {
   agentType: "explore",
   whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  tools: ["list", "read", "grep", "search", "plan", "agent_report"],
-  disallowedTools: ["edit", "write", "exec", "agent"],
+  tools: ["list", "read", "grep", "search", "plan", "exec", "agent_report"],
+  disallowedTools: ["edit", "write", "agent"],
   permissionMode: "readonly",
   maxTurns: 20,
   buildSystemPrompt: () => [
@@ -69,7 +69,8 @@ export const EXPLORE_AGENT: AgentDefinition = {
     "- For codebase exploration, you MUST use repository inspection tools before reporting findings.",
     "- Start with list/grep/read as appropriate for the assigned scope.",
     "- Do NOT claim that you inspected, confirmed, read, or verified anything unless it is based on tool results in this run.",
-    "- Do NOT modify files, write files, run shell commands, spawn subagents, or perform implementation.",
+    "- Do NOT modify files, write files, spawn subagents, or perform implementation.",
+    "- Shell commands via exec are available for inspection/diagnostics; avoid commands intended to mutate repository or system state.",
     "- Do NOT return progress-only text such as 'I will continue', 'next I will read', or 'I have started' as the final answer.",
     "- If you run out of turns or cannot complete the requested scope, submit an INCOMPLETE report explaining exactly what was and was not inspected.",
     "- When ready to report, you MUST call the agent_report tool with the complete report content. Do not rely on a normal assistant message for the final report.",

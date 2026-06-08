@@ -27,7 +27,7 @@ export const AGENT_TOOL_PROMPT_RULES = [
   "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
   "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
   "Background agents return an output file and task notification; do not fabricate results before the task completes.",
-  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents cannot edit/write/exec or spawn subagents.",
+  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents can inspect with exec but cannot edit/write or spawn subagents.",
   "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
   "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
   "Launch independent agents in the same model turn when parallel work is useful.",

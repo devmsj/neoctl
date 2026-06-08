@@ -162,8 +162,8 @@ async function main(): Promise<void> {
   }));
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
-    ["list", "read", "grep", "search", "plan", "agent_report"].every((name) => exploreToolNames.has(name)) &&
-    ["edit", "write", "exec", "agent", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
+    ["list", "read", "grep", "search", "plan", "exec", "agent_report"].every((name) => exploreToolNames.has(name)) &&
+    ["edit", "write", "agent", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
