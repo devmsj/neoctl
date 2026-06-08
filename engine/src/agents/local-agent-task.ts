@@ -41,6 +41,7 @@ export interface AgentToolResult {
   agent_id: string;
   agent_type: string;
   content: string;
+  status?: "completed" | "incomplete";
   total_duration_ms: number;
   total_tokens?: number;
   total_tool_use_count: number;

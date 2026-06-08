@@ -22,6 +22,12 @@ export interface AgentDefinition {
   memory?: "user" | "project" | "local";
   isolation?: AgentIsolation;
   omitProjectMemory?: boolean;
+  /** Require an authoritative final result via agent_report instead of normal assistant text. */
+  requiresReport?: boolean;
+  /** Report tool name used when requiresReport is enabled. Defaults to agent_report. */
+  reportToolName?: string;
+  /** Number of extra short turns allowed to recover a missing report. */
+  reportRetryTurns?: number;
   buildSystemPrompt?: (context?: ToolUseContext) => string;
 }
 
@@ -31,6 +37,7 @@ export const FORK_AGENT: AgentDefinition = {
   agentType: "fork",
   whenToUse: "Fork the current conversation into an isolated worker for scoped parallel work.",
   tools: ["*"],
+  disallowedTools: ["plan"],
   model: "inherit",
   permissionMode: "bubble",
   maxTurns: 40,
@@ -41,6 +48,7 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   agentType: "general-purpose",
   whenToUse: "General engineering worker for scoped implementation, investigation, or verification tasks.",
   tools: ["*"],
+  disallowedTools: ["plan"],
   permissionMode: "inherit",
   maxTurns: 40,
   buildSystemPrompt: () => [
@@ -54,10 +62,12 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
 export const EXPLORE_AGENT: AgentDefinition = {
   agentType: "explore",
   whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  tools: ["list", "read", "grep", "search", "plan", "exec", "agent_report"],
-  disallowedTools: ["edit", "write", "agent"],
+  tools: ["list", "read", "grep", "search", "exec", "agent_report"],
+  disallowedTools: ["edit", "write", "agent", "plan"],
   permissionMode: "readonly",
   maxTurns: 20,
+  requiresReport: true,
+  reportRetryTurns: 1,
   buildSystemPrompt: () => [
     "You are a read-only codebase exploration subagent inside the same neo runtime.",
     "",

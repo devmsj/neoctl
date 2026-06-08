@@ -5,7 +5,7 @@ import path from "node:path";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
-import { resolveAgentTools } from "../core/run-agent.js";
+import { finalizeAgentTool, resolveAgentTools } from "../core/run-agent.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { runToolUse } from "../tools/run-tool-use.js";
 import type { Tool, ToolUseContext } from "../tools/tool.js";
@@ -51,6 +51,7 @@ const smokePassthroughTool: Tool<{ text: string }> = {
 class ParentAndSubagentGateway implements ModelGateway {
   parentCalls = 0;
   subagentCalls = 0;
+  reportRecoveryPrompts = 0;
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     if (request.queryOrigin === "subagent") {
@@ -65,11 +66,12 @@ class ParentAndSubagentGateway implements ModelGateway {
         .map((block) => block.text)
         .join("\n") ?? "";
       const isExploreSmoke = allPromptText.includes("map readonly paths");
+      if (lastPrompt.includes("REQUIRED FINALIZATION:")) this.reportRecoveryPrompts += 1;
       const hasToolResult = request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"));
       const hasAgentReportResult = request.messages.some((message) =>
         message.blocks.some((block) => block.type === "tool_result" && block.name === "agent_report"),
       );
-      if (isExploreSmoke && !hasToolResult) {
+      if (isExploreSmoke && !hasToolResult && !lastPrompt.includes("REQUIRED FINALIZATION:")) {
         yield {
           type: "tool_use",
           toolUse: {
@@ -81,7 +83,7 @@ class ParentAndSubagentGateway implements ModelGateway {
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
         return;
       }
-      if (isExploreSmoke && !hasAgentReportResult) {
+      if (isExploreSmoke && !hasAgentReportResult && lastPrompt.includes("REQUIRED FINALIZATION:")) {
         yield {
           type: "tool_use",
           toolUse: {
@@ -109,6 +111,11 @@ class ParentAndSubagentGateway implements ModelGateway {
           },
         };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
+        return;
+      }
+      if (isExploreSmoke && !hasAgentReportResult) {
+        yield { type: "assistant_message", message: createTextMessage("assistant", "我将继续做只读检查，重新获取关键文件内容以避免依赖已清理的上下文。") };
+        yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
         return;
       }
 
@@ -162,8 +169,8 @@ async function main(): Promise<void> {
   }));
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
-    ["list", "read", "grep", "search", "plan", "exec", "agent_report"].every((name) => exploreToolNames.has(name)) &&
-    ["edit", "write", "agent", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
+    ["list", "read", "grep", "search", "exec", "agent_report"].every((name) => exploreToolNames.has(name)) &&
+    ["edit", "write", "agent", "plan", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
@@ -243,9 +250,22 @@ async function main(): Promise<void> {
     exploreResult.ok === true &&
     exploreOutput?.status === "completed" &&
     exploreOutput.agent_type === EXPLORE_AGENT.agentType &&
+    gateway.reportRecoveryPrompts === 1 &&
     (exploreOutput.total_tool_use_count ?? 0) > 0 &&
     exploreReportOk &&
     exploreNoProgressOnly;
+
+  const missingReport = finalizeAgentTool({
+    agentId: "explore_missing_report",
+    agentType: EXPLORE_AGENT.agentType,
+    agent: EXPLORE_AGENT,
+    messages: [createTextMessage("assistant", "I will continue checking files.")],
+    durationMs: 0,
+    totalToolUseCount: 1,
+  });
+  const missingReportOk =
+    missingReport.status === "incomplete" &&
+    missingReport.content.includes("Subagent did not submit the required agent_report");
 
   const task = taskId ? taskStore.get(taskId) : undefined;
   const outputText = JSON.stringify(output.map((update) => update.message.blocks));
@@ -254,8 +274,8 @@ async function main(): Promise<void> {
   const outputFileOk = Boolean(task?.outputFile && existsSync(task.outputFile));
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
-  const ok = syncOk && asyncOk && exploreToolsOk && exploreOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, exploreReportOk, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
+  const ok = syncOk && asyncOk && exploreToolsOk && exploreOk && missingReportOk;
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, missingReportOk, exploreReportOk, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, reportRecoveryPrompts: gateway.reportRecoveryPrompts, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

@@ -5,6 +5,7 @@ import type { ContextManager, RuntimeContext } from "../context/context-manager.
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { ModelGateway, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
+import { AGENT_REPORT_TOOL_NAME } from "../agents/agent-report-tool.js";
 import { supportsImageInput } from "../model/context-window.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runTools } from "../tools/tool-orchestration.js";
@@ -37,6 +38,8 @@ export interface QueryOptions {
   maxOutputTokensOverride?: number;
   maxTurns?: number;
   abortSignal?: AbortSignal;
+  /** Stop the query loop immediately after a successful agent_report tool result. */
+  stopOnAgentReport?: boolean;
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
 }
@@ -188,11 +191,13 @@ async function* queryLoop(
       yield { type: "message", message: notification };
     }
 
+    const allToolResults = [...toolResult.messages, ...taskNotifications];
     state = buildNextTurnState(state, {
       assistantMessages,
-      toolResults: [...toolResult.messages, ...taskNotifications],
+      toolResults: allToolResults,
       previousResponseId,
     });
+    if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults)) return "completed";
   }
 }
 
@@ -202,6 +207,12 @@ function beginTurn(state: QueryState): QueryState {
     phase: "preparing",
     queryTracking: nextTracking(state.queryTracking),
   };
+}
+
+function hasSuccessfulAgentReport(messages: readonly Message[]): boolean {
+  return messages.some((message) =>
+    message.blocks.some((block) => block.type === "tool_result" && block.name === AGENT_REPORT_TOOL_NAME && block.ok),
+  );
 }
 
 async function prepareMessagesForQuery(

@@ -7,7 +7,7 @@ import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
 import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
-import { AGENT_REPORT_TOOL_NAME, createAgentReportTool } from "../agents/agent-report-tool.js";
+import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { query } from "./query.js";
 
@@ -46,7 +46,7 @@ export interface RunAgentCompleted {
 
 export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent, RunAgentCompleted, void> {
   const startedAt = Date.now();
-  const messages = options.existingMessages?.length
+  const initialMessages = options.existingMessages?.length
     ? [...options.existingMessages, ...buildResumeMessages(options)]
     : buildInitialAgentMessages(options);
   const agentMessages: Message[] = [];
@@ -64,26 +64,40 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,
   };
 
-  for await (const event of query(messages, dependencies, {
-    agentId: options.agentId,
-    model: resolveAgentModel(options.agent, options.model),
-    fallbackModel: options.fallbackModel,
-    maxTurns: resolveSubagentMaxTurns(options),
-    queryOrigin: "subagent",
-    abortSignal: options.abortSignal,
-    workspaceCwd: options.workspaceCwd,
-  })) {
-    if (event.type === "message") agentMessages.push(event.message);
-    if (event.type === "tool.started") totalToolUseCount += 1;
-    if (event.type === "usage") lastUsage = event.usage;
-    if (event.type === "terminal") terminalReason = event.reason;
-    yield event;
+  const runQuery = async function* (messages: Message[], maxTurns?: number): AsyncGenerator<AgentEvent, void, void> {
+    for await (const event of query(messages, dependencies, {
+      agentId: options.agentId,
+      model: resolveAgentModel(options.agent, options.model),
+      fallbackModel: options.fallbackModel,
+      maxTurns,
+      queryOrigin: "subagent",
+      abortSignal: options.abortSignal,
+      workspaceCwd: options.workspaceCwd,
+      stopOnAgentReport: options.agent.requiresReport === true,
+    })) {
+      if (event.type === "message") agentMessages.push(event.message);
+      if (event.type === "tool.started") totalToolUseCount += 1;
+      if (event.type === "usage") lastUsage = event.usage;
+      if (event.type === "terminal") terminalReason = event.reason;
+      yield event;
+    }
+  };
+
+  yield* runQuery(initialMessages, resolveSubagentMaxTurns(options));
+
+  if (options.agent.requiresReport === true && !extractAgentReport(agentMessages, options.agent.reportToolName)) {
+    const retryTurns = options.agent.reportRetryTurns ?? 1;
+    if (retryTurns > 0 && !options.abortSignal?.aborted) {
+      const recoveryMessages = [...initialMessages, createTextMessage("user", buildReportRequiredReminder())];
+      yield* runQuery(recoveryMessages, Math.max(2, retryTurns + 1));
+    }
   }
 
   return {
     result: finalizeAgentTool({
       agentId: options.agentId,
       agentType: options.agent.agentType,
+      agent: options.agent,
       messages: agentMessages,
       durationMs: Date.now() - startedAt,
       usage: lastUsage,
@@ -115,21 +129,30 @@ export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinit
 export function finalizeAgentTool(input: {
   agentId: string;
   agentType: string;
+  agent?: AgentDefinition;
   messages: readonly Message[];
   durationMs: number;
   usage?: ModelUsage;
   totalToolUseCount?: number;
 }): AgentToolResult {
-  const content = extractFinalText(input.messages);
+  const report = extractAgentReport(input.messages, input.agent?.reportToolName);
+  const content = report?.report ?? extractFinalText(input.messages);
   const totalToolUseCount = input.totalToolUseCount ?? countToolUses(input.messages);
-  const validationError = input.agentType === EXPLORE_AGENT.agentType
+  const validationError = !report && input.agentType === EXPLORE_AGENT.agentType
     ? validateExploreFinalText(content, totalToolUseCount)
     : undefined;
+  const requiresReport = input.agent?.requiresReport === true;
+  const missingRequiredReport = requiresReport && !report;
 
   return {
     agent_id: input.agentId,
     agent_type: input.agentType,
-    content: validationError ? formatIncompleteExploreResult(validationError, content) : content,
+    content: missingRequiredReport
+      ? formatMissingRequiredReportResult(content)
+      : validationError
+        ? formatIncompleteExploreResult(validationError, content)
+        : content,
+    status: missingRequiredReport ? "incomplete" : report?.status,
     total_duration_ms: input.durationMs,
     total_tokens: input.usage?.totalTokens,
     total_tool_use_count: totalToolUseCount,
@@ -191,10 +214,21 @@ function resolveAgentModel(agent: AgentDefinition, override?: string): string | 
   return agent.model;
 }
 
-function extractFinalText(messages: readonly Message[]): string {
-  const submittedReport = extractSubmittedAgentReport(messages);
-  if (submittedReport) return submittedReport;
+function buildReportRequiredReminder(): string {
+  return [
+    "REQUIRED FINALIZATION:",
+    "",
+    "You reached the end of your subagent run without submitting the required agent_report tool result.",
+    "You must now call agent_report exactly once with your complete final report.",
+    "Do not continue investigating.",
+    "Do not call any other tool unless agent_report is unavailable.",
+    "Do not respond with normal assistant text.",
+    "",
+    "If your work is incomplete, call agent_report with status='incomplete' and explain exactly what was and was not inspected.",
+  ].join("\n");
+}
 
+function extractFinalText(messages: readonly Message[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role !== "assistant") continue;
     const text = messages[index].blocks
@@ -207,15 +241,20 @@ function extractFinalText(messages: readonly Message[]): string {
   return "";
 }
 
-function extractSubmittedAgentReport(messages: readonly Message[]): string | undefined {
+function extractAgentReport(messages: readonly Message[], reportToolName = AGENT_REPORT_TOOL_NAME): AgentReportOutput | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     for (const block of message.blocks) {
-      if (block.type !== "tool_result" || block.name !== AGENT_REPORT_TOOL_NAME || !block.ok) continue;
+      if (block.type !== "tool_result" || block.name !== reportToolName || !block.ok) continue;
       const output = block.output;
       if (!output || typeof output !== "object") continue;
       const report = (output as { report?: unknown }).report;
-      if (typeof report === "string" && report.trim()) return report.trim();
+      if (typeof report !== "string" || !report.trim()) continue;
+      const status = (output as { status?: unknown }).status;
+      return {
+        report: report.trim(),
+        status: status === "incomplete" ? "incomplete" : "completed",
+      };
     }
   }
   return undefined;
@@ -270,6 +309,20 @@ function formatIncompleteExploreResult(error: string, content: string): string {
   const lastOutput = content.trim() || "<empty>";
   return [
     `INCOMPLETE: ${error}`,
+    "",
+    "Last assistant output:",
+    lastOutput,
+  ].join("\n");
+}
+
+function formatMissingRequiredReportResult(content: string): string {
+  const lastOutput = content.trim() || "<empty>";
+  return [
+    "INCOMPLETE: Subagent did not submit the required agent_report tool result.",
+    "",
+    "Protocol violation:",
+    "- This agent is configured with requiresReport=true.",
+    "- A normal assistant message is not accepted as the authoritative final result.",
     "",
     "Last assistant output:",
     lastOutput,
