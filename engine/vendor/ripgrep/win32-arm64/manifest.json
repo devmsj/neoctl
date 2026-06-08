@@ -1,0 +1,7 @@
+{
+  "name": "ripgrep",
+  "version": "15.1.0",
+  "source": "https://github.com/BurntSushi/ripgrep/releases/tag/15.1.0",
+  "asset": "ripgrep-15.1.0-aarch64-pc-windows-msvc.zip",
+  "installedAt": "2026-06-08T09:40:39.867Z"
+}

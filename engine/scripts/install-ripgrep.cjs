@@ -11,6 +11,7 @@ const PROJECT_ROOT = path.resolve(__dirname, "..");
 const VENDOR_ROOT = path.join(PROJECT_ROOT, "vendor", "ripgrep");
 const OPTIONAL = process.argv.includes("--optional");
 const FORCE = process.argv.includes("--force");
+const ALL = process.argv.includes("--all");
 
 const TARGETS = {
   "win32-x64": [/x86_64-pc-windows-msvc\.zip$/i],
@@ -32,17 +33,23 @@ main().catch((error) => {
 });
 
 async function main() {
-  const key = platformKey();
-  const executable = process.platform === "win32" ? "rg.exe" : "rg";
+  const release = await getJson(LATEST_RELEASE_URL);
+  const keys = ALL ? Object.keys(TARGETS) : [platformKey()];
+  for (const key of keys) {
+    await installTarget(release, key);
+  }
+}
+
+async function installTarget(release, key) {
+  const executable = key.startsWith("win32-") ? "rg.exe" : "rg";
   const targetDir = path.join(VENDOR_ROOT, key);
   const targetPath = path.join(targetDir, executable);
 
   if (!FORCE && fs.existsSync(targetPath)) {
-    console.log(`[ripgrep] using existing ${path.relative(PROJECT_ROOT, targetPath)}`);
+    console.error(`[ripgrep] using existing ${path.relative(PROJECT_ROOT, targetPath)}`);
     return;
   }
 
-  const release = await getJson(LATEST_RELEASE_URL);
   const asset = selectAsset(release.assets ?? [], key);
   if (!asset) throw new Error(`no ripgrep release asset found for ${key}`);
 
@@ -52,7 +59,7 @@ async function main() {
     const extractDir = path.join(tempDir, "extract");
     await fsp.mkdir(extractDir, { recursive: true });
 
-    console.log(`[ripgrep] downloading ${asset.name}`);
+    console.error(`[ripgrep] downloading ${asset.name}`);
     await download(asset.browser_download_url, archivePath);
     extractArchive(archivePath, extractDir);
 
@@ -62,7 +69,7 @@ async function main() {
     await fsp.rm(targetDir, { recursive: true, force: true });
     await fsp.mkdir(targetDir, { recursive: true });
     await fsp.copyFile(binaryPath, targetPath);
-    if (process.platform !== "win32") await fsp.chmod(targetPath, 0o755);
+    if (!key.startsWith("win32-")) await fsp.chmod(targetPath, 0o755);
 
     await copyLicenseFiles(extractDir, targetDir);
     await fsp.writeFile(
@@ -76,7 +83,7 @@ async function main() {
       }, null, 2)}\n`,
       "utf8",
     );
-    console.log(`[ripgrep] installed ${path.relative(PROJECT_ROOT, targetPath)}`);
+    console.error(`[ripgrep] installed ${path.relative(PROJECT_ROOT, targetPath)}`);
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true });
   }
@@ -94,20 +101,57 @@ function selectAsset(assets, key) {
 }
 
 async function getJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "agent-scaffold-ripgrep-installer",
-    },
-  });
-  if (!response.ok) throw new Error(`GET ${url} returned ${response.status}: ${(await response.text()).slice(0, 200)}`);
-  return response.json();
+  try {
+    const response = await fetchWithRetry(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "agent-scaffold-ripgrep-installer",
+      },
+    });
+    if (!response.ok) throw new Error(`GET ${url} returned ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    return response.json();
+  } catch (error) {
+    const body = curlGet(url);
+    return JSON.parse(body.toString("utf8"));
+  }
 }
 
 async function download(url, destination) {
-  const response = await fetch(url, { headers: { "User-Agent": "agent-scaffold-ripgrep-installer" } });
-  if (!response.ok) throw new Error(`download returned ${response.status}`);
-  await fsp.writeFile(destination, Buffer.from(await response.arrayBuffer()));
+  try {
+    const response = await fetchWithRetry(url, { headers: { "User-Agent": "agent-scaffold-ripgrep-installer" } });
+    if (!response.ok) throw new Error(`download returned ${response.status}`);
+    await fsp.writeFile(destination, Buffer.from(await response.arrayBuffer()));
+  } catch (error) {
+    curlDownload(url, destination);
+  }
+}
+
+async function fetchWithRetry(url, options, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (response.ok || response.status < 500 || attempt === attempts) return response;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+    }
+    await delay(1000 * attempt);
+  }
+  throw lastError;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function curlGet(url) {
+  return execFileSync("curl", ["-fL", "--retry", "3", "--retry-delay", "1", "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: agent-scaffold-ripgrep-installer", url], { maxBuffer: 1024 * 1024 * 20 });
+}
+
+function curlDownload(url, destination) {
+  execFileSync("curl", ["-fL", "--retry", "3", "--retry-delay", "1", "-H", "User-Agent: agent-scaffold-ripgrep-installer", "-o", destination, url], { stdio: "ignore" });
 }
 
 function extractArchive(archivePath, destination) {

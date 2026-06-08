@@ -1,0 +1,7 @@
+{
+  "name": "ripgrep",
+  "version": "15.1.0",
+  "source": "https://github.com/BurntSushi/ripgrep/releases/tag/15.1.0",
+  "asset": "ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
+  "installedAt": "2026-06-08T09:41:25.983Z"
+}
