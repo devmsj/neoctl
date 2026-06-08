@@ -7,7 +7,7 @@ import { editTool, writeTool } from "./builtins/edit-tool.js";
 import { createExecTool, execTool, type ForegroundExecDetachHandle, type ForegroundExecDetachRegistry } from "./builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
 import { grepTool } from "./builtins/grep-tool.js";
-import { createOpenAIImageGenerationTool } from "./builtins/image-generation-tool.js";
+import { createOpenAIImageGenerationTool, DEFAULT_IMAGE_TIMEOUT_MS } from "./builtins/image-generation-tool.js";
 import { createSearchTool } from "./builtins/search-tool.js";
 import type { SearchProvider } from "./builtins/search-providers.js";
 import { createSearchProvider } from "./builtins/search-providers.js";
@@ -407,6 +407,7 @@ async function main(): Promise<void> {
     webSearchPromptDiscouragesExplicitProvider: searchToolPrompt.includes("do not explicitly set provider") && searchToolPrompt.includes("user requests") && searchToolPrompt.includes("persistently unavailable"),
     image2OnlyToolName: imageTool.name === "image2" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
     image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
+    image2DefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
     image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
     image2EditAcceptsBareImgRef:
       imageEditRefOutput?.sourceImages === 1 &&

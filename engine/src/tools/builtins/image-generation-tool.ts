@@ -99,7 +99,7 @@ export interface CreateOpenAIImageGenerationToolOptions {
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
 export const DEFAULT_OPENAI_IMAGE_MODEL: OpenAIImageModel = "gpt-image-2";
 const DEFAULT_IMAGE_MODEL = DEFAULT_OPENAI_IMAGE_MODEL;
-const DEFAULT_TIMEOUT_MS = 120_000;
+export const DEFAULT_IMAGE_TIMEOUT_MS = 360_000;
 const MAX_IMAGES = 4;
 const SUPPORTED_IMAGE_MODELS: readonly OpenAIImageModel[] = [DEFAULT_OPENAI_IMAGE_MODEL];
 const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
@@ -192,7 +192,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
 
       const baseUrl = stripTrailingSlash(options.baseUrl?.trim() || process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL);
       const model = input.model?.trim() || DEFAULT_IMAGE_MODEL;
-      const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
+      const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_IMAGE_TIMEOUT_MS;
 
       const mode = input.mode ?? "generate";
       callOptions.onProgress?.({ toolName: "image2", message: `${mode === "edit" ? "Editing" : "Generating"} image with OpenAI ${model}` });
