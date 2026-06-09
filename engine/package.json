@@ -25,7 +25,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "postinstall": "node scripts/install-ripgrep.cjs --optional && node scripts/patch-ink-clear-terminal.cjs",
+    "postinstall": "node scripts/patch-ink-clear-terminal.cjs && node scripts/install-ripgrep.cjs --optional",
     "vendor:rg": "node scripts/install-ripgrep.cjs",
     "vendor:rg:all": "node scripts/install-ripgrep.cjs --all",
     "build": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true })).catch(() => process.exit(1))\" && tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs",
@@ -60,7 +60,7 @@
     "chalk": "^5.6.2",
     "figures": "^6.1.0",
     "gpt-tokenizer": "^3.4.0",
-    "ink": "^6.8.0",
+    "ink": "6.8.0",
     "marked": "^18.0.3",
     "pptxgenjs": "^4.0.1",
     "react": "^19.2.4",

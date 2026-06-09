@@ -1547,7 +1547,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         ? secretsBrowserViewHeight(secretsBrowser)
         : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - promptHeight - statusRenderRows - managementBrowserHeight - loginFormHeight - dynamicMarginOverhead - 1);
+  const reservedRows = promptHeight + statusRenderRows + managementBrowserHeight + loginFormHeight + dynamicMarginOverhead + FULLSCREEN_RENDER_GUARD_ROWS;
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - reservedRows);
 
   useInput((value, key) => {
     if (isTerminalFocusInSequence(value)) {
@@ -5294,7 +5295,8 @@ const QUEUED_INPUT_RENDER_ROWS = 1;
 const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";
 const LONG_CLIPBOARD_TEXT_THRESHOLD = 200;
 const PASTE_STATUS_DISPLAY_MS = 2500;
-const MIN_LIVE_VIEWPORT_LINES = 4;
+const MIN_LIVE_VIEWPORT_LINES = 1;
+const FULLSCREEN_RENDER_GUARD_ROWS = 3;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
   maxLines: 6,
