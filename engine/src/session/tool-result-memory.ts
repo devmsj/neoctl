@@ -6,6 +6,9 @@ export const TOOL_RESULTS_SUBDIR = "tool-results";
 export const PERSISTED_OUTPUT_TAG = "<persisted-output>";
 export const PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>";
 export const TOOL_RESULT_CLEARED_MESSAGE = "[Old tool result content cleared]";
+export const DEFAULT_TOOL_RESULT_BUDGET_CHARS = 48000;
+export const DEFAULT_TOOL_RESULT_PREVIEW_CHARS = 8000;
+export const MAX_TOOL_RESULT_BUDGET_CHARS = 200000;
 
 export interface ContentReplacementState {
   seenIds: Set<string>;
@@ -45,8 +48,8 @@ export class FileToolResultMemory implements ToolResultMemory {
   private readonly toolResultsDir: string;
 
   constructor(private readonly options: ToolResultMemoryOptions, initialRecords: readonly ContentReplacementRecord[] = []) {
-    this.thresholdChars = options.thresholdChars ?? 16000;
-    this.previewChars = options.previewChars ?? 2000;
+    this.thresholdChars = options.thresholdChars ?? DEFAULT_TOOL_RESULT_BUDGET_CHARS;
+    this.previewChars = options.previewChars ?? DEFAULT_TOOL_RESULT_PREVIEW_CHARS;
     this.toolResultsDir = path.join(options.sessionDir, TOOL_RESULTS_SUBDIR);
     this.state = createContentReplacementState(initialRecords);
   }
@@ -56,7 +59,10 @@ export class FileToolResultMemory implements ToolResultMemory {
     if (existing !== undefined) return { output: existing };
 
     const serialized = serializeToolOutput(output);
-    if (serialized.length <= thresholdChars) return { output };
+    if (serialized.length <= thresholdChars) {
+      this.state.seenIds.add(toolUseId);
+      return { output };
+    }
 
     const persisted = await this.persistToolResult(toolUseId, output, serialized);
     const replacement = buildLargeToolResultMessage(persisted);
@@ -91,11 +97,7 @@ export class FileToolResultMemory implements ToolResultMemory {
         continue;
       }
 
-      const frozenSize = frozen.reduce((sum, candidate) => sum + candidate.size, 0);
-      const freshSize = fresh.reduce((sum, candidate) => sum + candidate.size, 0);
-      const selected = frozenSize + freshSize > maxSerializedLength
-        ? selectFreshToReplace(fresh, frozenSize, maxSerializedLength)
-        : [];
+      const selected = fresh.filter((candidate) => candidate.size > maxSerializedLength);
       const selectedIds = new Set(selected.map((candidate) => candidate.toolUseId));
 
       for (const candidate of candidates) {
@@ -225,17 +227,6 @@ function partitionByPriorDecision(candidates: readonly ToolResultCandidate[], st
     },
     { mustReapply: [], frozen: [], fresh: [] },
   );
-}
-
-function selectFreshToReplace(fresh: readonly ToolResultCandidate[], frozenSize: number, limit: number): ToolResultCandidate[] {
-  const selected: ToolResultCandidate[] = [];
-  let remaining = frozenSize + fresh.reduce((sum, candidate) => sum + candidate.size, 0);
-  for (const candidate of [...fresh].sort((left, right) => right.size - left.size)) {
-    if (remaining <= limit) break;
-    selected.push(candidate);
-    remaining -= candidate.size;
-  }
-  return selected;
 }
 
 function replaceToolResultOutputs(messages: readonly Message[], replacementMap: ReadonlyMap<string, string>): Message[] {

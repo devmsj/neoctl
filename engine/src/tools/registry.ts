@@ -1,4 +1,5 @@
-import type { Tool, ToolDefinition, ToolUseContext } from "./tool.js";
+import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
+import type { JsonSchema, Tool, ToolDefinition, ToolUseContext } from "./tool.js";
 import { resolveToolDescription } from "./tool.js";
 
 export interface ToolPoolOptions {
@@ -43,8 +44,8 @@ export class ToolRegistry {
   definitions(context?: ToolUseContext, options: ToolPoolOptions = {}): ToolDefinition[] {
     return this.visibleTools(context, options).map((tool) => ({
       name: tool.name,
-      description: resolveToolDescription(tool, context),
-      inputSchema: tool.inputSchema,
+      description: appendToolResultBudgetDescription(resolveToolDescription(tool, context), tool),
+      inputSchema: withToolResultBudgetInput(tool.inputSchema),
       strict: false,
     }));
   }
@@ -93,4 +94,23 @@ function compareToolForPromptCache(left: Tool<any>, right: Tool<any>): number {
   const rightMcp = right.metadata.isMcp ? 1 : 0;
   if (leftMcp !== rightMcp) return leftMcp - rightMcp;
   return left.name.localeCompare(right.name);
+}
+
+function appendToolResultBudgetDescription(description: string, tool: Tool<any>): string {
+  const defaultBudget = Math.max(tool.metadata.maxResultSizeChars ?? 0, DEFAULT_TOOL_RESULT_BUDGET_CHARS);
+  return `${description}\n\nTool result budget: by default, this tool's result is kept in model context up to ${defaultBudget} serialized characters. Pass optional maxResultChars on a single call to raise or lower that call's result budget; allowed range 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`;
+}
+
+function withToolResultBudgetInput(schema: JsonSchema): JsonSchema {
+  if (schema.type !== "object") return schema;
+  return {
+    ...schema,
+    properties: {
+      ...(schema.properties ?? {}),
+      maxResultChars: {
+        type: "number",
+        description: `Optional per-call tool result budget in serialized characters. Default is the tool's documented budget; allowed range 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Use this only when a specific call needs more or less output retained in context.`,
+      },
+    },
+  };
 }

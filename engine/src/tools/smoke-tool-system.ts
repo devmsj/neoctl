@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const valid = await runToolUseToMessages({ id: "smoke_passthrough1", name: "smoke_pass", input: { text: "ok" } }, context);
   const invalid = await runToolUseToMessages({ id: "smoke_passthrough2", name: "smoke_passthrough", input: { text: "" } }, context);
   const unknown = await runToolUseToMessages({ id: "missing", name: "missing", input: {} }, context);
-  const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20 } }, context);
+  const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20, maxResultChars: 8 } }, context);
   const grep = await runToolUseToMessages(
     { id: "grep", name: "grep", input: { query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 5 } },
     context,

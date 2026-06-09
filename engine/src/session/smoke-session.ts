@@ -106,7 +106,7 @@ function createToolMessages(): Message[] {
       id: "result-b",
       role: "tool_result",
       createdAt,
-      blocks: [{ type: "tool_result", toolUseId: "call_b", name: "beta", ok: true, output: "b".repeat(120) }],
+      blocks: [{ type: "tool_result", toolUseId: "call_b", name: "beta", ok: true, output: "b".repeat(220) }],
     },
   ];
 }
