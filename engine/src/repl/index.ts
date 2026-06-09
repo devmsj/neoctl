@@ -1515,7 +1515,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const inputLockedByQueue = busy && queuedInput !== undefined;
   const prompt = promptPrefix(busy);
   const currentTip = tipAt(tipIndex);
-  const activePlaceholder = input.length === 0 ? promptPlaceholder ?? currentTip.placeholder : undefined;
+  const compactLiveLayout = terminalSize.rows <= COMPACT_LIVE_LAYOUT_ROWS && (agentActivities.length > 0 || backgroundTasks.length > 0 || busy);
+  const activePlaceholder = input.length === 0 && !compactLiveLayout ? promptPlaceholder ?? currentTip.placeholder : undefined;
   const promptDisplayText = input;
   const promptDisplayCursor = cursor;
   const promptLayoutText = activePlaceholder ? ` ${activePlaceholder}` : promptDisplayText;
@@ -1532,11 +1533,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
-  const dynamicMarginOverhead = dynamicLines.reduce((sum, _, i) => {
-    const blockIndex = staticLines.length + i;
-    return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
-  }, 0);
-  const subagentRows = subagentLivePanelRenderRows(agentActivities, terminalSize.rows);
+  const subagentRows = subagentLivePanelRenderRows(agentActivities, terminalSize.rows, compactLiveLayout);
   const nonAgentBackgroundTasks = backgroundTasks.filter((task) => task.type !== "agent");
   const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + subagentRows + backgroundTaskStatusRenderRows(subagentRows > 0 ? nonAgentBackgroundTasks.length : backgroundTasks.length);
   const managementBrowserHeight = sessionsBrowser
@@ -1547,8 +1544,16 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         ? secretsBrowserViewHeight(secretsBrowser)
         : 0;
   const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
-  const reservedRows = promptHeight + statusRenderRows + managementBrowserHeight + loginFormHeight + dynamicMarginOverhead + FULLSCREEN_RENDER_GUARD_ROWS;
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - reservedRows);
+  const maxDynamicBlocks = compactLiveLayout ? COMPACT_LIVE_DYNAMIC_BLOCKS : Number.POSITIVE_INFINITY;
+  const visibleDynamicLines = dynamicLines.length > maxDynamicBlocks ? dynamicLines.slice(-maxDynamicBlocks) : dynamicLines;
+  const visibleDynamicMarginOverhead = visibleDynamicLines.reduce((sum, _, i) => {
+    const blockIndex = staticLines.length + i;
+    return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
+  }, 0);
+  const liveLineCount = Math.max(1, visibleDynamicLines.length);
+  const reservedRows = promptHeight + statusRenderRows + managementBrowserHeight + loginFormHeight + visibleDynamicMarginOverhead + FULLSCREEN_RENDER_GUARD_ROWS;
+  const dynamicRowsBudget = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - reservedRows);
+  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, Math.floor(dynamicRowsBudget / liveLineCount));
 
   useInput((value, key) => {
     if (isTerminalFocusInSequence(value)) {
@@ -1889,14 +1894,14 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     Box,
     { flexDirection: "column" },
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
-    e(MessageList, { lines: dynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
+    e(MessageList, { lines: visibleDynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     skillsBrowser ? e(SkillsBrowser, { state: skillsBrowser, width }) : null,
     secretsBrowser ? e(SecretsBrowser, { state: secretsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
-    agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, terminalRows: terminalSize.rows, animationTick }) : null,
+    agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, terminalRows: terminalSize.rows, compact: compactLiveLayout, animationTick }) : null,
     agentActivities.length === 0 && backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
     agentActivities.length > 0 && nonAgentBackgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: nonAgentBackgroundTasks, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
@@ -2346,7 +2351,7 @@ function StatusBar(
   const segments = fitStatusSegments(renderCompactStatusSegments(status, animationTick, width, inputTokens, outputTokens, displayPhase), width);
   return e(
     Box,
-    { marginTop: 1, width, height: 1, overflow: "hidden" },
+    { width, height: 1, overflow: "hidden" },
     ...segments.map((segment, index) => e(
       Text,
       { key: index, color: segment.color ?? "gray", bold: segment.bold ?? false },
@@ -2371,19 +2376,19 @@ function ForegroundExecDetachHintLine(
 }
 
 function SubagentLivePanel(
-  { activities, width: terminalWidth, terminalRows, animationTick }:
-  { activities: AgentActivity[]; width: number; terminalRows: number; animationTick: number },
+  { activities, width: terminalWidth, terminalRows, compact, animationTick }:
+  { activities: AgentActivity[]; width: number; terminalRows: number; compact: boolean; animationTick: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const rows = subagentLivePanelRenderRows(activities, terminalRows);
+  const rows = subagentLivePanelRenderRows(activities, terminalRows, compact);
   if (rows <= 0) return null;
   const sorted = sortAgentActivitiesForPanel(activities);
   const selected = sorted[0];
   if (!selected) return null;
   const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "pending").length;
-  const header = `◇ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""} | auto: latest activity`;
+  const header = `◇ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""}`;
   if (rows <= 1) {
-    return e(Text, { color: "yellow" }, fitToWidth(`${header} | ${compactAgentSummary(selected, width - header.length - 3)}`, width));
+    return e(Text, { color: "yellow" }, fitToWidth(`${header} · ${compactAgentSummary(selected, width - header.length - 3)}`, width));
   }
 
   const detailLines = buildSubagentDetailLines(selected, sorted, animationTick);
@@ -2401,9 +2406,9 @@ function SubagentLivePanel(
 
 const SUBAGENT_DETAIL_ROWS = 3;
 
-function subagentLivePanelRenderRows(activities: AgentActivity[], terminalRows: number): number {
+function subagentLivePanelRenderRows(activities: AgentActivity[], terminalRows: number, compact = false): number {
   if (activities.length === 0) return 0;
-  if (terminalRows < 18) return 1;
+  if (compact || terminalRows < 22 || activities.length > 1) return 1;
   return 1 + SUBAGENT_DETAIL_ROWS;
 }
 
@@ -2424,7 +2429,7 @@ function buildSubagentDetailLines(
 ): { text: string; color: string }[] {
   const spinner = selected.status === "running" ? spinnerFrame(animationTick) : statusGlyph(selected.status);
   const elapsed = formatElapsed(Date.now() - new Date(selected.startedAt).getTime());
-  const headerLine = `${spinner} ${selected.description || selected.agentId} · ${agentModeLabel(selected)} · ${selected.agentType} · ${selected.status} · ${elapsed}`;
+  const headerLine = `${spinner} ${selected.description || selected.agentId} · ${elapsed}`;
   const currentLine = selected.currentTool
     ? `→ ${selected.currentTool.name}${selected.currentTool.inputPreview ? ` · ${selected.currentTool.inputPreview}` : ""}`
     : selected.error
@@ -2452,12 +2457,8 @@ function compactAgentSummary(activity: AgentActivity, maxLength: number): string
   const current = activity.currentTool
     ? `${activity.currentTool.name}${activity.currentTool.inputPreview ? ` ${activity.currentTool.inputPreview}` : ""}`
     : activity.lastText ?? activity.resultPreview ?? activity.error ?? activity.prompt;
-  return truncateMiddle(`${activity.description || activity.agentId} · ${agentModeLabel(activity)} · ${activity.status} · tools:${activity.totalToolUseCount} · ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
-}
-
-function agentModeLabel(activity: AgentActivity): string {
-  if (activity.mode === "explore") return "explore";
-  return activity.mode;
+  const elapsed = formatElapsed(Date.now() - new Date(activity.startedAt).getTime());
+  return truncateMiddle(`${activity.description || activity.agentId} · ${elapsed} · tools:${activity.totalToolUseCount} · ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
 }
 
 function formatTimelineEntry(entry: AgentTimelineEntry, maxLength: number): string {
@@ -5274,7 +5275,7 @@ const TERMINAL_TITLE_WORKING_PREFIX = "● ";
 const TERMINAL_TITLE_READY_PREFIX = "✓ ";
 const REPL_ANIMATION_INTERVAL_MS = 420;
 const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
-const SUBAGENT_ACTIVITY_UPDATE_DEBOUNCE_MS = 180;
+const SUBAGENT_ACTIVITY_UPDATE_DEBOUNCE_MS = 1000;
 const SUBAGENT_COMPLETED_LINGER_MS = 8000;
 const TOKEN_PULSE_MS = 900;
 const ANIMATED_NUMBER_INTERVAL_MS = 50;
@@ -5287,7 +5288,7 @@ const STATUS_SHIMMER_GAP_TICKS = 3;
 const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " · ";
-const STATUS_BAR_RENDER_ROWS = 2;
+const STATUS_BAR_RENDER_ROWS = 1;
 const FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS = 1;
 const FOREGROUND_EXEC_DETACH_HINT_DELAY_MS = 2000;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
@@ -5297,6 +5298,8 @@ const LONG_CLIPBOARD_TEXT_THRESHOLD = 200;
 const PASTE_STATUS_DISPLAY_MS = 2500;
 const MIN_LIVE_VIEWPORT_LINES = 1;
 const FULLSCREEN_RENDER_GUARD_ROWS = 3;
+const COMPACT_LIVE_LAYOUT_ROWS = 24;
+const COMPACT_LIVE_DYNAMIC_BLOCKS = 1;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
   maxLines: 6,
