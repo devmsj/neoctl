@@ -40,7 +40,6 @@ export const FORK_AGENT: AgentDefinition = {
   disallowedTools: ["plan"],
   model: "inherit",
   permissionMode: "bubble",
-  maxTurns: 40,
   requiresReport: true,
   reportRetryTurns: 1,
   buildSystemPrompt: () => "",
@@ -52,7 +51,6 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   tools: ["*"],
   disallowedTools: ["plan"],
   permissionMode: "inherit",
-  maxTurns: 40,
   requiresReport: true,
   reportRetryTurns: 1,
   buildSystemPrompt: () => [
@@ -68,7 +66,6 @@ export const EXPLORE_AGENT: AgentDefinition = {
   tools: ["list", "read", "grep", "search", "exec", "agent_report"],
   disallowedTools: ["edit", "write", "agent", "plan"],
   permissionMode: "readonly",
-  maxTurns: 20,
   requiresReport: true,
   reportRetryTurns: 1,
   buildSystemPrompt: () => [

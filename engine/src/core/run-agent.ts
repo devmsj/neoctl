@@ -235,13 +235,7 @@ function createAgentContextManager(options: RunAgentOptions): ContextManager {
 }
 
 function resolveSubagentMaxTurns(options: RunAgentOptions): number | undefined {
-  if (options.maxTurns !== undefined) return options.maxTurns;
-  const raw = process.env.AGENT_SUBAGENT_MAX_TURNS;
-  if (raw !== undefined && raw !== "") {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n >= 1) return Math.floor(n);
-  }
-  return options.agent.maxTurns;
+  return options.maxTurns;
 }
 
 function resolveAgentModel(agent: AgentDefinition, override?: string): string | undefined {
