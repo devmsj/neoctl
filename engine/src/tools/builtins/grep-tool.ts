@@ -65,6 +65,7 @@ export const grepTool: Tool<GrepToolInput> = {
   inputSchema: {
     type: "object",
     properties: {
+      description: { type: "string", description: "Optional model-facing reason for this grep request. Ignored by the tool." },
       query: { type: "string", description: "Regex pattern or literal text to look for." },
       path: { type: "string", description: "Absolute or cwd-relative file/directory to grep. Defaults to the current working directory." },
       glob: {
@@ -88,6 +89,7 @@ export const grepTool: Tool<GrepToolInput> = {
     visible: true,
     maxResultSizeChars: 24000,
     searchHint: "grep files with bundled ripgrep",
+    ignoreUnknownInputProperties: true,
   },
   mapResult(result) {
     return shrinkGrepOutputForTransport(result.output, 21000);

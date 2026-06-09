@@ -33,6 +33,8 @@ export interface ToolMetadata {
   isLsp?: boolean;
   maxResultSizeChars?: number;
   searchHint?: string;
+  /** Strip unknown top-level object fields before JSON schema validation. Use only for simple, non-destructive tools. */
+  ignoreUnknownInputProperties?: boolean;
 }
 
 export interface ToolProgressEvent {
@@ -85,6 +87,12 @@ export interface ToolRuntimeOptions {
   refreshTools?: () => Promise<void> | void;
 }
 
+export interface ToolUseContextSession {
+  sessionId: string;
+  sessionDir: string;
+  rootDir?: string;
+}
+
 export interface ToolUseContext {
   agentId: string;
   agentType?: string;
@@ -95,6 +103,7 @@ export interface ToolUseContext {
   messages?: readonly Message[];
   queryTracking?: unknown;
   requestPrompt?: string;
+  session?: ToolUseContextSession;
   options?: ToolRuntimeOptions;
   toolResultMemory?: ToolResultMemory;
   secrets?: SecretResolver;

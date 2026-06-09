@@ -24,6 +24,7 @@ export const readFileTool: Tool<ReadFileToolInput> = {
   inputSchema: {
     type: "object",
     properties: {
+      description: { type: "string", description: "Optional model-facing reason for this read request. Ignored by the tool." },
       path: { type: "string", description: "Absolute or cwd-relative file path to read." },
       offset: { type: "integer", description: "1-based starting line. Defaults to 1." },
       limit: { type: "integer", description: "Number of lines to return, 1-500. Defaults to 120." },
@@ -37,6 +38,7 @@ export const readFileTool: Tool<ReadFileToolInput> = {
     visible: true,
     maxResultSizeChars: 30000,
     searchHint: "read a file line range",
+    ignoreUnknownInputProperties: true,
   },
   validate(input) {
     const record = input as Partial<ReadFileToolInput>;
@@ -107,6 +109,7 @@ export const listDirectoryTool: Tool<ListDirectoryToolInput> = {
   inputSchema: {
     type: "object",
     properties: {
+      description: { type: "string", description: "Optional model-facing reason for this list request. Ignored by the tool." },
       path: { type: "string", description: "Absolute or cwd-relative file/directory path. Defaults to current working directory." },
       recursive: { type: "boolean", description: "Recursively inventory descendants. Defaults to false." },
       includeHidden: { type: "boolean", description: "Include dotfiles and hidden-looking names. Defaults to false." },
@@ -126,6 +129,7 @@ export const listDirectoryTool: Tool<ListDirectoryToolInput> = {
     visible: true,
     maxResultSizeChars: 30000,
     searchHint: "list directory entries and file counts",
+    ignoreUnknownInputProperties: true,
   },
   mapResult(result) {
     return shrinkDirectoryOutputForTransport(result.output, 26000);

@@ -102,7 +102,10 @@ function parseAndValidateInput<TInput>(
   input: unknown,
   context: ToolUseContext,
 ): { ok: true; value: TInput } | { ok: false; message: string } {
-  const schemaResult = validateJsonSchema(input, tool.inputSchema);
+  const schemaInput = tool.metadata.ignoreUnknownInputProperties
+    ? stripUnknownInputProperties(input, tool.inputSchema)
+    : input;
+  const schemaResult = validateJsonSchema(schemaInput, tool.inputSchema);
   if (!schemaResult.ok) {
     const hint = tool.metadata.shouldDefer
       ? ` ${buildSchemaNotSentHint(tool.name)}`
@@ -171,4 +174,21 @@ async function processToolOutput(tool: Tool, request: ToolUseRequest, result: To
 
 function buildSchemaNotSentHint(toolName: string): string {
   return `If ${toolName} is deferred, select it with ToolSearch before retrying.`;
+}
+
+function stripUnknownInputProperties(input: unknown, schema: Tool["inputSchema"]): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  if (schema.type !== "object" || !schema.properties || schema.additionalProperties !== false) return input;
+
+  let changed = false;
+  const allowed = new Set(Object.keys(schema.properties));
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!allowed.has(key)) {
+      changed = true;
+      continue;
+    }
+    output[key] = value;
+  }
+  return changed ? output : input;
 }

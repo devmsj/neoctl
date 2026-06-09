@@ -175,6 +175,18 @@ async function main(): Promise<void> {
     { id: "list", name: "list", input: { path: "src/tools/builtins", recursive: false, maxEntries: 20 } },
     context,
   );
+  const readWithDescription = await runToolUseToMessages(
+    { id: "read-description", name: "read", input: { description: "Verify description is tolerated", path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 2, ignoredField: "ignored" } },
+    context,
+  );
+  const listWithDescription = await runToolUseToMessages(
+    { id: "list-description", name: "list", input: { description: "Verify description is tolerated", path: "src/tools/builtins", recursive: false, maxEntries: 5, ignoredField: "ignored" } },
+    context,
+  );
+  const grepWithDescription = await runToolUseToMessages(
+    { id: "grep-description", name: "grep", input: { description: "Verify description is tolerated", query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 1, ignoredField: "ignored" } },
+    context,
+  );
   const recursiveListRoot = path.join(tempDir, "recursive-list");
   await fs.mkdir(path.join(recursiveListRoot, ".idea"), { recursive: true });
   await fs.mkdir(path.join(recursiveListRoot, ".agent-tasks"), { recursive: true });
@@ -440,6 +452,10 @@ async function main(): Promise<void> {
     readContent: JSON.stringify(read[read.length - 1]).includes("spawn"),
     listOk: toolOk(list[list.length - 1]),
     listFindsFile: JSON.stringify(list[list.length - 1]).includes("grep-tool.ts"),
+    simpleReadOnlyToolsTolerateDescription:
+      toolOk(readWithDescription[readWithDescription.length - 1]) &&
+      toolOk(listWithDescription[listWithDescription.length - 1]) &&
+      toolOk(grepWithDescription[grepWithDescription.length - 1]),
     recursiveListOk: toolOk(recursiveList[recursiveList.length - 1]),
     recursiveListDefaultExcludes:
       recursiveListOutput.exclude?.includes(".git") === true &&

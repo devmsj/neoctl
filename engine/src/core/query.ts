@@ -3,7 +3,7 @@ import type { Compactor, ContextBudgetOptions, CompactionResult } from "../conte
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
 import { DefaultContextManager } from "../context/context-manager.js";
-import type { ModelGateway, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
+import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
 import { AGENT_REPORT_TOOL_NAME } from "../agents/agent-report-tool.js";
 import { supportsImageInput } from "../model/context-window.js";
@@ -40,6 +40,10 @@ export interface QueryOptions {
   abortSignal?: AbortSignal;
   /** Stop the query loop immediately after a successful agent_report tool result. */
   stopOnAgentReport?: boolean;
+  /** Tool name that counts as the final subagent report. */
+  agentReportToolName?: string;
+  /** Force model tool selection for this query run. Used for protocol finalization turns. */
+  toolChoice?: ModelRequest["toolChoice"];
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
 }
@@ -53,6 +57,7 @@ export interface QueryDependencies {
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
   toolResultMemory?: ToolUseContext["toolResultMemory"];
+  session?: ToolUseContext["session"];
   secrets?: ToolUseContext["secrets"];
   secretRedactions?: ToolUseContext["secretRedactions"];
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
@@ -116,6 +121,7 @@ async function* queryLoop(
       reasoning: options.reasoning,
     },
     toolResultMemory: dependencies.toolResultMemory,
+    session: dependencies.session,
     secrets: dependencies.secrets,
     secretRedactions: dependencies.secretRedactions,
     recordContentReplacements: dependencies.recordContentReplacements,
@@ -201,7 +207,7 @@ async function* queryLoop(
       toolResults: allToolResults,
       previousResponseId,
     });
-    if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults)) return "completed";
+    if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults, options.agentReportToolName)) return "completed";
   }
 }
 
@@ -213,9 +219,16 @@ function beginTurn(state: QueryState): QueryState {
   };
 }
 
-function hasSuccessfulAgentReport(messages: readonly Message[]): boolean {
+function hasSuccessfulAgentReport(messages: readonly Message[], reportToolName = AGENT_REPORT_TOOL_NAME): boolean {
   return messages.some((message) =>
-    message.blocks.some((block) => block.type === "tool_result" && block.name === AGENT_REPORT_TOOL_NAME && block.ok),
+    message.blocks.some((block) => {
+      if (block.type !== "tool_result" || block.name !== reportToolName || !block.ok) return false;
+      const output = block.output;
+      if (!output || typeof output !== "object") return false;
+      const status = (output as { status?: unknown }).status;
+      const final = (output as { final?: unknown }).final;
+      return final === true || status === "completed" || status === "incomplete";
+    }),
   );
 }
 
@@ -314,6 +327,7 @@ async function* callModelForTurn(
       messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
       tools: telemetry.toolDefinitions,
+      toolChoice: options.toolChoice,
       stream: true,
       maxOutputTokens: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
       reasoning: options.reasoning,

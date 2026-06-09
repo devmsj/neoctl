@@ -1,3 +1,4 @@
+import path from "node:path";
 import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway, ModelUsage } from "../model/model-gateway.js";
@@ -9,6 +10,7 @@ import type { AgentDefinition } from "../agents/agent-definition.js";
 import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
 import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
+import { SessionStore } from "../session/session-store.js";
 import { query } from "./query.js";
 
 export interface RunAgentDependencies {
@@ -19,6 +21,8 @@ export interface RunAgentDependencies {
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
   maxToolResultSerializedLength?: number;
+  toolResultMemory?: ToolUseContext["toolResultMemory"];
+  recordContentReplacements?: ToolUseContext["recordContentReplacements"];
 }
 
 export interface RunAgentOptions {
@@ -49,6 +53,10 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   const initialMessages = options.existingMessages?.length
     ? [...options.existingMessages, ...buildResumeMessages(options)]
     : buildInitialAgentMessages(options);
+  const childSession = await createChildAgentSession(options);
+  if (childSession && !options.existingMessages?.length) {
+    for (const message of initialMessages) childSession.recordMessage(message);
+  }
   const agentMessages: Message[] = [];
   let terminalReason: string | undefined;
   let lastUsage: ModelUsage | undefined;
@@ -62,11 +70,20 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     contextBudget: options.dependencies.contextBudget,
     canUseTool: options.dependencies.canUseTool,
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,
+    toolResultMemory: childSession?.toolResultMemory ?? options.dependencies.toolResultMemory ?? options.parentContext?.toolResultMemory,
+    session: childSession ? { sessionId: childSession.sessionId, sessionDir: childSession.sessionDir } : options.parentContext?.session,
+    recordContentReplacements: childSession
+      ? (records: Parameters<NonNullable<ToolUseContext["recordContentReplacements"]>>[0]) => childSession.recordContentReplacements(records)
+      : options.dependencies.recordContentReplacements ?? options.parentContext?.recordContentReplacements,
     secrets: options.parentContext?.secrets,
     secretRedactions: options.parentContext?.secretRedactions,
   };
 
-  const runQuery = async function* (messages: Message[], maxTurns?: number): AsyncGenerator<AgentEvent, void, void> {
+  const runQuery = async function* (
+    messages: Message[],
+    maxTurns?: number,
+    toolChoice?: { type: "function"; name: string },
+  ): AsyncGenerator<AgentEvent, void, void> {
     for await (const event of query(messages, dependencies, {
       agentId: options.agentId,
       model: resolveAgentModel(options.agent, options.model),
@@ -76,8 +93,13 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       abortSignal: options.abortSignal,
       workspaceCwd: options.workspaceCwd,
       stopOnAgentReport: options.agent.requiresReport === true,
+      agentReportToolName: options.agent.reportToolName,
+      toolChoice,
     })) {
-      if (event.type === "message") agentMessages.push(event.message);
+      if (event.type === "message") {
+        agentMessages.push(event.message);
+        childSession?.recordMessage(event.message);
+      }
       if (event.type === "tool.started") totalToolUseCount += 1;
       if (event.type === "usage") lastUsage = event.usage;
       if (event.type === "terminal") terminalReason = event.reason;
@@ -87,11 +109,11 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
 
   yield* runQuery(initialMessages, resolveSubagentMaxTurns(options));
 
-  if (options.agent.requiresReport === true && !extractAgentReport(agentMessages, options.agent.reportToolName)) {
+  if (options.agent.requiresReport === true && !extractFinalAgentReport(agentMessages, options.agent.reportToolName)) {
     const retryTurns = options.agent.reportRetryTurns ?? 1;
     if (retryTurns > 0 && !options.abortSignal?.aborted) {
-      const recoveryMessages = [...initialMessages, createTextMessage("user", buildReportRequiredReminder())];
-      yield* runQuery(recoveryMessages, Math.max(2, retryTurns + 1));
+      const recoveryMessages = [...initialMessages, ...agentMessages, createTextMessage("user", buildReportRequiredReminder())];
+      yield* runQuery(recoveryMessages, Math.max(2, retryTurns + 1), { type: "function", name: options.agent.reportToolName ?? AGENT_REPORT_TOOL_NAME });
     }
   }
 
@@ -121,7 +143,7 @@ export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinit
     registry.register(tool);
   }
 
-  if (agent.agentType !== FORK_AGENT.agentType && !registry.get(AGENT_REPORT_TOOL_NAME)) {
+  if (!registry.get(AGENT_REPORT_TOOL_NAME)) {
     registry.register(createAgentReportTool());
   }
 
@@ -137,8 +159,9 @@ export function finalizeAgentTool(input: {
   usage?: ModelUsage;
   totalToolUseCount?: number;
 }): AgentToolResult {
-  const report = extractAgentReport(input.messages, input.agent?.reportToolName);
-  const content = report?.report ?? extractFinalText(input.messages);
+  const report = extractFinalAgentReport(input.messages, input.agent?.reportToolName);
+  const latestDraft = report ? undefined : extractLatestAgentReport(input.messages, input.agent?.reportToolName);
+  const content = report?.report ?? latestDraft?.report ?? extractFinalText(input.messages);
   const totalToolUseCount = input.totalToolUseCount ?? countToolUses(input.messages);
   const validationError = !report && input.agentType === EXPLORE_AGENT.agentType
     ? validateExploreFinalText(content, totalToolUseCount)
@@ -154,7 +177,7 @@ export function finalizeAgentTool(input: {
       : validationError
         ? formatIncompleteExploreResult(validationError, content)
         : content,
-    status: missingRequiredReport ? "incomplete" : report?.status,
+    status: missingRequiredReport ? "incomplete" : report?.status === "completed" || report?.status === "incomplete" ? report.status : undefined,
     total_duration_ms: input.durationMs,
     total_tokens: input.usage?.totalTokens,
     total_tool_use_count: totalToolUseCount,
@@ -179,6 +202,17 @@ function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
 
 function buildResumeMessages(options: RunAgentOptions): Message[] {
   return [createTextMessage("user", `[Resumed] ${options.prompt}`)];
+}
+
+async function createChildAgentSession(options: RunAgentOptions): Promise<SessionStore | undefined> {
+  const parentSession = options.parentContext?.session;
+  if (!parentSession?.sessionDir) return undefined;
+  return SessionStore.open({
+    agentId: options.agentId,
+    sessionId: options.agentId,
+    rootDir: path.join(parentSession.sessionDir, "subagents"),
+    resume: false,
+  });
 }
 
 function createAgentContextManager(options: RunAgentOptions): ContextManager {
@@ -220,13 +254,14 @@ function buildReportRequiredReminder(): string {
   return [
     "REQUIRED FINALIZATION:",
     "",
-    "You reached the end of your subagent run without submitting the required agent_report tool result.",
-    "You must now call agent_report exactly once with your complete final report.",
+    "You reached the end of your subagent run without submitting a final agent_report.",
+    "Only agent_report content is visible to the parent as your report.",
+    "You must now call agent_report with status='completed' or status='incomplete'.",
     "Do not continue investigating.",
     "Do not call any other tool unless agent_report is unavailable.",
     "Do not respond with normal assistant text.",
     "",
-    "If your work is incomplete, call agent_report with status='incomplete' and explain exactly what was and was not inspected.",
+    "If your work is incomplete, blocked, or you would otherwise ask the parent a question, call agent_report with status='incomplete' and explain exactly what is blocking completion plus what was and was not done.",
   ].join("\n");
 }
 
@@ -243,7 +278,16 @@ function extractFinalText(messages: readonly Message[]): string {
   return "";
 }
 
-function extractAgentReport(messages: readonly Message[], reportToolName = AGENT_REPORT_TOOL_NAME): AgentReportOutput | undefined {
+function extractFinalAgentReport(messages: readonly Message[], reportToolName = AGENT_REPORT_TOOL_NAME): AgentReportOutput | undefined {
+  const report = extractLatestAgentReport(messages, reportToolName, { finalOnly: true });
+  return report;
+}
+
+function extractLatestAgentReport(
+  messages: readonly Message[],
+  reportToolName = AGENT_REPORT_TOOL_NAME,
+  options: { finalOnly?: boolean } = {},
+): AgentReportOutput | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     for (const block of message.blocks) {
@@ -252,11 +296,11 @@ function extractAgentReport(messages: readonly Message[], reportToolName = AGENT
       if (!output || typeof output !== "object") continue;
       const report = (output as { report?: unknown }).report;
       if (typeof report !== "string" || !report.trim()) continue;
-      const status = (output as { status?: unknown }).status;
-      return {
-        report: report.trim(),
-        status: status === "incomplete" ? "incomplete" : "completed",
-      };
+      const rawStatus = (output as { status?: unknown }).status;
+      const status = rawStatus === "completed" || rawStatus === "incomplete" ? rawStatus : "draft";
+      const final = (output as { final?: unknown }).final === true || status === "completed" || status === "incomplete";
+      if (options.finalOnly && !final) continue;
+      return { report: report.trim(), status, final };
     }
   }
   return undefined;
@@ -320,13 +364,14 @@ function formatIncompleteExploreResult(error: string, content: string): string {
 function formatMissingRequiredReportResult(content: string): string {
   const lastOutput = content.trim() || "<empty>";
   return [
-    "INCOMPLETE: Subagent did not submit the required agent_report tool result.",
+    "INCOMPLETE: Subagent ended without a final agent_report.",
     "",
-    "Protocol violation:",
+    "## Protocol diagnostic",
     "- This agent is configured with requiresReport=true.",
-    "- A normal assistant message is not accepted as the authoritative final result.",
+    "- No final agent_report tool result was submitted, even after the runtime finalization turn.",
+    "- The parent should treat this as an incomplete partial report, not a completed result.",
     "",
-    "Last assistant output:",
+    "## Partial output",
     lastOutput,
   ].join("\n");
 }
