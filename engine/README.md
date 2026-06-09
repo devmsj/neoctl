@@ -107,6 +107,8 @@ npm run smoke:openai -- "Say pong"
 
 `postinstall` 会以 optional 模式尝试安装 ripgrep；如果失败或需要重装，可手动运行 `npm run vendor:rg`。
 
+`postinstall` 还会运行 `scripts/patch-ink-clear-terminal.cjs`，对 Ink 的满屏重绘逻辑做一个本地兼容 patch：Ink 在动态输出高度达到终端高度时原本会调用 `ansiEscapes.clearTerminal`，该序列在现代终端中包含 `ESC[3J`，会清空 scrollback buffer，导致 TTY REPL 在长 Markdown 输出或子代理活动期间出现“滚动条冲顶/归零”的现象。patch 会把该分支替换为只清可见屏幕的 `ESC[2J ESC[H`，保留终端 scrollback。升级 Ink 后如果脚本提示找不到预期代码，需要重新检查 `node_modules/ink/build/ink.js` 的满屏渲染分支。
+
 ## REPL 用法
 
 启动后直接输入自然语言任务即可。命令行参数也可用 `-`/`--` 形式调用同名 REPL slash command：
