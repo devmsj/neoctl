@@ -25,7 +25,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-ink-clear-terminal.cjs && node scripts/install-ripgrep.cjs --optional",
+    "postinstall": "node scripts/install-ripgrep.cjs --optional",
     "vendor:rg": "node scripts/install-ripgrep.cjs",
     "vendor:rg:all": "node scripts/install-ripgrep.cjs --all",
     "build": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true })).catch(() => process.exit(1))\" && tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs",
