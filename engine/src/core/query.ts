@@ -28,6 +28,7 @@ import {
 import { AssistantOutputFilter } from "./assistant-output-filter.js";
 import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
+import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-notes.js";
 
 export interface QueryOptions {
   agentId: string;
@@ -82,6 +83,11 @@ interface PreparedMessages {
   compactedMessages: Message[];
   compaction?: CompactionResult;
   metrics: ReturnType<typeof buildContextMetrics>;
+}
+
+interface ImageNoteTarget {
+  imageRef: string;
+  label: string;
 }
 
 export async function* query(
@@ -167,6 +173,22 @@ async function* queryLoop(
       for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
         yield { type: "message", message };
       }
+    }
+
+    const annotation = yield* maybeRunImageNoteAnnotationTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
+      systemPrompt,
+      toolDefinitions,
+      metrics: prepared.metrics,
+    });
+    if (annotation.terminal) return annotation.terminal;
+    if (annotation.applied) {
+      toolContext = annotation.context;
+      state = buildNextTurnState(state, {
+        assistantMessages: annotation.assistantMessages,
+        toolResults: annotation.toolResults,
+        previousResponseId: undefined,
+      });
+      continue;
     }
 
     const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
@@ -276,7 +298,8 @@ async function prepareMessagesForQuery(
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
   });
   const compactedMessages = ensureToolResultPairing(compaction.messages);
-  const messagesForQuery = applyRuntimeContextForPromptCache(compactedMessages, context.userContext, context.systemContext);
+  const retentionAppliedMessages = applyImageRetention(compactedMessages);
+  const messagesForQuery = applyRuntimeContextForPromptCache(retentionAppliedMessages, context.userContext, context.systemContext);
   const metrics = buildContextMetrics({
     model: telemetry.model,
     messages: messagesForQuery,
@@ -400,6 +423,115 @@ async function* callModelForTurn(
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   appendSyntheticToolUseMessage(assistantMessages, toolUses);
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
+}
+
+async function* maybeRunImageNoteAnnotationTurn(
+  state: QueryState,
+  context: RuntimeContext,
+  messagesForQuery: Message[],
+  dependencies: QueryDependencies,
+  options: QueryOptions,
+  toolContext: ToolUseContext,
+  telemetry: { systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; metrics: ReturnType<typeof buildContextMetrics> },
+): AsyncGenerator<AgentEvent, { applied: false; terminal?: TerminalReason } | { applied: true; assistantMessages: Message[]; toolResults: Message[]; context: ToolUseContext; terminal?: TerminalReason }, void> {
+  if (!telemetry.toolDefinitions.some((tool) => tool.name === "image_note")) return { applied: false };
+  if (supportsImageInput(state.currentModel ?? options.model) === false) return { applied: false };
+
+  const targets = findImageNoteTargets(messagesForQuery);
+  if (targets.length === 0) return { applied: false };
+  if (hasImageNoteGateAlreadyTried(state.messages, targets)) return { applied: false };
+
+  const assistantMessages: Message[] = [];
+  const toolUses: ToolUseRequest[] = [];
+  const outputFilter = new AssistantOutputFilter();
+  const thinkingParts: string[] = [];
+  const imageNoteTool = telemetry.toolDefinitions.filter((tool) => tool.name === "image_note");
+  const annotationPrompt = createTextMessage(
+    "user",
+    [
+      "Before continuing the user's task, ensure every visible image target has an image_note retention decision.",
+      "Use the image_note tool now. Prefer the batch notes array. For each target, include a retention decision (next_turn, while_relevant with ttlTurns, or pinned only for explicit long-lived references). If semantic fields are missing or useful, also add concise factual caption, task purpose, and short retrieval tags.",
+      `Targets: ${targets.map((target) => target.imageRef).join(", ")}`,
+    ].join("\n"),
+  );
+  annotationPrompt.isMeta = true;
+  annotationPrompt.metadata = { imageNoteGatePrompt: true, imageNoteTargets: targets.map((target) => target.imageRef) };
+
+  yield { type: "state", phase: "calling_model", detail: `image note annotation turn for ${targets.length} unnamed image(s)` };
+  try {
+    for await (const event of dependencies.modelGateway.stream({
+      model: state.currentModel ?? options.model,
+      fallbackModel: state.fallbackModel ?? options.fallbackModel,
+      messages: adaptMessagesForModelCapabilities([...messagesForQuery, annotationPrompt], state.currentModel ?? options.model),
+      systemPrompt: telemetry.systemPrompt,
+      tools: imageNoteTool,
+      toolChoice: { type: "function", name: "image_note" },
+      stream: true,
+      maxOutputTokens: Math.max(options.maxOutputTokensOverride ?? 0, 1200),
+      reasoning: options.reasoning,
+      queryOrigin: options.queryOrigin,
+      cancellation: options.abortSignal,
+    })) {
+      if (options.abortSignal?.aborted) return { applied: false, terminal: "aborted_streaming" };
+      yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
+    }
+  } catch (error) {
+    yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
+    return { applied: false };
+  }
+
+  const imageNoteUses = toolUses.filter((toolUse) => toolUse.name === "image_note");
+  const targetKey = imageNoteGateTargetKey(targets);
+  if (imageNoteUses.length === 0) {
+    const marker = createTextMessage("progress", `Image note annotation gate skipped: model did not call image_note for ${targets.map((target) => target.imageRef).join(", ")}`);
+    marker.isMeta = true;
+    marker.metadata = { imageNoteGateAttempt: state.turnCount, imageNoteGateTargetKey: targetKey, imageNoteTargets: targets.map((target) => target.imageRef) };
+    return { applied: true, assistantMessages: [marker], toolResults: [], context: toolContext };
+  }
+
+  dependencies.exportToolCalls?.(imageNoteUses);
+  appendSyntheticToolUseMessage(assistantMessages, imageNoteUses);
+  const toolResult = yield* executeToolsForTurn(imageNoteUses, dependencies, options, toolContext);
+  if (toolResult.terminal) return { applied: false, terminal: toolResult.terminal };
+  const marker = createTextMessage("progress", `Image note annotation gate completed for ${targets.map((target) => target.imageRef).join(", ")}`);
+  marker.isMeta = true;
+  marker.metadata = { imageNoteGateAttempt: state.turnCount, imageNoteGateTargetKey: targetKey, imageNoteTargets: targets.map((target) => target.imageRef) };
+  return {
+    applied: true,
+    assistantMessages: [...assistantMessages, marker],
+    toolResults: toolResult.messages,
+    context: toolResult.context,
+  };
+}
+
+function hasImageNoteGateAlreadyTried(messages: readonly Message[], targets: readonly ImageNoteTarget[]): boolean {
+  const targetKey = imageNoteGateTargetKey(targets);
+  return messages.some((message) => message.metadata?.imageNoteGateTargetKey === targetKey);
+}
+
+function imageNoteGateTargetKey(targets: readonly ImageNoteTarget[]): string {
+  return targets.map((target) => target.imageRef).sort().join("|");
+}
+
+function findImageNoteTargets(messages: readonly Message[]): ImageNoteTarget[] {
+  const targets: ImageNoteTarget[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    if (message.metadata?.imageNoteGatePrompt || message.metadata?.imagePixelsOmittedByRetention) continue;
+    for (const block of message.blocks) {
+      if (block.type !== "image") continue;
+      if (!block.storage?.path) continue;
+      const note = readImageNoteForStoragePathSync(block.storage.path);
+      if (isImageRetention(note?.retention)) continue;
+      const imageRef = block.label?.trim() || block.storage.path;
+      const key = block.storage.path;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ imageRef, label: block.label ?? imageRef });
+      if (targets.length >= 10) return targets;
+    }
+  }
+  return targets;
 }
 
 function adaptMessagesForModelCapabilities(messages: Message[], model: string | undefined): Message[] {
@@ -655,6 +787,73 @@ function toolResultOk(message: Message): boolean {
 function formatCompactionDetail(compaction: CompactionResult): string {
   if (compaction.reason === "microcompact" && compaction.summary) return compaction.summary;
   return `${compaction.reason ?? "compact"} reduced context by ${compaction.charsFreed ?? compaction.tokensFreed ?? 0} chars`;
+}
+
+function applyImageRetention(messages: readonly Message[]): Message[] {
+  let changed = false;
+  let assistantTurnsSinceImage = 0;
+  const next = [...messages];
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant") assistantTurnsSinceImage += 1;
+    if (!message.blocks.some((block) => block.type === "image")) continue;
+
+    const retentionPolicy = resolveMessageImageRetention(message);
+    if (!retentionPolicy) continue;
+    const { retention, ttlTurns } = retentionPolicy;
+    const shouldKeepPixels = retention === "pinned" || (retention === "while_relevant" && assistantTurnsSinceImage <= ttlTurns) || (retention === "next_turn" && assistantTurnsSinceImage <= 1);
+    if (shouldKeepPixels) continue;
+
+    const blocks: MessageBlock[] = message.blocks.flatMap((block) => {
+      if (block.type !== "image") return [block];
+      const label = block.label ?? "image";
+      return [{ type: "text", text: `[image pixels omitted after ${retention} retention expired: ${label}; use load_image if visual inspection is needed]` }];
+    });
+    next[index] = {
+      ...message,
+      blocks,
+      metadata: { ...message.metadata, imagePixelsOmittedByRetention: true },
+    };
+    changed = true;
+  }
+
+  return changed ? next : [...messages];
+}
+
+function resolveMessageImageRetention(message: Message): { retention: ImageRetention; ttlTurns: number } | undefined {
+  const metadataRetention = message.metadata?.imageRetention;
+  const noteRetention = retentionFromImageNotes(message);
+  const retention = noteRetention ?? (isImageRetention(metadataRetention) ? metadataRetention : undefined);
+  if (!retention) return undefined;
+  const metadataTtl = message.metadata?.imageTtlTurns;
+  const noteTtl = ttlFromImageNotes(message);
+  const ttlTurns = noteTtl ?? (typeof metadataTtl === "number" && Number.isFinite(metadataTtl)
+    ? Math.max(1, Math.min(12, Math.round(metadataTtl)))
+    : 4);
+  return { retention, ttlTurns };
+}
+
+function retentionFromImageNotes(message: Message): ImageRetention | undefined {
+  for (const block of message.blocks) {
+    if (block.type !== "image" || !block.storage?.path) continue;
+    const note = readImageNoteForStoragePathSync(block.storage.path);
+    if (isImageRetention(note?.retention)) return note.retention;
+  }
+  return undefined;
+}
+
+function ttlFromImageNotes(message: Message): number | undefined {
+  for (const block of message.blocks) {
+    if (block.type !== "image" || !block.storage?.path) continue;
+    const note = readImageNoteForStoragePathSync(block.storage.path);
+    if (typeof note?.ttlTurns === "number" && Number.isFinite(note.ttlTurns)) return Math.max(1, Math.min(12, Math.round(note.ttlTurns)));
+  }
+  return undefined;
+}
+
+function isImageRetention(value: unknown): value is ImageRetention {
+  return value === "next_turn" || value === "while_relevant" || value === "pinned";
 }
 
 function terminalForModelError(error: unknown): TerminalReason {

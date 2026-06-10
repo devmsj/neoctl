@@ -24,6 +24,7 @@ import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
+import { createImageNoteTool } from "../tools/builtins/image-note-tool.js";
 import { createSecretTools } from "../tools/builtins/secret-tools.js";
 import { SecretStore } from "../secrets/secret-store.js";
 import { InMemorySecretRedactionRegistry } from "../secrets/secret-redaction.js";
@@ -397,6 +398,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(grepTool);
   tools.register(searchTool);
   tools.register(createLoadImageTool());
+  tools.register(createImageNoteTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
   for (const tool of createSecretTools()) tools.register(tool);

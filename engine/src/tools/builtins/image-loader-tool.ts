@@ -4,6 +4,7 @@ import { supportsImageInput } from "../../model/context-window.js";
 import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
 import { resolveImageRef, formatImageRegistryForContext, loadImageData } from "../../core/image-registry.js";
 import type { Message, MessageBlock } from "../../types/messages.js";
+import type { ImageRetention } from "../../core/image-notes.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 
 export interface LoadImageToolInput {
@@ -11,6 +12,10 @@ export interface LoadImageToolInput {
   imageRefs: string[];
   /** Optional question/context about what to look for in the image(s). Included as text alongside images. */
   prompt?: string;
+  /** How long the loaded image pixels should remain directly visible in model context. */
+  retention?: ImageRetention;
+  /** For while_relevant, number of assistant turns to keep sending pixels unless reloaded. */
+  ttlTurns?: number;
 }
 
 interface LoadedImageInfo {
@@ -25,6 +30,8 @@ export interface LoadImageToolOutput {
   loadedImages: LoadedImageInfo[];
   failedRefs: string[];
   prompt?: string;
+  retention?: ImageRetention;
+  ttlTurns?: number;
 }
 
 const SUPPORTED_EXTENSIONS: Record<string, string> = {
@@ -93,6 +100,15 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
           type: "string",
           description: "Optional analysis context or question about the image(s). Will be shown alongside the images.",
         },
+        retention: {
+          type: "string",
+          enum: ["next_turn", "while_relevant", "pinned"],
+          description: "Model-chosen pixel retention. Use next_turn for one-off inspection/OCR, while_relevant for multi-turn visual work such as UI design, and pinned only for explicit long-lived references.",
+        },
+        ttlTurns: {
+          type: "number",
+          description: "For while_relevant retention, number of assistant turns to keep the image pixels directly visible. Defaults to 4, range 1-12.",
+        },
       },
       required: ["imageRefs"],
       additionalProperties: false,
@@ -113,6 +129,8 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       return {
         imageRefs: record.imageRefs ?? [],
         prompt: record.prompt,
+        retention: record.retention,
+        ttlTurns: record.ttlTurns,
       };
     },
     validateInput(input, context) {
@@ -124,6 +142,12 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       }
       if (input.imageRefs.length > 10) {
         return { ok: false, message: "Cannot load more than 10 images at once to avoid context overflow" };
+      }
+      if (input.retention && !["next_turn", "while_relevant", "pinned"].includes(input.retention)) {
+        return { ok: false, message: "retention must be one of: next_turn, while_relevant, pinned" };
+      }
+      if (input.ttlTurns !== undefined && (!Number.isFinite(input.ttlTurns) || input.ttlTurns < 1 || input.ttlTurns > 12)) {
+        return { ok: false, message: "ttlTurns must be a number from 1 to 12" };
       }
       const model = context.options?.mainLoopModel;
       if (!model || supportsImageInput(model) !== true) {
@@ -207,9 +231,12 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         };
       }
 
+      const retention = input.retention ?? "next_turn";
+      const ttlTurns = retention === "while_relevant" ? Math.round(input.ttlTurns ?? 4) : undefined;
       const textParts: string[] = [];
       if (input.prompt) textParts.push(input.prompt);
       textParts.push(`Loaded ${loadedImages.length} image(s): ${loadedImages.map((i) => i.label ?? i.id).join(", ")}`);
+      textParts.push(`Image pixel retention: ${retention}${ttlTurns ? ` for ${ttlTurns} turn(s)` : ""}. The model chose this retention; reload or change retention if the visual context is still needed.`);
       if (failedRefs.length > 0) textParts.push(`Failed to load: ${failedRefs.join(", ")}`);
 
       const newMessage: Message = {
@@ -221,13 +248,21 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
           ...imageBlocks,
         ],
         isMeta: true,
-        metadata: { loadedImages: true, imageRefs: input.imageRefs },
+        metadata: {
+          loadedImages: true,
+          imageRefs: input.imageRefs,
+          imageRetention: retention,
+          ...(ttlTurns ? { imageTtlTurns: ttlTurns } : {}),
+          loadedImageLabels: loadedImages.map((image) => image.label ?? image.id),
+        },
       };
 
       const output: LoadImageToolOutput = {
         loadedImages,
         failedRefs,
         prompt: input.prompt,
+        retention,
+        ttlTurns,
       };
 
       return {

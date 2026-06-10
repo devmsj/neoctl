@@ -296,8 +296,8 @@ async function main(): Promise<void> {
   const searchToolPrompt = JSON.stringify({ description: searchToolDefinition?.description, schema: searchToolDefinition?.inputSchema });
   const imageTool = createOpenAIImageGenerationTool();
   const imageToolPrompt = JSON.stringify({ name: imageTool.name, description: imageTool.description, schema: imageTool.inputSchema });
-  const imageDefaultValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke" }, context) ?? { prompt: "smoke" }, context);
-  const imageLegacyModelValidation = await imageTool.validateInput?.(imageTool.validate?.({ prompt: "smoke", model: "gpt-image-1" }, context) ?? { prompt: "smoke", model: "gpt-image-1" }, context);
+  const imageDefaultValidation = await imageTool.validateInput?.(imageTool.validate?.({ semanticName: "smoke-test", prompt: "smoke" }, context) ?? { semanticName: "smoke-test", prompt: "smoke" }, context);
+  const imageLegacyModelValidation = await imageTool.validateInput?.(imageTool.validate?.({ semanticName: "smoke-test", prompt: "smoke", model: "gpt-image-1" }, context) ?? { semanticName: "smoke-test", prompt: "smoke", model: "gpt-image-1" }, context);
   const imageEditSmokeMessages: Message[] = [
     {
       id: "image-old",
@@ -355,6 +355,7 @@ async function main(): Promise<void> {
   try {
     const imageEditRefResult = await imageEditTool.call?.({
       mode: "edit",
+      semanticName: "smoke-edit-ref",
       prompt: "smoke edit",
       imageRefs: ["img#10"],
       useLatestImage: false,
@@ -365,6 +366,7 @@ async function main(): Promise<void> {
     } | undefined;
     const imageEditNumberResult = await imageEditTool.call?.({
       mode: "edit",
+      semanticName: "smoke-edit-number",
       prompt: "smoke edit",
       imageRefs: ["10"],
       useLatestImage: false,

@@ -570,8 +570,8 @@ function buildSmartMessageSummary(message: Message): string {
       parts.push(text.length > 400 ? `${text.slice(0, 400)}...` : text);
     } else if (block.type === "image") {
       const label = block.label ? `"${block.label}"` : "unlabeled";
-      const stored = block.storage?.path ? `, stored at ${block.storage.path}` : "";
-      parts.push(`[image: ${label}, ${block.mimeType}${stored}]`);
+      const stored = block.storage?.path ? ", stored payload available via image registry" : "";
+      parts.push(`[image omitted from text compaction: ${label}, ${block.mimeType}${stored}; use load_image by id/label for visual inspection]`);
     } else if (block.type === "tool_result") {
       parts.push(extractStructuredToolResult(block));
     } else if (block.type === "tool_use") {
@@ -715,7 +715,7 @@ function serializeBlock(block: MessageBlock): string {
     const estimatedBytes = Math.floor(resolveImageBlockDataLengthSync(block) * 0.75);
     const tiles = Math.max(1, Math.ceil(estimatedBytes / 200_000));
     const estimatedTokenEquivalentChars = tiles * 85 * 4;
-    return `${"x".repeat(estimatedTokenEquivalentChars)}`;
+    return `[image ${block.label ?? "unlabeled"} ${block.mimeType}; estimated visual token chars=${estimatedTokenEquivalentChars}; pixels are not text-summarized]`;
   }
   if (block.type === "thinking") return `thinking: ${block.text}`;
   if (block.type === "tool_use") return `tool_use ${block.name}: ${JSON.stringify(block.input)}`;

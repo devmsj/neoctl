@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getNeoctlHome } from "../../paths.js";
@@ -32,6 +32,8 @@ export interface ImageEditInputImage {
 export interface ImageGenerationToolInput {
   /** generate creates a new image; edit modifies one or more existing images. */
   mode?: ImageToolMode;
+  /** Required semantic image name used as the conversation label and default output filename. */
+  semanticName: string;
   prompt: string;
   model?: string;
   size?: ImageGenerationSize;
@@ -91,6 +93,7 @@ export interface ImageGenerationToolOutput extends ImageGenerationToolTiming {
   mode: ImageToolMode;
   model: string;
   prompt: string;
+  semanticName: string;
   size: ImageGenerationSize;
   quality: ImageGenerationQuality;
   outputFormat: ImageGenerationFormat;
@@ -132,6 +135,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       type: "object",
       properties: {
         mode: { type: "string", enum: ["generate", "edit"], description: "Operation mode. generate creates a new image; edit modifies existing image(s). Defaults to generate." },
+        semanticName: { type: "string", description: "Required short semantic image name used as the conversation label and default output filename, e.g. realistic-blue-kitten, checkout-redesign-v2, hero-banner. Must describe the image meaning; do not use generic names like image, output, result, gen, or img." },
         prompt: { type: "string", description: "Detailed image prompt/instruction. For edit mode, describe exactly how to modify the source image(s)." },
         model: { type: "string", enum: [...SUPPORTED_IMAGE_MODELS], description: `Optional OpenAI Images API model. Defaults to OPENAI_IMAGE_MODEL or ${DEFAULT_IMAGE_MODEL}. Supported by this tool: ${SUPPORTED_MODEL_LIST}.` },
         size: { type: "string", enum: ["auto", "1024x1024", "1536x1024", "1024x1536"], description: `${DEFAULT_IMAGE_MODEL} output image size. Supported values: auto, 1024x1024, 1536x1024, 1024x1536. Defaults to auto.` },
@@ -145,9 +149,9 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         imageRefs: { type: "array", description: "Labels of prior conversation image blocks to edit, e.g. gen#1, Generated image 1, or [img#1].", items: { type: "string" } },
         useLatestImage: { type: "boolean", description: "In edit mode, use the latest prior conversation image when no explicit source image or imageRefs are provided. Defaults to true." },
         outputDir: { type: "string", description: "Optional directory where generated image files should be saved. Defaults to the current session/agent image directory." },
-        outputPath: { type: "string", description: "Optional exact file path for a single generated image. For n > 1, use outputDir instead." },
+        outputPath: { type: "string", description: "Optional target directory/file hint for a single generated image. The final filename is derived from semanticName and adjusted to avoid collisions. For n > 1, use outputDir instead." },
       },
-      required: ["prompt"],
+      required: ["semanticName", "prompt"],
       additionalProperties: false,
     },
     metadata: {
@@ -160,6 +164,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       const record = input as Partial<ImageGenerationToolInput>;
       return {
         mode: record.mode ?? "generate",
+        semanticName: record.semanticName ?? "",
         prompt: record.prompt ?? "",
         model: record.model,
         size: record.size ?? "auto",
@@ -179,6 +184,8 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
     validateInput(input) {
       const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
       if (!isImageToolMode(input.mode)) return { ok: false, message: image2ValidationError(model, "mode", "must be generate or edit") };
+      const semanticSlug = semanticNameSlug(input.semanticName);
+      if (!semanticSlug) return { ok: false, message: image2ValidationError(model, "semanticName", "is required and must be a meaningful non-generic image name, e.g. realistic-blue-kitten or checkout-redesign-v2") };
       if (!input.prompt.trim()) return { ok: false, message: image2ValidationError(model, "prompt", "cannot be empty") };
       if (!isSupportedImageModel(model)) return { ok: false, message: image2ValidationError(model, "model", `is not supported by image2. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
       if (!isImageSize(input.size)) return { ok: false, message: image2ValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
@@ -193,7 +200,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       if (input.outputDir !== undefined && !input.outputDir.trim()) return { ok: false, message: image2ValidationError(model, "outputDir", "must be a non-empty string when provided") };
       if (input.outputPath !== undefined && !input.outputPath.trim()) return { ok: false, message: image2ValidationError(model, "outputPath", "must be a non-empty string when provided") };
       if (input.outputPath !== undefined && count > 1) return { ok: false, message: image2ValidationError(model, "outputPath", "can only be used when n is 1; use outputDir for multiple images") };
-      return { ok: true, value: { ...input, model, n: count } };
+      return { ok: true, value: { ...input, model, n: count, semanticName: semanticSlug } };
     },
     isConcurrencySafe() {
       return true;
@@ -251,6 +258,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           mode,
           model,
           prompt: input.prompt,
+          semanticName: input.semanticName,
           size: input.size ?? "auto",
           quality: input.quality ?? "auto",
           outputFormat: input.outputFormat ?? "png",
@@ -569,16 +577,17 @@ async function persistGeneratedImages(
 ): Promise<ImageGenerationResult[]> {
   if (images.length === 0) return images;
 
-  const nextNumber = nextGeneratedImageNumber(context.messages);
   const outputDir = resolveGeneratedImageOutputDir(input, context);
   await fs.mkdir(outputDir, { recursive: true });
+  const allocatedLabels = new Set<string>();
 
   return Promise.all(images.map(async (image, offset) => {
-    const label = `gen#${nextNumber + offset}`;
     const extension = extensionForMimeType(image.mimeType);
+    const requestedBase = images.length === 1 ? input.semanticName : `${input.semanticName}-${offset + 1}`;
+    const label = uniqueGeneratedImageLabel(requestedBase, context.messages, allocatedLabels);
     const binaryPath = path.resolve(
       input.outputPath && images.length === 1
-        ? input.outputPath
+        ? uniqueOutputPath(input.outputPath, label, extension)
         : path.join(outputDir, `${sanitizeFilename(label)}.${extension}`),
     );
     await fs.mkdir(path.dirname(binaryPath), { recursive: true });
@@ -603,19 +612,42 @@ function resolveGeneratedImageOutputDir(input: ImageGenerationToolInput, context
   return path.join(getNeoctlHome(), "generated", context.agentId || "main", "images");
 }
 
-function nextGeneratedImageNumber(messages: readonly Message[] | undefined): number {
-  let max = 0;
+function uniqueGeneratedImageLabel(baseName: string, messages: readonly Message[] | undefined, allocated: Set<string>): string {
+  const base = semanticNameSlug(baseName) || "generated-image";
+  const existing = collectExistingImageLabels(messages);
+  let candidate = base;
+  let suffix = 2;
+  while (existing.has(candidate.toLowerCase()) || allocated.has(candidate.toLowerCase())) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  allocated.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function collectExistingImageLabels(messages: readonly Message[] | undefined): Set<string> {
+  const labels = new Set<string>();
   for (const message of messages ?? []) {
     for (const block of message.blocks) {
       if (block.type !== "image") continue;
-      const label = block.label ?? "";
-      const match = /^gen#(\d+)$/iu.exec(label.trim());
-      if (!match) continue;
-      const value = Number(match[1]);
-      if (Number.isInteger(value) && value > max) max = value;
+      if (block.label?.trim()) labels.add(block.label.trim().toLowerCase());
     }
   }
-  return max + 1;
+  return labels;
+}
+
+function uniqueOutputPath(requestedPath: string, label: string, extension: string): string {
+  const resolved = path.resolve(requestedPath.trim());
+  const directory = path.dirname(resolved);
+  const ext = path.extname(resolved) || `.${extension}`;
+  const base = sanitizeFilename(label);
+  let candidate = path.join(directory, `${base}${ext}`);
+  let suffix = 2;
+  while (existsSync(candidate) || existsSync(`${candidate}.base64.txt`)) {
+    candidate = path.join(directory, `${base}-${suffix}${ext}`);
+    suffix += 1;
+  }
+  return candidate;
 }
 
 function extensionForMimeType(mimeType: string): string {
@@ -626,6 +658,25 @@ function extensionForMimeType(mimeType: string): string {
 
 function sanitizeFilename(value: string): string {
   return value.replace(/[^a-z0-9._#-]/giu, "_");
+}
+
+function semanticNameSlug(value: string | undefined): string {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return "";
+  const slug = trimmed
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .replace(/-{2,}/gu, "-")
+    .slice(0, 80);
+  if (!slug || isGenericImageName(slug)) return "";
+  return slug;
+}
+
+function isGenericImageName(value: string): boolean {
+  return /^(?:image|img|picture|photo|output|result|generated|generation|gen|edit|edited|final|new|untitled|file|pic)(?:-?\d+)?$/iu.test(value);
 }
 
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {

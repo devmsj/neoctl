@@ -405,9 +405,14 @@ export class QueryEngine {
 
   private async persistMessageImages(message: Message): Promise<Message> {
     if (!message.blocks.some((block) => block.type === "image")) return message;
+    const persistedBlocks = await persistMessageImages(message.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId });
+    const hasRetention = typeof message.metadata?.imageRetention === "string";
     return {
       ...message,
-      blocks: await persistMessageImages(message.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId }),
+      blocks: persistedBlocks,
+      metadata: hasRetention
+        ? message.metadata
+        : { ...message.metadata, imageRetention: "while_relevant", imageTtlTurns: 4 },
     };
   }
 

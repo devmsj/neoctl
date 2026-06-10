@@ -3,6 +3,7 @@ import type { ToolDefinition } from "../tools/tool.js";
 import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
 import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { imageNeedsSemanticNotePrompt, imageSemanticNotePrompt } from "../core/image-note-prompt.js";
 
 export interface ToolBuffer {
   callId: string;
@@ -257,7 +258,8 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
 function imageStorageText(block: { label?: string; storage?: { path: string; format: string } }): string | undefined {
   if (!block.storage?.path) return undefined;
   const label = block.label ? `${block.label} ` : "";
-  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.`;
+  const notePrompt = imageNeedsSemanticNotePrompt(block) ? ` ${imageSemanticNotePrompt(block.label)}` : "";
+  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.${notePrompt}`;
 }
 
 function imageDataUrl(block: { mimeType: string; data: string; storage?: { path: string; format: string } }): string {
