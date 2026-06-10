@@ -93,8 +93,9 @@ export function formatImageRegistryForContext(registry: ImageRegistry): string {
   const lines = registry.images.map((entry) => {
     const label = entry.label ? `"${entry.label}"` : `unlabeled`;
     const origin = entry.origin !== "unknown" ? `, origin=${entry.origin}` : "";
+    const alias = entry.label && /^gen#\d+$/iu.test(entry.label.trim()) ? `${entry.label.trim()}: ` : "";
     const storage = entry.storagePath ? `, uri=neo://image/${entry.id}` : ", no stored payload";
-    return `- ${entry.id}: ${label}, ${entry.mimeType}${origin}${storage}`;
+    return `- ${alias}${entry.id}: ${label}, ${entry.mimeType}${origin}${storage}`;
   });
   return [
     "Available images from conversation history (use load_image tool with the id to examine any image):",
@@ -122,6 +123,13 @@ export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntr
 
   const byId = registry.images.find((e) => e.id.toLowerCase() === normalized);
   if (byId) return byId;
+
+  const genMatch = /^\[?gen#?(\d+)\]?$/i.exec(normalized);
+  if (genMatch) {
+    const canonical = `gen#${Number(genMatch[1])}`;
+    const generated = registry.images.find((e) => e.label?.toLowerCase() === canonical);
+    if (generated) return generated;
+  }
 
   const numMatch = /^(?:\[?img[_#]?|image\s*)?(\d+)\]?$/i.exec(normalized);
   if (numMatch) {

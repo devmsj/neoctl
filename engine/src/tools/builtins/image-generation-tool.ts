@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
-import type { Tool, ToolResult } from "../tool.js";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { getNeoctlHome } from "../../paths.js";
+import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
 
 export type ImageGenerationSize = "auto" | "1024x1024" | "1536x1024" | "1024x1536";
@@ -45,6 +48,10 @@ export interface ImageGenerationToolInput {
   imageRefs?: string[];
   /** In edit mode, use the latest prior conversation image when no image/imageRefs are provided. Defaults to true. */
   useLatestImage?: boolean;
+  /** Directory where generated image files should be saved. Defaults to a session/agent image directory. */
+  outputDir?: string;
+  /** Exact file path for a single generated image. For multiple images, outputDir is used instead. */
+  outputPath?: string;
 }
 
 export interface ImageGenerationResult {
@@ -53,6 +60,12 @@ export interface ImageGenerationResult {
   base64: string;
   dataUrl: string;
   revisedPrompt?: string;
+  /** Stable conversation label, e.g. gen#1. */
+  label?: string;
+  /** Absolute path to the saved binary image file, if persisted. */
+  path?: string;
+  /** Absolute path to the saved base64 payload used by load_image history reloads. */
+  storagePath?: string;
 }
 
 export interface ImageGenerationToolTiming {
@@ -129,8 +142,10 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         n: { type: "integer", description: `${DEFAULT_IMAGE_MODEL} number of output images, 1-${MAX_IMAGES}. Defaults to 1.` },
         image: { type: "object", description: "Single source image for mode=edit. Provide base64/data/dataUrl plus mimeType when not using a dataUrl.", additionalProperties: true },
         images: { type: "array", description: "Multiple source images for mode=edit.", items: { type: "object", additionalProperties: true } },
-        imageRefs: { type: "array", description: "Labels of prior conversation image blocks to edit, e.g. Generated image 1 or [img#1].", items: { type: "string" } },
+        imageRefs: { type: "array", description: "Labels of prior conversation image blocks to edit, e.g. gen#1, Generated image 1, or [img#1].", items: { type: "string" } },
         useLatestImage: { type: "boolean", description: "In edit mode, use the latest prior conversation image when no explicit source image or imageRefs are provided. Defaults to true." },
+        outputDir: { type: "string", description: "Optional directory where generated image files should be saved. Defaults to the current session/agent image directory." },
+        outputPath: { type: "string", description: "Optional exact file path for a single generated image. For n > 1, use outputDir instead." },
       },
       required: ["prompt"],
       additionalProperties: false,
@@ -157,6 +172,8 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         images: record.images,
         imageRefs: record.imageRefs,
         useLatestImage: record.useLatestImage ?? true,
+        outputDir: record.outputDir,
+        outputPath: record.outputPath,
       };
     },
     validateInput(input) {
@@ -173,6 +190,9 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: image2ValidationError(model, "n", `must be between 1 and ${MAX_IMAGES}`) };
       if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: image2ValidationError(model, "images", "must be a non-empty array when provided") };
       if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: image2ValidationError(model, "imageRefs", "must contain non-empty strings") };
+      if (input.outputDir !== undefined && !input.outputDir.trim()) return { ok: false, message: image2ValidationError(model, "outputDir", "must be a non-empty string when provided") };
+      if (input.outputPath !== undefined && !input.outputPath.trim()) return { ok: false, message: image2ValidationError(model, "outputPath", "must be a non-empty string when provided") };
+      if (input.outputPath !== undefined && count > 1) return { ok: false, message: image2ValidationError(model, "outputPath", "can only be used when n is 1; use outputDir for multiple images") };
       return { ok: true, value: { ...input, model, n: count } };
     },
     isConcurrencySafe() {
@@ -219,7 +239,11 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
             signal: context.abortSignal,
             input: { ...input, model },
           });
-        const images = extractGeneratedImages(response, input.outputFormat ?? "png");
+        const images = await persistGeneratedImages(
+          extractGeneratedImages(response, input.outputFormat ?? "png"),
+          input,
+          context,
+        );
         const timing = imageGenerationTiming(startedAt);
         const output: ImageGenerationToolOutput = {
           ...timing,
@@ -520,7 +544,7 @@ function normalizeImageRef(value: string): string {
 }
 
 function parseImageRefNumber(normalizedRef: string): number | undefined {
-  const match = /^(?:\[?img#?|image(?:\s+|-)?)?(\d+)\]?$/iu.exec(normalizedRef);
+  const match = /^(?:\[?(?:img|gen)#?|image(?:\s+|-)?)?(\d+)\]?$/iu.exec(normalizedRef);
   if (!match) return undefined;
   const value = Number(match[1]);
   return Number.isInteger(value) && value > 0 ? value : undefined;
@@ -538,6 +562,72 @@ function stripFileExtension(filename: string): string {
   return filename.replace(/\.[^.]+$/u, "");
 }
 
+async function persistGeneratedImages(
+  images: ImageGenerationResult[],
+  input: ImageGenerationToolInput,
+  context: ToolUseContext,
+): Promise<ImageGenerationResult[]> {
+  if (images.length === 0) return images;
+
+  const nextNumber = nextGeneratedImageNumber(context.messages);
+  const outputDir = resolveGeneratedImageOutputDir(input, context);
+  await fs.mkdir(outputDir, { recursive: true });
+
+  return Promise.all(images.map(async (image, offset) => {
+    const label = `gen#${nextNumber + offset}`;
+    const extension = extensionForMimeType(image.mimeType);
+    const binaryPath = path.resolve(
+      input.outputPath && images.length === 1
+        ? input.outputPath
+        : path.join(outputDir, `${sanitizeFilename(label)}.${extension}`),
+    );
+    await fs.mkdir(path.dirname(binaryPath), { recursive: true });
+    await fs.writeFile(binaryPath, Buffer.from(normalizeBase64ImageData(image.base64), "base64"));
+
+    const storagePath = `${binaryPath}.base64.txt`;
+    await fs.writeFile(storagePath, normalizeBase64ImageData(image.base64), "utf8");
+
+    return {
+      ...image,
+      label,
+      path: binaryPath,
+      storagePath,
+    };
+  }));
+}
+
+function resolveGeneratedImageOutputDir(input: ImageGenerationToolInput, context: ToolUseContext): string {
+  if (input.outputDir?.trim()) return path.resolve(input.outputDir.trim());
+  if (input.outputPath?.trim()) return path.dirname(path.resolve(input.outputPath.trim()));
+  if (context.session?.sessionDir) return path.join(context.session.sessionDir, "generated", "images");
+  return path.join(getNeoctlHome(), "generated", context.agentId || "main", "images");
+}
+
+function nextGeneratedImageNumber(messages: readonly Message[] | undefined): number {
+  let max = 0;
+  for (const message of messages ?? []) {
+    for (const block of message.blocks) {
+      if (block.type !== "image") continue;
+      const label = block.label ?? "";
+      const match = /^gen#(\d+)$/iu.exec(label.trim());
+      if (!match) continue;
+      const value = Number(match[1]);
+      if (Number.isInteger(value) && value > max) max = value;
+    }
+  }
+  return max + 1;
+}
+
+function extensionForMimeType(mimeType: string): string {
+  const subtype = mimeType.split("/")[1]?.split(";")[0]?.trim().toLowerCase() || "png";
+  if (subtype === "jpeg") return "jpg";
+  return subtype.replace(/[^a-z0-9]/giu, "") || "png";
+}
+
+function sanitizeFilename(value: string): string {
+  return value.replace(/[^a-z0-9._#-]/giu, "_");
+}
+
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {
   const output = result.output;
   const blocks: Message["blocks"] = [{
@@ -550,7 +640,13 @@ function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: s
 
   if (result.ok && isImageGenerationToolOutput(output)) {
     for (const image of output.images) {
-      blocks.push({ type: "image", mimeType: image.mimeType, data: image.base64, label: `Generated image ${image.index + 1}` });
+      blocks.push({
+        type: "image",
+        mimeType: image.mimeType,
+        data: image.storagePath ? "" : image.base64,
+        label: image.label ?? `gen#${image.index + 1}`,
+        storage: image.storagePath ? { path: image.storagePath, format: "base64" } : undefined,
+      });
     }
   }
 
