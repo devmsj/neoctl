@@ -203,7 +203,7 @@ const ANIMATED_NUMBER_INTERVAL_MS = 50;
 const ANIMATED_NUMBER_MIN_DURATION_MS = 180;
 const ANIMATED_NUMBER_MAX_DURATION_MS = 700;
 const ANIMATED_NUMBER_DURATION_SCALE_MS = 130;
-const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, backgroundTasks: [], backgroundSessionRunCount: 0, runningSessionIds: [], session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, tips: [], tipIndex: 0, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
+const state = { lines: [], status: { phase: 'ready', streamedOutputTokens: 0 }, busy: false, queuedInput: undefined, backgroundTaskCount: 0, backgroundTasks: [], backgroundSessionRunCount: 0, runningSessionIds: [], session: undefined, catalog: { commands: [], modelIds: [], reasoning: [] }, interactive: {}, history: [], historyIndex: undefined, completionIndex: 0, expandedToolLines: new Set(), panel: undefined, panelSelection: 0, attachments: [], attachmentCounter: 0, view: location.pathname === '/sessions' ? 'sessions' : 'chat' };
 const animatedNumbers = { input: { target: undefined, display: undefined, timer: undefined }, output: { target: undefined, display: undefined, timer: undefined } };
 const renderedLineKeys = new Map();
 const statusNodes = {};
@@ -244,8 +244,6 @@ es.addEventListener('sync', (event) => {
   state.session = payload.session;
   if (payload.catalog) state.catalog = payload.catalog;
   if (payload.interactive) state.interactive = payload.interactive;
-  if (payload.tips) state.tips = payload.tips;
-  if (payload.tipIndex !== undefined && state.tipIndex === 0) state.tipIndex = payload.tipIndex;
   updateInputPlaceholder();
   scheduleRender();
 });
@@ -633,10 +631,8 @@ function renderCompletions() {
   completionsEl.innerHTML = '<div class="completion-title">' + esc(title) + '</div>' + visible.map((c, i) => '<div class="completion-row ' + (c.kind || '') + ' ' + (i + pageStart === selected ? 'selected' : '') + '"><span class="num">' + (i + pageStart + 1) + '.</span><span class="name">' + esc(c.value) + '</span><span class="desc">' + esc(c.description || '') + '</span></div>').join('') + '<div class="completion-footer">↑/↓ select · ←/→ page · Tab complete</div>';
 }
 function selectedCompletion() { const list = completions(); return list.length ? list[Math.max(0, Math.min(state.completionIndex, list.length - 1))] : undefined; }
-function completeSelection() { const c = selectedCompletion(); if (!c) return false; const cursor = input.selectionStart || 0; input.value = c.insertText + input.value.slice(cursor); input.selectionStart = input.selectionEnd = c.insertText.length; advanceTip(); autosize(); renderCompletions(); return true; }
-function currentTip() { const tips = state.tips || []; return tips.length ? tips[((state.tipIndex % tips.length) + tips.length) % tips.length] : undefined; }
-function advanceTip(delta = 1) { state.tipIndex += delta; updateInputPlaceholder(); }
-function updateInputPlaceholder() { const tip = currentTip(); input.placeholder = tip ? tip.placeholder : 'Type a message, or /help for commands'; }
+function completeSelection() { const c = selectedCompletion(); if (!c) return false; const cursor = input.selectionStart || 0; input.value = c.insertText + input.value.slice(cursor); input.selectionStart = input.selectionEnd = c.insertText.length; autosize(); renderCompletions(); return true; }
+function updateInputPlaceholder() { input.placeholder = 'Type a message, or /help for commands'; }
 async function postJson(url, body) { const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const value = await res.json(); if (!value.ok && value.error) alert(value.error); return value; }
 async function saveLoginPanel() {
   const login = state.login;
@@ -648,7 +644,7 @@ async function saveLoginPanel() {
   if (result.ok) { state.panel = undefined; renderPanel(); }
 }
 function attachmentsForText(text) { return state.attachments.filter(attachment => text.includes(attachment.label)); }
-function insertAtCursor(value) { const start = input.selectionStart || 0, end = input.selectionEnd || start; input.value = input.value.slice(0, start) + value + input.value.slice(end); input.selectionStart = input.selectionEnd = start + value.length; advanceTip(); autosize(); renderCompletions(); }
+function insertAtCursor(value) { const start = input.selectionStart || 0, end = input.selectionEnd || start; input.value = input.value.slice(0, start) + value + input.value.slice(end); input.selectionStart = input.selectionEnd = start + value.length; autosize(); renderCompletions(); }
 async function fileToDataUrlPayload(file) {
   const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || '')); reader.onerror = () => reject(reader.error || new Error('read failed')); reader.readAsDataURL(file); });
   const comma = dataUrl.indexOf(',');
@@ -742,15 +738,13 @@ input.addEventListener('keydown', (e) => {
   const count = completions().length;
   if (handleSessionsKey(e)) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const c = selectedCompletion(); if (c && c.kind === 'command' && c.arguments !== 'none') { completeSelection(); input.value += ' '; input.selectionStart = input.selectionEnd = input.value.length; return; } submit(); return; }
-  if (e.key === 'Tab') { if (completeSelection()) e.preventDefault(); else if (!input.value) { e.preventDefault(); advanceTip(); } return; }
+  if (e.key === 'Tab') { if (completeSelection()) e.preventDefault(); return; }
   if (e.key === 'ArrowUp' && count) { e.preventDefault(); state.completionIndex = (state.completionIndex + count - 1) % count; renderCompletions(); return; }
   if (e.key === 'ArrowDown' && count) { e.preventDefault(); state.completionIndex = (state.completionIndex + 1) % count; renderCompletions(); return; }
   if (e.key === 'ArrowLeft' && count > 10) { e.preventDefault(); state.completionIndex = (state.completionIndex + count - 10) % count; renderCompletions(); return; }
   if (e.key === 'ArrowRight' && count > 10) { e.preventDefault(); state.completionIndex = (state.completionIndex + 10) % count; renderCompletions(); return; }
   if (e.key === 'ArrowUp' && !input.value && state.history.length) { e.preventDefault(); state.historyIndex = Math.min(state.history.length - 1, (state.historyIndex ?? -1) + 1); input.value = state.history[state.historyIndex] || ''; autosize(); return; }
-  if (e.key === 'ArrowUp' && !input.value) { e.preventDefault(); advanceTip(-1); return; }
   if (e.key === 'ArrowDown' && state.historyIndex !== undefined) { e.preventDefault(); state.historyIndex -= 1; if (state.historyIndex < 0) { state.historyIndex = undefined; input.value = ''; } else input.value = state.history[state.historyIndex] || ''; autosize(); return; }
-  if (e.key === 'ArrowDown' && !input.value) { e.preventDefault(); advanceTip(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { if (input.value) { input.value = ''; autosize(); renderCompletions(); } else if (state.queuedInput) { state.queuedInput = undefined; scheduleRender(); fetch('/api/queue/cancel', { method: 'POST' }); } else fetch('/api/interrupt', { method: 'POST' }); }
   if (e.key === 'Escape') { state.completionIndex = 0; if (state.queuedInput) { state.queuedInput = undefined; scheduleRender(); fetch('/api/queue/cancel', { method: 'POST' }); } else renderCompletions(); }
 });
@@ -758,7 +752,7 @@ document.addEventListener('keydown', (e) => {
   if (e.target === input || e.target.closest('input, textarea, select')) return;
   handleSessionsKey(e);
 });
-input.addEventListener('input', () => { state.completionIndex = 0; state.attachments = attachmentsForText(input.value); advanceTip(); autosize(); renderCompletions(); });
+input.addEventListener('input', () => { state.completionIndex = 0; state.attachments = attachmentsForText(input.value); autosize(); renderCompletions(); });
 input.addEventListener('paste', (e) => { void handlePaste(e); });
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, window.innerHeight * .35) + 'px'; updateScrollBottomAffordance(); }
 function phaseLabel(phase) { if (phase === 'calling_model') return 'model'; if (phase === 'thinking') return 'think'; if (phase === 'running_tools') return 'tools'; if (phase === 'injecting_context') return 'context'; return phase || 'ready'; }

@@ -43,7 +43,6 @@ import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
-import { formatTipLine, initialTipIndex, tipAt } from "../tips.js";
 import { openDirectory } from "../open-directory.js";
 import { runWebServer } from "../web/index.js";
 import { getNeoctlHome } from "../paths.js";
@@ -682,7 +681,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const queuedAttachmentsRef = useRef<ClipboardAttachment[] | undefined>(undefined);
   const [cursor, setCursor] = useState(0);
   const [promptPlaceholder, setPromptPlaceholder] = useState<string | undefined>(undefined);
-  const [tipIndex, setTipIndex] = useState(() => initialTipIndex(runtime.engine.snapshot().session?.sessionId ?? process.cwd()));
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<UiStatus>(() => initialStatus(runtime));
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
@@ -885,12 +883,9 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     pasteStatusTimerRef.current = timer;
   };
 
-  const advanceTip = () => setTipIndex((current) => current + 1);
-
   const insertAtCursor = (value: string) => {
     const currentText = inputRef.current;
     const currentCursor = cursorRef.current;
-    advanceTip();
     setPromptState(`${currentText.slice(0, currentCursor)}${value}${currentText.slice(currentCursor)}`, currentCursor + value.length);
   };
 
@@ -1491,7 +1486,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   };
 
   useEffect(() => {
-    setTipIndex(initialTipIndex(runtime.engine.snapshot().session?.sessionId ?? process.cwd()));
     setLines(initialLines(runtime, lineId));
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
@@ -1516,9 +1510,8 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const width = terminalSize.columns;
   const inputLockedByQueue = busy && queuedInput !== undefined;
   const prompt = promptPrefix(busy);
-  const currentTip = tipAt(tipIndex);
   const compactLiveLayout = terminalSize.rows <= COMPACT_LIVE_LAYOUT_ROWS && (agentActivities.length > 0 || backgroundTasks.length > 0 || busy);
-  const activePlaceholder = input.length === 0 && !compactLiveLayout ? promptPlaceholder ?? currentTip.placeholder : undefined;
+  const activePlaceholder = input.length === 0 && !compactLiveLayout ? promptPlaceholder : undefined;
   const promptDisplayText = input;
   const promptDisplayCursor = cursor;
   const promptLayoutText = activePlaceholder ? ` ${activePlaceholder}` : promptDisplayText;
@@ -1787,10 +1780,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (key.backspace || key.delete) {
       const currentText = inputRef.current;
       const currentCursor = cursorRef.current;
-      if (currentText.length === 0) {
-        setTipIndex((current) => current + 1);
-        return;
-      }
+      if (currentText.length === 0) return;
       if (currentCursor > 0) {
         setPromptState(`${currentText.slice(0, currentCursor - 1)}${currentText.slice(currentCursor)}`, currentCursor - 1);
       }
@@ -1802,10 +1792,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
       }
-      if (inputRef.current.length === 0) {
-        setTipIndex((current) => current - 1);
-        return;
-      }
+      if (inputRef.current.length === 0) return;
       setPromptState(inputRef.current, cursorRef.current - 1);
       return;
     }
@@ -1815,28 +1802,20 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         setSlashCompletionSelection((slashCompletionIndexRef.current + SLASH_COMPLETION_PAGE_SIZE) % completionCount);
         return;
       }
-      if (inputRef.current.length === 0) {
-        setTipIndex((current) => current + 1);
-        return;
-      }
+      if (inputRef.current.length === 0) return;
       setPromptState(inputRef.current, cursorRef.current + 1);
       return;
     }
     if (key.home) {
-      if (inputRef.current.length === 0) setTipIndex(0);
-      else setPromptState(inputRef.current, 0);
+      if (inputRef.current.length > 0) setPromptState(inputRef.current, 0);
       return;
     }
     if (key.end) {
-      if (inputRef.current.length === 0) setTipIndex((current) => current + 1);
-      else setPromptState(inputRef.current, inputRef.current.length);
+      if (inputRef.current.length > 0) setPromptState(inputRef.current, inputRef.current.length);
       return;
     }
     if (key.upArrow) {
-      if (inputRef.current.length === 0 && history.current.length === 0) {
-        setTipIndex((current) => current - 1);
-        return;
-      }
+      if (inputRef.current.length === 0 && history.current.length === 0) return;
       const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + completionCount - 1) % completionCount);
@@ -1850,10 +1829,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       return;
     }
     if (key.downArrow) {
-      if (inputRef.current.length === 0 && historyIndexRef.current === undefined) {
-        setTipIndex((current) => current + 1);
-        return;
-      }
+      if (inputRef.current.length === 0 && historyIndexRef.current === undefined) return;
       const completionCount = slashCompletionSelectableCount(inputRef.current, cursorRef.current, skillCompletions, secretCompletions);
       if (completionCount > 0) {
         setSlashCompletionSelection((slashCompletionIndexRef.current + 1) % completionCount);
@@ -1873,10 +1849,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
     if (key.tab) {
       const currentText = inputRef.current;
-      if (currentText.length === 0) {
-        setTipIndex((current) => current + 1);
-        return;
-      }
+      if (currentText.length === 0) return;
       const currentCursor = cursorRef.current;
       const completions = slashCommandCompletions(currentText, currentCursor, skillCompletions, secretCompletions);
       const completion = completions[Math.min(slashCompletionIndexRef.current, completions.length - 1)];
@@ -3656,13 +3629,7 @@ async function handleDeleteSessionCommand(
 }
 
 function initialLines(runtime: ReplRuntime, lineId: { current: number }): UiLine[] {
-  const session = runtime.engine.snapshot().session;
-  const suffix = session
-    ? ` Session: ${session.sessionId}${session.resumedMessages > 0 ? ` (${session.resumedMessages} resumed messages)` : ""}.`
-    : "";
-  const lines: UiLine[] = [
-    { id: 0, kind: "system", title: "System", text: `Interactive UI enabled. Type /help for commands.${suffix}\n${formatTipLine(tipAt(initialTipIndex(session?.sessionId ?? process.cwd())))}`, previewStyle: "summary" },
-  ];
+  const lines: UiLine[] = [];
   lineId.current = 0;
   if (runtime.envNotice) lines.push({ id: ++lineId.current, kind: "system", title: "Config", text: runtime.envNotice, format: "plain", previewStyle: "summary" });
   for (const line of restoredHistoryLines(runtime)) lines.push({ id: ++lineId.current, ...line });
