@@ -30,7 +30,7 @@ import { SecretStore } from "../secrets/secret-store.js";
 import { InMemorySecretRedactionRegistry } from "../secrets/secret-redaction.js";
 import type { SecretMetadata } from "../secrets/secret-types.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
-import { AgentActivityStore, type AgentActivity, type AgentTimelineEntry } from "../agents/agent-activity.js";
+import { AgentActivityStore, type AgentActivity } from "../agents/agent-activity.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
@@ -397,7 +397,7 @@ async function createRuntime(): Promise<ReplRuntime> {
   tools.register(searchTool);
   tools.register(createLoadImageTool());
   tools.register(createImageNoteTool());
-  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
+  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool({ taskStore, foregroundDetachRegistry: foregroundExecDetach }));
   tools.register(planTool);
   for (const tool of createSecretTools()) tools.register(tool);
   tools.register(createSkillTool(skills));
@@ -469,7 +469,7 @@ async function createRuntime(): Promise<ReplRuntime> {
 
 function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderName | undefined): void {
   runtime.tools.unregister("image2");
-  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
+  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool({ taskStore: runtime.taskStore, foregroundDetachRegistry: runtime.foregroundExecDetach }));
 }
 
 
@@ -1494,7 +1494,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (key.ctrl && value.toLowerCase() === "b") {
       const result = runtime.foregroundExecDetach.detachCurrent();
       append(result.ok
-        ? systemLine(`Detached foreground exec to background task ${result.taskId ?? "unknown"}.`)
+        ? systemLine(`Detached foreground task to background task ${result.taskId ?? "unknown"}.`)
         : systemLine(result.message));
       return;
     }
@@ -1797,7 +1797,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
     showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
-    agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, terminalRows: terminalSize.rows, compact: compactLiveLayout, animationTick }) : null,
+    agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, animationTick }) : null,
     agentActivities.length === 0 && backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
     agentActivities.length > 0 && nonAgentBackgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: nonAgentBackgroundTasks, width }) : null,
     pasteStatus ? e(PasteStatusLine, { text: pasteStatus, width }) : null,
@@ -2243,46 +2243,29 @@ function ForegroundExecDetachHintLine(
   { handle: ForegroundExecDetachHandle; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
+  const toolName = handle.toolName?.trim() || "exec";
   const label = handle.description?.trim() || handle.command;
-  const text = `↳ exec still running · Ctrl+B to detach · ${truncateMiddle(label, Math.max(12, width - 38))}`;
+  const text = `↳ ${toolName} still running · Ctrl+B to detach · ${truncateMiddle(label, Math.max(12, width - toolName.length - 33))}`;
   return e(Text, { color: "yellow" }, fitToWidth(text, width));
 }
 
 function SubagentLivePanel(
-  { activities, width: terminalWidth, terminalRows, compact, animationTick }:
-  { activities: AgentActivity[]; width: number; terminalRows: number; compact: boolean; animationTick: number },
+  { activities, width: terminalWidth, animationTick }:
+  { activities: AgentActivity[]; width: number; animationTick: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const rows = subagentLivePanelRenderRows(activities, terminalRows, compact);
-  if (rows <= 0) return null;
   const sorted = sortAgentActivitiesForPanel(activities);
   const selected = sorted[0];
   if (!selected) return null;
   const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "pending").length;
-  const header = `◆ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""}`;
-  if (rows <= 1) {
-    return e(Text, { color: "yellow" }, fitToWidth(`${header} · ${compactAgentSummary(selected, width - header.length - 3)}`, width));
-  }
-
-  const detailLines = buildSubagentDetailLines(selected, sorted, animationTick);
-
-  return e(
-    Box,
-    { flexDirection: "column", width, overflow: "hidden" },
-    e(Text, { color: "yellow" }, fitToWidth(header, width)),
-    ...detailLines.map((line, index) => e(Text, {
-      key: `agent-detail-${selected.agentId}-${index}`,
-      color: line.color,
-    }, fitToWidth(line.text, width))),
-  );
-}
-
-const SUBAGENT_DETAIL_ROWS = 3;
-
-function subagentLivePanelRenderRows(activities: AgentActivity[], terminalRows: number, compact = false): number {
-  if (activities.length === 0) return 0;
-  if (compact || terminalRows < 22 || activities.length > 1) return 1;
-  return 1 + SUBAGENT_DETAIL_ROWS;
+  const recentCount = Math.max(0, activities.length - activeCount);
+  const countText = activeCount > 1
+    ? `${activeCount} active${recentCount ? ` · ${recentCount} recent` : ""}`
+    : recentCount && activeCount === 0
+      ? `${recentCount} recent`
+      : "";
+  const text = `↳ subagent ${subagentStatusText(selected.status, animationTick)}${countText ? ` · ${countText}` : ""} · ${compactAgentSummary(selected, width)}`;
+  return e(Text, { color: statusColor(selected.status) }, fitToWidth(text, width));
 }
 
 function sortAgentActivitiesForPanel(activities: AgentActivity[]): AgentActivity[] {
@@ -2295,73 +2278,33 @@ function sortAgentActivitiesForPanel(activities: AgentActivity[]): AgentActivity
   return [...activities].sort((left, right) => rank(left.status) - rank(right.status) || right.updatedAt.localeCompare(left.updatedAt));
 }
 
-function buildSubagentDetailLines(
-  selected: AgentActivity,
-  sorted: AgentActivity[],
-  animationTick: number,
-): { text: string; color: string }[] {
-  const spinner = selected.status === "running" ? spinnerFrame(animationTick) : statusGlyph(selected.status);
-  const elapsed = formatElapsed(Date.now() - new Date(selected.startedAt).getTime());
-  const headerLine = `${spinner} ${selected.description || selected.agentId} · ${elapsed}`;
-  const currentLine = selected.currentTool
-    ? `→ ${selected.currentTool.name}${selected.currentTool.inputPreview ? ` · ${selected.currentTool.inputPreview}` : ""}`
-    : selected.error
-      ? `✖ ${selected.error}`
-      : selected.resultPreview
-        ? `✓ ${selected.resultPreview}`
-        : selected.lastText
-          ? `• ${selected.lastText}`
-          : `• ${selected.prompt}`;
-  const recent = selected.timeline.slice(-2).map((entry) => `${timelinePrefix(entry)} ${formatTimelineEntry(entry, 240)}`);
-  const otherRunning = sorted
-    .filter((activity) => activity.agentId !== selected.agentId && (activity.status === "running" || activity.status === "pending"))
-    .slice(0, 2)
-    .map((activity) => compactAgentSummary(activity, 180));
-  const tail = [...recent, ...otherRunning.map((summary) => `· ${summary}`)].find((line) => line.trim()) ?? `tools:${selected.totalToolUseCount}`;
-
-  return [
-    { text: headerLine, color: statusColor(selected.status) },
-    { text: currentLine, color: selected.error ? "red" : selected.currentTool ? "#d4b04c" : "yellow" },
-    { text: tail, color: "gray" },
-  ];
-}
-
 function compactAgentSummary(activity: AgentActivity, maxLength: number): string {
   const current = activity.currentTool
     ? `${activity.currentTool.name}${activity.currentTool.inputPreview ? ` ${activity.currentTool.inputPreview}` : ""}`
-    : activity.lastText ?? activity.resultPreview ?? activity.error ?? activity.prompt;
+    : firstSafeSubagentPreview(activity.resultPreview, activity.error, activity.lastText, activity.prompt);
   const elapsed = formatElapsed(Date.now() - new Date(activity.startedAt).getTime());
   return truncateMiddle(`${activity.description || activity.agentId} · ${elapsed} · tools:${activity.totalToolUseCount} · ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
 }
 
-function formatTimelineEntry(entry: AgentTimelineEntry, maxLength: number): string {
-  const detail = entry.detail ? ` · ${entry.detail.replace(/\s+/g, " ")}` : "";
-  return truncateMiddle(`${entry.title}${detail}`, Math.max(8, maxLength));
+function firstSafeSubagentPreview(...values: Array<string | undefined>): string {
+  return values.find((value) => value && !isInternalContinuationPreview(value)) ?? "working";
 }
 
-function timelinePrefix(entry: AgentTimelineEntry): string {
-  if (entry.kind === "tool_start") return "→";
-  if (entry.kind === "tool_result") return entry.status === "failed" ? "✖" : "←";
-  if (entry.kind === "thinking") return "◆";
-  if (entry.kind === "error") return "✖";
-  if (entry.kind === "status") return "•";
-  return "assistant:";
+function isInternalContinuationPreview(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return normalized.includes("<compact_state>")
+    || normalized.includes("internal continuation state")
+    || normalized.includes("auto compact")
+    || normalized.includes("conversation summary generated by compact");
 }
 
-function timelineColor(entry: AgentTimelineEntry): string {
-  if (entry.status === "failed" || entry.kind === "error") return "red";
-  if (entry.kind === "tool_start" || entry.kind === "tool_result") return "#d4b04c";
-  if (entry.kind === "thinking") return THINKING_COLOR;
-  if (entry.kind === "status") return "gray";
-  return "green";
-}
-
-function statusGlyph(status: AgentActivity["status"]): string {
-  if (status === "completed") return "✓";
-  if (status === "failed") return "✖";
-  if (status === "killed") return "■";
-  if (status === "pending") return "…";
-  return "●";
+function subagentStatusText(status: AgentActivity["status"], animationTick: number): string {
+  if (status === "running") return `still running ${spinnerFrame(animationTick)}`;
+  if (status === "pending") return "pending";
+  if (status === "completed") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "killed") return "killed";
+  return status;
 }
 
 function statusColor(status: AgentActivity["status"]): string {

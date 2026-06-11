@@ -50,6 +50,7 @@ export interface ForegroundExecDetachResult {
 
 export interface ForegroundExecDetachHandle {
   toolUseId?: string;
+  toolName?: string;
   command: string;
   description?: string;
   cwd: string;

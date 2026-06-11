@@ -5,7 +5,7 @@ import type { Message } from "../types/messages.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
-export type LocalAgentTaskType = "agent" | "exec";
+export type LocalAgentTaskType = "agent" | "exec" | "image";
 
 export interface AgentProgressSnapshot {
   totalEvents: number;
