@@ -1947,11 +1947,11 @@ function summaryUsesRoleMarker(line: UiLine): boolean {
 }
 
 function titleProvidesToolMarker(line: UiLine): boolean {
-  return line.kind === "tool" && !!line.title && line.title.startsWith("◆ ");
+  return line.kind === "tool" && !!line.title;
 }
 
 function titleStatusMarker(status: NonNullable<UiLine["titleStatus"]>): string {
-  return status === "success" ? "✓" : "✗";
+  return status === "success" ? "\u2713" : "\u2717";
 }
 
 function titleStatusColor(status: NonNullable<UiLine["titleStatus"]>): string {
@@ -1993,7 +1993,7 @@ function renderSummaryBlock(line: UiLine, width: number, maxLines?: number, skip
     }
     if (line.format === "ansi") {
       const baseStyle: AnsiStyle = detail
-        ? { color: "gray", dimColor: true }
+        ? {}
         : { color: colorForKind(line.kind), bold: true };
       return e(Text, { key: `summary-${line.id}-${index}` }, ...renderAnsiInline(text, baseStyle));
     }
@@ -4280,8 +4280,37 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 
 
 function toolTitle(toolName: string): string {
-  if (toolName === "plan") return "◆ plan";
-  return `◆ ${toolName}`;
+  if (toolName === "plan") return "\u25c6 plan";
+  const labels: Record<string, string> = {
+    exec: "command",
+    read: "file read",
+    list: "directory listing",
+    grep: "search",
+    edit: "file edit",
+    write: "file write",
+    search: "web search",
+    plan: "plan",
+    agent: "subagent",
+    load_image: "image load",
+    image_note: "image note",
+    image2: "image generation",
+    secret_list: "secret list",
+    secret_info: "secret info",
+    secret_request: "secret request",
+    skill: "skill",
+    skill_list: "skill list",
+    skill_read: "skill read",
+    skill_validate: "skill validation",
+    skill_create: "skill create",
+    skill_update: "skill update",
+    TaskList: "task list",
+    TaskGet: "task detail",
+    TaskOutput: "task output",
+    TaskStop: "task stop",
+    TaskResume: "task resume",
+    SendMessage: "task message",
+  };
+  return `\u25c6 ${labels[toolName] ?? `tool: ${toolName}`}`;
 }
 
 function execDescriptionFromInput(input: unknown): string | undefined {
@@ -4341,9 +4370,9 @@ function formatPlanItem(item: PlanItemLike, depth = 0): string[] {
 }
 
 function planItemMarker(status: PlanItemLike["status"]): string {
-  if (status === "completed") return "✓";
-  if (status === "in_progress") return "▶";
-  return "○";
+  if (status === "completed") return "\u2713";
+  if (status === "in_progress") return "\u25b6";
+  return "\u25cb";
 }
 
 function escapePlanMarkdown(text: string): string {
@@ -4422,15 +4451,15 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (toolName === "list" && isRecord(output)) {
-    return { text: formatListToolResult(output, ok) };
+    return { text: formatListToolResult(output, ok), format: "ansi" };
   }
 
   if (toolName === "read" && isRecord(output)) {
-    return { text: formatReadToolResult(output, ok) };
+    return { text: formatReadToolResult(output, ok), format: "ansi" };
   }
 
   if (toolName === "grep" && isRecord(output)) {
-    return { text: formatGrepToolResult(output, ok) };
+    return { text: formatGrepToolResult(output, ok), format: "ansi" };
   }
 
   if (toolName === "search" && isRecord(output)) {
@@ -4445,7 +4474,83 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: formatPlanToolPayload(output), bodyTitle: planToolBodyTitle(output), full: true };
   }
 
-  return { text: `${ok ? "ok" : "failed"}\n${formatJson(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+  return { text: formatGenericToolResult(output, ok), format: "ansi", summaryMaxLines: FALLBACK_PREVIEW_LINES };
+}
+
+function formatGenericToolResult(output: unknown, ok: boolean): string {
+  if (typeof output === "string") return previewTextLines(output, FALLBACK_PREVIEW_LINES, "output").join("\n");
+  if (!isRecord(output)) return `${ok ? "completed" : "failed"}\n${formatReplData(output, 1200)}`;
+
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (error) return ["failed", error].join("\n");
+
+  const status = typeof output.status === "string" ? output.status : undefined;
+  const lines = [status ? `${ok ? "completed" : "failed"}: ${status}` : ok ? "completed" : "failed"];
+  const entries = Object.entries(output)
+    .filter(([key, value]) => value !== undefined && !LOW_VALUE_FALLBACK_FIELDS.has(key))
+    .slice(0, 24);
+  for (const [key, value] of entries) {
+    if (key === "status") continue;
+    const label = formatFallbackLabel(key);
+    if (isReplScalar(value)) lines.push(`${dimAnsi(label)} ${formatReplValue(value)}`);
+    else lines.push(`${dimAnsi(label)} ${truncate(formatReplValue(value), 500)}`);
+  }
+  if (entries.length === 0 && !status) lines.push(dimAnsi("no additional details"));
+  return lines.slice(0, FALLBACK_PREVIEW_LINES).join("\n");
+}
+
+function formatFallbackLabel(key: string): string {
+  const labels: Record<string, string> = {
+    task_id: "task",
+    taskId: "task",
+    agent_id: "agent",
+    agentId: "agent",
+    output_file: "output file",
+    outputFile: "output file",
+    can_read_output_file: "output readable",
+    returnedEntries: "entries shown",
+    totalFiles: "files",
+    totalDirectories: "directories",
+    updated_at: "updated",
+    created_at: "created",
+  };
+  return labels[key] ?? key.replace(/_/gu, " ");
+}
+
+function formatEditOperation(operation: string): string {
+  const normalized = operation.trim().toLowerCase();
+  if (normalized === "created" || normalized === "create") return "file created";
+  if (normalized === "written" || normalized === "write") return "file written";
+  if (normalized === "deleted" || normalized === "delete") return "file deleted";
+  return "file updated";
+}
+
+function previewTextLines(text: string, maxLines: number, label: string): string[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const preview = lines.slice(0, maxLines);
+  const note = lines.length > maxLines
+    ? `showing first ${maxLines} of ${lines.length} ${label} lines`
+    : `showing ${preview.length} of ${lines.length} ${label} lines`;
+  return [...preview, dimAnsi(note)];
+}
+
+function formatCommandPreview(command: string): string[] {
+  const normalized = command.replace(/\r\n/g, "\n").trimEnd();
+  const lines = normalized.split("\n");
+  if (lines.length === 1 && stripAnsi(normalized).length <= EXEC_COMMAND_PREVIEW_CHARS) return [normalized];
+
+  const firstLine = lines[0]?.trim() ?? "";
+  const summary = lines.length > 1
+    ? `command omitted: ${lines.length} lines, ${normalized.length} chars`
+    : `command omitted: ${normalized.length} chars`;
+  const preview = firstLine ? truncate(firstLine, EXEC_COMMAND_PREVIEW_CHARS) : "(empty command)";
+  return [dimAnsi(summary), preview];
+}
+
+function formatDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs)) return "?ms";
+  if (durationMs < 1000) return `${Math.max(0, Math.round(durationMs))}ms`;
+  return `${Number((durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0))}s`;
 }
 
 interface EditToolOutputLike extends Record<string, unknown> {
@@ -4486,8 +4591,12 @@ function isEditPatchHunk(value: unknown): value is EditPatchHunkLike {
 }
 
 function formatEditToolDiff(output: EditToolOutputLike, ok: boolean): string {
+  const replacementText = output.replacements === 1 ? "1 replacement" : `${output.replacements} replacements`;
+  const operation = ok ? formatEditOperation(output.operation) : "file edit failed";
   const lines = [
-    dimAnsi(`${ok ? output.operation : "failed"} ${output.path}, ${output.replacements} replacement(s)`),
+    operation,
+    output.path,
+    dimAnsi(replacementText),
     `\x1b[2;31m--- ${output.path}\x1b[0m`,
     `\x1b[2;32m+++ ${output.path}\x1b[0m`,
   ];
@@ -4575,17 +4684,16 @@ function formatExecToolResult(output: ExecResultLike, ok: boolean): string {
       : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
   const description = typeof output.description === "string" ? output.description.trim() : "";
   const lines = [
-    "exec result",
-    ...(description ? [`purpose: ${description}`] : []),
-    `status: ${status}`,
-    `duration: ${output.durationMs}ms`,
-    `command: ${output.command}`,
+    `${ok && output.exitCode === 0 && !output.timedOut ? "command completed" : "command failed"}: ${status} in ${formatDuration(output.durationMs)}`,
+    ...formatCommandPreview(output.command),
   ];
+  if (description) lines.push("", dimAnsi("purpose"), description);
+
   const stdout = output.stdout.replace(/\s+$/u, "");
   const stderr = output.stderr.replace(/\s+$/u, "");
-  if (stdout) lines.push("stdout:", stdout);
-  if (stderr) lines.push("stderr:", stderr);
-  if (!stdout && !stderr) lines.push(ok ? "output: (none)" : "output: (not captured)");
+  if (stdout) lines.push("", dimAnsi("stdout"), ...previewTextLines(stdout, EXEC_STDOUT_PREVIEW_LINES, "stdout"));
+  if (stderr) lines.push("", dimAnsi("stderr"), ...previewTextLines(stderr, EXEC_STDERR_PREVIEW_LINES, "stderr"));
+  if (!stdout && !stderr) lines.push("", dimAnsi("no output captured"));
   return lines.join("\n");
 }
 
@@ -4619,32 +4727,39 @@ function imageGenerationDuration(output: Record<string, unknown>): number | unde
 }
 
 function formatListToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const error = typeof output.error === "string" ? output.error : undefined;
+  if (!ok || error) return ["directory listing failed", error ?? formatReplData(output, 1200)].join("\n");
+
   const pathValue = typeof output.path === "string" ? output.path : "";
-  const typeValue = typeof output.type === "string" ? output.type : "result";
   const returnedEntries = typeof output.returnedEntries === "number" ? output.returnedEntries : undefined;
   const totalFiles = typeof output.totalFiles === "number" ? output.totalFiles : undefined;
   const totalDirectories = typeof output.totalDirectories === "number" ? output.totalDirectories : undefined;
   const entries = Array.isArray(output.entries) ? output.entries : [];
   const names = entries
-    .map((entry) => (isRecord(entry) && typeof entry.name === "string" ? entry.name : undefined))
-    .filter((name): name is string => Boolean(name))
-    .slice(0, 3);
+    .map((entry) => {
+      if (!isRecord(entry) || typeof entry.name !== "string") return undefined;
+      return entry.type === "directory" ? `${entry.name}/` : entry.name;
+    })
+    .filter((name): name is string => Boolean(name));
 
-  const lines = [ok ? typeValue : "failed"];
-  if (pathValue) lines.push(pathValue);
+  const lines = pathValue ? [pathValue] : [];
   const counts = [
-    returnedEntries !== undefined ? `${returnedEntries} shown` : undefined,
+    returnedEntries !== undefined ? `${returnedEntries} entries shown` : undefined,
     totalFiles !== undefined ? `${totalFiles} files` : undefined,
-    totalDirectories !== undefined ? `${totalDirectories} dirs` : undefined,
+    totalDirectories !== undefined ? `${totalDirectories} directories` : undefined,
   ].filter((value): value is string => Boolean(value));
-  if (counts.length > 0) lines.push(counts.join(" · "));
-  for (const name of names) lines.push(name);
+  if (counts.length > 0) lines.push(dimAnsi(counts.join(", ")));
+  if (names.length > 0) {
+    lines.push("");
+    lines.push(...names.slice(0, LIST_ENTRY_PREVIEW_COUNT));
+    if (names.length > LIST_ENTRY_PREVIEW_COUNT) lines.push(dimAnsi(`showing first ${LIST_ENTRY_PREVIEW_COUNT} of ${names.length} entries`));
+  }
   return lines.join("\n");
 }
 
 function formatReadToolResult(output: Record<string, unknown>, ok: boolean): string {
   const error = typeof output.error === "string" ? output.error : undefined;
-  if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
+  if (!ok || error) return ["file read failed", error ?? formatReplData(output, 1200)].join("\n");
 
   const pathValue = typeof output.path === "string" ? output.path : undefined;
   const startLine = typeof output.startLine === "number" ? output.startLine : undefined;
@@ -4653,17 +4768,21 @@ function formatReadToolResult(output: Record<string, unknown>, ok: boolean): str
   const hasMoreBefore = output.hasMoreBefore === true;
   const hasMoreAfter = output.hasMoreAfter === true;
   const content = typeof output.content === "string" ? output.content.trimEnd() : "";
+  const contentLines = content ? content.split("\n") : [];
 
-  const lines = ["read result"];
-  if (pathValue) lines.push(`file: ${pathValue}`);
+  const lines = pathValue ? [pathValue] : [];
   if (startLine !== undefined && endLine !== undefined && totalLines !== undefined) {
-    const more = [hasMoreBefore ? "more before" : undefined, hasMoreAfter ? "more after" : undefined]
-      .filter((value): value is string => Boolean(value))
-      .join(", ");
-    lines.push(`range: lines ${startLine}-${endLine} of ${totalLines}${more ? ` (${more})` : ""}`);
+    lines.push(dimAnsi(`lines ${startLine}-${endLine} of ${totalLines}`));
   }
-  lines.push("content:");
-  lines.push(content || "(empty range)");
+  if (contentLines.length > 0) {
+    lines.push("");
+    lines.push(...contentLines.slice(0, READ_CONTENT_PREVIEW_LINES));
+    if (contentLines.length > READ_CONTENT_PREVIEW_LINES) lines.push(dimAnsi(`showing first ${READ_CONTENT_PREVIEW_LINES} of ${contentLines.length} returned lines`));
+  } else {
+    lines.push("", dimAnsi("empty range"));
+  }
+  const more = [hasMoreBefore ? "before" : undefined, hasMoreAfter ? "after" : undefined].filter((value): value is string => Boolean(value));
+  if (more.length > 0) lines.push(dimAnsi(`more content exists ${more.join(" and ")} this range`));
   return lines.join("\n");
 }
 
@@ -4697,7 +4816,7 @@ function formatWebSearchToolResult(output: Record<string, unknown>, ok: boolean)
 
 function formatGrepToolResult(output: Record<string, unknown>, ok: boolean): string {
   const error = typeof output.error === "string" ? output.error : undefined;
-  if (!ok || error) return ["failed", error ?? formatJson(output, 1200)].join("\n");
+  if (!ok || error) return ["search failed", error ?? formatReplData(output, 1200)].join("\n");
 
   const query = typeof output.query === "string" ? output.query : undefined;
   const grepPath = typeof output.grepPath === "string" ? output.grepPath : undefined;
@@ -4710,40 +4829,36 @@ function formatGrepToolResult(output: Record<string, unknown>, ok: boolean): str
     : [];
   const transportTruncation = isRecord(output.transportTruncation) ? output.transportTruncation : undefined;
   const omittedMatches = typeof transportTruncation?.omittedMatches === "number" ? transportTruncation.omittedMatches : undefined;
+  const total = totalMatchesKnown ?? returnedMatches ?? matches.length;
 
-  const lines = ["grep result"];
-  if (query !== undefined) lines.push(`query: ${query}`);
-  if (grepPath !== undefined) lines.push(`path: ${grepPath}`);
-  const countParts = [
-    `${returnedMatches ?? matches.length} shown`,
-    totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined,
-    truncated ? "truncated" : undefined,
-    omittedMatches !== undefined && omittedMatches > 0 ? `${omittedMatches} omitted` : undefined,
-  ].filter((value): value is string => Boolean(value));
-  lines.push(`matches: ${countParts.join(" · ")}`);
+  const lines = [`${total} ${total === 1 ? "match" : "matches"}`];
+  if (query !== undefined) lines.push(`${dimAnsi("query")} ${query}`);
+  if (grepPath !== undefined) lines.push(`${dimAnsi("path")} ${grepPath}`);
 
   if (errors.length > 0) {
-    lines.push("errors:");
-    lines.push(...errors.slice(0, 5).map((message) => `  ${message}`));
-    if (errors.length > 5) lines.push(`  ... ${errors.length - 5} more error(s)`);
+    lines.push("", dimAnsi("errors"));
+    lines.push(...errors.slice(0, 5));
+    if (errors.length > 5) lines.push(dimAnsi(`${errors.length - 5} more errors`));
   }
 
   if (matches.length === 0) {
-    lines.push("no matches");
+    lines.push("", dimAnsi("no matches"));
     return lines.join("\n");
   }
 
-  lines.push("results:");
-  for (const match of matches) {
-    for (const context of match.contextBefore ?? []) {
-      lines.push(formatGrepContextLine(context, "-"));
-    }
+  lines.push("");
+  for (const match of matches.slice(0, GREP_MATCH_PREVIEW_COUNT)) {
+    const before = (match.contextBefore ?? []).slice(-GREP_CONTEXT_PREVIEW_LINES);
+    const after = (match.contextAfter ?? []).slice(0, GREP_CONTEXT_PREVIEW_LINES);
+    for (const context of before) lines.push(dimAnsi(formatGrepContextLine(context, "-")));
     lines.push(formatGrepMatchLine(match));
-    for (const context of match.contextAfter ?? []) {
-      lines.push(formatGrepContextLine(context, "+"));
-    }
+    for (const context of after) lines.push(dimAnsi(formatGrepContextLine(context, "+")));
+    lines.push("");
   }
-  return lines.join("\n");
+  if (matches.length > GREP_MATCH_PREVIEW_COUNT) lines.push(dimAnsi(`showing first ${GREP_MATCH_PREVIEW_COUNT} of ${matches.length} returned matches`));
+  if (truncated) lines.push(dimAnsi("results were truncated"));
+  if (omittedMatches !== undefined && omittedMatches > 0) lines.push(dimAnsi(`${omittedMatches} additional matches omitted by transport`));
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
 interface GrepMatchLike {
@@ -5139,6 +5254,15 @@ const THINKING_MARKER = "◆";
 const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
 const EDIT_TOOL_SUMMARY_MAX_LINES = EXPANDED_SUMMARY_MAX_LINES;
+const EXEC_COMMAND_PREVIEW_CHARS = 120;
+const EXEC_STDOUT_PREVIEW_LINES = 40;
+const EXEC_STDERR_PREVIEW_LINES = 60;
+const READ_CONTENT_PREVIEW_LINES = 80;
+const GREP_MATCH_PREVIEW_COUNT = 20;
+const GREP_CONTEXT_PREVIEW_LINES = 2;
+const LIST_ENTRY_PREVIEW_COUNT = 12;
+const FALLBACK_PREVIEW_LINES = 40;
+const LOW_VALUE_FALLBACK_FIELDS = new Set(["ok", "summary", "metadata", "transportTruncation"]);
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
   const stripped = stripAnsi(value);
