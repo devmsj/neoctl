@@ -1108,21 +1108,13 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     setStatus((current) => reduceStatus(current, event));
     if (event.type === "usage") runtime.usage.add(event.usage);
     if (event.type === "state") return;
-    if (event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta") return;
-    if (event.type === "assistant.delta") {
-      finalizeThinkingLine();
-      const id = assistantLineId.current ?? append({ kind: "assistant", text: "", live: true });
-      assistantLineId.current = id;
-      updateLine(id, (text) => text + event.text);
-      return;
-    }
-    if (event.type === "thinking.delta") {
-      const id = thinkingLineId.current ?? finalizedThinkingLineId.current ?? append(thinkingLine("", true));
-      thinkingLineId.current = id;
-      finalizedThinkingLineId.current = undefined;
-      updateLine(id, (text) => text + event.text);
-      return;
-    }
+    if (
+      event.type === "context.metrics" ||
+      event.type === "usage" ||
+      event.type === "tool_call.delta" ||
+      event.type === "assistant.delta" ||
+      event.type === "thinking.delta"
+    ) return;
     if (event.type === "message") {
       let replacedStreamingContent = false;
       if (event.message.role === "assistant" && assistantLineId.current !== undefined) {
