@@ -166,15 +166,11 @@ export function createImageNoteTool(): Tool<ImageNoteToolInput> {
     },
     renderToolResultMessage(result, request) {
       if (!request) return undefined;
-      const output = result.output as ImageNoteToolOutput;
-      const text = result.ok
-        ? `Recorded semantic notes for images: ${output.recorded.map((item) => item.imageRef).join(", ")}.`
-        : `Image note result: recorded ${output.recorded?.length ?? 0}, failed ${output.failed?.map((item) => `${item.imageRef}: ${item.error}`).join("; ") ?? "unknown"}.`;
       return {
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
         role: "tool_result",
         createdAt: new Date().toISOString(),
-        blocks: [{ type: "tool_result", toolUseId: request.id, name: request.name, ok: result.ok, output: text }],
+        blocks: [{ type: "tool_result", toolUseId: request.id, name: request.name, ok: result.ok, output: result.output }],
       };
     },
   };
