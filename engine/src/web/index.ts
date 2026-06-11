@@ -15,6 +15,7 @@ import { CommunicationLogger, LoggingModelGateway } from "../model/communication
 import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
+import type { Tool } from "../tools/tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool } from "../tools/builtins/exec-tool.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
@@ -155,6 +156,11 @@ export interface WebServerOptions {
   port: number;
 }
 
+export interface RunWebServerOptions {
+  createRuntime?: WebRuntimeRouterOptions["createRuntime"];
+  createRepl?: WebRuntimeRouterOptions["createRepl"];
+}
+
 export interface CreateWebRuntimeOptions {
   /** Override the initial session id for this runtime. */
   sessionId?: string;
@@ -162,6 +168,8 @@ export interface CreateWebRuntimeOptions {
   resume?: boolean;
   /** Override the QueryEngine agent id. Defaults to main. */
   agentId?: string;
+  /** Additional tools to register in the web runtime. */
+  externalTools?: readonly Tool[];
 }
 
 export interface WebRuntimeScope {
@@ -224,9 +232,9 @@ interface WebBackgroundSessionRun {
   promise: Promise<void>;
 }
 
-export async function runWebServer(argv = process.argv.slice(2)): Promise<void> {
+export async function runWebServer(argv = process.argv.slice(2), runtimeOptions: RunWebServerOptions = {}): Promise<void> {
   const options = parseWebArgs(argv);
-  const router = await createWebRuntimeRouter();
+  const router = await createWebRuntimeRouter(runtimeOptions);
   const server = http.createServer((req, res) => void route(req, res, router));
   await new Promise<void>((resolve) => server.listen(options.port, options.host, resolve));
   const address = server.address();
@@ -266,6 +274,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   tools.register(createImageNoteTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
+  for (const tool of options.externalTools ?? []) tools.register(tool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
