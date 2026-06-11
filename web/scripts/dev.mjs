@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import { runWebServer } from 'neoctl/web/index.js';
+import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
+import { createExposeDownloadsTool, DownloadRegistry, downloadRootsFromEnv, serveDownload } from '../downloads.mjs';
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
@@ -12,6 +13,8 @@ const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const downloadRegistry = new DownloadRegistry();
+const downloadRoots = downloadRootsFromEnv(process.cwd());
 
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
@@ -34,7 +37,17 @@ const DEFAULT_APP_PROMPT_LIBRARY = [
   },
 ];
 
-await runWebServer(['--host', host, '--port', String(upstreamPort)]);
+await runWebServer(['--host', host, '--port', String(upstreamPort)], {
+  createRuntime: (runtimeOptions) => createWebRuntime({
+    ...runtimeOptions,
+    externalTools: [
+      createExposeDownloadsTool({
+        registry: downloadRegistry,
+        allowedRoots: downloadRoots,
+      }),
+    ],
+  }),
+});
 await startPromptLibraryProxy();
 
 const childEnv = Object.fromEntries(
@@ -99,6 +112,10 @@ async function routeRequest(req, res) {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
       return sendJson(res, { ok: true, file });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/downloads/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/downloads/'.length));
+      return serveDownload(downloadRegistry, req, res, id);
     }
     return proxyToRuntime(req, res, url);
   } catch (error) {

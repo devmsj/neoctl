@@ -2,6 +2,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DownloadRegistry, serveDownload } from './downloads.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
@@ -11,6 +12,7 @@ const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(__dirname, '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(__dirname, '.neoctl-web', 'uploads'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const downloadRegistry = new DownloadRegistry();
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -88,6 +90,10 @@ async function routeRequest(req, res) {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
       return sendJson(res, { ok: true, file });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/downloads/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/downloads/'.length));
+      return serveDownload(downloadRegistry, req, res, id);
     }
     if (shouldProxy(url.pathname)) {
       return proxy(req, res);

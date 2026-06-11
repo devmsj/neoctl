@@ -786,6 +786,75 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-output-images {
   margin-top: 0;
 }
+.download-result {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+}
+.download-result-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.download-result-header strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+.download-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.download-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text) !important;
+  text-decoration: none;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .04);
+  transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+.download-card:hover {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+  transform: translateY(-1px);
+}
+.download-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--purple);
+  font-size: 18px;
+  line-height: 1;
+}
+.download-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.download-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+.download-main span {
+  color: var(--muted);
+  font-size: 12px;
+}
 @keyframes image2-shimmer {
   to { background-position-x: -200%; }
 }

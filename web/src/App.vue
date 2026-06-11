@@ -39,6 +39,7 @@ const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
+const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
 const ATTACHMENT_MANIFEST_START = '<<ATTACHMENT_MANIFEST>>'
 const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
@@ -538,7 +539,7 @@ async function submit() {
   const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
   const submitText = appendHiddenAttachmentManifest(
-    textWithAttachmentLabels(textWithImageToolHint(text, imageAttachments), imageAttachments),
+    textWithDownloadExposureHint(textWithAttachmentLabels(textWithImageToolHint(text, imageAttachments), imageAttachments)),
     fileAttachments
   )
   cacheMessageImagePreviews(imageAttachments)
@@ -806,6 +807,7 @@ function shouldMarkdown(line) {
 
 function renderLine(line) {
   if (isImage2ResultLine(line)) return renderImage2Result(line)
+  if (isExposeDownloadsLine(line)) return renderExposeDownloadsResult(line)
   const text = lineText(line)
   const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', state.expandedTools.has(line.id) ? '1' : '0', text].join('\u001f')
   const cached = renderedLineCache.get(key)
@@ -824,6 +826,58 @@ function renderDiff(text) {
 
 function isImage2ResultLine(line) {
   return isImage2Line(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
+}
+
+function isExposeDownloadsLine(line) {
+  return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'expose_downloads'
+}
+
+function renderExposeDownloadsResult(line) {
+  const downloads = parseExposeDownloads(line.text || '')
+  if (!downloads.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
+  const cards = downloads.map((item) => {
+    const filename = escapeHtml(item.filename || item.name || 'download')
+    const href = escapeHtml(downloadHref(item))
+    const size = item.sizeBytes || item.size ? formatBytes(item.sizeBytes || item.size) : ''
+    const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
+    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong><span>${escapeHtml([size, expires].filter(Boolean).join(' · ') || '点击下载')}</span></span></a>`
+  }).join('')
+  return `<div class="download-result"><div class="download-result-header"><strong>文件已准备好</strong><span>${downloads.length} 个下载项</span></div><div class="download-grid">${cards}</div></div>`
+}
+
+function parseExposeDownloads(text) {
+  const parsed = parseFirstJsonObject(text)
+  const downloads = parsed?.downloads || parsed?.output?.downloads || parsed?.result?.downloads
+  return Array.isArray(downloads) ? downloads.filter((item) => item && typeof item === 'object') : []
+}
+
+function downloadHref(item) {
+  const url = String(item?.url || '')
+  if (url.startsWith('/api/downloads/')) return url
+  return `/api/downloads/${encodeURIComponent(item?.id || '')}`
+}
+
+function parseFirstJsonObject(text) {
+  const raw = String(text || '')
+  const starts = []
+  for (let index = raw.indexOf('{'); index >= 0; index = raw.indexOf('{', index + 1)) starts.push(index)
+  for (const start of starts) {
+    for (let end = raw.length; end > start; end = raw.lastIndexOf('}', end - 1)) {
+      if (end <= start) break
+      try {
+        return JSON.parse(raw.slice(start, end + 1))
+      } catch {}
+    }
+  }
+  return null
+}
+
+function formatDownloadExpiry(value) {
+  const time = Number(value)
+  if (!Number.isFinite(time)) return ''
+  const remaining = time - Date.now()
+  if (remaining <= 0) return '已过期'
+  return `${formatDuration(remaining)} 后过期`
 }
 
 function renderImage2Stage(line) {
@@ -1097,6 +1151,10 @@ function textWithImageToolHint(text, attachments) {
   return [text.trim(), ...hints].filter(Boolean).join('\n\n')
 }
 
+function textWithDownloadExposureHint(text) {
+  return [String(text || '').trim(), DOWNLOAD_EXPOSURE_HINT].filter(Boolean).join('\n\n')
+}
+
 function looksLikeImageGenerationRequest(text) {
   const value = String(text || '').toLowerCase()
   return /绘制|画一张|画个|生成图片|生成一张图|做一张图|出图|配图|插画|海报|封面|头像|draw|illustrate|generate (?:an? )?image|create (?:an? )?image|make (?:an? )?image|render|poster|cover art|concept art|portrait|mascot/.test(value)
@@ -1112,7 +1170,12 @@ function stripImageLabels(text) {
 }
 
 function stripImageOperationHint(text) {
-  return String(text).replace(IMAGE_GENERATION_HINT, '').replace(IMAGE_OPERATION_HINT, '').replace(/[ \t]{2,}/g, ' ').trim()
+  return String(text)
+    .replace(IMAGE_GENERATION_HINT, '')
+    .replace(IMAGE_OPERATION_HINT, '')
+    .replace(DOWNLOAD_EXPOSURE_HINT, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
 }
 
 function stripHiddenAttachmentManifest(text) {
