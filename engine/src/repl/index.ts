@@ -35,7 +35,7 @@ import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js"
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
 import { cliHelpText, isModelReasoningArgument, isValidReplCommandLine, parseCliReplCommandArgs, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
-import { estimateMarkdownLineCount, markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
+import { markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { CompactionResult } from "../context/compaction.js";
 import { DefaultContextManager, type ContextBuildInput, type ContextManager, type RuntimeContext } from "../context/context-manager.js";
 import { buildEffectiveSystemPrompt } from "../context/prompts.js";
@@ -1465,31 +1465,11 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   if (selectedSlashCompletionIndex !== slashCompletionIndexRef.current) {
     slashCompletionIndexRef.current = selectedSlashCompletionIndex;
   }
-  const promptHeight = promptTextView(promptLayoutText, promptLayoutCursor, width, prompt).length + slashCompletionViewHeight(slashCompletions) + (queuedInput !== undefined ? QUEUED_INPUT_RENDER_ROWS : 0) + (pasteStatus ? 1 : 0);
   const firstDynamicLineIndex = lines.findIndex((line) => lineNeedsDynamicRender(line, messageContentWidth(width)));
   const staticLines = firstDynamicLineIndex === -1 ? lines : lines.slice(0, firstDynamicLineIndex);
   const dynamicLines = firstDynamicLineIndex === -1 ? [] : lines.slice(firstDynamicLineIndex);
-  const subagentRows = subagentLivePanelRenderRows(agentActivities, terminalSize.rows, compactLiveLayout);
+  const visibleDynamicLines = dynamicLines;
   const nonAgentBackgroundTasks = backgroundTasks.filter((task) => task.type !== "agent");
-  const statusRenderRows = STATUS_BAR_RENDER_ROWS + (showForegroundExecDetachHint && foregroundExecDetachHandle ? FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS : 0) + subagentRows + backgroundTaskStatusRenderRows(subagentRows > 0 ? nonAgentBackgroundTasks.length : backgroundTasks.length);
-  const managementBrowserHeight = sessionsBrowser
-    ? sessionsBrowserViewHeight(sessionsBrowser)
-    : skillsBrowser
-      ? skillsBrowserViewHeight(skillsBrowser)
-      : secretsBrowser
-        ? secretsBrowserViewHeight(secretsBrowser)
-        : 0;
-  const loginFormHeight = loginForm ? loginFormViewHeight(loginForm) : 0;
-  const maxDynamicBlocks = compactLiveLayout ? COMPACT_LIVE_DYNAMIC_BLOCKS : Number.POSITIVE_INFINITY;
-  const visibleDynamicLines = dynamicLines.length > maxDynamicBlocks ? dynamicLines.slice(-maxDynamicBlocks) : dynamicLines;
-  const visibleDynamicMarginOverhead = visibleDynamicLines.reduce((sum, _, i) => {
-    const blockIndex = staticLines.length + i;
-    return sum + (blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0);
-  }, 0);
-  const liveLineCount = Math.max(1, visibleDynamicLines.length);
-  const reservedRows = promptHeight + statusRenderRows + managementBrowserHeight + loginFormHeight + visibleDynamicMarginOverhead + FULLSCREEN_RENDER_GUARD_ROWS;
-  const dynamicRowsBudget = Math.max(MIN_LIVE_VIEWPORT_LINES, terminalSize.rows - reservedRows);
-  const liveViewportLines = Math.max(MIN_LIVE_VIEWPORT_LINES, Math.floor(dynamicRowsBudget / liveLineCount));
 
   useInput((value, key) => {
     if (isTerminalFocusInSequence(value)) {
@@ -1810,7 +1790,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     Box,
     { flexDirection: "column" },
     e(Static<UiLine>, { items: staticLines, children: (line, index) => e(MessageBlock, { key: line.id, line, width, blockIndex: index }) }),
-    e(MessageList, { lines: visibleDynamicLines, width, liveMaxLines: liveViewportLines, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
+    e(MessageList, { lines: visibleDynamicLines, width, lineIndexOffset: staticLines.length, onMarkdownRenderComplete: markLineRendered }),
     sessionsBrowser ? e(SessionsBrowser, { state: sessionsBrowser, width }) : null,
     skillsBrowser ? e(SkillsBrowser, { state: skillsBrowser, width }) : null,
     secretsBrowser ? e(SecretsBrowser, { state: secretsBrowser, width }) : null,
@@ -1827,11 +1807,10 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
 }
 
 const MessageList = React.memo(function MessageList(
-  { lines, width, liveMaxLines, lineIndexOffset = 0, onMarkdownRenderComplete }:
+  { lines, width, lineIndexOffset = 0, onMarkdownRenderComplete }:
   {
     lines: UiLine[];
     width: number;
-    liveMaxLines?: number;
     lineIndexOffset?: number;
     onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
   },
@@ -1848,46 +1827,42 @@ const MessageList = React.memo(function MessageList(
       blockIndex: lineIndexOffset + index,
       contentWidth,
       toolWidth,
-      liveMaxLines,
       onMarkdownRenderComplete,
     })),
   );
 });
 
 function MessageBlock(
-  { line, width, blockIndex, contentWidth, toolWidth, liveMaxLines, onMarkdownRenderComplete }:
+  { line, width, blockIndex, contentWidth, toolWidth, onMarkdownRenderComplete }:
   {
     line: UiLine;
     width: number;
     blockIndex: number;
     contentWidth?: number;
     toolWidth?: number;
-    liveMaxLines?: number;
     onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
   },
 ) {
   return e(
     Box,
     { flexDirection: "column", marginTop: blockIndex > 0 ? MESSAGE_BLOCK_SPACING_LINES : 0 },
-    e(MessageLine, { line, width, contentWidth, toolWidth, liveMaxLines, onMarkdownRenderComplete }),
+    e(MessageLine, { line, width, contentWidth, toolWidth, onMarkdownRenderComplete }),
   );
 }
 
 function MessageLine(
-  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), liveMaxLines, onMarkdownRenderComplete }:
+  { line, width, contentWidth = messageContentWidth(width), toolWidth = toolContentWidth(width), onMarkdownRenderComplete }:
   {
     line: UiLine;
     width: number;
     contentWidth?: number;
     toolWidth?: number;
-    liveMaxLines?: number;
     onMarkdownRenderComplete?: (lineId: number, renderKey: string) => void;
   },
 ) {
   if (line.previewStyle === "summary") {
     const useRoleMarker = summaryUsesRoleMarker(line);
     const summaryWidth = useRoleMarker ? contentWidth : toolWidth;
-    const display = displayWindowForLine(line, summaryWidth, line.live ? liveMaxLines : undefined);
     return e(
       Box,
       { flexDirection: "row" },
@@ -1895,18 +1870,16 @@ function MessageLine(
       e(
         Box,
         { flexDirection: "column", width: summaryWidth },
-        ...renderDisplayText(line, summaryWidth, display.maxLines, display.skipTop),
+        ...renderDisplayText(line, summaryWidth),
       ),
     );
   }
   const useRoleMarker = !titleProvidesToolMarker(line);
   const lineWidth = useRoleMarker ? contentWidth : toolWidth;
-  const clipPendingMarkdown = !line.live && onMarkdownRenderComplete !== undefined && lineNeedsDynamicRender(line, lineWidth);
-  const display = displayWindowForLine(line, lineWidth, line.live || clipPendingMarkdown ? liveMaxLines : undefined);
   const contentNodes: React.ReactNode[] = [];
   if (line.title) contentNodes.push(renderBlockTitle(line));
   if (line.bodyTitle) contentNodes.push(e(Text, { key: `body-title-${line.id}`, bold: true }, line.bodyTitle));
-  contentNodes.push(...renderDisplayText(line, lineWidth, display.maxLines, display.skipTop, onMarkdownRenderComplete));
+  contentNodes.push(...renderDisplayText(line, lineWidth, undefined, 0, onMarkdownRenderComplete));
   return e(Box, { flexDirection: "row" },
     useRoleMarker ? e(Text, { color: markerColorForKind(line.kind) }, messageRoleMarker(line.kind)) : null,
     e(
@@ -1915,22 +1888,6 @@ function MessageLine(
       ...contentNodes,
     ),
   );
-}
-
-function displayWindowForLine(line: UiLine, width: number, maxLines: number | undefined): { maxLines?: number; skipTop: number } {
-  if (maxLines === undefined) return { skipTop: 0 };
-  const safeMaxLines = Math.max(1, maxLines);
-  const lineCount = estimateRenderedLineCount(line, width);
-  return {
-    maxLines: safeMaxLines,
-    skipTop: Math.max(0, lineCount - safeMaxLines),
-  };
-}
-
-function estimateRenderedLineCount(line: UiLine, width: number): number {
-  if (line.previewStyle === "summary") return renderSummaryLines(line, width).length;
-  if (line.format === "ansi") return wrapAnsi(line.text, Math.max(10, width), { hard: true, trim: false }).split("\n").length;
-  return estimateMarkdownLineCount(line.text, width);
 }
 
 function lineNeedsDynamicRender(line: UiLine, width: number): boolean {
@@ -1990,7 +1947,7 @@ function summaryUsesRoleMarker(line: UiLine): boolean {
 }
 
 function titleProvidesToolMarker(line: UiLine): boolean {
-  return line.kind === "tool" && !!line.title && (line.title.startsWith("◇ ") || line.title.startsWith("◆ "));
+  return line.kind === "tool" && !!line.title && line.title.startsWith("◆ ");
 }
 
 function titleStatusMarker(status: NonNullable<UiLine["titleStatus"]>): string {
@@ -2302,7 +2259,7 @@ function SubagentLivePanel(
   const selected = sorted[0];
   if (!selected) return null;
   const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "pending").length;
-  const header = `◇ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""}`;
+  const header = `◆ subagents: ${activeCount} active${activities.length > activeCount ? ` · ${activities.length - activeCount} recent` : ""}`;
   if (rows <= 1) {
     return e(Text, { color: "yellow" }, fitToWidth(`${header} · ${compactAgentSummary(selected, width - header.length - 3)}`, width));
   }
@@ -2423,7 +2380,7 @@ function BackgroundTaskStatusLine(
   { tasks: ReturnType<typeof activeBackgroundTasks>; width: number },
 ) {
   const width = statusBarWidth(terminalWidth);
-  const summary = `◇ background tools: ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
+  const summary = `◆ background tools: ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
   const detailTasks = tasks.slice(0, 2);
   return e(
     Box,
@@ -4285,7 +4242,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) {
     return {
       kind: "tool",
-      title: toolTitle(toolUse.name, "running"),
+      title: toolTitle(toolUse.name),
       bodyTitle: planToolBodyTitle(toolUse.input),
       text: formatPlanToolPayload(toolUse.input),
     };
@@ -4294,7 +4251,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
   return {
     kind: "tool",
-    title: toolTitle(toolUse.name, "running"),
+    title: toolTitle(toolUse.name),
     bodyTitle: description,
     text: formatJson(toolUse.input, 1200),
     previewStyle: "summary",
@@ -4305,7 +4262,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   const formatted = formatToolResult(toolName, output, ok);
   const line: Omit<UiLine, "id"> = {
     kind: ok ? "tool" : "error",
-    title: toolTitle(toolName, "finished"),
+    title: toolTitle(toolName),
     bodyTitle: formatted.bodyTitle,
     titleStatus: ok ? "success" : "failure",
     text: formatted.text,
@@ -4322,9 +4279,9 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 }
 
 
-function toolTitle(toolName: string, phase: "running" | "finished"): string {
-  if (toolName === "plan") return `${phase === "running" ? "◇" : "◆"} plan`;
-  return `${phase === "running" ? "◇" : "◆"} ${toolName}`;
+function toolTitle(toolName: string): string {
+  if (toolName === "plan") return "◆ plan";
+  return `◆ ${toolName}`;
 }
 
 function execDescriptionFromInput(input: unknown): string | undefined {
@@ -5171,10 +5128,7 @@ const QUEUED_INPUT_RENDER_ROWS = 1;
 const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";
 const LONG_CLIPBOARD_TEXT_THRESHOLD = 200;
 const PASTE_STATUS_DISPLAY_MS = 2500;
-const MIN_LIVE_VIEWPORT_LINES = 1;
-const FULLSCREEN_RENDER_GUARD_ROWS = 3;
 const COMPACT_LIVE_LAYOUT_ROWS = 24;
-const COMPACT_LIVE_DYNAMIC_BLOCKS = 1;
 const MESSAGE_BLOCK_SPACING_LINES = 1;
 const SUMMARY_BLOCK = {
   maxLines: 6,
