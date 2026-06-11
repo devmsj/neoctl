@@ -134,7 +134,6 @@ interface UiLine {
   previewStyle?: "summary";
   summaryMaxLines?: number;
   live?: boolean;
-  pendingReplacement?: boolean;
   collapsible?: boolean;
   image?: UiLineImage;
 }
@@ -404,7 +403,6 @@ export class WebRepl {
   private finalizedThinkingLineId: number | undefined;
   private activeAbortController: AbortController | undefined;
   private interruptArmed = false;
-  private readonly toolLineIds = new Map<string, number>();
   private lines: UiLine[];
   private status: UiStatus;
   private busy = false;
@@ -541,7 +539,6 @@ export class WebRepl {
     this.assistantLineId = undefined;
     this.thinkingLineId = undefined;
     this.finalizedThinkingLineId = undefined;
-    this.toolLineIds.clear();
     if (line) this.append(line);
     this.broadcastSync();
   }
@@ -664,7 +661,6 @@ export class WebRepl {
   private finalizeForegroundView(): void {
     this.finalizeLiveLine(this.assistantLineId);
     this.finalizeThinkingLine();
-    this.finalizeActiveToolLines();
     this.assistantLineId = undefined;
     this.finalizedThinkingLineId = undefined;
   }
@@ -763,11 +759,6 @@ export class WebRepl {
     this.thinkingLineId = undefined;
   }
 
-  private finalizeActiveToolLines(): void {
-    for (const id of this.toolLineIds.values()) this.replaceLine(id, { live: false, pendingReplacement: false });
-    this.toolLineIds.clear();
-  }
-
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta" || event.type === "retrying") {
@@ -816,7 +807,7 @@ export class WebRepl {
         return;
       }
       if (event.message.role === "tool_result") {
-        renderToolResultMessage(event.message, (line) => this.append(line), (id, patch) => this.replaceLine(id, patch), this.toolLineIds);
+        renderToolResultMessage(event.message, (line) => this.append(line));
         renderMessageImages(event.message, (line) => this.append(line));
         return;
       }
@@ -837,22 +828,12 @@ export class WebRepl {
     if (event.type === "tool.started") {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
-      const id = this.append({ ...formatToolUse(event.toolUse), live: true });
-      this.toolLineIds.set(event.toolUse.id, id);
       return;
     }
-    if (event.type === "tool.finished") {
-      const id = this.toolLineIds.get(event.toolUse.id);
-      if (id !== undefined) {
-        this.replaceLine(id, formatToolFinishedWithoutResult(event.toolUse, event.ok));
-        this.toolLineIds.delete(event.toolUse.id);
-      }
-      return;
-    }
+    if (event.type === "tool.finished") return;
     if (event.type === "terminal") {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
-      this.finalizeActiveToolLines();
       this.assistantLineId = undefined;
       this.broadcastSync();
       return;
@@ -1562,17 +1543,11 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
   return rendered;
 }
 
-function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, replaceLine: (id: number, patch: Partial<UiLine>) => void, activeToolLineIds: Map<string, number>): boolean {
+function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    const line = formatToolResultLine(block.name, block.output, block.ok);
-    const id = activeToolLineIds.get(block.toolUseId);
-    if (id === undefined) append(line);
-    else {
-      replaceLine(id, { ...line, title: toolTitle(block.name, "finished"), live: false, pendingReplacement: false });
-      activeToolLineIds.delete(block.toolUseId);
-    }
+    append(formatToolResultLine(block.name, block.output, block.ok));
     rendered = true;
   }
   return rendered;
@@ -1666,11 +1641,6 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
 }
 
-function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Partial<UiLine> {
-  const inputText = formatReplData(toolUse.input, 1200);
-  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolUse.name, "finished"), bodyTitle: description, titleStatus: ok ? "success" : "failure", text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed", previewStyle: "summary", live: true, pendingReplacement: true, collapsible: true };
-}
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {
   return toolName;

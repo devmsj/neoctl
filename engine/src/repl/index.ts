@@ -193,7 +193,6 @@ interface UiLine {
   previewStyle?: "summary";
   summaryMaxLines?: number;
   live?: boolean;
-  pendingReplacement?: boolean;
   renderedKey?: string;
 }
 
@@ -673,8 +672,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const activeAbortController = useRef<AbortController | undefined>(undefined);
   const interruptArmed = useRef(false);
   const history = useRef<string[]>([]);
-  const toolLineIds = useRef(new Map<string, number>());
-  const pendingToolResultTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [lines, setLines] = useState<UiLine[]>(() => initialLines(runtime, lineId));
   const [input, setInput] = useState("");
   const [queuedInput, setQueuedInput] = useState<string | undefined>(undefined);
@@ -1019,8 +1016,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
     finalizedThinkingLineId.current = undefined;
-    toolLineIds.current.clear();
-    clearPendingToolResultTimers();
   };
 
   const resumeSnapshot = (snapshot: SessionStoreSnapshot, metrics?: ContextMetrics) => {
@@ -1058,48 +1053,15 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     thinkingLineId.current = undefined;
   };
 
-  const finalizeToolLine = (id: number | undefined) => {
-    if (id === undefined) return;
-    setLines((current) => current.map((line) => line.id === id ? { ...line, live: false, pendingReplacement: false } : line));
-  };
-
-  const cancelPendingToolResultTimer = (toolUseId: string) => {
-    const timer = pendingToolResultTimers.current.get(toolUseId);
-    if (timer === undefined) return;
-    clearTimeout(timer);
-    pendingToolResultTimers.current.delete(toolUseId);
-  };
-
-  const scheduleToolResultReplacement = (toolUseId: string, lineId: number, line: Omit<UiLine, "id">) => {
-    cancelPendingToolResultTimer(toolUseId);
-    const timer = setTimeout(() => {
-      pendingToolResultTimers.current.delete(toolUseId);
-      replaceLine(lineId, { ...line, pendingReplacement: false });
-    }, TOOL_RESULT_REPLACEMENT_DELAY_MS);
-    pendingToolResultTimers.current.set(toolUseId, timer);
-  };
-
-  const clearPendingToolResultTimers = () => {
-    for (const timer of pendingToolResultTimers.current.values()) clearTimeout(timer);
-    pendingToolResultTimers.current.clear();
-  };
-
   useEffect(() => {
     return () => {
-      clearPendingToolResultTimers();
       if (pasteStatusTimerRef.current) clearTimeout(pasteStatusTimerRef.current);
     };
   }, []);
 
-  const finalizeActiveToolLines = () => {
-    for (const id of toolLineIds.current.values()) finalizeToolLine(id);
-    toolLineIds.current.clear();
-  };
-
   const finalizeForegroundView = () => {
     finalizeLiveLine(assistantLineId.current);
     finalizeThinkingLine();
-    finalizeActiveToolLines();
     assistantLineId.current = undefined;
     finalizedThinkingLineId.current = undefined;
   };
@@ -1139,7 +1101,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       }
       if (replacedStreamingContent) return;
       if (event.message.role === "tool_result") {
-        renderToolResultMessage(event.message, append, replaceLine, toolLineIds.current, scheduleToolResultReplacement);
+        renderToolResultMessage(event.message, append);
         return;
       }
       if (event.message.role !== "assistant") {
@@ -1158,22 +1120,13 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (event.type === "tool.started") {
       finalizeLiveLine(assistantLineId.current);
       finalizeThinkingLine();
-      const id = append({ ...formatToolUse(event.toolUse), live: true });
-      toolLineIds.current.set(event.toolUse.id, id);
       return;
     }
-    if (event.type === "tool.finished") {
-      const id = toolLineIds.current.get(event.toolUse.id);
-      if (id !== undefined) {
-        replaceLine(id, formatToolFinishedWithoutResult(event.toolUse, event.ok));
-      }
-      return;
-    }
+    if (event.type === "tool.finished") return;
     if (event.type === "retrying") return;
     if (event.type === "terminal") {
       finalizeLiveLine(assistantLineId.current);
       finalizeThinkingLine();
-      finalizeActiveToolLines();
       assistantLineId.current = undefined;
       return;
     }
@@ -1333,8 +1286,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       assistantLineId.current = undefined;
       thinkingLineId.current = undefined;
       finalizedThinkingLineId.current = undefined;
-      toolLineIds.current.clear();
-      clearPendingToolResultTimers();
       append(systemLine(snapshot ? `new session ${snapshot.sessionId}` : "new session"));
       return;
     }
@@ -1482,8 +1433,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     assistantLineId.current = undefined;
     thinkingLineId.current = undefined;
     finalizedThinkingLineId.current = undefined;
-    toolLineIds.current.clear();
-    clearPendingToolResultTimers();
     setStatus(initialStatus(runtime));
     setSessionsBrowser(undefined);
     setSkillsBrowser(undefined);
@@ -1985,7 +1934,7 @@ function estimateRenderedLineCount(line: UiLine, width: number): number {
 }
 
 function lineNeedsDynamicRender(line: UiLine, width: number): boolean {
-  if (line.live || line.pendingReplacement) return true;
+  if (line.live) return true;
   if (line.previewStyle === "summary" || line.format === "ansi") return false;
   return line.renderedKey !== markdownRenderKey(line.text, line.kind, width);
 }
@@ -3377,31 +3326,11 @@ function renderMessage(
   return rendered;
 }
 
-function renderToolResultMessage(
-  message: Message,
-  append: (line: Omit<UiLine, "id">) => number,
-  replaceLine: (id: number, patch: Partial<UiLine>) => void,
-  activeToolLineIds: Map<string, number>,
-  scheduleReplacement: (toolUseId: string, lineId: number, line: Omit<UiLine, "id">) => void,
-): boolean {
+function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    const line = formatToolResultLine(block.name, block.output, block.ok);
-    const id = activeToolLineIds.get(block.toolUseId);
-    if (id === undefined) {
-      append(line);
-    } else {
-      replaceLine(id, {
-        kind: line.kind,
-        title: toolTitle(block.name, "finished"),
-        titleStatus: block.ok ? "success" : "failure",
-        live: true,
-        pendingReplacement: true,
-      });
-      activeToolLineIds.delete(block.toolUseId);
-      scheduleReplacement(block.toolUseId, id, line);
-    }
+    append(formatToolResultLine(block.name, block.output, block.ok));
     rendered = true;
   }
   return rendered;
@@ -4392,20 +4321,6 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
   return line;
 }
 
-function formatToolFinishedWithoutResult(toolUse: ToolUseRequest, ok: boolean): Omit<UiLine, "id"> {
-  const inputText = formatJson(toolUse.input, 1200);
-  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
-  return {
-    kind: ok ? "tool" : "error",
-    title: toolTitle(toolUse.name, "finished"),
-    bodyTitle: description,
-    titleStatus: ok ? "success" : "failure",
-    text: inputText ? `${ok ? "finished" : "failed"}\n${inputText}` : ok ? "finished" : "failed",
-    previewStyle: "summary",
-    live: true,
-    pendingReplacement: true,
-  };
-}
 
 function toolTitle(toolName: string, phase: "running" | "finished"): string {
   if (toolName === "plan") return `${phase === "running" ? "◇" : "◆"} plan`;
@@ -5235,7 +5150,6 @@ const SESSIONS_DEFAULT_PAGE_SIZE = 10;
 const TERMINAL_TITLE_WORKING_PREFIX = "● ";
 const TERMINAL_TITLE_READY_PREFIX = "✓ ";
 const REPL_ANIMATION_INTERVAL_MS = 420;
-const TOOL_RESULT_REPLACEMENT_DELAY_MS = 2000;
 const SUBAGENT_ACTIVITY_UPDATE_DEBOUNCE_MS = 1000;
 const SUBAGENT_COMPLETED_LINGER_MS = 8000;
 const TOKEN_PULSE_MS = 900;

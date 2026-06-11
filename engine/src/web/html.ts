@@ -309,10 +309,10 @@ function lineRenderKey(line) {
   const expanded = state.expandedToolLines.has(line.id);
   const collapsible = kind === 'tool' && line.collapsible !== false && hasMoreThanLines(line.text || '', TOOL_COLLAPSED_LINES);
   const image = line.image ? [line.image.src || '', line.image.label || '', line.image.mimeType || ''].join('\u001e') : '';
-  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', line.pendingReplacement ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0', image].join('\u001f');
+  return [kind, line.text || '', line.title || '', line.bodyTitle || '', line.titleStatus || '', line.format || '', line.previewStyle || '', line.summaryMaxLines || '', line.live ? '1' : '0', collapsible ? '1' : '0', expanded ? '1' : '0', image].join('\u001f');
 }
 function markerForLine(line, kind) {
-  if (kind === 'tool') return line.live || line.pendingReplacement ? '◇' : '◆';
+  if (kind === 'tool') return line.live ? '◇' : '◆';
   if (kind === 'thinking') return '◆';
   return '●';
 }
