@@ -56,6 +56,20 @@ const LINE_TITLE_LABELS = {
   Config: '配置',
   Reasoning: '推理过程',
   'Runtime tool': '运行时工具',
+  agent: '子任务',
+  edit: '编辑文件',
+  exec: '执行命令',
+  expose_downloads: '文件下载',
+  grep: '搜索文本',
+  image2: '图片生成',
+  image_note: '记录图片说明',
+  list: '列出文件',
+  load_image: '读取图片',
+  plan: '任务计划',
+  read: '读取文件',
+  search: '网络搜索',
+  write: '写入文件',
+  '文件下载': '文件下载',
 }
 const TASK_STATUS_LABELS = {
   running: '运行中',
@@ -319,6 +333,7 @@ function connectEvents() {
 function applySync(payload) {
   const shouldFollow = isTranscriptNearBottom()
   state.lines = payload.lines || []
+  syncMessageImagePreviewsFromLines(state.lines)
   syncLiveToolTimers(state.lines)
   state.status = payload.status || state.status
   updateComposerMetricTargets()
@@ -676,7 +691,7 @@ function localizeSystemText(text) {
 }
 
 function lineTitle(line) {
-  if (line.title) return LINE_TITLE_LABELS[line.title] || line.title
+  if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
   if (line.kind === 'user') return '你'
   if (line.kind === 'tool') return '运行时工具'
@@ -829,7 +844,8 @@ function isImage2ResultLine(line) {
 }
 
 function isExposeDownloadsLine(line) {
-  return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'expose_downloads'
+  const title = String(line?.title || '').toLowerCase()
+  return line?.kind === 'tool' && (title === 'expose_downloads' || title === '文件下载')
 }
 
 function renderExposeDownloadsResult(line) {
@@ -840,15 +856,31 @@ function renderExposeDownloadsResult(line) {
     const href = escapeHtml(downloadHref(item))
     const size = item.sizeBytes || item.size ? formatBytes(item.sizeBytes || item.size) : ''
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
-    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong><span>${escapeHtml([size, expires].filter(Boolean).join(' · ') || '点击下载')}</span></span></a>`
+    const meta = [size, expires].filter(Boolean).join(' · ')
+    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong><span>${escapeHtml(meta || '已生成')}</span></span><span class="download-action">点击下载</span></a>`
   }).join('')
-  return `<div class="download-result"><div class="download-result-header"><strong>文件已准备好</strong><span>${downloads.length} 个下载项</span></div><div class="download-grid">${cards}</div></div>`
+  return `<div class="download-result"><div class="download-result-header"><strong>文件已准备好</strong><span>点击下方链接下载</span></div><div class="download-grid">${cards}</div></div>`
 }
 
 function parseExposeDownloads(text) {
   const parsed = parseFirstJsonObject(text)
   const downloads = parsed?.downloads || parsed?.output?.downloads || parsed?.result?.downloads
-  return Array.isArray(downloads) ? downloads.filter((item) => item && typeof item === 'object') : []
+  if (Array.isArray(downloads)) return downloads.filter((item) => item && typeof item === 'object')
+  return parseDownloadLinksFromText(text)
+}
+
+function parseDownloadLinksFromText(text) {
+  const value = String(text || '')
+  const urls = Array.from(new Set(value.match(/\/api\/downloads\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+/g) || []))
+  if (!urls.length) return []
+  const filenames = Array.from(value.matchAll(/filename:\s*([^\n]+)|-\s*([^:\n]+):\s*\/api\/downloads\//g))
+    .map((match) => (match[1] || match[2] || '').trim())
+    .filter(Boolean)
+  return urls.map((url, index) => ({
+    id: decodeURIComponent(url.slice('/api/downloads/'.length)),
+    url,
+    filename: filenames[index] || `下载文件 ${index + 1}`,
+  }))
 }
 
 function downloadHref(item) {
@@ -1200,8 +1232,18 @@ function cacheMessageImagePreviews(attachments) {
       originalUrl: attachment.previewUrl,
       name: attachment.name,
     }))
+  mergeMessageImagePreviews(previews)
+}
+
+function syncMessageImagePreviewsFromLines(lines) {
+  const previews = []
+  for (const line of lines || []) collectLineImageItems(line, previews)
+  mergeMessageImagePreviews(previews.map(normalizeImagePreview).filter((item) => item?.label))
+}
+
+function mergeMessageImagePreviews(previews) {
   if (!previews.length) return
-  const labels = new Set(previews.map((item) => item.label))
+  const labels = new Set(previews.map((item) => item.label).filter(Boolean))
   state.messageImagePreviews = [
     ...state.messageImagePreviews.filter((item) => !labels.has(item.label)),
     ...previews,
@@ -1213,6 +1255,7 @@ function lineImagePreviews(line) {
   const images = []
   collectLineImageItems(line, images)
   for (const label of imageLabelsFromText(line?.text)) {
+    if (hasStandaloneLineImage(label, line?.id)) continue
     const cached = state.messageImagePreviews.find((item) => item.label === label)
     if (cached) images.push(cached)
   }
@@ -1224,6 +1267,16 @@ function image2LineImages(line) {
   collectLineImageItems(line, images)
   for (const generatedLine of generatedImageLinesAfter(line)) collectLineImageItems(generatedLine, images)
   return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+}
+
+function hasStandaloneLineImage(label, currentLineId) {
+  if (!label) return false
+  return (state.lines || []).some((line) => {
+    if (line?.id === currentLineId) return false
+    const images = []
+    collectLineImageItems(line, images)
+    return images.map(normalizeImagePreview).some((image) => image?.label === label)
+  })
 }
 
 function generatedImageLinesAfter(line) {

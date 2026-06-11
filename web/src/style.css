@@ -841,6 +841,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 }
 .download-main {
   min-width: 0;
+  flex: 1 1 auto;
   display: grid;
   gap: 4px;
 }
@@ -854,6 +855,19 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .download-main span {
   color: var(--muted);
   font-size: 12px;
+}
+.download-action {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--purple);
+  background: var(--purple);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+}
+.download-card:hover .download-action {
+  background: #050505;
+  border-color: #050505;
 }
 @keyframes image2-shimmer {
   to { background-position-x: -200%; }
