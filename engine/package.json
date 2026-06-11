@@ -1,6 +1,6 @@
 {
   "name": "neoctl",
-  "version": "0.2.10",
+  "version": "0.2.13",
   "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
   "type": "module",
   "main": "./dist/index.js",
@@ -30,6 +30,8 @@
     "vendor:rg:all": "node scripts/install-ripgrep.cjs --all",
     "build": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true })).catch(() => process.exit(1))\" && tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs",
     "prepack": "npm run build && npm run vendor:rg:all",
+    "release:local": "node scripts/release-local.mjs",
+    "release-local": "node scripts/release-local.mjs",
     "standalone": "npm run build && node scripts/build-standalone.mjs",
     "standalone:clean": "node -e \"require('node:fs').rmSync('standalone',{recursive:true,force:true});require('node:fs').rmSync('.standalone-build',{recursive:true,force:true})\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -273,6 +273,7 @@ function formatToolOutputPreview(output: unknown, fallback: string): string {
   if (!isRecord(output)) return fallback;
   if (isReadOutputLike(output)) return formatReadOutputPreview(output);
   if (isGrepOutputLike(output)) return formatGrepOutputPreview(output);
+  if (isTextEditOutputLike(output)) return formatTextEditOutputPreview(output);
   return fallback;
 }
 
@@ -291,6 +292,65 @@ function formatReadOutputPreview(output: Record<string, unknown>): string {
   lines.push("content:");
   lines.push(typeof output.content === "string" ? output.content.trimEnd() : "");
   return lines.join("\n");
+}
+
+function isTextEditOutputLike(output: Record<string, unknown>): boolean {
+  return (
+    typeof output.path === "string" &&
+    typeof output.operation === "string" &&
+    typeof output.replacements === "number" &&
+    typeof output.bytesBefore === "number" &&
+    typeof output.bytesAfter === "number" &&
+    Array.isArray(output.patch)
+  );
+}
+
+function formatTextEditOutputPreview(output: Record<string, unknown>): string {
+  const operation = typeof output.operation === "string" ? output.operation : "write";
+  const pathValue = typeof output.path === "string" ? output.path : "";
+  const replacements = typeof output.replacements === "number" ? output.replacements : 0;
+  const bytesBefore = typeof output.bytesBefore === "number" ? output.bytesBefore : undefined;
+  const bytesAfter = typeof output.bytesAfter === "number" ? output.bytesAfter : undefined;
+  const lineEnding = typeof output.lineEnding === "string" ? output.lineEnding : undefined;
+  const encoding = typeof output.encoding === "string" ? output.encoding : undefined;
+  const patch = Array.isArray(output.patch) ? output.patch.filter(isPatchHunkPreviewLike) : [];
+
+  const lines = [
+    `${operation} result`,
+    `file: ${pathValue}`,
+    `changes: ${replacements === 1 ? "1 replacement" : `${replacements} replacements`}`,
+  ];
+  const details = [
+    bytesBefore !== undefined && bytesAfter !== undefined ? `${bytesBefore} -> ${bytesAfter} bytes` : undefined,
+    lineEnding ? `line endings: ${lineEnding}` : undefined,
+    encoding ? `encoding: ${encoding}` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  if (details.length > 0) lines.push(details.join(" · "));
+
+  if (patch.length > 0) {
+    lines.push("patch:");
+    for (const hunk of patch.slice(0, 3)) {
+      lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+      for (const line of hunk.lines.slice(0, 12)) lines.push(line);
+      if (hunk.lines.length > 12) lines.push(`... ${hunk.lines.length - 12} more patch lines`);
+    }
+    if (patch.length > 3) lines.push(`... ${patch.length - 3} more patch hunks`);
+  } else {
+    lines.push("patch: no changes");
+  }
+  return lines.join("\n");
+}
+
+function isPatchHunkPreviewLike(value: unknown): value is { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: string[] } {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.oldStart === "number" &&
+    typeof value.oldLines === "number" &&
+    typeof value.newStart === "number" &&
+    typeof value.newLines === "number" &&
+    Array.isArray(value.lines) &&
+    value.lines.every((line) => typeof line === "string")
+  );
 }
 
 function isGrepOutputLike(output: Record<string, unknown>): boolean {

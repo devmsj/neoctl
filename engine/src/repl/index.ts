@@ -4537,7 +4537,19 @@ function previewTextLines(text: string, maxLines: number, label: string): string
 }
 
 function previewGenericString(text: string): string {
+  const persisted = formatPersistedOutputString(text);
+  if (persisted) return persisted;
   return previewTextLines(text, FALLBACK_PREVIEW_LINES, "output").join("\n");
+}
+
+function formatPersistedOutputString(text: string): string | undefined {
+  if (!text.startsWith("<persisted-output>")) return undefined;
+  const savedPath = /^Output too large \(([^)]+)\)\. Full output saved to:\s*(.+)$/m.exec(text)?.[2]?.trim();
+  const preview = /Preview \(first \d+ chars\):\n([\s\S]*?)\n(?:\.\.\.\n)?<\/persisted-output>/m.exec(text)?.[1]?.trimEnd();
+  const lines = ["output persisted"];
+  if (savedPath) lines.push(`${dimAnsi("saved to")} ${savedPath}`);
+  if (preview) lines.push("", dimAnsi("preview"), ...previewTextLines(preview, PERSISTED_OUTPUT_PREVIEW_LINES, "preview"));
+  return lines.join("\n");
 }
 
 function formatCommandPreview(command: string): string[] {
@@ -5312,6 +5324,7 @@ const GREP_MATCH_PREVIEW_COUNT = 20;
 const GREP_CONTEXT_PREVIEW_LINES = 2;
 const LIST_ENTRY_PREVIEW_COUNT = 12;
 const FALLBACK_PREVIEW_LINES = 40;
+const PERSISTED_OUTPUT_PREVIEW_LINES = 24;
 const LOW_VALUE_FALLBACK_FIELDS = new Set(["ok", "summary", "metadata", "transportTruncation"]);
 
 function fixed(value: string, width: number, align: "left" | "right" = "right"): string {
