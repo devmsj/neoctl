@@ -4467,7 +4467,11 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   }
 
   if (toolName === "image2" && isRecord(output)) {
-    return { text: formatImageGenerationToolResult(output, ok), summaryMaxLines: 4 };
+    return { text: formatImageGenerationToolResult(output, ok), format: "ansi", summaryMaxLines: 8 };
+  }
+
+  if (toolName === "image_note" && isRecord(output)) {
+    return { text: formatImageNoteToolResult(output, ok), format: "ansi", summaryMaxLines: 16 };
   }
 
   if (toolName === "plan" && isPlanToolPayload(output)) {
@@ -4478,7 +4482,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
 }
 
 function formatGenericToolResult(output: unknown, ok: boolean): string {
-  if (typeof output === "string") return previewTextLines(output, FALLBACK_PREVIEW_LINES, "output").join("\n");
+  if (typeof output === "string") return previewGenericString(output);
   if (!isRecord(output)) return `${ok ? "completed" : "failed"}\n${formatReplData(output, 1200)}`;
 
   const error = typeof output.error === "string" ? output.error : undefined;
@@ -4528,10 +4532,12 @@ function formatEditOperation(operation: string): string {
 function previewTextLines(text: string, maxLines: number, label: string): string[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const preview = lines.slice(0, maxLines);
-  const note = lines.length > maxLines
-    ? `showing first ${maxLines} of ${lines.length} ${label} lines`
-    : `showing ${preview.length} of ${lines.length} ${label} lines`;
-  return [...preview, dimAnsi(note)];
+  if (lines.length <= maxLines) return preview;
+  return [...preview, dimAnsi(`showing first ${maxLines} of ${lines.length} ${label} lines`)];
+}
+
+function previewGenericString(text: string): string {
+  return previewTextLines(text, FALLBACK_PREVIEW_LINES, "output").join("\n");
 }
 
 function formatCommandPreview(command: string): string[] {
@@ -4717,8 +4723,50 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
   if (details.length > 0) lines.push(details.join(" · "));
   if (sourceImages !== undefined) lines.push(`source images: ${sourceImages}`);
   const duration = imageGenerationDuration(output);
-  if (duration !== undefined) lines.push(`duration: ${duration}ms`);
+  if (duration !== undefined) lines.push(dimAnsi(`duration: ${duration}ms`));
+  const prompt = typeof output.prompt === "string" ? output.prompt.trim() : "";
+  if (prompt) lines.push("", dimAnsi("prompt"), ...previewTextLines(prompt, IMAGE_PROMPT_PREVIEW_LINES, "prompt"));
   return lines.join("\n");
+}
+
+function formatImageNoteToolResult(output: Record<string, unknown>, ok: boolean): string {
+  const failed = Array.isArray(output.failed) ? output.failed.filter(isImageNoteFailureLike) : [];
+  const recorded = Array.isArray(output.recorded) ? output.recorded.filter(isImageNoteRecordLike) : [];
+  const lines = [`${recorded.length} note${recorded.length === 1 ? "" : "s"} recorded`];
+  for (const item of recorded.slice(0, IMAGE_NOTE_PREVIEW_COUNT)) {
+    lines.push("", item.imageRef);
+    const note = item.note;
+    if (typeof note.caption === "string" && note.caption.trim()) lines.push(`${dimAnsi("caption")} ${note.caption.trim()}`);
+    if (typeof note.purpose === "string" && note.purpose.trim()) lines.push(`${dimAnsi("purpose")} ${note.purpose.trim()}`);
+    if (Array.isArray(note.detectedText) && note.detectedText.length > 0) lines.push(`${dimAnsi("text")} ${note.detectedText.filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("; ")}`);
+    if (Array.isArray(note.tags) && note.tags.length > 0) lines.push(`${dimAnsi("tags")} ${note.tags.filter((value): value is string => typeof value === "string" && value.trim().length > 0).join(", ")}`);
+    if (typeof note.retention === "string") lines.push(`${dimAnsi("retention")} ${note.retention}${typeof note.ttlTurns === "number" ? `, ${note.ttlTurns} turns` : ""}`);
+  }
+  if (recorded.length > IMAGE_NOTE_PREVIEW_COUNT) lines.push(dimAnsi(`showing first ${IMAGE_NOTE_PREVIEW_COUNT} of ${recorded.length} notes`));
+  if (!ok || failed.length > 0) {
+    lines.push("", dimAnsi("failed"));
+    for (const failure of failed.slice(0, 5)) lines.push(`${failure.imageRef}: ${failure.error}`);
+    if (failed.length > 5) lines.push(dimAnsi(`${failed.length - 5} more failures`));
+  }
+  return lines.join("\n");
+}
+
+interface ImageNoteRecordLike {
+  imageRef: string;
+  note: Record<string, unknown>;
+}
+
+interface ImageNoteFailureLike {
+  imageRef: string;
+  error: string;
+}
+
+function isImageNoteRecordLike(value: unknown): value is ImageNoteRecordLike {
+  return isRecord(value) && typeof value.imageRef === "string" && isRecord(value.note);
+}
+
+function isImageNoteFailureLike(value: unknown): value is ImageNoteFailureLike {
+  return isRecord(value) && typeof value.imageRef === "string" && typeof value.error === "string";
 }
 
 function imageGenerationDuration(output: Record<string, unknown>): number | undefined {
@@ -5258,6 +5306,8 @@ const EXEC_COMMAND_PREVIEW_CHARS = 120;
 const EXEC_STDOUT_PREVIEW_LINES = 40;
 const EXEC_STDERR_PREVIEW_LINES = 60;
 const READ_CONTENT_PREVIEW_LINES = 80;
+const IMAGE_PROMPT_PREVIEW_LINES = 8;
+const IMAGE_NOTE_PREVIEW_COUNT = 8;
 const GREP_MATCH_PREVIEW_COUNT = 20;
 const GREP_CONTEXT_PREVIEW_LINES = 2;
 const LIST_ENTRY_PREVIEW_COUNT = 12;
