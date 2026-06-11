@@ -223,11 +223,25 @@ function serializeToolOutput(output: unknown): string {
  * merging any registry persisted in a compact boundary with images from recent messages.
  */
 export function getImageRegistryFromMessages(messages: readonly Message[]): ImageRegistry {
+  const metadataRegistry = extractImageRegistriesFromMetadata(messages);
   const boundaryRegistry = extractRegistryFromBoundary(messages);
   const currentRegistry = buildImageRegistry(messages);
-  return boundaryRegistry
-    ? mergeImageRegistries(boundaryRegistry, currentRegistry)
+  const previousRegistry = metadataRegistry.images.length > 0
+    ? metadataRegistry
+    : boundaryRegistry;
+  return previousRegistry
+    ? mergeImageRegistries(previousRegistry, currentRegistry)
     : currentRegistry;
+}
+
+function extractImageRegistriesFromMetadata(messages: readonly Message[]): ImageRegistry {
+  let registry: ImageRegistry = { images: [] };
+  for (const message of messages) {
+    const candidate = message.metadata?.imageRegistry as ImageRegistry | undefined;
+    if (!candidate?.images?.length) continue;
+    registry = mergeImageRegistries(registry, candidate);
+  }
+  return registry;
 }
 
 function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {

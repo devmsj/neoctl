@@ -29,6 +29,7 @@ import { AssistantOutputFilter } from "./assistant-output-filter.js";
 import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-notes.js";
+import { buildImageRegistry } from "./image-registry.js";
 
 export interface QueryOptions {
   agentId: string;
@@ -805,15 +806,18 @@ function applyImageRetention(messages: readonly Message[]): Message[] {
     const shouldKeepPixels = retention === "pinned" || (retention === "while_relevant" && assistantTurnsSinceImage <= ttlTurns) || (retention === "next_turn" && assistantTurnsSinceImage <= 1);
     if (shouldKeepPixels) continue;
 
+    const imageRegistry = buildImageRegistry([message]);
     const blocks: MessageBlock[] = message.blocks.flatMap((block) => {
       if (block.type !== "image") return [block];
       const label = block.label ?? "image";
-      return [{ type: "text", text: `[image pixels omitted after ${retention} retention expired: ${label}; use load_image if visual inspection is needed]` }];
+      const entry = imageRegistry.images.find((image) => image.label === block.label || image.storagePath === block.storage?.path);
+      const ref = entry?.id ?? label;
+      return [{ type: "text", text: `[image pixels omitted after ${retention} retention expired: ${label}; use load_image/image_note with ${ref} if visual inspection or note recording is needed]` }];
     });
     next[index] = {
       ...message,
       blocks,
-      metadata: { ...message.metadata, imagePixelsOmittedByRetention: true },
+      metadata: { ...message.metadata, imagePixelsOmittedByRetention: true, imageRegistry },
     };
     changed = true;
   }

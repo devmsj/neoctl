@@ -148,7 +148,7 @@ export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntr
     if (idx >= 0 && idx < registry.images.length) return registry.images[idx];
   }
 
-  const byLabel = registry.images.find((e) => e.label?.toLowerCase() === normalized);
+  const byLabel = registry.images.find((e) => normalizeImageRefText(e.label) === normalized || normalizeImageRefText(e.label) === normalizeImageRefText(ref));
   if (byLabel) return byLabel;
 
   const byPath = registry.images.find((e) =>
@@ -158,6 +158,10 @@ export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntr
   if (byPath) return byPath;
 
   return undefined;
+}
+
+function normalizeImageRefText(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "").replace(/^img#/u, "img_");
 }
 
 function inferImageOrigin(message: Message, _block: MessageBlock): ImageEntry["origin"] {

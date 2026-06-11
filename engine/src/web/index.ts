@@ -942,6 +942,7 @@ export class WebRepl {
 
     const promptPayload = buildWebPromptPayload(command.text, attachments);
     this.append({ kind: "user", text: promptPayload.displayText });
+    for (const line of imageLinesForBlocks("user", promptPayload.blocks)) this.append(line);
     const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
@@ -1574,6 +1575,14 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
   return rendered;
 }
 
+function imageLinesForBlocks(role: Message["role"], blocks: readonly MessageBlock[] | undefined): Omit<UiLine, "id">[] {
+  if (!blocks?.length) return [];
+  return blocks
+    .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image")
+    .map((block) => imageLineForBlock(role, block))
+    .filter((line): line is Omit<UiLine, "id"> => Boolean(line));
+}
+
 function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>): Omit<UiLine, "id"> | undefined {
   const kind = kindForRole(role);
   if (kind === "meta") return undefined;
@@ -1641,8 +1650,8 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
-  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
-  return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: description, text: formatReplData(toolUse.input, 1200), previewStyle: "summary", collapsible: true };
+  const summary = summarizeToolUse(toolUse.name, toolUse.input);
+  return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
@@ -1652,13 +1661,43 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {
-  return toolName;
+  const labels: Record<string, string> = {
+    agent: "子任务",
+    edit: "编辑文件",
+    exec: "执行命令",
+    expose_downloads: "文件下载",
+    grep: "搜索文本",
+    image2: "图片生成",
+    image_note: "记录图片说明",
+    list: "列出文件",
+    load_image: "读取图片",
+    plan: "任务计划",
+    read: "读取文件",
+    search: "网络搜索",
+    write: "写入文件",
+  };
+  return labels[toolName] ?? toolName;
 }
 
-function execDescriptionFromInput(input: unknown): string | undefined {
+function summarizeToolUse(toolName: string, input: unknown): { text: string; bodyTitle?: string } {
+  const purpose = toolUsePurpose(toolName, input);
+  return {
+    bodyTitle: purpose,
+    text: purpose ? `目的：${purpose}` : "正在执行工具…",
+  };
+}
+
+function toolUsePurpose(toolName: string, input: unknown): string | undefined {
   if (!isRecord(input)) return undefined;
   const description = typeof input.description === "string" ? input.description.trim() : "";
-  return description || undefined;
+  if (description) return description;
+  if (toolName === "expose_downloads") return "准备网页下载链接";
+  if (toolName === "read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
+  if (toolName === "list" && typeof input.path === "string") return `查看 ${input.path}`;
+  if (toolName === "grep" && typeof input.query === "string") return `搜索 ${input.query}`;
+  if (toolName === "write" && typeof input.path === "string") return `写入 ${path.basename(input.path)}`;
+  if (toolName === "edit" && typeof input.path === "string") return `修改 ${path.basename(input.path)}`;
+  return undefined;
 }
 
 interface PlanToolPayloadLike extends Record<string, unknown> {
@@ -1699,9 +1738,39 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   if (toolName === "grep" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
   if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   if (toolName === "image2" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
+  if (toolName === "expose_downloads") return { text: formatExposeDownloadsToolResult(output, ok), full: true, bodyTitle: ok ? "请点击下载" : "下载准备失败" };
   if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true, bodyTitle: planToolBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+}
+
+function formatExposeDownloadsToolResult(output: unknown, ok: boolean): string {
+  const downloads = extractDownloadEntries(output);
+  if (!ok) return downloads.length ? `下载准备失败\n${formatDownloadEntries(downloads)}` : "下载准备失败";
+  if (!downloads.length) return "文件已准备好，请点击下载。";
+  return `文件已准备好，请点击下载。\n${formatDownloadEntries(downloads)}`;
+}
+
+function formatDownloadEntries(downloads: DownloadEntryLike[]): string {
+  return downloads.map((entry) => {
+    const filename = entry.filename || entry.name || "下载文件";
+    const url = entry.url || (entry.id ? `/api/downloads/${encodeURIComponent(entry.id)}` : "");
+    return url ? `- ${filename}: ${url}` : `- ${filename}`;
+  }).join("\n");
+}
+
+interface DownloadEntryLike extends Record<string, unknown> {
+  id?: string;
+  filename?: string;
+  name?: string;
+  url?: string;
+}
+
+function extractDownloadEntries(output: unknown): DownloadEntryLike[] {
+  if (!isRecord(output)) return [];
+  const candidates = [output.downloads, isRecord(output.output) ? output.output.downloads : undefined, isRecord(output.result) ? output.result.downloads : undefined];
+  const downloads = candidates.find(Array.isArray);
+  return Array.isArray(downloads) ? downloads.filter(isRecord).map((entry) => ({ ...entry })) : [];
 }
 
 interface EditToolOutputLike extends Record<string, unknown> {
@@ -1785,14 +1854,14 @@ function isExecOutput(value: unknown): value is ExecOutputLike {
 }
 
 function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
-  const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
+  const status = output.timedOut ? "已超时" : ok ? "已完成" : "执行失败";
   const description = typeof output.description === "string" ? output.description.trim() : "";
-  const lines = ["exec result", ...(description ? [`purpose: ${description}`] : []), `status: ${status}`, `duration: ${output.durationMs}ms`, `command: ${output.command}`];
+  const lines = [description ? `目的：${description}` : "执行命令", `状态：${status}`, `耗时：${output.durationMs}ms`];
   const stdout = typeof output.stdout === "string" ? output.stdout.replace(/\s+$/u, "") : "";
   const stderr = typeof output.stderr === "string" ? output.stderr.replace(/\s+$/u, "") : "";
-  if (stdout) lines.push("stdout:", stdout);
-  if (stderr) lines.push("stderr:", stderr);
-  if (!stdout && !stderr) lines.push(ok ? "output: (none)" : "output: (not captured)");
+  if (stdout) lines.push("输出：", stdout);
+  if (stderr) lines.push("错误：", stderr);
+  if (!stdout && !stderr) lines.push(ok ? "无输出。" : "没有捕获到输出。");
   return lines.join("\n");
 }
 
