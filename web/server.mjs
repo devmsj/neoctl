@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DownloadRegistry, serveDownload } from './downloads.mjs';
+import { serveXhsArtifact, XhsArtifactRegistry } from './artifacts.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
@@ -13,6 +14,7 @@ const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || pa
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(__dirname, '.neoctl-web', 'uploads'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const downloadRegistry = new DownloadRegistry();
+const xhsArtifactRegistry = new XhsArtifactRegistry();
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -94,6 +96,10 @@ async function routeRequest(req, res) {
     if (req.method === 'GET' && url.pathname.startsWith('/api/downloads/')) {
       const id = decodeURIComponent(url.pathname.slice('/api/downloads/'.length));
       return serveDownload(downloadRegistry, req, res, id);
+    }
+    if ((req.method === 'GET' || req.method === 'PUT') && url.pathname.startsWith('/api/xhs-artifacts/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/xhs-artifacts/'.length));
+      return serveXhsArtifact(xhsArtifactRegistry, req, res, id, readJsonBody);
     }
     if (shouldProxy(url.pathname)) {
       return proxy(req, res);

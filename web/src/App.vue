@@ -12,6 +12,7 @@ import xml from 'highlight.js/lib/languages/xml'
 import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
+import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -40,6 +41,7 @@ const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
 const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
+const XHS_ARTIFACT_EDITOR_HINT = 'System hint from web UI: when you produce a complete structured Xiaohongshu/Miaochengjian post draft, call open_xhs_artifact_editor with a structured payload or Markdown content so the user can review and edit it in a Xiaohongshu-style editor. Before revising an existing artifact, call read_xhs_artifact with its id to get the latest user-edited version.'
 const ATTACHMENT_MANIFEST_START = '<<ATTACHMENT_MANIFEST>>'
 const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
@@ -208,6 +210,7 @@ const state = reactive({
   attachmentCounter: 0,
   uploadingFiles: false,
   messageImagePreviews: [],
+  xhsArtifacts: {},
   liveToolStartedAt: {},
   clockTick: Date.now(),
   composerMetrics: {
@@ -848,6 +851,37 @@ function isExposeDownloadsLine(line) {
   return line?.kind === 'tool' && (title === 'expose_downloads' || title === '文件下载')
 }
 
+function isXhsArtifactLine(line) {
+  const title = String(line?.title || '').toLowerCase()
+  return line?.kind === 'tool' && (title === 'open_xhs_artifact_editor' || title === '小红书产物编辑器')
+}
+
+function xhsArtifactForLine(line) {
+  const parsed = parseFirstJsonObject(line?.text || '')
+  const artifact = parsed?.artifact || parsed?.output?.artifact || parsed?.result?.artifact || parseXhsArtifactSummary(line?.text)
+  if (!artifact?.id) return null
+  const id = String(artifact.id)
+  if (!state.xhsArtifacts[id]) state.xhsArtifacts[id] = artifact
+  return state.xhsArtifacts[id]
+}
+
+function parseXhsArtifactSummary(text) {
+  const value = String(text || '')
+  const id = /\bid:\s*([^\s]+)/i.exec(value)?.[1]
+  if (!id) return null
+  const title = /\btitle:\s*([\s\S]*?)\s+(?:payload|content):\s*/i.exec(value)?.[1]?.trim() || '小红书笔记'
+  const content = /\bcontent:\s*([\s\S]*)$/i.exec(value)?.[1]?.trim() || ''
+  return { id, type: 'xhs-post', title, payload: parseFirstJsonObject(content) || {}, content }
+}
+
+function handleXhsArtifactSaved(artifact) {
+  if (artifact?.id) state.xhsArtifacts[artifact.id] = artifact
+}
+
+function handleXhsArtifactError(message) {
+  notify(message || '小红书产物保存失败')
+}
+
 function renderExposeDownloadsResult(line) {
   const downloads = parseExposeDownloads(line.text || '')
   if (!downloads.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
@@ -1184,7 +1218,7 @@ function textWithImageToolHint(text, attachments) {
 }
 
 function textWithDownloadExposureHint(text) {
-  return [String(text || '').trim(), DOWNLOAD_EXPOSURE_HINT].filter(Boolean).join('\n\n')
+  return [String(text || '').trim(), DOWNLOAD_EXPOSURE_HINT, XHS_ARTIFACT_EDITOR_HINT].filter(Boolean).join('\n\n')
 }
 
 function looksLikeImageGenerationRequest(text) {
@@ -1206,6 +1240,7 @@ function stripImageOperationHint(text) {
     .replace(IMAGE_GENERATION_HINT, '')
     .replace(IMAGE_OPERATION_HINT, '')
     .replace(DOWNLOAD_EXPOSURE_HINT, '')
+    .replace(XHS_ARTIFACT_EDITOR_HINT, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }
@@ -1657,7 +1692,16 @@ function linkify(value) {
                 </div>
                 <div v-if="lineHasImage2Stage(line)" class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
                 <template v-else>
-                  <div v-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
+                  <template v-if="isXhsArtifactLine(line)">
+                    <XhsArtifactEditor
+                      v-if="xhsArtifactForLine(line)"
+                      :artifact="xhsArtifactForLine(line)"
+                      @saved="handleXhsArtifactSaved"
+                      @error="handleXhsArtifactError"
+                    />
+                    <div v-else class="message-text markdown" v-html="renderLine(line)"></div>
+                  </template>
+                  <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">
                       <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
