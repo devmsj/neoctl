@@ -71,7 +71,7 @@ export function createOpenXhsArtifactEditorTool(options) {
       const content = typeof input?.content === 'string' ? input.content : '';
       if (!payload && !content.trim()) throw new Error('provide payload or content');
       return {
-        title: String(input?.title || payload?.title || payload?.cover_title || '小红书笔记').trim().slice(0, 160),
+        title: firstText(input?.title, payload?.title, payload?.main_title, payload?.cover_title, '小红书笔记').slice(0, 160),
         payload: normalizePayload(payload || { body: content }),
         content,
       };
@@ -132,11 +132,12 @@ export async function serveXhsArtifact(registry, req, res, id, readJsonBody) {
 }
 
 function normalizeArtifact(value) {
+  const payload = normalizePayload(value.payload);
   return {
     id: String(value.id),
     type: String(value.type || 'xhs-post'),
-    title: String(value.title || '').trim() || firstText(value.payload?.title, value.payload?.cover_title, '小红书笔记'),
-    payload: normalizePayload(value.payload),
+    title: String(value.title || '').trim() || firstText(payload.title, payload.cover_title, '小红书笔记'),
+    payload,
     content: String(value.content || ''),
     sessionId: value.sessionId,
     createdAt: Number(value.createdAt || Date.now()),
@@ -145,14 +146,17 @@ function normalizeArtifact(value) {
 }
 
 function normalizePayload(value) {
-  const payload = value && typeof value === 'object' ? { ...value } : {};
-  payload.title = firstText(payload.title, payload.main_title, payload.cover_title);
-  payload.body = firstText(payload.body, payload.caption, payload.copy, payload.text);
-  payload.interaction = firstText(payload.interaction, payload.rules, payload.activity_rules);
-  payload.hashtags = normalizeTags(payload.hashtags || payload.tags || payload.topics);
-  payload.images = normalizeImages(payload.images || payload.image_plan || payload.imagePlan || payload.image_cards);
-  payload.review = firstText(payload.review, payload.check, payload.self_check);
-  return payload;
+  const root = value && typeof value === 'object' ? { ...value } : {};
+  const payload = root.web_editor_payload || root.post || root.draft || root.payload || root;
+  return {
+    ...payload,
+    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.title_options, payload.titles),
+    body: richText(payload.body || payload.content || payload.caption || payload.copy || payload.text || payload.main_body),
+    interaction: richText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
+    hashtags: normalizeTags(payload.hashtags || payload.tags || payload.topics),
+    images: normalizeImages(payload.images || payload.image_plan || payload.imagePlan || payload.image_cards || payload.cards || payload.visuals),
+    review: richText(payload.review || payload.check || payload.self_check || payload.safety_check),
+  };
 }
 
 function normalizeImages(value) {
@@ -160,11 +164,12 @@ function normalizeImages(value) {
   return list.map((item, index) => {
     if (item && typeof item === 'object') {
       return {
-        id: asText(item.id || item.key || `image-${index + 1}`),
-        url: asText(item.url || item.src || item.imageUrl || item.image_url),
-        caption: firstText(item.caption, item.title, item.scene, item.description, item.text, `配图 ${index + 1}`),
-        overlay: firstText(item.overlay, item.overlay_text, item.cover_text, item.key_text),
-        note: firstText(item.note, item.direction, item.prompt, item.detail),
+        id: firstText(item.id, item.key, `image-${index + 1}`),
+        url: safeImageUrl(item.url, item.src, item.imageUrl, item.image_url),
+        caption: firstText(item.caption, item.title, item.scene, item.description, item.text, item.visual, item.shot, item.copy, `配图 ${index + 1}`),
+        overlay: firstText(item.overlay, item.overlay_text, item.cover_text, item.key_text, item.headline),
+        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame),
+        upload: item.upload && typeof item.upload === 'object' ? trimUploadInfo(item.upload) : undefined,
       };
     }
     const text = String(item || '').replace(/^\d+[.)、\s-]*/, '').trim();
@@ -172,8 +177,25 @@ function normalizeImages(value) {
   });
 }
 
+function safeImageUrl(...values) {
+  const url = firstText(...values);
+  if (!url || /^data:/i.test(url)) return '';
+  return url.slice(0, 2048);
+}
+
+function trimUploadInfo(value) {
+  return {
+    id: firstText(value.id),
+    name: firstText(value.name),
+    storedName: firstText(value.storedName),
+    size: Number(value.size || 0),
+    mimeType: firstText(value.mimeType),
+    url: safeImageUrl(value.url),
+  };
+}
+
 function normalizeTags(value) {
-  const text = Array.isArray(value) ? value.join(' ') : asText(value);
+  const text = Array.isArray(value) ? value.map(asText).join(' ') : asText(value);
   return [...new Set(text.split(/[\s,，、]+/).map((tag) => tag.trim()).filter(Boolean).map((tag) => tag.startsWith('#') ? tag : `#${tag}`))];
 }
 
@@ -182,18 +204,18 @@ function parsePayload(content) {
   if (parsed && typeof parsed === 'object') return parsed;
   const text = String(content || '');
   return {
-    title: markdownSection(text, ['标题', '鏍囬']),
-    body: markdownSection(text, ['正文', '姝ｆ枃']),
-    images: markdownSection(text, ['配图建议', '配图', '閰嶅浘寤鸿']),
+    title: markdownSection(text, ['标题', '主标题', '小红书标题']),
+    body: markdownSection(text, ['正文', '笔记正文', '发布文案']),
+    images: markdownSection(text, ['配图建议', '配图', '图片方案', 'image_cards']),
     interaction: markdownSection(text, ['互动/活动规则', '互动', '活动规则']),
-    hashtags: markdownSection(text, ['话题标签', '标签']),
-    review: markdownSection(text, ['品牌词与风格自检', '自检']),
+    hashtags: markdownSection(text, ['话题标签', '标签', 'hashtags']),
+    review: markdownSection(text, ['品牌词与风格自检', '自检', 'review']),
   };
 }
 
 function markdownSection(text, headings) {
   for (const heading of headings) {
-    const match = new RegExp(`(?:^|\\n)#{1,3}\\s*${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s+|$)`, 'i').exec(String(text || ''));
+    const match = new RegExp(`(?:^|\\n)#{1,4}\\s*${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n#{1,4}\\s+|$)`, 'i').exec(String(text || ''));
     if (match?.[1]?.trim()) return match[1].trim();
   }
   return '';
@@ -218,12 +240,25 @@ function firstText(...values) {
   return '';
 }
 
+function richText(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(richText).filter(Boolean).join('\n');
+  if (typeof value === 'object') {
+    const preferred = firstText(value.title, value.caption, value.text, value.content, value.description, value.scene, value.name);
+    if (preferred) return preferred;
+    return Object.values(value).map(richText).filter(Boolean).join('\n');
+  }
+  return String(value).trim();
+}
+
 function asText(value) {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(' / ');
-  if (typeof value === 'object') return firstText(value.title, value.caption, value.text, value.description, value.scene, value.name);
+  if (typeof value === 'object') return firstText(value.title, value.caption, value.text, value.content, value.description, value.scene, value.name);
   return String(value).trim();
 }
 

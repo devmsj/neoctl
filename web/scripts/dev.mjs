@@ -14,6 +14,8 @@ const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 'skills');
+const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry();
 const downloadRoots = downloadRootsFromEnv(process.cwd());
@@ -42,6 +44,7 @@ const DEFAULT_APP_PROMPT_LIBRARY = [
 await runWebServer(['--host', host, '--port', String(upstreamPort)], {
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
+    skillRoots: [scaffoldSkillRoot, xhsSkillRoot],
     externalTools: [
       createExposeDownloadsTool({
         registry: downloadRegistry,
@@ -111,6 +114,10 @@ async function routeRequest(req, res) {
       const nextItems = items.filter((entry) => entry.id !== id);
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
+      const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
+      return serveUploadedFile(res, storedName);
     }
     if (req.method === 'POST' && url.pathname === '/api/uploads') {
       const body = await readJsonBody(req);
@@ -240,7 +247,35 @@ async function storeUploadedFile(payload) {
     mimeType: normalizeMimeType(payload?.mimeType),
     absolutePath,
     relativePath: path.relative(process.cwd(), absolutePath) || storedName,
+    url: `/api/uploads/${encodeURIComponent(storedName)}`,
   };
+}
+
+async function serveUploadedFile(res, storedName) {
+  const safeName = path.basename(String(storedName || '').trim());
+  if (!safeName || safeName !== storedName) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('invalid upload name');
+    return;
+  }
+  const root = path.resolve(uploadsDir);
+  const filePath = path.resolve(root, safeName);
+  if (!filePath.startsWith(root + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('forbidden');
+    return;
+  }
+  try {
+    const body = await readFile(filePath);
+    res.writeHead(200, {
+      'Content-Type': mimeTypeForPath(filePath),
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  }
 }
 
 function sanitizeUploadName(value) {
@@ -251,6 +286,16 @@ function sanitizeUploadName(value) {
 function normalizeMimeType(value) {
   const mimeType = String(value || '').trim();
   return mimeType || 'application/octet-stream';
+}
+
+function mimeTypeForPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.svg') return 'image/svg+xml';
+  return 'application/octet-stream';
 }
 
 async function readJsonBody(req) {

@@ -88,6 +88,10 @@ async function routeRequest(req, res) {
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
     }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
+      const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
+      return serveUploadedFile(res, storedName);
+    }
     if (req.method === 'POST' && url.pathname === '/api/uploads') {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
@@ -252,7 +256,35 @@ async function storeUploadedFile(payload) {
     mimeType: normalizeMimeType(payload?.mimeType),
     absolutePath,
     relativePath: path.relative(__dirname, absolutePath) || storedName,
+    url: `/api/uploads/${encodeURIComponent(storedName)}`,
   };
+}
+
+async function serveUploadedFile(res, storedName) {
+  const safeName = path.basename(String(storedName || '').trim());
+  if (!safeName || safeName !== storedName) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('invalid upload name');
+    return;
+  }
+  const uploadRoot = path.resolve(uploadsDir);
+  const filePath = path.resolve(uploadRoot, safeName);
+  if (!filePath.startsWith(uploadRoot + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('forbidden');
+    return;
+  }
+  try {
+    const body = await fsp.readFile(filePath);
+    res.writeHead(200, {
+      'Content-Type': mime[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  }
 }
 
 function sanitizeUploadName(value) {
