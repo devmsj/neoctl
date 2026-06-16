@@ -545,6 +545,16 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .message-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .message-head strong { font-size: 14px; }
 .message-head span { color: var(--muted); font-size: 12px; }
+.tool-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  color: var(--green) !important;
+  background: var(--green-soft);
+  border-left: 2px solid var(--green);
+  font-size: 11px;
+}
 .live-pill {
   display: inline-flex;
   align-items: center;

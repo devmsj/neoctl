@@ -238,10 +238,17 @@ let previousBackgroundTaskStatuses = new Map()
 const renderedLineCache = new Map()
 
 const phaseLabel = computed(() => phaseText(state.status?.phase))
+const exactPhaseLabel = computed(() => {
+  if (state.status?.phase === 'running_tools') {
+    const tool = state.status?.currentTool
+    if (tool?.name) return `调用 ${tool.name}${tool.kind ? ` · ${tool.kind}` : ''}`
+  }
+  return phaseLabel.value
+})
 
 const active = computed(() => isActivePhase(state.status?.phase))
 const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading)
-const transcriptLoadingLabel = computed(() => state.sessionResumeLoading ? '正在加载会话' : `正在${phaseLabel.value}`)
+const transcriptLoadingLabel = computed(() => state.sessionResumeLoading ? '正在加载会话' : `正在${exactPhaseLabel.value}`)
 const realSessionTitle = computed(() => {
   const title = state.session?.title?.trim() || ''
   return title && title !== 'neo' ? title : ''
@@ -694,12 +701,29 @@ function localizeSystemText(text) {
 }
 
 function lineTitle(line) {
+  if (line.kind === 'tool') return exactToolName(line)
   if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
   if (line.kind === 'user') return '你'
-  if (line.kind === 'tool') return '运行时工具'
   if (line.kind === 'thinking') return '推理过程'
   return '系统'
+}
+
+function exactToolName(line) {
+  return String(line?.title || line?.metadata?.tool || 'tool').trim() || 'tool'
+}
+
+function lineToolKindText(line) {
+  if (line?.kind !== 'tool') return ''
+  if (line.toolKind) return line.toolKind
+  const name = exactToolName(line).toLowerCase()
+  if (name === 'image2') return '作图'
+  if (name.includes('xhs_artifact_editor') || name === 'edit' || name === 'write' || name.includes('apply_patch')) return '编辑'
+  if (name === 'exec' || name.includes('shell') || name.includes('command')) return '执行'
+  if (name.includes('download')) return '下载'
+  if (name.includes('read') || name.includes('load') || name.includes('list') || name.includes('grep') || name.includes('search') || name.includes('query')) return '查询'
+  if (name.includes('plan')) return '计划'
+  return '工具'
 }
 
 function isImage2Line(line) {
@@ -719,7 +743,7 @@ function shouldHideLine(line) {
 }
 
 function lineHasImage2Stage(line) {
-  return isImage2LiveLine(line) || isImage2ResultLine(line) || isImage2PendingReplacementLine(line)
+  return isImage2ResultLine(line) && lineImagePreviews(line).length > 0
 }
 
 function syncLiveToolTimers(lines) {
@@ -1686,6 +1710,7 @@ function linkify(value) {
               <div class="message-body">
                 <div class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
+                  <span v-if="lineToolKindText(line)" class="tool-kind-pill">{{ lineToolKindText(line) }}</span>
                   <span v-if="line.titleStatus">{{ line.titleStatus }}</span>
                   <span v-if="line.live" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
@@ -1786,7 +1811,7 @@ function linkify(value) {
 
         <aside class="right-panel">
           <section class="status-card compact-status">
-            <div :class="['runtime-phase', { active }]">{{ active ? '●' : '✓' }} {{ phaseLabel }}</div>
+            <div :class="['runtime-phase', { active }]">{{ active ? '●' : '✓' }} {{ exactPhaseLabel }}</div>
             <dl>
               <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
               <div><dt>上下文</dt><dd>{{ contextPercent }}</dd></div>
