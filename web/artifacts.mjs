@@ -83,7 +83,7 @@ export function createOpenXhsArtifactEditorTool(options) {
         content: input.content,
         sessionId: context.session?.sessionId,
       });
-      return { ok: true, output: { artifact }, summary: `Opened Xiaohongshu editor ${artifact.id}` };
+      return { ok: true, output: { artifact: clientArtifact(artifact) }, summary: `Opened Xiaohongshu editor ${artifact.id}` };
     },
   };
 }
@@ -113,7 +113,7 @@ export function createReadXhsArtifactTool(options) {
     async execute(input) {
       const artifact = options.registry.get(input.id);
       if (!artifact) throw new Error(`xhs artifact not found: ${input.id}`);
-      return { ok: true, output: { artifact }, summary: `Read Xiaohongshu artifact ${artifact.id}` };
+      return { ok: true, output: { artifact: clientArtifact(artifact) }, summary: '已读取稿件' };
     },
   };
 }
@@ -121,12 +121,12 @@ export function createReadXhsArtifactTool(options) {
 export async function serveXhsArtifact(registry, req, res, id, readJsonBody) {
   if (req.method === 'GET') {
     const artifact = registry.get(id);
-    return artifact ? sendJson(res, { ok: true, artifact }) : sendJson(res, { error: 'artifact not found' }, 404);
+    return artifact ? sendJson(res, { ok: true, artifact: clientArtifact(artifact) }) : sendJson(res, { error: 'artifact not found' }, 404);
   }
   if (req.method === 'PUT') {
     const body = await readJsonBody(req);
     const artifact = registry.update(id, body || {});
-    return artifact ? sendJson(res, { ok: true, artifact }) : sendJson(res, { error: 'artifact not found' }, 404);
+    return artifact ? sendJson(res, { ok: true, artifact: clientArtifact(artifact) }) : sendJson(res, { error: 'artifact not found' }, 404);
   }
   return sendJson(res, { error: 'method not allowed' }, 405);
 }
@@ -145,18 +145,84 @@ function normalizeArtifact(value) {
   };
 }
 
+function clientArtifact(artifact) {
+  return {
+    id: artifact.id,
+    type: artifact.type,
+    title: artifact.title,
+    payload: clientPayload(artifact.payload),
+    sessionId: artifact.sessionId,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
+}
+
+function clientPayload(payload) {
+  return {
+    type: firstText(payload.type, 'xiaohongshu_post_draft'),
+    version: firstText(payload.version, '1.0'),
+    id: firstText(payload.id),
+    status: firstText(payload.status, 'draft'),
+    meta: compactObject(payload.meta),
+    brief: compactObject(payload.brief),
+    title: firstText(payload.title),
+    body: richText(payload.body),
+    interaction: interactionText(payload.interaction),
+    hashtags: Array.isArray(payload.hashtags) ? payload.hashtags.slice(0, 40) : normalizeTags(payload.hashtags),
+    images: Array.isArray(payload.images) ? payload.images.map(clientImage) : [],
+    review: richText(payload.review),
+  };
+}
+
+function clientImage(image) {
+  return {
+    id: firstText(image.id),
+    url: safeImageUrl(image.url),
+    caption: firstText(image.caption),
+    overlay: firstText(image.overlay, image.overlay_text?.main, image.overlay_text?.sub),
+    note: richText(image.note).slice(0, 2000),
+  };
+}
+
+function compactObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactValue(item)]).filter(([, item]) => item !== undefined && item !== ''));
+}
+
+function compactValue(value) {
+  if (typeof value === 'string') return value.slice(0, 2000);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map(compactValue).filter((item) => item !== undefined && item !== '');
+  if (value && typeof value === 'object') return compactObject(value);
+  return undefined;
+}
+
 function normalizePayload(value) {
   const root = value && typeof value === 'object' ? { ...value } : {};
   const payload = root.web_editor_payload || root.post || root.draft || root.payload || root;
+  const content = payload.content && typeof payload.content === 'object' ? payload.content : {};
+  const imageCards = firstImageList(payload.image_cards, payload.images, payload.image_plan, payload.imagePlan, payload.cards, payload.visuals);
   return {
     ...payload,
-    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.title_options, payload.titles),
-    body: richText(payload.body || payload.content || payload.caption || payload.copy || payload.text || payload.main_body),
-    interaction: richText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
-    hashtags: normalizeTags(payload.hashtags || payload.tags || payload.topics),
-    images: normalizeImages(payload.images || payload.image_plan || payload.imagePlan || payload.image_cards || payload.cards || payload.visuals),
+    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.final_title, content.final_title, payload.title_options, content.title_options, payload.titles),
+    body: richText(content.body || payload.body || payload.caption || payload.copy || payload.text || payload.main_body),
+    interaction: interactionText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
+    hashtags: normalizeTags(content.hashtags || payload.hashtags || payload.tags || payload.topics),
+    images: normalizeImages(imageCards),
     review: richText(payload.review || payload.check || payload.self_check || payload.safety_check),
   };
+}
+
+function firstImageList(...values) {
+  for (const value of values) {
+    const images = normalizeImages(value);
+    if (images.some(hasUsefulImageInfo)) return value;
+  }
+  return values.find((value) => Array.isArray(value) && value.length) || values.find(Boolean);
+}
+
+function hasUsefulImageInfo(image) {
+  return Boolean(image.url || image.caption || image.overlay || image.note);
 }
 
 function normalizeImages(value) {
@@ -165,10 +231,10 @@ function normalizeImages(value) {
     if (item && typeof item === 'object') {
       return {
         id: firstText(item.id, item.key, `image-${index + 1}`),
-        url: safeImageUrl(item.url, item.src, item.imageUrl, item.image_url),
-        caption: firstText(item.caption, item.title, item.scene, item.description, item.text, item.visual, item.shot, item.copy, `配图 ${index + 1}`),
-        overlay: firstText(item.overlay, item.overlay_text, item.cover_text, item.key_text, item.headline),
-        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame),
+        url: safeImageUrl(item.url, item.src, item.imageUrl, item.image_url, item.preview_url, item.previewUrl, item.local_path, item.path),
+        caption: firstText(item.caption, item.title, item.role, item.scene, item.description, item.text, item.visual, item.visual_brief, item.shot, item.copy, `配图 ${index + 1}`),
+        overlay: firstText(item.overlay, item.overlay_text?.main, item.overlay_text?.sub, item.overlay_text, item.cover_text, item.key_text, item.headline),
+        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame || item.visual_brief || item.design_notes || item.replace_instruction),
         upload: item.upload && typeof item.upload === 'object' ? trimUploadInfo(item.upload) : undefined,
       };
     }
@@ -180,7 +246,13 @@ function normalizeImages(value) {
 function safeImageUrl(...values) {
   const url = firstText(...values);
   if (!url || /^data:/i.test(url)) return '';
+  if (/^(?:https?:|blob:|\/api\/)/i.test(url)) return url.slice(0, 2048);
+  if (isLocalFilePath(url)) return `/api/local-images/${encodeURIComponent(Buffer.from(url, 'utf8').toString('base64url'))}`;
   return url.slice(0, 2048);
+}
+
+function isLocalFilePath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/');
 }
 
 function trimUploadInfo(value) {
@@ -197,6 +269,38 @@ function trimUploadInfo(value) {
 function normalizeTags(value) {
   const text = Array.isArray(value) ? value.map(asText).join(' ') : asText(value);
   return [...new Set(text.split(/[\s,，、]+/).map((tag) => tag.trim()).filter(Boolean).map((tag) => tag.startsWith('#') ? tag : `#${tag}`))];
+}
+
+function interactionText(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return cleanInteractionLines(value);
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return '';
+  if (Array.isArray(value)) return cleanInteractionLines(value.map(interactionText).filter(Boolean).join('\n'));
+  if (typeof value === 'object') {
+    return cleanInteractionLines([
+      value.type,
+      value.action_text,
+      value.activity_time,
+      value.prize,
+      value.winner_count,
+      value.claim_note,
+      value.risk_note,
+      value.note,
+      value.description,
+      value.text,
+      value.content,
+    ].map(richText).filter(Boolean).join('\n'));
+  }
+  return cleanInteractionLines(String(value));
+}
+
+function cleanInteractionLines(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^(?:true|false|未设置|无|none|null|undefined)$/i.test(line))
+    .join('\n');
 }
 
 function parsePayload(content) {

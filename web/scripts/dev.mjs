@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
-import { createExposeDownloadsTool, DownloadRegistry, downloadRootsFromEnv, serveDownload } from '../downloads.mjs';
+import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from '../downloads.mjs';
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from '../artifacts.mjs';
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
@@ -18,7 +19,6 @@ const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 
 const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry();
-const downloadRoots = downloadRootsFromEnv(process.cwd());
 
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
@@ -48,7 +48,6 @@ await runWebServer(['--host', host, '--port', String(upstreamPort)], {
     externalTools: [
       createExposeDownloadsTool({
         registry: downloadRegistry,
-        allowedRoots: downloadRoots,
       }),
       createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
       createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
@@ -119,6 +118,10 @@ async function routeRequest(req, res) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
       return serveUploadedFile(res, storedName);
     }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/local-images/')) {
+      const encodedPath = decodeURIComponent(url.pathname.slice('/api/local-images/'.length));
+      return serveLocalImage(res, encodedPath);
+    }
     if (req.method === 'POST' && url.pathname === '/api/uploads') {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
@@ -145,7 +148,7 @@ async function proxyToRuntime(req, res, originalUrl) {
   const requestHeaders = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
-    if (['host', 'content-length', 'connection'].includes(key.toLowerCase())) continue;
+    if (['host', 'content-length', 'connection', 'expect'].includes(key.toLowerCase())) continue;
     requestHeaders.set(key, Array.isArray(value) ? value.join(', ') : value);
   }
   let upstream;
@@ -272,6 +275,39 @@ async function serveUploadedFile(res, storedName) {
       'Cache-Control': 'public, max-age=31536000, immutable',
     });
     res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  }
+}
+
+async function serveLocalImage(res, encodedPath) {
+  let filePath = '';
+  try {
+    filePath = Buffer.from(encodedPath, 'base64url').toString('utf8');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('invalid image path');
+    return;
+  }
+  const absolutePath = path.resolve(filePath);
+  const contentType = mimeTypeForPath(absolutePath);
+  if (!contentType.startsWith('image/')) {
+    res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not an image');
+    return;
+  }
+  try {
+    const fileStat = await stat(absolutePath);
+    if (!fileStat.isFile()) throw new Error('not a file');
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-store',
+    });
+    fs.createReadStream(absolutePath)
+      .on('error', () => res.destroy())
+      .pipe(res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('not found');

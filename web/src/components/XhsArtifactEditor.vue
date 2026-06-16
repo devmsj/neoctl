@@ -60,7 +60,7 @@ function createDraft(artifact) {
     id: artifact?.id || '',
     title: firstText(payload.title, artifact?.title),
     body: richText(payload.body),
-    interaction: richText(payload.interaction),
+    interaction: interactionText(payload.interaction),
     hashtags: payload.hashtags || [],
     images: payload.images?.length ? payload.images : [],
     review: richText(payload.review),
@@ -212,12 +212,14 @@ async function saveNow() {
 function normalizePayload(value) {
   const root = value && typeof value === 'object' ? value : {}
   const payload = root.web_editor_payload || root.post || root.draft || root.payload || root
+  const content = payload.content && typeof payload.content === 'object' ? payload.content : {}
+  const imageCards = firstImageList(payload.image_cards, payload.images, payload.image_plan, payload.imagePlan, payload.cards, payload.visuals)
   return {
-    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.title_options, payload.titles),
-    body: richText(payload.body || payload.content || payload.caption || payload.copy || payload.text || payload.main_body),
-    interaction: richText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
-    hashtags: normalizeTags(payload.hashtags || payload.tags || payload.topics),
-    images: normalizeImages(payload.images || payload.image_plan || payload.imagePlan || payload.image_cards || payload.cards || payload.visuals),
+    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.final_title, content.final_title, payload.title_options, content.title_options, payload.titles),
+    body: richText(content.body || payload.body || payload.caption || payload.copy || payload.text || payload.main_body),
+    interaction: interactionText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
+    hashtags: normalizeTags(content.hashtags || payload.hashtags || payload.tags || payload.topics),
+    images: normalizeImages(imageCards),
     review: richText(payload.review || payload.check || payload.self_check || payload.safety_check),
   }
 }
@@ -253,10 +255,10 @@ function normalizeImages(value) {
     if (item && typeof item === 'object') {
       return {
         id: firstText(item.id, item.key, `image-${index + 1}`),
-        url: firstText(item.url, item.src, item.imageUrl, item.image_url, item.dataUrl, item.data_url),
-        caption: firstText(item.caption, item.title, item.scene, item.description, item.text, item.visual, item.shot, item.copy, `配图 ${index + 1}`),
-        overlay: firstText(item.overlay, item.overlay_text, item.cover_text, item.key_text, item.headline),
-        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame),
+        url: safeImageUrl(item.url, item.src, item.imageUrl, item.image_url, item.preview_url, item.previewUrl, item.local_path, item.path),
+        caption: firstText(item.caption, item.title, item.role, item.scene, item.description, item.text, item.visual, item.visual_brief, item.shot, item.copy, `配图 ${index + 1}`),
+        overlay: firstText(item.overlay, item.overlay_text?.main, item.overlay_text?.sub, item.overlay_text, item.cover_text, item.key_text, item.headline),
+        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame || item.visual_brief || item.design_notes || item.replace_instruction),
       }
     }
     const text = String(item || '').replace(/^\d+[.)、\s-]*/, '').trim()
@@ -264,9 +266,65 @@ function normalizeImages(value) {
   })
 }
 
+function firstImageList(...values) {
+  for (const value of values) {
+    const images = normalizeImages(value)
+    if (images.some(hasUsefulImageInfo)) return value
+  }
+  return values.find((value) => Array.isArray(value) && value.length) || values.find(Boolean)
+}
+
+function hasUsefulImageInfo(image) {
+  return Boolean(image.url || image.caption || image.overlay || image.note)
+}
+
+function safeImageUrl(...values) {
+  const url = firstText(...values)
+  if (!url || /^data:/i.test(url)) return ''
+  if (/^(?:https?:|blob:|\/api\/)/i.test(url)) return url
+  if (isLocalFilePath(url)) return `/api/local-images/${encodeURIComponent(btoa(unescape(encodeURIComponent(url))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''))}`
+  return url
+}
+
+function isLocalFilePath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/')
+}
+
 function normalizeTags(value) {
   const text = Array.isArray(value) ? value.map(asText).join(' ') : asText(value)
   return [...new Set(text.split(/[\s,，、]+/).map((tag) => tag.trim()).filter(Boolean).map((tag) => tag.startsWith('#') ? tag : `#${tag}`))]
+}
+
+function interactionText(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return cleanInteractionLines(value)
+  if (typeof value === 'number') return String(value)
+  if (typeof value === 'boolean') return ''
+  if (Array.isArray(value)) return cleanInteractionLines(value.map(interactionText).filter(Boolean).join('\n'))
+  if (typeof value === 'object') {
+    return cleanInteractionLines([
+      value.type,
+      value.action_text,
+      value.activity_time,
+      value.prize,
+      value.winner_count,
+      value.claim_note,
+      value.risk_note,
+      value.note,
+      value.description,
+      value.text,
+      value.content,
+    ].map(richText).filter(Boolean).join('\n'))
+  }
+  return cleanInteractionLines(String(value))
+}
+
+function cleanInteractionLines(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^(?:true|false|未设置|无|none|null|undefined)$/i.test(line))
+    .join('\n')
 }
 
 function markdownSection(text, headings) {
@@ -361,11 +419,25 @@ function escapeRegExp(value) {
           </button>
         </div>
         <div class="xhs-phone-body">
-          <h3>{{ draft.title || '未命名小红书笔记' }}</h3>
-          <p>{{ draft.body || '正文会显示在这里。' }}</p>
-          <div v-if="draft.interaction" class="xhs-interaction">{{ draft.interaction }}</div>
-          <div class="xhs-tags">
-            <span v-for="tag in draft.hashtags" :key="tag">{{ tag }}</span>
+          <div class="xhs-readonly-author">
+            <span class="xhs-author-avatar">喵</span>
+            <span class="xhs-author-name">喵乘舰</span>
+            <button type="button">关注</button>
+          </div>
+          <div class="xhs-readonly-scroll">
+            <h3>{{ draft.title || '未命名小红书笔记' }}</h3>
+            <p>{{ draft.body || '正文会显示在这里。' }}</p>
+            <div v-if="draft.interaction" class="xhs-interaction">{{ draft.interaction }}</div>
+            <div class="xhs-tags">
+              <span v-for="tag in draft.hashtags" :key="tag">{{ tag }}</span>
+            </div>
+          </div>
+          <div class="xhs-readonly-meta">今天 · 小红书</div>
+          <div class="xhs-readonly-actions">
+            <span>说点什么...</span>
+            <strong>♡ 52</strong>
+            <strong>☆ 43</strong>
+            <strong>◯ 69</strong>
           </div>
         </div>
       </article>
@@ -464,11 +536,25 @@ function escapeRegExp(value) {
                 </button>
               </div>
               <div class="xhs-phone-body">
-                <h3>{{ draft.title || '未命名小红书笔记' }}</h3>
-                <p>{{ draft.body || '正文会显示在这里。' }}</p>
-                <div v-if="draft.interaction" class="xhs-interaction">{{ draft.interaction }}</div>
-                <div class="xhs-tags">
-                  <span v-for="tag in draft.hashtags" :key="tag">{{ tag }}</span>
+                <div class="xhs-readonly-author">
+                  <span class="xhs-author-avatar">喵</span>
+                  <span class="xhs-author-name">喵乘舰</span>
+                  <button type="button">关注</button>
+                </div>
+                <div class="xhs-readonly-scroll">
+                  <h3>{{ draft.title || '未命名小红书笔记' }}</h3>
+                  <p>{{ draft.body || '正文会显示在这里。' }}</p>
+                  <div v-if="draft.interaction" class="xhs-interaction">{{ draft.interaction }}</div>
+                  <div class="xhs-tags">
+                    <span v-for="tag in draft.hashtags" :key="tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <div class="xhs-readonly-meta">今天 · 小红书</div>
+                <div class="xhs-readonly-actions">
+                  <span>说点什么...</span>
+                  <strong>♡ 52</strong>
+                  <strong>☆ 43</strong>
+                  <strong>◯ 69</strong>
                 </div>
               </div>
             </article>

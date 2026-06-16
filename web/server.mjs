@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,6 +93,10 @@ async function routeRequest(req, res) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
       return serveUploadedFile(res, storedName);
     }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/local-images/')) {
+      const encodedPath = decodeURIComponent(url.pathname.slice('/api/local-images/'.length));
+      return serveLocalImage(res, encodedPath);
+    }
     if (req.method === 'POST' && url.pathname === '/api/uploads') {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
@@ -125,7 +130,7 @@ async function proxy(req, res) {
   const requestHeaders = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
-    if (['host', 'content-length', 'connection'].includes(key.toLowerCase())) continue;
+    if (['host', 'content-length', 'connection', 'expect'].includes(key.toLowerCase())) continue;
     requestHeaders.set(key, Array.isArray(value) ? value.join(', ') : value);
   }
 
@@ -281,6 +286,39 @@ async function serveUploadedFile(res, storedName) {
       'Cache-Control': 'public, max-age=31536000, immutable',
     });
     res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  }
+}
+
+async function serveLocalImage(res, encodedPath) {
+  let filePath = '';
+  try {
+    filePath = Buffer.from(encodedPath, 'base64url').toString('utf8');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('invalid image path');
+    return;
+  }
+  const absolutePath = path.resolve(filePath);
+  const contentType = mime[path.extname(absolutePath).toLowerCase()] || 'application/octet-stream';
+  if (!contentType.startsWith('image/')) {
+    res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not an image');
+    return;
+  }
+  try {
+    const fileStat = await fsp.stat(absolutePath);
+    if (!fileStat.isFile()) throw new Error('not a file');
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': String(fileStat.size),
+      'Cache-Control': 'no-store',
+    });
+    fs.createReadStream(absolutePath)
+      .on('error', () => res.destroy())
+      .pipe(res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('not found');

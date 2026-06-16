@@ -850,6 +850,7 @@ function shouldMarkdown(line) {
 function renderLine(line) {
   if (isImage2ResultLine(line)) return renderImage2Result(line)
   if (isExposeDownloadsLine(line)) return renderExposeDownloadsResult(line)
+  if (isReadXhsArtifactLine(line)) return sanitizeMarkdown(marked.parse('已读取稿件'))
   const text = lineText(line)
   const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', state.expandedTools.has(line.id) ? '1' : '0', text].join('\u001f')
   const cached = renderedLineCache.get(key)
@@ -875,6 +876,11 @@ function isExposeDownloadsLine(line) {
   return line?.kind === 'tool' && (title === 'expose_downloads' || title === '文件下载')
 }
 
+function isReadXhsArtifactLine(line) {
+  const title = String(line?.title || '').toLowerCase()
+  return line?.kind === 'tool' && title === 'read_xhs_artifact'
+}
+
 function isXhsArtifactLine(line) {
   const title = String(line?.title || '').toLowerCase()
   return line?.kind === 'tool' && (title === 'open_xhs_artifact_editor' || title === '小红书产物编辑器')
@@ -882,10 +888,10 @@ function isXhsArtifactLine(line) {
 
 function xhsArtifactForLine(line) {
   const parsed = parseFirstJsonObject(line?.text || '')
-  const artifact = parsed?.artifact || parsed?.output?.artifact || parsed?.result?.artifact || parseXhsArtifactSummary(line?.text)
+  const artifact = line?.artifact || parsed?.artifact || parsed?.output?.artifact || parsed?.result?.artifact || parseXhsArtifactSummary(line?.text)
   if (!artifact?.id) return null
   const id = String(artifact.id)
-  if (!state.xhsArtifacts[id]) state.xhsArtifacts[id] = artifact
+  if (!state.xhsArtifacts[id] || line?.artifact) state.xhsArtifacts[id] = artifact
   return state.xhsArtifacts[id]
 }
 
@@ -1739,7 +1745,7 @@ function linkify(value) {
                     </div>
                   </template>
                 </template>
-                <button v-if="line.kind === 'tool' && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
+                <button v-if="line.kind === 'tool' && !isReadXhsArtifactLine(line) && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
                   {{ state.expandedTools.has(line.id) ? '收起工具输出' : '展开完整工具输出' }}
                 </button>
               </div>
