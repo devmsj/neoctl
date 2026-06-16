@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DownloadRegistry, serveDownload } from './downloads.mjs';
-import { serveXhsArtifact, XhsArtifactRegistry } from './artifacts.mjs';
+import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
+import { createExposeDownloadsTool, DownloadRegistry, downloadRootsFromEnv, serveDownload } from './downloads.mjs';
+import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from './artifacts.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
@@ -16,6 +17,7 @@ const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(__dirna
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry();
+const embedRuntime = process.env.NEO_EMBED_RUNTIME !== 'false';
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -59,9 +61,28 @@ const server = http.createServer((req, res) => {
 
 server.keepAliveTimeout = 70_000;
 server.headersTimeout = 75_000;
+if (embedRuntime) await startEmbeddedRuntime();
 server.listen(port, host, () => {
   console.log(`maker web listening on http://${host}:${port}, dist=${root}, runtime=${runtimeTarget.href}`);
 });
+
+async function startEmbeddedRuntime() {
+  const runtimeHost = runtimeTarget.hostname || '127.0.0.1';
+  const runtimePort = runtimeTarget.port || '3101';
+  await runWebServer(['--host', runtimeHost, '--port', runtimePort], {
+    createRuntime: (runtimeOptions) => createWebRuntime({
+      ...runtimeOptions,
+      externalTools: [
+        createExposeDownloadsTool({
+          registry: downloadRegistry,
+          allowedRoots: downloadRootsFromEnv(__dirname),
+        }),
+        createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
+        createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
+      ],
+    }),
+  });
+}
 
 async function routeRequest(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
