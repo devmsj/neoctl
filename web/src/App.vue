@@ -209,6 +209,7 @@ const state = reactive({
   promptManagerOpen: false,
   selectedPromptId: '',
   composerDropActive: false,
+  composerDropMode: 'prompt',
   attachments: [],
   attachmentCounter: 0,
   uploadingFiles: false,
@@ -268,6 +269,10 @@ const outputTokens = computed(() => compactNumber(state.status?.usage?.outputTok
 const composerContextValue = computed(() => `${state.composerMetrics.context.display.toFixed(1)}%`)
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
+const composerDropHint = computed(() => {
+  if (state.composerDropMode === 'files') return state.composerDropActive ? '松开即可上传附件' : '拖入这里即可上传附件'
+  return state.composerDropActive ? '松开即可替换应用提示词' : '拖入这里即可替换应用提示词'
+})
 const currentContextTokens = computed(() => Number(state.status?.metrics?.estimatedInputTokens ?? state.status?.usage?.inputTokens ?? 0))
 const showCompressionWarning = computed(() => currentContextTokens.value > CONTEXT_COMPRESSION_WARNING_TOKENS)
 const filteredSessions = computed(() => state.sessions || [])
@@ -515,20 +520,35 @@ function handlePromptDragStart(event, item) {
 
 function handleComposerDragOver(event) {
   const types = Array.from(event?.dataTransfer?.types || [])
-  if (!types.includes('application/x-neoctl-prompt-id')) return
+  const draggingFiles = hasDraggedFiles(event)
+  if (!types.includes('application/x-neoctl-prompt-id') && !draggingFiles) return
   event.preventDefault()
   state.composerDropActive = true
+  state.composerDropMode = draggingFiles ? 'files' : 'prompt'
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 function handleComposerDragLeave(event) {
   if (event?.currentTarget && event?.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return
   state.composerDropActive = false
+  state.composerDropMode = 'prompt'
 }
 
 async function handleComposerDrop(event) {
+  const files = filesFromDataTransfer(event?.dataTransfer)
+  if (files.length) {
+    event.preventDefault()
+    state.composerDropActive = false
+    state.composerDropMode = 'prompt'
+    draggingPromptId.value = ''
+    await uploadFiles(files)
+    composer.value?.focus()
+    return
+  }
+
   const promptId = event?.dataTransfer?.getData('application/x-neoctl-prompt-id') || draggingPromptId.value
   state.composerDropActive = false
+  state.composerDropMode = 'prompt'
   if (!promptId) return
   event.preventDefault()
   const item = state.promptLibrary.find((entry) => entry.id === promptId)
@@ -540,9 +560,25 @@ async function handleComposerDrop(event) {
   await applyPromptItem(item)
 }
 
+function hasDraggedFiles(event) {
+  const types = Array.from(event?.dataTransfer?.types || [])
+  if (types.includes('Files')) return true
+  return Array.from(event?.dataTransfer?.items || []).some((item) => item.kind === 'file')
+}
+
+function filesFromDataTransfer(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || [])
+  if (files.length) return files
+  return Array.from(dataTransfer?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+}
+
 function handlePromptDragEnd() {
   draggingPromptId.value = ''
   state.composerDropActive = false
+  state.composerDropMode = 'prompt'
 }
 
 async function submit() {
@@ -1895,7 +1931,7 @@ function linkify(value) {
             @dragleave="handleComposerDragLeave"
             @drop="handleComposerDrop"
           >
-            <div class="composer-drop-hint">{{ state.composerDropActive ? '松开即可替换应用提示词' : '拖入这里即可替换应用提示词' }}</div>
+            <div class="composer-drop-hint">{{ composerDropHint }}</div>
             <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
               <span class="composer-app-prompt-label">当前提示词</span>
               <strong>{{ activeAppPromptTitle }}</strong>
