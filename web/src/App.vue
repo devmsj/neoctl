@@ -38,6 +38,9 @@ hljs.registerLanguage('diff', diff)
 
 const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
+const IMAGE_MAX_EDGE = 2048
+const IMAGE_MAX_BYTES = 1_800_000
+const IMAGE_MIN_QUALITY = 0.62
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
 const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
@@ -1165,13 +1168,18 @@ async function handlePaste(event) {
   const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith('image/'))
   if (!files.length) return
   event.preventDefault()
+  const compressionRates = []
   for (const file of files) {
     const id = ++state.attachmentCounter
     const label = `[img#${id}]`
     const payload = await fileToDataUrlPayload(file)
+    if (payload.compressionRate > 0) {
+      compressionRates.push(payload.compressionRate)
+    }
     state.attachments.push({ kind: 'image', label, mimeType: payload.mimeType, data: payload.data, previewUrl: payload.previewUrl, name: file.name || `图片 ${id}` })
   }
   notify(`已添加 ${files.length} 张图片附件`)
+  if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
 }
 
 function triggerFilePicker() {
@@ -1189,7 +1197,22 @@ async function uploadFiles(files) {
   state.uploadingFiles = true
   try {
     const uploaded = []
+    const compressionRates = []
     for (const file of files) {
+      if (file.type.startsWith('image/')) {
+        const payload = await fileToDataUrlPayload(file)
+        const label = `[img#${++state.attachmentCounter}]`
+        if (payload.compressionRate > 0) compressionRates.push(payload.compressionRate)
+        uploaded.push({
+          kind: 'image',
+          label,
+          name: file.name || label,
+          mimeType: payload.mimeType,
+          data: payload.data,
+          previewUrl: payload.previewUrl,
+        })
+        continue
+      }
       const payload = await fileToBase64Payload(file)
       const result = await postJson('/api/uploads', {
         name: file.name,
@@ -1208,6 +1231,7 @@ async function uploadFiles(files) {
       })
     }
     state.attachments.push(...uploaded)
+    if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
     notify(`已上传 ${uploaded.length} 个附件`)
   } catch (error) {
     notify(error.message || String(error))
@@ -1493,8 +1517,7 @@ function insertAtCursor(value) {
 
 async function fileToDataUrlPayload(file) {
   const dataUrl = await readFileAsDataUrl(file)
-  const comma = dataUrl.indexOf(',')
-  return { mimeType: file.type || 'image/png', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl, previewUrl: dataUrl }
+  return normalizeImageDataUrlPayload(dataUrl, file.type || 'image/png')
 }
 
 async function fileToBase64Payload(file) {
@@ -1510,6 +1533,107 @@ async function readFileAsDataUrl(file) {
     reader.onerror = () => reject(reader.error || new Error('read failed'))
     reader.readAsDataURL(file)
   })
+}
+
+async function normalizeImageDataUrlPayload(dataUrl, fallbackMimeType = 'image/png') {
+  const original = parseImageDataUrl(dataUrl, fallbackMimeType)
+  const originalBytes = estimateBase64Bytes(original.base64)
+  const image = await loadImageFromDataUrl(original.dataUrl).catch(() => undefined)
+  if (!image) {
+    const base64 = normalizeBase64Data(original.base64)
+    if (!base64) throw new Error('图片格式异常，无法读取为有效图片')
+    return { mimeType: original.mimeType, data: base64, previewUrl: `data:${original.mimeType};base64,${base64}`, compressionRate: 0 }
+  }
+
+  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
+  let width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale))
+  let height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale))
+  let quality = 0.88
+  let encoded
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    encoded = await encodeImageWithCanvas(image, width, height, 'image/jpeg', quality)
+    if (encoded.bytes <= IMAGE_MAX_BYTES || (quality <= IMAGE_MIN_QUALITY && Math.max(width, height) <= 1280)) break
+    if (quality > IMAGE_MIN_QUALITY) quality = Math.max(IMAGE_MIN_QUALITY, quality - 0.1)
+    else {
+      width = Math.max(1, Math.round(width * 0.82))
+      height = Math.max(1, Math.round(height * 0.82))
+    }
+  }
+
+  const base64 = normalizeBase64Data(encoded?.base64)
+  if (!base64) throw new Error('图片格式异常，无法转换为有效图片')
+  return {
+    mimeType: encoded.mimeType,
+    data: base64,
+    previewUrl: `data:${encoded.mimeType};base64,${base64}`,
+    compressionRate: compressionRatePercent(originalBytes, encoded.bytes),
+  }
+}
+
+function parseImageDataUrl(value, fallbackMimeType) {
+  const text = String(value || '').trim()
+  const match = /^data:([^;,]+);base64,([\s\S]*)$/i.exec(text)
+  const mimeType = match?.[1]?.startsWith('image/') ? match[1] : fallbackMimeType
+  const base64 = match ? match[2] : text
+  return { mimeType, base64, dataUrl: match ? text : `data:${mimeType};base64,${base64}` }
+}
+
+function estimateBase64Bytes(value) {
+  const normalized = normalizeBase64Data(value)
+  if (!normalized) return 0
+  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor(normalized.length * 0.75) - padding)
+}
+
+function compressionRatePercent(beforeBytes, afterBytes) {
+  if (!beforeBytes || !afterBytes || afterBytes >= beforeBytes) return 0
+  return Math.round((1 - afterBytes / beforeBytes) * 100)
+}
+
+function compressionToastText(rates) {
+  const rate = Math.max(...rates)
+  return rates.length > 1 ? `图片已压缩，最高压缩率为 ${rate}%` : `图片已压缩，压缩率为 ${rate}%`
+}
+
+function normalizeBase64Data(value) {
+  let text = String(value || '').trim().replace(/^data:[^;,]+;base64,/i, '').replace(/\s+/g, '')
+  if (!text) return ''
+  text = text.replace(/-/g, '+').replace(/_/g, '/')
+  const remainder = text.length % 4
+  if (remainder) text += '='.repeat(4 - remainder)
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text)) return ''
+  try {
+    atob(text)
+    return text
+  } catch {
+    return ''
+  }
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('image decode failed'))
+    image.src = dataUrl
+  })
+}
+
+async function encodeImageWithCanvas(image, width, height, mimeType, quality) {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('canvas unavailable')
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, width, height)
+  context.drawImage(image, 0, 0, width, height)
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality))
+  if (!blob) throw new Error('image encode failed')
+  const dataUrl = await readFileAsDataUrl(blob)
+  const parsed = parseImageDataUrl(dataUrl, mimeType)
+  return { mimeType: parsed.mimeType, base64: parsed.base64, bytes: blob.size }
 }
 
 function autosize() {
