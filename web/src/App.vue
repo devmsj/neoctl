@@ -890,6 +890,8 @@ function renderLine(line) {
   if (isImage2ResultLine(line)) return renderImage2Result(line)
   if (isExposeDownloadsLine(line)) return renderExposeDownloadsResult(line)
   if (isReadXhsArtifactLine(line)) return sanitizeMarkdown(marked.parse('已读取稿件'))
+  if (isImageNoteLine(line)) return renderImageNoteResult(line)
+  if (isSkillReadLine(line)) return renderSkillReadResult(line)
   const text = lineText(line)
   const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', state.expandedTools.has(line.id) ? '1' : '0', text].join('\u001f')
   const cached = renderedLineCache.get(key)
@@ -918,6 +920,64 @@ function isExposeDownloadsLine(line) {
 function isReadXhsArtifactLine(line) {
   const title = String(line?.title || '').toLowerCase()
   return line?.kind === 'tool' && title === 'read_xhs_artifact'
+}
+
+function isImageNoteLine(line) {
+  const title = String(line?.title || '').toLowerCase()
+  return line?.kind === 'tool' && title === 'image_note'
+}
+
+function isSkillReadLine(line) {
+  const title = String(line?.title || '').toLowerCase()
+  return line?.kind === 'tool' && title === 'skill_read'
+}
+
+function isCompactToolLine(line) {
+  return isReadXhsArtifactLine(line) || isImageNoteLine(line) || isSkillReadLine(line)
+}
+
+function renderSkillReadResult(line) {
+  return sanitizeMarkdown(marked.parse(`已阅读技能${skillReadName(line?.text || '')}`))
+}
+
+function skillReadName(text) {
+  const value = String(text || '')
+  const name = /\bname:\s*([^\s]+)/i.exec(value)?.[1] ||
+    /(?:^|\s)skill:\s*([^\s]+)/i.exec(value)?.[1] ||
+    /(?:^|\s)id:\s*([^\s]+)/i.exec(value)?.[1]
+  const cleaned = String(name || '').trim()
+  return cleaned ? cleaned : ''
+}
+
+function renderImageNoteResult(line) {
+  return sanitizeMarkdown(marked.parse(`已分析并记录图片${imageNoteLabel(line?.text || '')}`))
+}
+
+function imageNoteLabel(text) {
+  const label = firstImageNoteLabel(text)
+  return label ? ` ${label}` : ''
+}
+
+function firstImageNoteLabel(text) {
+  const value = String(text || '')
+  const filename = /(?:^|\s)(?:storagePath|path|file|filename):\s*([^\s]+\.(?:png|jpe?g|webp|gif|bmp|avif|txt))/i.exec(value)?.[1]
+  const filenameLabel = filename ? cleanImageNoteLabel(filename.split(/[\\/]/).pop() || '') : ''
+  if (filenameLabel) return filenameLabel
+  const imageRef = /(?:^|\s)imageRef:\s*([^\s]+)/i.exec(value)?.[1]
+  const refLabel = cleanImageNoteLabel(imageRef || '')
+  if (refLabel) return refLabel
+  const tag = /(?:^|\s)tags:\s*(?:[-*]\s*)?([^\n\r,，]+)/i.exec(value)?.[1] ||
+    /(?:^|\s)detectedText:\s*(?:[-*]\s*)?([^\n\r,，]+)/i.exec(value)?.[1] ||
+    /(?:^|\s)caption:\s*([^.,，。;\n\r]{2,24})/i.exec(value)?.[1]
+  return cleanImageNoteLabel(tag || '')
+}
+
+function cleanImageNoteLabel(value) {
+  let text = String(value || '').trim()
+  text = text.replace(/\.base64\.txt$/i, '').replace(/\.(?:png|jpe?g|webp|gif|bmp|avif|txt)$/i, '')
+  text = text.replace(/^[-*]\s*/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!text || /^ok$/i.test(text)) return ''
+  return text.length > 18 ? `${text.slice(0, 18)}...` : text
 }
 
 function isXhsArtifactLine(line) {
@@ -1905,7 +1965,7 @@ function linkify(value) {
                     </div>
                   </template>
                 </template>
-                <button v-if="line.kind === 'tool' && !isReadXhsArtifactLine(line) && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
+                <button v-if="line.kind === 'tool' && !isCompactToolLine(line) && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
                   {{ state.expandedTools.has(line.id) ? '收起工具输出' : '展开完整工具输出' }}
                 </button>
               </div>

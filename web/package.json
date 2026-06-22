@@ -22,5 +22,10 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
     "vite": "^5.4.21"
-  }
+  },
+  "description": "一个 Render 风格的 Vue 3 + Vite 单页应用，面向设计人员和工作流用户封装 `neoctl` 本地 AI Agent 运行时。",
+  "main": "vite.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
