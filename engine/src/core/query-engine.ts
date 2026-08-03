@@ -410,7 +410,9 @@ export class QueryEngine {
     return {
       ...message,
       blocks: persistedBlocks,
-      metadata: hasRetention
+      metadata: message.role === "user"
+        ? { ...message.metadata, imageRetention: "pinned", imageTtlTurns: undefined }
+        : hasRetention
         ? message.metadata
         : { ...message.metadata, imageRetention: "while_relevant", imageTtlTurns: 4 },
     };

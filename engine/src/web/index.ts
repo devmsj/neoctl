@@ -24,7 +24,6 @@ import { searchTool } from "../tools/builtins/search-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
-import { createImageNoteTool } from "../tools/builtins/image-note-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
@@ -271,7 +270,6 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   tools.register(grepTool);
   tools.register(searchTool);
   tools.register(createLoadImageTool());
-  tools.register(createImageNoteTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
   for (const tool of options.externalTools ?? []) tools.register(tool);

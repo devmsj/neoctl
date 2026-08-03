@@ -6,7 +6,6 @@ import type { ModelRequest, ModelStreamEvent, ModelUsage, ReasoningConfig } from
 import { decodeSSE } from "./sse-decoder.js";
 import { asNumber, asString, dropUndefined } from "./openai-mappers.js";
 import { resolveImageBlockDataSync } from "../core/image-storage.js";
-import { imageNeedsSemanticNotePrompt, imageSemanticNotePrompt } from "../core/image-note-prompt.js";
 
 export interface AnthropicMapperOptions {
   model: string;
@@ -456,8 +455,7 @@ function collectPairedToolIds(messages: readonly Message[]): Set<string> {
 function imageStorageText(block: { label?: string; storage?: { path: string; format: string } }): string | undefined {
   if (!block.storage?.path) return undefined;
   const label = block.label ? `${block.label} ` : "";
-  const notePrompt = imageNeedsSemanticNotePrompt(block) ? ` ${imageSemanticNotePrompt(block.label)}` : "";
-  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.${notePrompt}`;
+  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.`;
 }
 
 function base64Data(data: string): string {

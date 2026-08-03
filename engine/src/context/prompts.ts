@@ -21,7 +21,6 @@ export interface EffectiveSystemPromptOptions {
 export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = []): PromptSection[] {
   const hasImageGenerationTool = enabledTools.includes("image2");
   const hasLoadImageTool = enabledTools.includes("load_image");
-  const hasImageNoteTool = enabledTools.includes("image_note");
   const hasSecretTools = enabledTools.includes("secret_list") || enabledTools.includes("secret_request");
   return [
     {
@@ -52,11 +51,8 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           : "Available tools are provided separately by the runtime.",
         "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
         hasLoadImageTool
-          ? "When you need to inspect, describe, OCR, or answer questions about any image (including historical images from earlier in the conversation that may have been compacted), use the load_image tool with image ids (e.g. img_1) or labels. Choose the retention parameter yourself: next_turn for one-off inspection/OCR, while_relevant for multi-turn visual tasks such as UI/design iteration, and pinned only when the user explicitly wants a long-lived reference. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
+          ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the load_image tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
           : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",
-        hasImageNoteTool
-          ? "Use image_note when an image note prompt appears near an image, or when you need to preserve an inspected image's meaning for later reference."
-          : "",
         hasImageGenerationTool
           ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",

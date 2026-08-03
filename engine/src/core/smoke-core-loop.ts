@@ -120,6 +120,11 @@ async function main(): Promise<void> {
     // drain first turn so the image remains in history
   }
   const firstImageRequest = imageGateway.requests[0];
+  const userImagePinned = firstImageRequest?.messages.some((message) =>
+    message.role === "user" &&
+    message.metadata?.imageRetention === "pinned" &&
+    message.blocks.some((block) => block.type === "image"),
+  ) === true;
   const storedImageBlock = firstImageRequest?.messages
     .flatMap((message) => message.blocks)
     .find((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image");
@@ -152,9 +157,10 @@ async function main(): Promise<void> {
     sanitized === "目录内容：\n- `package-lock.json`" &&
     snapshot.messages >= 3 &&
     abortDuringToolsOk &&
+    userImagePinned &&
     storedImageCompacted &&
     historyImageDowngraded;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, storedImageCompacted, downgradeEvents, historyImageDowngraded }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
