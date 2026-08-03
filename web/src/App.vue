@@ -875,10 +875,6 @@ function shouldHideLine(line) {
     && imageLabelsFromText(line?.text).length === 0
 }
 
-function lineHasImage2Stage(line) {
-  return isImage2ResultLine(line) && lineImagePreviews(line).length > 0
-}
-
 function syncLiveToolTimers(lines) {
   const activeIds = new Set()
   const now = Date.now()
@@ -1001,6 +997,7 @@ function renderLine(line) {
 
 function renderToolDetail(line) {
   if (!line) return ''
+  if (isImage2Line(line)) return renderImage2Detail(line)
   const text = lineText(line)
   if (line.format === 'diff' || /(?:^|\n)---\s+.+\n\+\+\+\s+/.test(text)) return renderDiff(text)
   if (line.format === 'ansi') return `<pre class="tool-detail-pre">${escapeHtml(stripAnsi(text))}</pre>`
@@ -1254,7 +1251,8 @@ function formatDownloadExpiry(value) {
 
 function renderImage2Stage(line) {
   const images = lineImagePreviews(line)
-  if (images.length) return renderImageGrid(images)
+  if (images.length) return `<div class="image2-result-block">${renderImage2Result(line)}${renderImageGrid(images)}</div>`
+  if (isImage2ResultLine(line)) return renderImage2Result(line)
   return renderImage2Skeleton(line)
 }
 
@@ -1286,14 +1284,40 @@ function renderImage2Result(line) {
   const parsed = parseImage2Result(line.text || '')
   const text = String(line.text || '')
   const status = /\bfail(?:ed)?\b|failed/i.test(text) ? '生成失败' : /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
-  const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, parsed.size, parsed.quality, parsed.outputFormat, parsed.duration].filter(Boolean)
+  const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, parsed.size, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
   const parts = [`<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>`]
-  if (parsed.prompt) parts.push(`<div class="image2-meta"><span>提示词</span><p>${escapeHtml(parsed.prompt)}</p></div>`)
-  if (parsed.revisedPrompt && parsed.revisedPrompt !== parsed.prompt) parts.push(`<div class="image2-meta"><span>修订提示词</span><p>${escapeHtml(parsed.revisedPrompt)}</p></div>`)
   const details = [parsed.provider && `provider: ${parsed.provider}`, parsed.background && `background: ${parsed.background}`, parsed.usage && `usage: ${parsed.usage}`].filter(Boolean)
   if (details.length) parts.push(`<div class="image2-details">${escapeHtml(details.join(' · '))}</div>`)
   parts.push('</div>')
   return parts.join('')
+}
+
+function renderImage2Detail(line) {
+  const parsed = parseImage2Result(line?.text || '')
+  const fields = [
+    ['模型', parsed.model],
+    ['模式', parsed.mode],
+    ['尺寸', parsed.size],
+    ['质量', parsed.quality],
+    ['格式', parsed.outputFormat],
+    ['背景', parsed.background],
+    ['图片数量', parsed.count ? `${parsed.count} 张` : ''],
+    ['源图数量', parsed.sourceImages ? `${parsed.sourceImages} 张` : ''],
+    ['耗时', parsed.duration],
+    ['语义名称', parsed.semanticName],
+    ['开始时间', parsed.startedAt],
+    ['完成时间', parsed.finishedAt],
+  ].filter(([, value]) => value)
+  const metadata = fields.length
+    ? `<dl class="image2-detail-grid">${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`
+    : ''
+  const prompt = parsed.prompt
+    ? `<section class="image2-detail-prompt"><span>调用提示词</span><p>${escapeHtml(parsed.prompt)}</p></section>`
+    : `<section class="image2-detail-prompt empty"><span>调用提示词</span><p>当前历史记录未保存提示词；新执行的 image2 调用会在这里显示。</p></section>`
+  const revisedPrompt = parsed.revisedPrompt && parsed.revisedPrompt !== parsed.prompt
+    ? `<section class="image2-detail-prompt"><span>修订提示词</span><p>${escapeHtml(parsed.revisedPrompt)}</p></section>`
+    : ''
+  return `<div class="image2-detail-view">${metadata}${prompt}${revisedPrompt}</div>`
 }
 
 function parseImage2Result(text) {
@@ -1307,14 +1331,19 @@ function parseImage2Result(text) {
   return {
     provider: matchImage2Field(compact, 'provider', ['model', 'prompt']) || detailParts[0] || '',
     model: matchImage2Field(compact, 'model', ['prompt']) || detailParts[1] || '',
-    prompt: matchImage2Field(compact, 'prompt', ['size', 'quality', 'outputFormat', 'background', 'returnedImages', 'duration']),
+    prompt: matchImage2Field(compact, 'prompt', ['revisedPrompt', 'mode', 'semanticName', 'size', 'quality', 'outputFormat', 'background', 'returnedImages', 'startedAt', 'finishedAt', 'duration']),
+    mode: matchImage2Field(compact, 'mode', ['semanticName', 'prompt', 'size', 'quality']),
+    semanticName: matchImage2Field(compact, 'semanticName', ['prompt', 'size', 'quality', 'outputFormat']),
     size: matchImage2Field(compact, 'size', ['quality', 'outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => /^\d+x\d+$/i.test(part)) || '',
     quality: matchImage2Field(compact, 'quality', ['outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => ['low', 'medium', 'high'].includes(part.toLowerCase())) || '',
     outputFormat: matchImage2Field(compact, 'outputFormat', ['background', 'returnedImages', 'images', 'duration']) || detailParts.find((part) => ['png', 'jpeg', 'jpg', 'webp'].includes(part.toLowerCase())) || '',
-    background: matchImage2Field(compact, 'background', ['returnedImages', 'images', 'duration']),
+    background: matchImage2Field(compact, 'background', ['returnedImages', 'images', 'startedAt', 'finishedAt', 'duration']),
+    sourceImages: matchImage2Field(compact, 'source images', ['prompt', 'mode', 'semanticName', 'duration']),
     count: matchImage2Field(compact, 'returnedImages', ['images', 'index', 'duration']) || generated?.[2] || '',
-    revisedPrompt: matchImage2Field(compact, 'revisedPrompt', ['raw', 'created', 'data', 'b64_json', 'background', 'output_format', 'quality', 'size', 'usage', 'duration']),
+    revisedPrompt: matchImage2Field(compact, 'revisedPrompt', ['mode', 'semanticName', 'raw', 'created', 'data', 'b64_json', 'background', 'output_format', 'quality', 'size', 'usage', 'startedAt', 'finishedAt', 'duration']),
     usage: matchImage2Field(compact, 'usage', ['duration']),
+    startedAt: matchImage2Field(compact, 'startedAt', ['finishedAt', 'duration']),
+    finishedAt: matchImage2Field(compact, 'finishedAt', ['duration']),
     duration: durationMs === undefined ? '' : formatDuration(durationMs),
   }
 }
@@ -1865,7 +1894,25 @@ function mimeExtension(mimeType) {
 
 function isGeneratedImageLine(line) {
   const title = String(line?.title || '').toLowerCase()
-  return title === 'image2' || line?.metadata?.tool === 'image2' || line?.metadata?.generatedImages === true || (line?.kind === 'tool' && /^Generated image \d+$/i.test(String(line?.text || '').trim()))
+  return title === 'image2'
+    || line?.metadata?.tool === 'image2'
+    || line?.metadata?.generatedImages === true
+    || isImage2OutputImageLine(line)
+    || (line?.kind === 'tool' && /^Generated image \d+$/i.test(String(line?.text || '').trim()))
+}
+
+function isImage2OutputImageLine(line) {
+  if (line?.kind !== 'tool' || line?.title || directLineImagePreviews(line).length === 0) return false
+  const lines = state.lines || []
+  const index = lines.findIndex((item) => String(item?.id) === String(line?.id))
+  if (index < 0) return false
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const previous = lines[cursor]
+    if (isImage2Line(previous)) return true
+    if (previous?.kind === 'tool' && !previous?.title && directLineImagePreviews(previous).length > 0) continue
+    return false
+  }
+  return false
 }
 
 function removeOmittedImageDetails(line) {
@@ -2271,7 +2318,10 @@ function linkify(value) {
                   <span v-if="line.live" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
-                <div v-if="lineHasImage2Stage(line)" class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
+                <div v-if="isImage2ResultLine(line)" class="image2-result-shell">
+                  <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
+                  <button type="button" class="image2-detail-button" @click="openToolDetail(line)">查看调用详情</button>
+                </div>
                 <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">
                   <div class="tool-result-summary-icon" aria-hidden="true">
                     <svg class="ui-icon" viewBox="0 0 20 20">

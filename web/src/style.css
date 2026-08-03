@@ -1092,6 +1092,79 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-stage-wrap {
   margin-top: 2px;
 }
+.image2-result-shell,
+.image2-result-block {
+  width: min(760px, 100%);
+  display: grid;
+  gap: 10px;
+}
+.image2-detail-button {
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.image2-detail-button:hover {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+  color: var(--purple);
+}
+.image2-detail-view {
+  display: grid;
+  gap: 14px;
+}
+.image2-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 1px;
+  background: var(--line-soft);
+}
+.image2-detail-grid div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 11px;
+  background: var(--surface);
+}
+.image2-detail-grid dt {
+  color: var(--faint);
+  font-size: 11px;
+}
+.image2-detail-grid dd {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.image2-detail-prompt {
+  display: grid;
+  gap: 6px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.image2-detail-prompt span {
+  color: var(--purple);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.image2-detail-prompt p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.image2-detail-prompt.empty p { color: var(--muted); }
 .image2-stage {
   width: min(420px, 100%);
   border: 1px solid var(--line);
@@ -2704,6 +2777,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
     grid-template-columns: 24px minmax(0, 1fr);
   }
   .plan-item-status { display: none; }
+  .image2-detail-grid { grid-template-columns: 1fr; }
   .tool-result-modal-backdrop { padding: 10px; }
   .tool-result-modal {
     width: 100%;
