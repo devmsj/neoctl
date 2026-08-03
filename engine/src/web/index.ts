@@ -419,6 +419,7 @@ export class WebRepl {
   private queuedAttachments: WebAttachmentPayload[] | undefined;
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
+  private pendingUserImageEchoLabels: string[] | undefined;
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
   private backgroundTaskCount: number;
@@ -770,6 +771,11 @@ export class WebRepl {
 
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
+    if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
+      this.pendingUserImageEchoLabels = undefined;
+      this.broadcastSync();
+      return;
+    }
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta" || event.type === "retrying") {
       this.broadcastSync();
       return;
@@ -848,6 +854,15 @@ export class WebRepl {
       return;
     }
     if (event.type === "error") this.append({ kind: "error", text: event.error.message });
+  }
+
+  private matchesPendingUserImageEcho(message: Message): boolean {
+    const pending = this.pendingUserImageEchoLabels;
+    if (!pending?.length || message.role !== "user") return false;
+    const labels = message.blocks
+      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
+      .map((block) => block.label as string);
+    return labels.length === pending.length && labels.every((label, index) => label === pending[index]);
   }
 
   private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = []): Promise<void> {
@@ -943,6 +958,10 @@ export class WebRepl {
     const promptPayload = buildWebPromptPayload(command.text, attachments);
     this.append({ kind: "user", text: promptPayload.displayText });
     for (const line of imageLinesForBlocks("user", promptPayload.blocks)) this.append(line);
+    const optimisticImageLabels = (promptPayload.blocks ?? [])
+      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
+      .map((block) => block.label as string);
+    this.pendingUserImageEchoLabels = optimisticImageLabels.length ? optimisticImageLabels : undefined;
     const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
@@ -974,6 +993,7 @@ export class WebRepl {
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
       this.finalizeForegroundView();
+      this.pendingUserImageEchoLabels = undefined;
       const queuedText = this.queuedInput;
       const queuedAttach = this.queuedAttachments;
       this.queuedInput = undefined;
@@ -1876,12 +1896,30 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
   const quality = typeof output.quality === "string" ? output.quality : undefined;
   const format = typeof output.outputFormat === "string" ? output.outputFormat : undefined;
   const sourceImages = typeof output.sourceImages === "number" ? output.sourceImages : undefined;
+  const prompt = typeof output.prompt === "string" ? output.prompt.trim() : "";
+  const semanticName = typeof output.semanticName === "string" ? output.semanticName.trim() : "";
+  const background = typeof output.background === "string" ? output.background : undefined;
+  const startedAtIso = typeof output.startedAtIso === "string" ? output.startedAtIso : undefined;
+  const finishedAtIso = typeof output.finishedAtIso === "string" ? output.finishedAtIso : undefined;
+  const revisedPrompt = Array.isArray(output.images)
+    ? output.images
+      .filter(isRecord)
+      .map((image) => typeof image.revisedPrompt === "string" ? image.revisedPrompt.trim() : "")
+      .find((value) => Boolean(value))
+    : undefined;
   const lines = [`${mode === "edit" ? "edited" : "generated"} ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
   if (details.length > 0) lines.push(details.join(" · "));
   if (sourceImages !== undefined) lines.push(`source images: ${sourceImages}`);
   const duration = imageGenerationDuration(output);
   if (duration !== undefined) lines.push(`duration: ${duration}ms`);
+  if (prompt) lines.push(`prompt: ${prompt}`);
+  if (revisedPrompt && revisedPrompt !== prompt) lines.push(`revisedPrompt: ${revisedPrompt}`);
+  lines.push(`mode: ${mode}`);
+  if (semanticName) lines.push(`semanticName: ${semanticName}`);
+  if (background) lines.push(`background: ${background}`);
+  if (startedAtIso) lines.push(`startedAt: ${startedAtIso}`);
+  if (finishedAtIso) lines.push(`finishedAt: ${finishedAtIso}`);
   return lines.join("\n");
 }
 
