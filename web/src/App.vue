@@ -2436,7 +2436,7 @@ function linkify(value) {
                   :title="state.fastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
                   @click="toggleFastMode"
                 >
-                  <span>快速模式</span>
+                  <span>{{ state.fastMode ? '快速模式' : '快速模式（未启用）' }}</span>
                 </button>
                 <span class="compress-wrap">
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
