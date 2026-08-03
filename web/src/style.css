@@ -152,7 +152,7 @@ html.theme-transitioning::view-transition-new(root) {
   display: grid;
   gap: 4px;
 }
-.nav button, .sidebar-footer button, .ghost, .primary, .session-actions button, .chips button, .link-button, .compact-button {
+.nav button, .sidebar-footer button, .ghost, .primary, .session-actions button, .chips button, .link-button, .compact-button, .fast-mode-button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
@@ -2284,6 +2284,112 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .model-chip strong {
   max-width: 155px;
 }
+.fast-mode-button {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  overflow: hidden;
+  border-color: rgba(95, 75, 128, .24);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(245,242,250,.9));
+  color: #746a82;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.7);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color .2s ease, color .2s ease, box-shadow .25s ease, background .25s ease, transform .16s ease;
+}
+.fast-mode-button::before,
+.fast-mode-button::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+.fast-mode-button::before {
+  z-index: 0;
+  inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(188,116,255,.48) 0 .65px, transparent 1.15px),
+    radial-gradient(circle, rgba(224,187,255,.42) 0 .7px, transparent 1.2px),
+    radial-gradient(circle, rgba(145,62,255,.42) 0 .8px, transparent 1.3px),
+    radial-gradient(circle, rgba(244,224,255,.38) 0 .6px, transparent 1.1px);
+  background-size: 23px 13px, 31px 17px, 41px 19px, 53px 23px;
+  background-position: 0 2px, 7px 9px, 13px 4px, 19px 12px;
+  opacity: 0;
+  transition: opacity .25s ease;
+}
+.fast-mode-button::after {
+  z-index: 1;
+  inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(255,240,255,.92) 0 .9px, transparent 1.4px),
+    radial-gradient(circle, rgba(193,119,255,.82) 0 .85px, transparent 1.35px),
+    radial-gradient(circle, rgba(237,207,255,.86) 0 .7px, transparent 1.25px),
+    radial-gradient(circle, rgba(151,66,255,.76) 0 .8px, transparent 1.3px),
+    radial-gradient(circle, rgba(218,172,255,.8) 0 .65px, transparent 1.15px),
+    radial-gradient(circle, rgba(248,229,255,.78) 0 .75px, transparent 1.25px);
+  background-size: 29px 17px, 37px 21px, 43px 19px, 51px 23px, 61px 17px, 71px 25px;
+  background-position: 2px 3px, 11px 11px, 17px 6px, 23px 14px, 31px 2px, 41px 9px;
+  filter: drop-shadow(0 0 2px rgba(166,84,255,.72));
+  opacity: 0;
+  transition: opacity .25s ease;
+}
+.fast-mode-button:hover {
+  border-color: rgba(124,25,255,.48);
+  color: var(--purple);
+  transform: translateY(-1px);
+}
+.fast-mode-button:active {
+  transform: translateY(0) scale(.98);
+}
+.fast-mode-button.active {
+  border-color: rgba(137,63,255,.72);
+  background: linear-gradient(180deg, rgba(35,22,55,.98), rgba(25,16,40,.98));
+  color: #f7efff;
+  box-shadow:
+    inset 0 0 0 1px rgba(216,177,255,.08),
+    inset 0 0 10px rgba(124,25,255,.14),
+    0 0 8px rgba(124,25,255,.18);
+  text-shadow: 0 0 7px rgba(202,157,255,.38);
+}
+.fast-mode-button.active::before,
+.fast-mode-button.active::after {
+  opacity: 1;
+}
+.fast-mode-button.active::after {
+  animation: fast-particles-front 2.35s linear infinite;
+}
+.fast-mode-button.active::before {
+  animation: fast-particles-back 4.2s linear infinite;
+}
+.fast-mode-button.syncing {
+  box-shadow: inset 0 0 10px rgba(124,25,255,.18), 0 0 10px rgba(124,25,255,.28);
+}
+.fast-mode-button.syncing::before {
+  animation-duration: 2.1s;
+}
+.fast-mode-button.syncing::after {
+  animation-duration: 1.25s;
+}
+.fast-mode-button > span {
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+@keyframes fast-particles-back {
+  from { background-position: 0 2px, 7px 9px, 13px 4px, 19px 12px; }
+  to { background-position: 23px 2px, 38px 9px, 54px 4px, 72px 12px; }
+}
+@keyframes fast-particles-front {
+  from { background-position: 2px 3px, 11px 11px, 17px 6px, 23px 14px, 31px 2px, 41px 9px; }
+  to { background-position: 31px 3px, 48px 11px, 60px 6px, 74px 14px, 92px 2px, 112px 9px; }
+}
 .compress-wrap {
   position: relative;
   display: inline-flex;
@@ -2697,6 +2803,12 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 :root[data-theme='dark'] .metric-chip,
 :root[data-theme='dark'] .compact-button {
   background: rgba(24, 24, 31, .9);
+}
+:root[data-theme='dark'] .fast-mode-button:not(.active) {
+  border-color: rgba(255,255,255,.12);
+  background: rgba(24,24,31,.9);
+  color: #9b93a8;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.025);
 }
 :root[data-theme='dark'] .compression-warning,
 :root[data-theme='dark'] .compression-warning::before {

@@ -188,6 +188,8 @@ const state = reactive({
   lines: [],
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
+  fastMode: false,
+  fastModeMutating: false,
   busy: false,
   queuedInput: undefined,
   backgroundTaskCount: 0,
@@ -244,6 +246,8 @@ let activeThemeTransition
 let themeRevealAnimation
 let themeTransitionRunId = 0
 let requestedTheme = theme.value
+let fastModeMutationQueue = Promise.resolve()
+let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 const renderedLineCache = new Map()
 
@@ -381,6 +385,7 @@ function applySync(payload) {
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
   state.cwd = payload.cwd || ''
+  if (!state.fastModeMutating) state.fastMode = payload.fastMode === true
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session)
   if (state.sessionResumeLoading) {
@@ -654,6 +659,29 @@ async function retractQueuedInput() {
 async function compressSession() {
   const result = await postJson('/api/submit', { text: '/compact', attachments: [] })
   if (result?.ok !== false) notify('已请求压缩上下文')
+}
+
+function toggleFastMode() {
+  const enabled = !state.fastMode
+  const version = ++fastModeMutationVersion
+  state.fastMode = enabled
+  state.fastModeMutating = true
+
+  fastModeMutationQueue = fastModeMutationQueue
+    .catch(() => undefined)
+    .then(() => postJson('/api/fast-mode', { enabled }))
+    .then((result) => {
+      if (version !== fastModeMutationVersion) return
+      state.fastMode = result.fastMode === true
+      state.fastModeMutating = false
+      notify(state.fastMode ? '快速模式已为当前会话启动' : '快速模式已关闭')
+    })
+    .catch(async (error) => {
+      if (version !== fastModeMutationVersion) return
+      state.fastModeMutating = false
+      await fetchState()
+      notify(`快速模式切换失败：${error.message || error}`)
+    })
 }
 
 async function openSessions() {
@@ -2401,6 +2429,15 @@ function linkify(value) {
                 <span :class="['metric-chip numeric', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`"><em>上下文</em><strong>{{ composerContextValue }}</strong></span>
                 <span :class="['metric-chip numeric', metricBumpClass('inputTokens')]" :key="`input-${state.composerMetrics.inputTokens.bump}`"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
                 <span :class="['metric-chip numeric', metricBumpClass('outputTokens')]" :key="`output-${state.composerMetrics.outputTokens.bump}`"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
+                <button
+                  type="button"
+                  :class="['fast-mode-button', { active: state.fastMode, syncing: state.fastModeMutating }]"
+                  :aria-pressed="state.fastMode"
+                  :title="state.fastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
+                  @click="toggleFastMode"
+                >
+                  <span>快速模式</span>
+                </button>
                 <span class="compress-wrap">
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
                   <span v-if="showCompressionWarning" class="compression-warning" role="alert">上下文已超过 100k，请压缩上下文</span>
