@@ -65,6 +65,7 @@ export class QueryEngine {
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
   private currentFallbackModel?: string;
+  private currentFastMode = false;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
   private titleSchedulerVersion = 0;
@@ -184,6 +185,7 @@ export class QueryEngine {
       fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       queryOrigin: this.options.queryOrigin ?? "repl",
+      serviceTier: this.currentFastMode ? "priority" : undefined,
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
       maxTurns: this.options.maxTurns,
       abortSignal: options.abortSignal,
@@ -236,6 +238,17 @@ export class QueryEngine {
     };
   }
 
+  isFastMode(): boolean {
+    return this.currentFastMode;
+  }
+
+  async setFastMode(enabled: boolean): Promise<boolean> {
+    await this.initialize();
+    this.currentFastMode = enabled === true;
+    this.sessionStore?.recordFastMode(this.currentFastMode);
+    return this.currentFastMode;
+  }
+
   getAppPrompt(): AppPromptSnapshot {
     return this.appPromptStore.snapshot();
   }
@@ -280,13 +293,14 @@ export class QueryEngine {
     return result;
   }
 
-  snapshot(): { agentId: string; messages: number; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
+  snapshot(): { agentId: string; messages: number; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
       model: this.currentModel,
       fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
+      fastMode: this.currentFastMode,
       lastTerminalReason: this.lastTerminalReason,
       session: this.sessionStore?.snapshot(),
     };
@@ -432,6 +446,7 @@ export class QueryEngine {
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
     this.appPromptStore.setAppPrompt(this.sessionStore.getAppPrompt());
+    this.currentFastMode = this.sessionStore.getFastMode();
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 

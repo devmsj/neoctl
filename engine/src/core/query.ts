@@ -37,6 +37,7 @@ export interface QueryOptions {
   fallbackModel?: string;
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
+  serviceTier?: ModelRequest["serviceTier"];
   maxOutputTokensOverride?: number;
   maxTurns?: number;
   abortSignal?: AbortSignal;
@@ -336,6 +337,7 @@ async function* callModelForTurn(
       reasoning: options.reasoning,
       previousResponseId: state.previousResponseId,
       queryOrigin: options.queryOrigin,
+      serviceTier: options.serviceTier,
       cancellation: options.abortSignal,
     })) {
       if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };

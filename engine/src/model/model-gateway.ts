@@ -41,6 +41,7 @@ export interface ModelRequest {
   stream: boolean;
   timeoutMs?: number;
   queryOrigin?: string;
+  serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
   cancellation?: AbortSignal;
   providerOptions?: Record<string, unknown>;
 }

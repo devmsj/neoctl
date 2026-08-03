@@ -86,6 +86,7 @@ async function main(): Promise<void> {
   tools.register(smokePassthroughTool);
   const gateway = new FakeToolCallingGateway();
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4 });
+  await engine.setFastMode(true);
 
   const events: string[] = [];
   for await (const event of engine.sendUserText("run tool")) {
@@ -156,6 +157,9 @@ async function main(): Promise<void> {
     events.includes("terminal:completed") &&
     sanitized === "目录内容：\n- `package-lock.json`" &&
     snapshot.messages >= 3 &&
+    snapshot.fastMode === true &&
+    gateway.requests.length > 0 &&
+    gateway.requests.every((request) => request.serviceTier === "priority") &&
     abortDuringToolsOk &&
     userImagePinned &&
     storedImageCompacted &&

@@ -14,6 +14,7 @@ export type SessionTranscriptEntry =
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
+  | { type: "fast-mode"; sessionId: string; agentId: string; createdAt: string; enabled: boolean }
   | { type: "compact"; sessionId: string; agentId: string; createdAt: string }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
@@ -61,6 +62,7 @@ export interface SessionStoreSnapshot {
   resumedMessages: number;
   contentReplacements: number;
   appPrompt?: AppPromptValue;
+  fastMode: boolean;
 }
 
 export interface SessionTitleState {
@@ -83,6 +85,7 @@ export class SessionStore {
   private hasInitialTitle = false;
   private hasTitleRefinement = false;
   private appPrompt?: AppPromptValue;
+  private fastMode = false;
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
@@ -96,6 +99,7 @@ export class SessionStore {
     this.hasInitialTitle = loaded.hasInitialTitle;
     this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.appPrompt = loaded.appPrompt;
+    this.fastMode = loaded.fastMode;
     this.toolResultMemory = new FileToolResultMemory(
       {
         sessionDir: this.sessionDir,
@@ -224,6 +228,23 @@ export class SessionStore {
     });
   }
 
+  getFastMode(): boolean {
+    return this.fastMode;
+  }
+
+  recordFastMode(enabled: boolean): void {
+    const next = enabled === true;
+    if (next === this.fastMode) return;
+    this.fastMode = next;
+    this.appendEntry({
+      type: "fast-mode",
+      sessionId: this.sessionId,
+      agentId: this.agentId,
+      createdAt: new Date().toISOString(),
+      enabled: next,
+    });
+  }
+
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
     if (replacements.length === 0) return;
     this.contentReplacements.push(...replacements);
@@ -256,6 +277,7 @@ export class SessionStore {
       hasTitleRefinement: this.hasTitleRefinement,
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
+      fastMode: this.fastMode,
       ...(this.appPrompt ? { appPrompt: cloneAppPrompt(this.appPrompt) } : {}),
     };
   }
@@ -275,6 +297,7 @@ interface LoadedTranscript {
   hasInitialTitle: boolean;
   hasTitleRefinement: boolean;
   appPrompt?: AppPromptValue;
+  fastMode: boolean;
 }
 
 interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
@@ -330,6 +353,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
         }
       }
       if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
+      if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
     } catch {
       // Skip malformed lines so a partial write does not make the session unusable.
     }
@@ -338,7 +362,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
 }
 
 function createEmptyLoadedTranscript(): LoadedTranscript {
-  return { messages: [], replacements: [], entries: 0, hasInitialTitle: false, hasTitleRefinement: false };
+  return { messages: [], replacements: [], entries: 0, hasInitialTitle: false, hasTitleRefinement: false, fastMode: false };
 }
 
 function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {

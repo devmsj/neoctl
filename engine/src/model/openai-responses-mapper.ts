@@ -37,6 +37,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     reasoning: reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined),
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
+    service_tier: request.serviceTier,
     store: shouldStoreResponse(request, tools.length),
     ...((request.providerOptions?.responses as Record<string, unknown> | undefined) ?? {}),
   });

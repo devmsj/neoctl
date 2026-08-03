@@ -30,7 +30,7 @@ const danglingToolUse: Message = {
 const danglingToolResult = createToolResultMessage({ id: "call_missing_use", name: "smoke_tool", input: { text: "missing" } }, true, "missing");
 
 const plain = buildResponsesRequest(
-  { messages: [createTextMessage("user", "hello")], tools: [], stream: true },
+  { messages: [createTextMessage("user", "hello")], tools: [], stream: true, serviceTier: "fast" },
   { model: "gpt-test" },
 );
 const withTools = buildResponsesRequest(
@@ -63,7 +63,7 @@ const override = buildResponsesRequest(
   { model: "gpt-test" },
 );
 const chat = buildChatRequest(
-  { messages: [assistantToolUse, toolResult], tools: [tool], stream: true },
+  { messages: [assistantToolUse, toolResult], tools: [tool], stream: true, serviceTier: "fast" },
   { model: "gpt-test" },
 );
 const chatWithSystemState = buildChatRequest(
@@ -83,6 +83,7 @@ const danglingChatMessages = danglingChat.messages as Array<Record<string, unkno
 const chatAssistant = chatMessages.find((message) => message.role === "assistant") as Record<string, unknown> | undefined;
 const ok =
   plain.store === false &&
+  plain.service_tier === "fast" &&
   withTools.store === true &&
   continuation.store === true &&
   continuation.previous_response_id === undefined &&
@@ -95,7 +96,8 @@ const ok =
   chatWithSystemStateMessages.some((message) => message.role === "system" && String(message.content).includes("Internal continuation state")) &&
   !JSON.stringify(danglingChatMessages).includes("call_missing_result") &&
   !JSON.stringify(danglingChatMessages).includes("call_missing_use") &&
-  override.store === false;
+  override.store === false &&
+  chat.service_tier === "fast";
 
 console.log(JSON.stringify({ ok, stores: { plain: plain.store, withTools: withTools.store, continuation: continuation.store, override: override.store } }, null, 2));
 if (!ok) process.exitCode = 1;

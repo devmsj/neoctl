@@ -23,6 +23,7 @@ async function main(): Promise<void> {
   store.recordContentReplacements(first.records);
   store.recordTitle("Smoke Session Title", "initial");
   store.recordTitle("Refined Smoke Session Title", "refinement");
+  store.recordFastMode(true);
   store.recordMessage({ ...messages[0], role: "progress" });
 
   const resumed = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
@@ -60,6 +61,7 @@ async function main(): Promise<void> {
     resumed.snapshot().titleKind === "refinement" &&
     resumed.snapshot().hasInitialTitle &&
     resumed.snapshot().hasTitleRefinement &&
+    resumed.snapshot().fastMode === true &&
     latest.snapshot().sessionId === sessionId &&
     latest.snapshot().resumedMessages === messages.length &&
     latest.snapshot().title === "Refined Smoke Session Title" &&
@@ -77,6 +79,7 @@ async function main(): Promise<void> {
     exportedMarkdown.includes("## Transcript") &&
     exportedMarkdown.includes("Tool use ID: call_a") &&
     resetResume.snapshot().resumedMessages === 0 &&
+    resetResume.snapshot().fastMode === true &&
     deleted &&
     listedAfterDelete.length === 0;
 

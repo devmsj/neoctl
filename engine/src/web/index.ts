@@ -457,6 +457,7 @@ export class WebRepl {
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
+      fastMode: this.runtime.engine.isFastMode(),
       appPrompt: this.runtime.engine.getAppPrompt(),
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
@@ -585,6 +586,16 @@ export class WebRepl {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: message };
+    }
+  }
+
+  async setFastMode(enabled: boolean): Promise<{ ok: true; fastMode: boolean } | { ok: false; error: string }> {
+    try {
+      const fastMode = await this.runtime.engine.setFastMode(enabled);
+      this.broadcastSync();
+      return { ok: true, fastMode };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -1066,6 +1077,10 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "POST" && url.pathname === "/api/app-prompt") {
       const body = await readJsonBody<WebSetAppPromptPayload>(req);
       return sendJson(res, repl.setAppPrompt(body));
+    }
+    if (req.method === "POST" && url.pathname === "/api/fast-mode") {
+      const body = await readJsonBody<{ enabled?: boolean }>(req);
+      return sendJson(res, await repl.setFastMode(body.enabled === true));
     }
     if (req.method === "POST" && url.pathname === "/api/submit") {
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);

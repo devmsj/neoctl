@@ -37,6 +37,7 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
     reasoning_effort: chatReasoningEffortOption(request.model ?? options.model, reasoning),
     thinking: chatThinkingOption(request.model ?? options.model, reasoning, reasoningDisabled),
     metadata: options.includeMetadata === false ? undefined : request.metadata,
+    service_tier: request.serviceTier,
     ...((request.providerOptions?.chat as Record<string, unknown> | undefined) ?? {}),
   });
 }
