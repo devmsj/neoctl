@@ -1774,24 +1774,15 @@ function directLineImagePreviews(line) {
   return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
 }
 
-function isUserTurnBoundary(line) {
-  const text = String(line?.text || '')
-  return line?.kind === 'user' && (text.includes(DOWNLOAD_EXPOSURE_HINT) || text.includes(XHS_ARTIFACT_EDITOR_HINT))
-}
-
 function userMessageGroup(line) {
   if (line?.kind !== 'user') return [line]
   const lines = state.lines || []
   const index = lines.findIndex((item) => String(item?.id) === String(line?.id))
   if (index < 0) return [line]
   let start = index
-  while (start > 0) {
-    const previous = lines[start - 1]
-    if (previous?.kind !== 'user' || isUserTurnBoundary(previous)) break
-    start -= 1
-  }
+  while (start > 0 && lines[start - 1]?.kind === 'user') start -= 1
   let end = start
-  while (end + 1 < lines.length && lines[end + 1]?.kind === 'user' && !isUserTurnBoundary(lines[end])) end += 1
+  while (end + 1 < lines.length && lines[end + 1]?.kind === 'user') end += 1
   return lines.slice(start, end + 1)
 }
 
