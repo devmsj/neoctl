@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
 import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from '../downloads.mjs';
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from '../artifacts.mjs';
+import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
@@ -19,6 +20,19 @@ const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 
 const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry();
+const workspaceRuntime = createWorkspaceRuntimeManager({
+  projectRoot: process.cwd(),
+  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
+  createRuntime: (runtimeOptions) => createWebRuntime({
+    ...runtimeOptions,
+    skillRoots: [scaffoldSkillRoot, xhsSkillRoot],
+    externalTools: [
+      createExposeDownloadsTool({ registry: downloadRegistry }),
+      createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
+      createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
+    ],
+  }),
+});
 
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
@@ -42,17 +56,8 @@ const DEFAULT_APP_PROMPT_LIBRARY = [
 ];
 
 await runWebServer(['--host', host, '--port', String(upstreamPort)], {
-  createRuntime: (runtimeOptions) => createWebRuntime({
-    ...runtimeOptions,
-    skillRoots: [scaffoldSkillRoot, xhsSkillRoot],
-    externalTools: [
-      createExposeDownloadsTool({
-        registry: downloadRegistry,
-      }),
-      createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
-      createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
-    ],
-  }),
+  createRuntime: workspaceRuntime.createRuntime,
+  createRepl: workspaceRuntime.createRepl,
 });
 await startPromptLibraryProxy();
 

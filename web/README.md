@@ -15,6 +15,8 @@ npm run dev
 - Neo 运行时：`http://127.0.0.1:3101`
 - Vue 单页应用：`http://127.0.0.1:5173`
 
+每个新建对话会自动创建独立工作目录：`workspace/YYMMDDHHMMSS`。可通过 `NEO_WORKSPACE_ROOT` 覆盖 `workspace` 根目录；会话恢复时会自动回到该会话原有的工作目录。
+
 Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo web` 相同的后端能力：
 
 - `/events`：SSE 流式同步
@@ -24,6 +26,8 @@ Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo w
 - `/api/sessions/*`：会话列表、恢复、新建、删除
 - `/api/login`：模型供应商配置
 - `/vendor/*`：neo web 运行时静态资源
+
+`expose_downloads` 可暴露任意现有绝对文件路径，不受当前工作目录限制；下载链接仍为临时链接并按注册表有效期失效。
 
 如果只想启动纯前端 Vite：
 

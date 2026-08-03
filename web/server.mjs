@@ -4,8 +4,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
-import { createExposeDownloadsTool, DownloadRegistry, downloadRootsFromEnv, serveDownload } from './downloads.mjs';
+import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from './downloads.mjs';
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from './artifacts.mjs';
+import { createWorkspaceRuntimeManager } from './runtime-workspaces.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
@@ -18,6 +19,18 @@ const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 10
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry();
 const embedRuntime = process.env.NEO_EMBED_RUNTIME !== 'false';
+const workspaceRuntime = createWorkspaceRuntimeManager({
+  projectRoot: __dirname,
+  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(__dirname, 'workspace')),
+  createRuntime: (runtimeOptions) => createWebRuntime({
+    ...runtimeOptions,
+    externalTools: [
+      createExposeDownloadsTool({ registry: downloadRegistry }),
+      createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
+      createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
+    ],
+  }),
+});
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -70,17 +83,8 @@ async function startEmbeddedRuntime() {
   const runtimeHost = runtimeTarget.hostname || '127.0.0.1';
   const runtimePort = runtimeTarget.port || '3101';
   await runWebServer(['--host', runtimeHost, '--port', runtimePort], {
-    createRuntime: (runtimeOptions) => createWebRuntime({
-      ...runtimeOptions,
-      externalTools: [
-        createExposeDownloadsTool({
-          registry: downloadRegistry,
-          allowedRoots: downloadRootsFromEnv(__dirname),
-        }),
-        createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
-        createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
-      ],
-    }),
+    createRuntime: workspaceRuntime.createRuntime,
+    createRepl: workspaceRuntime.createRepl,
   });
 }
 

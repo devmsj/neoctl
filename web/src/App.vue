@@ -36,7 +36,6 @@ hljs.registerLanguage('yaml', yaml)
 hljs.registerLanguage('yml', yaml)
 hljs.registerLanguage('diff', diff)
 
-const TOOL_COLLAPSED_CHARS = 1800
 const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
@@ -99,6 +98,7 @@ const LOGIN_FIELD_LABELS = {
 }
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
+const THEME_STORAGE_KEY = 'neoctl-web.theme'
 const runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
 
@@ -195,6 +195,7 @@ const state = reactive({
   backgroundSessionRunCount: 0,
   runningSessionIds: [],
   session: undefined,
+  cwd: '',
   sessionsLoading: false,
   sessionResumeLoading: false,
   pendingResumeSessionId: '',
@@ -203,7 +204,7 @@ const state = reactive({
   sessions: [],
   login: undefined,
   activePanel: 'chat',
-  expandedTools: new Set(),
+  toolDetailLineId: undefined,
   promptLibrary: [],
   promptLibraryLoading: true,
   promptManagerOpen: false,
@@ -226,6 +227,7 @@ const state = reactive({
 })
 
 const input = ref('')
+const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
 const transcript = ref(null)
@@ -238,6 +240,10 @@ let toastTimer
 let scrollRaf = 0
 let clockTimer
 let metricsRaf = 0
+let activeThemeTransition
+let themeRevealAnimation
+let themeTransitionRunId = 0
+let requestedTheme = theme.value
 let previousBackgroundTaskStatuses = new Map()
 const renderedLineCache = new Map()
 
@@ -259,6 +265,7 @@ const realSessionTitle = computed(() => {
 })
 const currentTitle = computed(() => realSessionTitle.value || '未命名设计会话')
 const currentSessionId = computed(() => state.session?.sessionId || '暂无会话')
+const currentCwd = computed(() => state.cwd || '—')
 const modelName = computed(() => state.status?.metrics?.model || '模型未配置')
 const contextPercent = computed(() => {
   const ratio = state.status?.metrics?.contextUsageRatio
@@ -283,9 +290,14 @@ const activePanelLabel = computed(() => ({
   settings: '模型配置',
 }[state.activePanel] || state.activePanel))
 const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
+const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
 const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
+const isDarkTheme = computed(() => theme.value === 'dark')
+const themeToggleLabel = computed(() => isDarkTheme.value ? '切换到日间模式' : '切换到夜间模式')
+
+watch(theme, applyTheme, { immediate: true })
 
 watch(realSessionTitle, (title) => {
   document.title = title || '对话工作台'
@@ -303,6 +315,11 @@ onBeforeUnmount(() => {
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
   if (clockTimer) clearInterval(clockTimer)
+  themeTransitionRunId += 1
+  themeRevealAnimation?.cancel()
+  activeThemeTransition?.skipTransition()
+  clearThemeTransitionVisuals()
+  document.body.classList.remove('tool-detail-open')
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -351,6 +368,7 @@ function connectEvents() {
 function applySync(payload) {
   const shouldFollow = isTranscriptNearBottom()
   state.lines = payload.lines || []
+  if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   syncMessageImagePreviewsFromLines(state.lines)
   syncLiveToolTimers(state.lines)
   state.status = payload.status || state.status
@@ -362,6 +380,7 @@ function applySync(payload) {
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
+  state.cwd = payload.cwd || ''
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session)
   if (state.sessionResumeLoading) {
@@ -712,17 +731,10 @@ async function postJson(url, body) {
   return value
 }
 
-function toggleTool(lineId) {
-  if (state.expandedTools.has(lineId)) state.expandedTools.delete(lineId)
-  else state.expandedTools.add(lineId)
-}
-
 function lineText(line) {
   const baseText = stripHiddenAttachmentManifest(stripImageOperationHint(stripImageLabels(line.text || '')))
   const text = line.kind === 'system' || line.kind === 'meta' ? localizeSystemText(baseText) : baseText
-  if (line.kind !== 'tool') return text
-  if (state.expandedTools.has(line.id) || text.length <= TOOL_COLLAPSED_CHARS) return text
-  return `${text.slice(0, TOOL_COLLAPSED_CHARS)}\n…`
+  return text
 }
 
 function localizeSystemText(text) {
@@ -740,7 +752,7 @@ function localizeSystemText(text) {
 }
 
 function lineTitle(line) {
-  if (line.kind === 'tool') return exactToolName(line)
+  if (line.kind === 'tool') return isPlanToolLine(line) ? '任务计划' : exactToolName(line)
   if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
   if (line.kind === 'user') return '你'
@@ -765,6 +777,82 @@ function lineToolKindText(line) {
   return '工具'
 }
 
+function isPlanToolLine(line) {
+  return line?.kind === 'tool' && exactToolName(line).toLowerCase() === 'plan'
+}
+
+function isInlineRichToolLine(line) {
+  return isPlanToolLine(line) || isImage2Line(line) || isExposeDownloadsLine(line) || isXhsArtifactLine(line)
+}
+
+function shouldCollapseToolLine(line) {
+  return line?.kind === 'tool' && !isInlineRichToolLine(line)
+}
+
+function openToolDetail(line) {
+  if (!line || !line.text) return
+  state.toolDetailLineId = line.id
+  document.body.classList.add('tool-detail-open')
+}
+
+function closeToolDetail() {
+  state.toolDetailLineId = undefined
+  document.body.classList.remove('tool-detail-open')
+}
+
+function toolResultStatus(line) {
+  if (line?.live) return { key: 'running', label: '执行中' }
+  const parsed = parseFirstJsonObject(line?.text || '')
+  const failed = parsed?.ok === false || parsed?.error || parsed?.output?.error || /fail|error/i.test(String(line?.titleStatus || '')) || /(^|\s)(error|failed|failure):/i.test(String(line?.text || ''))
+  return failed ? { key: 'failed', label: '执行失败' } : { key: 'completed', label: '执行完成' }
+}
+
+function toolResultSummary(line) {
+  const name = exactToolName(line).toLowerCase()
+  const raw = String(line?.text || '')
+  const parsed = parseFirstJsonObject(raw)
+  const output = parsed?.output && typeof parsed.output === 'object' ? parsed.output : parsed
+  const error = output?.error || parsed?.error
+  if (error) return truncateSummary(String(error), 150)
+  if (name === 'exec' || name.includes('shell') || name.includes('command')) {
+    const description = output?.description || output?.command || toolTextField(raw, ['目的', 'description', 'command'])
+    const suffix = output?.exitCode !== undefined ? ` · exit ${output.exitCode}` : ''
+    return truncateSummary(`${description || '命令执行结束'}${suffix}`, 150)
+  }
+  if (name === 'read' || name.includes('read')) {
+    const range = output?.startLine && output?.endLine ? ` · ${output.startLine}-${output.endLine} 行` : ''
+    return truncateSummary(`${output?.path || toolTextField(raw, ['file', 'path']) || '文件读取完成'}${range}`, 150)
+  }
+  if (name === 'write' || name === 'edit' || name.includes('apply_patch')) {
+    const operation = output?.operation ? ` · ${output.operation}` : ''
+    const path = output?.path || /^(?:create|edit|write)\s+(.+?)(?:,|$)/im.exec(raw)?.[1]
+    return truncateSummary(`${path || '文件更新完成'}${operation}`, 150)
+  }
+  if (name === 'list') {
+    const count = output?.returnedEntries ?? output?.totalFiles
+    return truncateSummary(`${output?.path || toolTextField(raw, ['path']) || '目录读取完成'}${count !== undefined ? ` · ${count} 项` : ''}`, 150)
+  }
+  if (name === 'grep' || name.includes('search') || name.includes('query')) {
+    const count = output?.matchCount ?? output?.matches?.length ?? output?.results?.length
+    return truncateSummary(`${output?.query || output?.pattern || output?.path || '搜索完成'}${count !== undefined ? ` · ${count} 条` : ''}`, 150)
+  }
+  const firstLine = raw.split(/\r?\n/).map((item) => item.trim()).find(Boolean)
+  return truncateSummary(firstLine || `${exactToolName(line)} 已完成`, 150)
+}
+
+function truncateSummary(value, maxLength) {
+  const compact = String(value || '').replace(/\s+/g, ' ').trim()
+  return compact.length > maxLength ? `${compact.slice(0, maxLength)}…` : compact
+}
+
+function toolTextField(text, labels) {
+  for (const label of labels) {
+    const match = new RegExp(`(?:^|\\n)${escapeRegExp(label)}[:：]\\s*([^\\n]+)`, 'i').exec(String(text || ''))
+    if (match?.[1]) return match[1].trim()
+  }
+  return ''
+}
+
 function isImage2Line(line) {
   return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'image2'
 }
@@ -778,7 +866,13 @@ function isImage2PendingReplacementLine(line) {
 }
 
 function shouldHideLine(line) {
-  return isGeneratedImageLine(line) && !isImage2Line(line)
+  if (isGeneratedImageLine(line) && !isImage2Line(line)) return true
+  if (line?.kind !== 'user') return false
+  const group = userMessageGroup(line)
+  if (userGroupHasImages(group)) return String(userMessageOwner(group)?.id) !== String(line?.id)
+  return !lineText(line)
+    && directLineImagePreviews(line).length === 0
+    && imageLabelsFromText(line?.text).length === 0
 }
 
 function lineHasImage2Stage(line) {
@@ -887,13 +981,14 @@ function shouldMarkdown(line) {
 }
 
 function renderLine(line) {
+  if (isPlanToolLine(line)) return renderPlanResult(line)
   if (isImage2ResultLine(line)) return renderImage2Result(line)
   if (isExposeDownloadsLine(line)) return renderExposeDownloadsResult(line)
   if (isReadXhsArtifactLine(line)) return sanitizeMarkdown(marked.parse('已读取稿件'))
   if (isImageNoteLine(line)) return renderImageNoteResult(line)
   if (isSkillReadLine(line)) return renderSkillReadResult(line)
   const text = lineText(line)
-  const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', state.expandedTools.has(line.id) ? '1' : '0', text].join('\u001f')
+  const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', text].join('\u001f')
   const cached = renderedLineCache.get(key)
   if (cached !== undefined) return cached
   let html
@@ -902,6 +997,92 @@ function renderLine(line) {
   else html = sanitizeMarkdown(marked.parse(text || ''))
   renderedLineCache.set(key, html)
   return html
+}
+
+function renderToolDetail(line) {
+  if (!line) return ''
+  const text = lineText(line)
+  if (line.format === 'diff' || /(?:^|\n)---\s+.+\n\+\+\+\s+/.test(text)) return renderDiff(text)
+  if (line.format === 'ansi') return `<pre class="tool-detail-pre">${escapeHtml(stripAnsi(text))}</pre>`
+  const parsed = parseFirstJsonObject(text)
+  if (parsed) {
+    const json = JSON.stringify(parsed, null, 2)
+    return sanitizeMarkdown(marked.parse(`\`\`\`json\n${json}\n\`\`\``))
+  }
+  return `<pre class="tool-detail-pre">${escapeHtml(stripAnsi(text))}</pre>`
+}
+
+function renderPlanResult(line) {
+  const plan = parsePlanResult(line)
+  const items = Array.isArray(plan?.items) ? plan.items : []
+  if (!plan || !items.length) return sanitizeMarkdown(marked.parse(lineText(line) || ''))
+  const completed = Number.isFinite(Number(plan.completed))
+    ? Number(plan.completed)
+    : items.filter((item) => normalizePlanStatus(item?.status) === 'completed').length
+  const total = Number.isFinite(Number(plan.total)) ? Number(plan.total) : items.length
+  const progress = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0
+  const title = escapeHtml(plan.title || '任务计划')
+  const rows = items.map((item, index) => {
+    const status = normalizePlanStatus(item?.status)
+    const icon = status === 'completed' ? '✓' : status === 'in_progress' ? '●' : status === 'failed' ? '!' : String(index + 1)
+    return `<li class="plan-item status-${status}"><span class="plan-item-marker" aria-hidden="true">${icon}</span><span class="plan-item-text">${escapeHtml(item?.description || `步骤 ${index + 1}`)}</span><span class="plan-item-status">${planStatusLabel(status)}</span></li>`
+  }).join('')
+  const note = plan.note ? `<div class="plan-note"><span>说明</span><p>${escapeHtml(plan.note)}</p></div>` : ''
+  return `<section class="plan-card"><div class="plan-card-head"><div><span class="plan-kicker">执行计划</span><strong>${title}</strong></div><span class="plan-progress-label">${completed} / ${total}</span></div><div class="plan-progress-track" aria-label="计划进度 ${Math.round(progress)}%"><span style="width:${progress.toFixed(2)}%"></span></div><ol class="plan-items">${rows}</ol>${note}</section>`
+}
+
+function parsePlanResult(line) {
+  const raw = String(line?.text || '')
+  const parsed = parseFirstJsonObject(raw)
+  const structured = parsed?.output && typeof parsed.output === 'object' ? parsed.output : parsed
+  if (Array.isArray(structured?.items)) return structured
+
+  const lines = raw.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+  const summary = /^(\d+)\s*\/\s*(\d+)\s+completed/i.exec(lines[0] || '')
+  const itemLines = lines.filter((item) => /^[-*]\s+/.test(item))
+  const items = itemLines.map((item) => {
+    let description = item.replace(/^[-*]\s+/, '').trim()
+    let status = 'pending'
+    if (/^~~[\s\S]+~~$/.test(description)) {
+      status = 'completed'
+      description = description.slice(2, -2).trim()
+    } else if (/^[▶►●]\s*/.test(description)) {
+      status = 'in_progress'
+      description = description.replace(/^[▶►●]\s*/, '').trim()
+    } else if (/^[!✗×]\s*/.test(description)) {
+      status = 'failed'
+      description = description.replace(/^[!✗×]\s*/, '').trim()
+    }
+    return { description, status }
+  })
+  const note = lines
+    .slice(summary ? 1 : 0)
+    .filter((item) => !/^[-*]\s+/.test(item))
+    .join(' ')
+  return {
+    title: '当前执行计划',
+    note,
+    items,
+    completed: summary ? Number(summary[1]) : items.filter((item) => item.status === 'completed').length,
+    total: summary ? Number(summary[2]) : items.length,
+  }
+}
+
+function normalizePlanStatus(status) {
+  const value = String(status || 'pending').toLowerCase().replace(/[\s-]+/g, '_')
+  if (value === 'complete' || value === 'done') return 'completed'
+  if (value === 'running' || value === 'inprogress') return 'in_progress'
+  if (value === 'error') return 'failed'
+  return ['completed', 'in_progress', 'failed', 'pending'].includes(value) ? value : 'pending'
+}
+
+function planStatusLabel(status) {
+  return {
+    completed: '已完成',
+    in_progress: '进行中',
+    failed: '失败',
+    pending: '待处理',
+  }[status] || '待处理'
 }
 
 function renderDiff(text) {
@@ -930,10 +1111,6 @@ function isImageNoteLine(line) {
 function isSkillReadLine(line) {
   const title = String(line?.title || '').toLowerCase()
   return line?.kind === 'tool' && title === 'skill_read'
-}
-
-function isCompactToolLine(line) {
-  return isReadXhsArtifactLine(line) || isImageNoteLine(line) || isSkillReadLine(line)
 }
 
 function renderSkillReadResult(line) {
@@ -1251,6 +1428,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.toolDetailLineId !== undefined) {
+    event.preventDefault()
+    closeToolDetail()
+    return
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     composer.value?.focus()
@@ -1258,6 +1440,107 @@ function handleGlobalKeydown(event) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && !input.value) {
     interrupt()
   }
+}
+
+function resolveInitialTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY)
+    if (saved === 'light' || saved === 'dark') return saved
+  } catch {
+    // Fall through to the operating-system preference when storage is unavailable.
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function applyTheme(value) {
+  document.documentElement.dataset.theme = value
+  document.documentElement.style.colorScheme = value
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0c0c0f' : '#ffffff')
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, value)
+  } catch {
+    // Theme switching still works for the current page when storage is unavailable.
+  }
+}
+
+function clearThemeTransitionVisuals() {
+  const root = document.documentElement
+  root.classList.remove('theme-transitioning')
+  root.style.removeProperty('--theme-transition-x')
+  root.style.removeProperty('--theme-transition-y')
+}
+
+function toggleTheme(event) {
+  const nextTheme = requestedTheme === 'dark' ? 'light' : 'dark'
+  requestedTheme = nextTheme
+  const trigger = event?.currentTarget
+  const rect = trigger?.getBoundingClientRect()
+  const originX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+  const originY = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+  if (activeThemeTransition) {
+    themeTransitionRunId += 1
+    themeRevealAnimation?.cancel()
+    themeRevealAnimation = undefined
+    activeThemeTransition.skipTransition()
+    clearThemeTransitionVisuals()
+    theme.value = nextTheme
+    return
+  }
+
+  if (!document.startViewTransition || reduceMotion) {
+    theme.value = nextTheme
+    return
+  }
+
+  const root = document.documentElement
+  const radius = Math.hypot(
+    Math.max(originX, window.innerWidth - originX),
+    Math.max(originY, window.innerHeight - originY),
+  )
+  root.style.setProperty('--theme-transition-x', `${originX}px`)
+  root.style.setProperty('--theme-transition-y', `${originY}px`)
+  root.classList.add('theme-transitioning')
+  const runId = ++themeTransitionRunId
+  let transition
+  try {
+    transition = document.startViewTransition(async () => {
+      if (runId !== themeTransitionRunId) return
+      theme.value = nextTheme
+      await nextTick()
+    })
+    activeThemeTransition = transition
+  } catch {
+    clearThemeTransitionVisuals()
+    theme.value = nextTheme
+    return
+  }
+
+  transition.ready.then(() => {
+    if (runId !== themeTransitionRunId || activeThemeTransition !== transition) return
+    themeRevealAnimation = root.animate(
+      {
+        clipPath: [
+          `circle(0px at ${originX}px ${originY}px)`,
+          `circle(${radius}px at ${originX}px ${originY}px)`,
+        ],
+      },
+      {
+        duration: 2000,
+        easing: 'cubic-bezier(.22,.68,.18,1)',
+        fill: 'both',
+        pseudoElement: '::view-transition-new(root)',
+      },
+    )
+  }).catch(() => {})
+
+  transition.finished.finally(() => {
+    if (activeThemeTransition === transition) activeThemeTransition = undefined
+    if (runId !== themeTransitionRunId) return
+    themeRevealAnimation = undefined
+    clearThemeTransitionVisuals()
+  })
 }
 
 async function handlePaste(event) {
@@ -1437,14 +1720,16 @@ function mergeMessageImagePreviews(previews) {
 
 function lineImagePreviews(line) {
   if (isImage2Line(line)) return image2LineImages(line)
+  const group = line?.kind === 'user' ? userMessageGroup(line) : [line]
   const images = []
-  collectLineImageItems(line, images)
-  for (const label of imageLabelsFromText(line?.text)) {
-    if (hasStandaloneLineImage(label, line?.id)) continue
-    const cached = state.messageImagePreviews.find((item) => item.label === label)
-    if (cached) images.push(cached)
+  for (const item of group) {
+    images.push(...directLineImagePreviews(item))
+    for (const label of imageLabelsFromText(item?.text)) {
+      const cached = state.messageImagePreviews.find((image) => image.label === label)
+      if (cached) images.push(cached)
+    }
   }
-  return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+  return dedupeImages(images)
 }
 
 function image2LineImages(line) {
@@ -1454,14 +1739,41 @@ function image2LineImages(line) {
   return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
 }
 
-function hasStandaloneLineImage(label, currentLineId) {
-  if (!label) return false
-  return (state.lines || []).some((line) => {
-    if (line?.id === currentLineId) return false
-    const images = []
-    collectLineImageItems(line, images)
-    return images.map(normalizeImagePreview).some((image) => image?.label === label)
-  })
+function directLineImagePreviews(line) {
+  const images = []
+  collectLineImageItems(line, images)
+  return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+}
+
+function isUserTurnBoundary(line) {
+  const text = String(line?.text || '')
+  return line?.kind === 'user' && (text.includes(DOWNLOAD_EXPOSURE_HINT) || text.includes(XHS_ARTIFACT_EDITOR_HINT))
+}
+
+function userMessageGroup(line) {
+  if (line?.kind !== 'user') return [line]
+  const lines = state.lines || []
+  const index = lines.findIndex((item) => String(item?.id) === String(line?.id))
+  if (index < 0) return [line]
+  let start = index
+  while (start > 0) {
+    const previous = lines[start - 1]
+    if (previous?.kind !== 'user' || isUserTurnBoundary(previous)) break
+    start -= 1
+  }
+  let end = start
+  while (end + 1 < lines.length && lines[end + 1]?.kind === 'user' && !isUserTurnBoundary(lines[end])) end += 1
+  return lines.slice(start, end + 1)
+}
+
+function userGroupHasImages(group) {
+  return group.some((line) => directLineImagePreviews(line).length > 0 || imageLabelsFromText(line?.text).length > 0)
+}
+
+function userMessageOwner(group) {
+  return group.find((line) => lineText(line))
+    || group.find((line) => directLineImagePreviews(line).length > 0 || imageLabelsFromText(line?.text).length > 0)
+    || group[0]
 }
 
 function generatedImageLinesAfter(line) {
@@ -1818,7 +2130,16 @@ function linkify(value) {
   <div class="shell">
     <aside class="sidebar">
       <div class="brand-row logo-only">
-        <img class="mark" src="/favicon.svg" alt="工作台" />
+        <button class="theme-toggle" type="button" :aria-label="themeToggleLabel" :title="themeToggleLabel" @click="toggleTheme">
+          <svg v-if="isDarkTheme" class="ui-icon theme-toggle-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="10" cy="10" r="3.2" />
+            <path d="M10 2.4v2M10 15.6v2M2.4 10h2M15.6 10h2M4.6 4.6 6 6M14 14l1.4 1.4M15.4 4.6 14 6M6 14l-1.4 1.4" />
+          </svg>
+          <svg v-else class="ui-icon theme-toggle-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M15.8 12.4A6.1 6.1 0 0 1 7.6 4.2 6.1 6.1 0 1 0 15.8 12.4Z" />
+          </svg>
+          <span>{{ isDarkTheme ? '日间模式' : '夜间模式' }}</span>
+        </button>
       </div>
 
       <nav class="nav">
@@ -1919,6 +2240,15 @@ function linkify(value) {
           <span>工作空间 / {{ activePanelLabel }}</span>
         </div>
         <div class="top-actions">
+          <button class="ghost mobile-theme-toggle" type="button" :aria-label="themeToggleLabel" :title="themeToggleLabel" @click="toggleTheme">
+            <svg v-if="isDarkTheme" class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="3.2" />
+              <path d="M10 2.4v2M10 15.6v2M2.4 10h2M15.6 10h2M4.6 4.6 6 6M14 14l1.4 1.4M15.4 4.6 14 6M6 14l-1.4 1.4" />
+            </svg>
+            <svg v-else class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M15.8 12.4A6.1 6.1 0 0 1 7.6 4.2 6.1 6.1 0 1 0 15.8 12.4Z" />
+            </svg>
+          </button>
           <button class="ghost" @click="openLogin()">配置模型</button>
           <button class="primary" @click="newSession">+ 新建</button>
         </div>
@@ -1942,6 +2272,18 @@ function linkify(value) {
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="lineHasImage2Stage(line)" class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
+                <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">
+                  <div class="tool-result-summary-icon" aria-hidden="true">
+                    <svg class="ui-icon" viewBox="0 0 20 20">
+                      <path d="M5 5.5h10v9H5zM7.5 8h5M7.5 11h3.5" />
+                    </svg>
+                  </div>
+                  <div class="tool-result-summary-main">
+                    <div><strong>{{ toolResultStatus(line).label }}</strong><span>{{ lineToolKindText(line) }}</span></div>
+                    <p>{{ toolResultSummary(line) }}</p>
+                  </div>
+                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">查看结果</button>
+                </div>
                 <template v-else>
                   <template v-if="isXhsArtifactLine(line)">
                     <XhsArtifactEditor
@@ -1965,9 +2307,6 @@ function linkify(value) {
                     </div>
                   </template>
                 </template>
-                <button v-if="line.kind === 'tool' && !isCompactToolLine(line) && (line.text || '').length > TOOL_COLLAPSED_CHARS" class="link-button" @click="toggleTool(line.id)">
-                  {{ state.expandedTools.has(line.id) ? '收起工具输出' : '展开完整工具输出' }}
-                </button>
               </div>
             </article>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
@@ -2042,6 +2381,7 @@ function linkify(value) {
               <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
               <div><dt>上下文</dt><dd>{{ contextPercent }}</dd></div>
               <div><dt>Token</dt><dd>↑ {{ inputTokens }} / ↓ {{ outputTokens }}</dd></div>
+              <div class="cwd-row"><dt>CWD</dt><dd :title="currentCwd">{{ currentCwd }}</dd></div>
             </dl>
           </section>
           <section>
@@ -2180,4 +2520,29 @@ function linkify(value) {
 
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>
+
+  <Teleport to="body">
+    <div v-if="toolDetailLine" class="tool-result-modal-backdrop" @click.self="closeToolDetail">
+      <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)} 执行结果`">
+        <header class="tool-result-modal-head">
+          <div>
+            <span class="tool-result-modal-kicker">工具执行结果</span>
+            <div class="tool-result-modal-title">
+              <strong>{{ lineTitle(toolDetailLine) }}</strong>
+              <span :class="['tool-result-modal-status', `status-${toolResultStatus(toolDetailLine).key}`]">{{ toolResultStatus(toolDetailLine).label }}</span>
+            </div>
+            <p>{{ toolResultSummary(toolDetailLine) }}</p>
+          </div>
+          <button type="button" class="tool-result-modal-close" aria-label="关闭工具结果" @click="closeToolDetail">×</button>
+        </header>
+        <div class="tool-result-modal-content">
+          <div class="message-text markdown tool-detail-markdown" v-html="renderToolDetail(toolDetailLine)"></div>
+        </div>
+        <footer class="tool-result-modal-footer">
+          <span>按 Esc 关闭</span>
+          <button type="button" class="primary" @click="closeToolDetail">关闭</button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>

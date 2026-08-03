@@ -71,9 +71,6 @@ export function createExposeDownloadsTool(options) {
       const downloads = [];
       for (const rawPath of input.paths) {
         const absolutePath = path.resolve(rawPath);
-        if (!isAllowedPath(absolutePath, options.allowedRoots ?? [])) {
-          throw new Error(`path is outside allowed download roots: ${absolutePath}`);
-        }
         const stat = await fsp.stat(absolutePath).catch(() => undefined);
         if (!stat) throw new Error(`file does not exist: ${absolutePath}`);
         if (!stat.isFile()) throw new Error(`path is not a file: ${absolutePath}`);
@@ -102,14 +99,6 @@ export function createExposeDownloadsTool(options) {
   };
 }
 
-export function downloadRootsFromEnv(defaultRoot = process.cwd()) {
-  return String(process.env.NEO_DOWNLOAD_ROOTS || defaultRoot)
-    .split(path.delimiter)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => path.resolve(item));
-}
-
 export function serveDownload(registry, req, res, id) {
   const entry = registry.get(id);
   if (!entry) {
@@ -135,13 +124,4 @@ export function serveDownload(registry, req, res, id) {
       }
     })
     .pipe(res);
-}
-
-function isAllowedPath(filePath, allowedRoots) {
-  if (!allowedRoots.length) return true;
-  const normalizedFile = path.resolve(filePath).toLowerCase();
-  return allowedRoots.some((root) => {
-    const normalizedRoot = path.resolve(root).toLowerCase();
-    return normalizedFile === normalizedRoot || normalizedFile.startsWith(normalizedRoot + path.sep);
-  });
 }
