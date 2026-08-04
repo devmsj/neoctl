@@ -1175,7 +1175,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 }
 .image2-detail-prompt.empty p { color: var(--muted); }
 .image2-stage {
-  width: min(420px, 100%);
+  width: min(440px, 100%);
   border: 1px solid var(--line);
   background: #fff;
   overflow: hidden;
@@ -1206,7 +1206,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-stage-text {
   display: grid;
   gap: 8px;
-  padding: 10px 12px 12px;
+  padding: 12px 14px 0;
   border-top: 1px solid var(--line-soft);
 }
 .image2-stage-heading {
@@ -1255,25 +1255,31 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-stage-progress {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding-top: 2px;
+  gap: 0;
+  margin: 4px -14px 0;
+  padding: 14px 18px 13px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel-soft);
 }
 .image2-stage-step {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
   min-width: 0;
   color: var(--faint) !important;
+  font-size: 11px !important;
+  line-height: 1.2;
+  text-align: center;
   white-space: nowrap;
 }
 .image2-stage-step::after {
   content: '';
   position: absolute;
-  left: 12px;
-  right: -6px;
-  top: 5px;
-  height: 1px;
+  left: calc(50% + 10px);
+  right: calc(-50% + 10px);
+  top: 7px;
+  height: 2px;
   background: var(--line);
   z-index: 0;
 }
@@ -1281,18 +1287,37 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-stage-step i {
   position: relative;
   z-index: 1;
-  width: 10px;
-  height: 10px;
-  flex: 0 0 10px;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
   border: 2px solid var(--line);
   border-radius: 50%;
   background: var(--surface);
 }
 .image2-stage-step.done { color: var(--green) !important; }
-.image2-stage-step.done i { border-color: var(--green); background: var(--green); }
+.image2-stage-step.done::after {
+  background: var(--green);
+}
+.image2-stage-step.done i {
+  border-color: var(--green);
+  background: var(--green);
+}
+.image2-stage-step.done i::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 7px;
+  border-right: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(45deg);
+}
 .image2-stage-step.active { color: var(--purple) !important; font-weight: 650; }
 .image2-stage-step.active i {
   border-color: var(--purple);
+  border-width: 4px;
+  background: var(--surface);
   box-shadow: 0 0 0 4px var(--purple-soft);
   animation: image2-step-pulse 1.4s ease-in-out infinite;
 }
