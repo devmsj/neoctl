@@ -208,6 +208,7 @@ const state = reactive({
   login: undefined,
   activePanel: 'chat',
   toolDetailLineId: undefined,
+  imagePreview: undefined,
   promptLibrary: [],
   promptLibraryLoading: true,
   promptManagerOpen: false,
@@ -358,6 +359,7 @@ onMounted(async () => {
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
   window.addEventListener('keydown', handleGlobalKeydown)
+  document.addEventListener('click', handleDocumentImageClick)
 })
 
 onBeforeUnmount(() => {
@@ -369,8 +371,9 @@ onBeforeUnmount(() => {
   themeRevealAnimation?.cancel()
   activeThemeTransition?.skipTransition()
   clearThemeTransitionVisuals()
-  document.body.classList.remove('tool-detail-open')
+  document.body.classList.remove('tool-detail-open', 'image-preview-open')
   window.removeEventListener('keydown', handleGlobalKeydown)
+  document.removeEventListener('click', handleDocumentImageClick)
 })
 
 async function fetchState() {
@@ -863,7 +866,8 @@ function isInlineRichToolLine(line) {
 }
 
 function shouldCollapseToolLine(line) {
-  return line?.kind === 'tool' && !isInlineRichToolLine(line)
+  const isToolResult = line?.kind === 'tool' || (line?.kind === 'error' && line?.toolName)
+  return isToolResult && !isInlineRichToolLine(line)
 }
 
 function openToolDetail(line) {
@@ -875,6 +879,26 @@ function openToolDetail(line) {
 function closeToolDetail() {
   state.toolDetailLineId = undefined
   document.body.classList.remove('tool-detail-open')
+}
+
+function handleDocumentImageClick(event) {
+  const image = event.target instanceof HTMLImageElement ? event.target : null
+  if (!image || image.closest('.image-preview-modal')) return
+  const previewSource = image.closest('[data-preview-src]')?.dataset.previewSrc || image.currentSrc || image.src
+  if (!previewSource) return
+  event.preventDefault()
+  event.stopPropagation()
+  openImagePreview(previewSource, image.alt)
+}
+
+function openImagePreview(src, caption = '') {
+  state.imagePreview = { src: String(src || ''), caption: String(caption || '').trim() }
+  document.body.classList.add('image-preview-open')
+}
+
+function closeImagePreview() {
+  state.imagePreview = undefined
+  document.body.classList.remove('image-preview-open')
 }
 
 function toolResultStatus(line) {
@@ -1376,7 +1400,7 @@ function renderImageGrid(images) {
     const src = escapeHtml(item.previewUrl)
     const caption = escapeHtml(imageCaption(item, index))
     const download = escapeHtml(imageDownloadName(item, index))
-    return `<figure class="message-image-attachment"><a href="${href}" target="_blank" rel="noreferrer noopener"><img src="${src}" alt="${caption}" /></a><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
+    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
   }).join('')
   return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
@@ -1558,6 +1582,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.imagePreview) {
+    event.preventDefault()
+    closeImagePreview()
+    return
+  }
   if (event.key === 'Escape' && state.toolDetailLineId !== undefined) {
     event.preventDefault()
     closeToolDetail()
@@ -2421,9 +2450,9 @@ function linkify(value) {
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">
                       <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
-                        <a :href="item.originalUrl || item.previewUrl" target="_blank" rel="noreferrer noopener">
+                        <button type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
                           <img :src="item.previewUrl" :alt="imageCaption(item, index)" />
-                        </a>
+                        </button>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <a class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
                       </figure>
@@ -2678,6 +2707,18 @@ function linkify(value) {
 
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>
+
+  <Teleport to="body">
+    <div v-if="state.imagePreview" class="image-preview-backdrop" @click.self="closeImagePreview">
+      <section class="image-preview-modal" role="dialog" aria-modal="true" :aria-label="state.imagePreview.caption || '图片预览'">
+        <button type="button" class="image-preview-close" aria-label="关闭图片预览" @click="closeImagePreview">×</button>
+        <div class="image-preview-canvas">
+          <img :src="state.imagePreview.src" :alt="state.imagePreview.caption || '图片预览'" />
+        </div>
+        <footer v-if="state.imagePreview.caption" class="image-preview-caption">{{ state.imagePreview.caption }}</footer>
+      </section>
+    </div>
+  </Teleport>
 
   <Teleport to="body">
     <div v-if="toolDetailLine" class="tool-result-modal-backdrop" @click.self="closeToolDetail">

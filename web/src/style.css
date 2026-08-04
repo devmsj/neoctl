@@ -2120,9 +2120,17 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   border: 1px solid var(--line);
   background: #fff;
 }
-.message-image-attachment a {
+.message-image-attachment a,
+.image-preview-trigger {
   display: block;
   color: inherit;
+}
+.image-preview-trigger {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
 }
 .message-image-attachment img {
   display: block;
@@ -2164,6 +2172,73 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   border-color: var(--purple);
   color: var(--purple) !important;
   background: var(--purple-soft);
+}
+.image-preview-open {
+  overflow: hidden !important;
+}
+.image-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 5, 8, .82);
+  backdrop-filter: blur(10px);
+  animation: tool-modal-fade .16s ease-out both;
+}
+.image-preview-modal {
+  position: relative;
+  width: min(1440px, calc(100vw - 48px));
+  height: min(920px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: #0b0b0e;
+  box-shadow: 0 36px 120px rgba(0, 0, 0, .52);
+  animation: tool-modal-enter .2s cubic-bezier(.2,.72,.2,1) both;
+}
+.image-preview-canvas {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+}
+.image-preview-canvas img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(94vh - 90px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.image-preview-close {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  right: 14px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(255, 255, 255, .26);
+  border-radius: 50%;
+  background: rgba(10, 10, 14, .76);
+  color: #fff;
+  font-size: 24px;
+  line-height: 34px;
+}
+.image-preview-close:hover {
+  border-color: #fff;
+  background: rgba(255, 255, 255, .14);
+}
+.image-preview-caption {
+  padding: 11px 18px 13px;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+  color: rgba(255, 255, 255, .78);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
 }
 .link-button { color: var(--purple); padding: 0; margin-top: 8px; }
 .queued {
