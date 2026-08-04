@@ -127,6 +127,8 @@ interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
+  toolName?: string;
+  parentToolName?: string;
   title?: string;
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
@@ -1558,6 +1560,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
   if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) return false;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) return true;
+  const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type === "text") {
@@ -1569,7 +1572,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
     } else if (block.type === "image") {
       const line = imageLineForBlock(message.role, block);
       if (!line) continue;
-      append(line);
+      append({ ...line, parentToolName });
       rendered = true;
     } else if (block.type === "thinking") {
       if (options.includeThinkingBlocks === false) continue;
@@ -1598,11 +1601,12 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
 
 function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
   let rendered = false;
+  const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   for (const block of message.blocks) {
     if (block.type !== "image") continue;
     const line = imageLineForBlock(message.role, block);
     if (!line) continue;
-    append(line);
+    append({ ...line, parentToolName });
     rendered = true;
   }
   return rendered;
@@ -1682,14 +1686,14 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
-  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
+  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
-  return { kind: "tool", title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
+  return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
+  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
 }
 
 
