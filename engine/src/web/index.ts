@@ -143,6 +143,12 @@ interface UiLine {
 interface UiStatus {
   phase: string;
   detail?: string;
+  currentTool?: {
+    id: string;
+    name: string;
+    input: unknown;
+    startedAt: number;
+  };
   metrics?: ContextMetrics;
   usage?: ModelUsage;
   streamedOutputTokens: number;
@@ -410,6 +416,7 @@ export class WebRepl {
   private assistantLineId: number | undefined;
   private thinkingLineId: number | undefined;
   private finalizedThinkingLineId: number | undefined;
+  private readonly liveToolLineIds = new Map<string, number>();
   private activeAbortController: AbortController | undefined;
   private interruptArmed = false;
   private lines: UiLine[];
@@ -550,6 +557,7 @@ export class WebRepl {
     this.assistantLineId = undefined;
     this.thinkingLineId = undefined;
     this.finalizedThinkingLineId = undefined;
+    this.liveToolLineIds.clear();
     if (line) this.append(line);
     this.broadcastSync();
   }
@@ -698,8 +706,9 @@ export class WebRepl {
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
     this.finalizeForegroundView();
+    this.finalizeLiveToolLines();
     this.busy = false;
-    this.status = { ...this.status, phase: "ready", detail: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
+    this.status = { ...this.status, phase: "ready", detail: undefined, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
     this.broadcastSync();
     return runWasActive;
   }
@@ -780,6 +789,11 @@ export class WebRepl {
     this.thinkingLineId = undefined;
   }
 
+  private finalizeLiveToolLines(): void {
+    for (const id of this.liveToolLineIds.values()) this.finalizeLiveLine(id);
+    this.liveToolLineIds.clear();
+  }
+
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
@@ -833,7 +847,13 @@ export class WebRepl {
         return;
       }
       if (event.message.role === "tool_result") {
-        renderToolResultMessage(event.message, (line) => this.append(line));
+        renderToolResultMessage(event.message, (line, toolUseId) => {
+          const liveLineId = this.liveToolLineIds.get(toolUseId);
+          if (liveLineId === undefined) return this.append(line);
+          this.replaceLine(liveLineId, line);
+          this.liveToolLineIds.delete(toolUseId);
+          return liveLineId;
+        });
         renderMessageImages(event.message, (line) => this.append(line));
         return;
       }
@@ -854,12 +874,22 @@ export class WebRepl {
     if (event.type === "tool.started") {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
+      const id = this.append({ ...formatToolUse(event.toolUse), live: true });
+      this.liveToolLineIds.set(event.toolUse.id, id);
       return;
     }
-    if (event.type === "tool.finished") return;
+    if (event.type === "tool.finished") {
+      const id = this.liveToolLineIds.get(event.toolUse.id);
+      if (id !== undefined) {
+        this.finalizeLiveLine(id);
+        this.liveToolLineIds.delete(event.toolUse.id);
+      }
+      return;
+    }
     if (event.type === "terminal") {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
+      this.finalizeLiveToolLines();
       this.assistantLineId = undefined;
       this.broadcastSync();
       return;
@@ -1234,15 +1264,17 @@ function pushTextBlock(blocks: MessageBlock[], text: string): void {
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
-  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
+  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "usage") return { ...status, usage: event.usage, inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "assistant.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "thinking.delta") return { ...status, phase: "thinking", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "retrying") return { ...status, phase: "calling_model", detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
-  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined, activityTick: status.activityTick + 1 };
-  if (event.type === "message" || event.type === "tool.started" || event.type === "tool.finished" || event.type === "error") return { ...status, activityTick: status.activityTick + 1 };
+  if (event.type === "tool.started") return { ...status, phase: "running_tools", currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
+  if (event.type === "tool.finished") return { ...status, currentTool: status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };
+  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined, activityTick: status.activityTick + 1 };
+  if (event.type === "message" || event.type === "error") return { ...status, activityTick: status.activityTick + 1 };
   return status;
 }
 
@@ -1589,11 +1621,11 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
   return rendered;
 }
 
-function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
+function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">, toolUseId: string) => number): boolean {
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    append(formatToolResultLine(block.name, block.output, block.ok));
+    append(formatToolResultLine(block.name, block.output, block.ok), block.toolUseId);
     rendered = true;
   }
   return rendered;
@@ -1687,6 +1719,7 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
+  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
   return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
 }
