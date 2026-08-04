@@ -4,6 +4,7 @@ set -u
 LOG_FILE="/var/log/neoctl-web-boot.log"
 POWERSHELL="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 WSL_IP="$(hostname -I | awk '{print $1}')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -z "${WSL_INTEROP:-}" ]]; then
   WSL_INTEROP="$(ls -t /run/WSL/*_interop 2>/dev/null | head -n1 || true)"
@@ -17,4 +18,4 @@ if [[ -n "$WSL_IP" && -x "$POWERSHELL" && -S "${WSL_INTEROP:-}" ]]; then
 fi
 
 service ssh start >>"$LOG_FILE" 2>&1
-/bin/bash /mnt/d/maker/neoctl-web/bin/boot.sh >>"$LOG_FILE" 2>&1
+/bin/bash "$SCRIPT_DIR/boot.sh" >>"$LOG_FILE" 2>&1
