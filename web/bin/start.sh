@@ -18,14 +18,11 @@ fi
 export APP_HOST="${APP_HOST:-0.0.0.0}"
 export APP_PORT="${APP_PORT:-5173}"
 
-if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
-  pm2 restart "$APP_NAME" --update-env
-else
-  pm2 start "$APP_DIR/server.mjs" \
-    --name "$APP_NAME" \
-    --cwd "$APP_DIR" \
-    --interpreter /usr/local/bin/node
-fi
+pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
+pm2 start "$APP_DIR/server.mjs" \
+  --name "$APP_NAME" \
+  --cwd "$APP_DIR" \
+  --interpreter /usr/local/bin/node
 
 pm2 save --force
 
