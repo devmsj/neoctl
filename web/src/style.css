@@ -543,6 +543,15 @@ html.theme-transitioning::view-transition-new(root) {
   border-color: #050505;
 }
 .primary:disabled { opacity: .45; cursor: not-allowed; }
+.primary.composer-action.stop {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+.primary.composer-action.stop:hover {
+  border-color: #b91c1c;
+  background: #b91c1c;
+}
 
 .status-card {
   align-self: stretch;
@@ -1196,9 +1205,28 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .image2-skeleton span:nth-child(3) { right: 32px; width: 28%; bottom: 40px; height: 16px; }
 .image2-stage-text {
   display: grid;
-  gap: 3px;
+  gap: 8px;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--line-soft);
+}
+.image2-stage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.image2-stage-heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.image2-stage-heading > div span {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11px;
 }
 .image2-stage-text strong {
   color: var(--text);
@@ -1208,6 +1236,68 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   color: var(--muted);
   font-size: 12px;
 }
+.image2-stage-prompt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.image2-stage-prompt span {
+  color: var(--purple);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.image2-stage-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding-top: 2px;
+}
+.image2-stage-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--faint) !important;
+  white-space: nowrap;
+}
+.image2-stage-step::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: -6px;
+  top: 5px;
+  height: 1px;
+  background: var(--line);
+  z-index: 0;
+}
+.image2-stage-step:last-child::after { display: none; }
+.image2-stage-step i {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.image2-stage-step.done { color: var(--green) !important; }
+.image2-stage-step.done i { border-color: var(--green); background: var(--green); }
+.image2-stage-step.active { color: var(--purple) !important; font-weight: 650; }
+.image2-stage-step.active i {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 4px var(--purple-soft);
+  animation: image2-step-pulse 1.4s ease-in-out infinite;
+}
+.image2-stage-step.failed { color: var(--red) !important; }
+.image2-stage-step.failed i { border-color: var(--red); background: var(--red); }
 .image2-stage.failed .image2-skeleton {
   animation: none;
   background: #fff1f1;
@@ -1979,6 +2069,10 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 @keyframes image2-shimmer {
   to { background-position-x: -200%; }
 }
+@keyframes image2-step-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--purple-soft); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
 @keyframes message-loading-dot {
   0%, 80%, 100% { opacity: .35; transform: translateY(0) scale(.9); }
   40% { opacity: 1; transform: translateY(-3px) scale(1.08); }
@@ -2503,6 +2597,37 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .page-head h2, .panel-page h2 { margin: 0 0 8px; font-size: 30px; letter-spacing: -.03em; }
 .page-head p, .panel-page p { margin: 0; color: var(--muted); }
 .empty-state { border: 1px dashed var(--line); padding: 40px; color: var(--muted); text-align: center; }
+.session-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+.session-search {
+  display: grid;
+  gap: 6px;
+  width: min(520px, 100%);
+}
+.session-search span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.session-search input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  padding: 0 12px;
+  outline: none;
+}
+.session-search input:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+.session-count { color: var(--faint); font-size: 12px; white-space: nowrap; }
 .session-list { display: grid; gap: 12px; }
 .session-card {
   border: 1px solid var(--line);
@@ -2517,6 +2642,30 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .session-actions { display: flex; align-items: center; gap: 8px; }
 .session-actions button { border: 1px solid var(--line); background: #fff; padding: 7px 10px; }
 .session-actions .danger { color: var(--red); }
+.session-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 18px;
+}
+.session-pagination button {
+  min-width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  padding: 0 10px;
+}
+.session-pagination button:hover:not(:disabled),
+.session-pagination button.active {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+  color: var(--purple);
+}
+.session-pagination button:disabled { opacity: .4; cursor: not-allowed; }
+.session-pagination span { margin-left: 5px; color: var(--faint); font-size: 12px; }
 
 .settings-form {
   display: grid;
@@ -2576,6 +2725,18 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   border-color: var(--purple);
   background: var(--purple);
   color: #fff;
+}
+:root[data-theme='dark'] .primary.composer-action.stop,
+:root[data-theme='dark'] .primary.composer-action.stop:hover {
+  border-color: #ef4444;
+  background: #dc2626;
+  color: #fff;
+}
+:root[data-theme='dark'] .session-search input,
+:root[data-theme='dark'] .session-pagination button {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--text);
 }
 :root[data-theme='dark'] select option {
   background: var(--surface-raised);
@@ -2874,6 +3035,11 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
     justify-content: flex-end;
     flex-wrap: wrap;
   }
+  .session-toolbar { align-items: stretch; flex-direction: column; gap: 10px; }
+  .session-count { white-space: normal; }
+  .session-card { align-items: stretch; flex-direction: column; }
+  .session-actions { justify-content: flex-end; flex-wrap: wrap; }
+  .session-pagination { justify-content: center; }
   .tool-result-summary {
     grid-template-columns: 34px minmax(0, 1fr);
   }

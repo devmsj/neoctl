@@ -40,6 +40,7 @@ const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
 const IMAGE_MIN_QUALITY = 0.62
+const SESSION_PAGE_SIZE = 10
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
 const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
@@ -229,6 +230,8 @@ const state = reactive({
 })
 
 const input = ref('')
+const sessionSearch = ref('')
+const sessionPage = ref(1)
 const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
@@ -251,10 +254,15 @@ let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 const renderedLineCache = new Map()
 
+const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
 const phaseLabel = computed(() => phaseText(state.status?.phase))
 const exactPhaseLabel = computed(() => {
+  if (liveImage2Line.value) {
+    return isImage2PendingReplacementLine(liveImage2Line.value) ? '整理图片结果' : '图片生成中'
+  }
   if (state.status?.phase === 'running_tools') {
     const tool = state.status?.currentTool
+    if (String(tool?.name || '').toLowerCase() === 'image2') return '图片生成中'
     if (tool?.name) return `调用 ${tool.name}${tool.kind ? ` · ${tool.kind}` : ''}`
   }
   return phaseLabel.value
@@ -262,7 +270,15 @@ const exactPhaseLabel = computed(() => {
 
 const active = computed(() => isActivePhase(state.status?.phase))
 const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading)
-const transcriptLoadingLabel = computed(() => state.sessionResumeLoading ? '正在加载会话' : `正在${exactPhaseLabel.value}`)
+const transcriptLoadingLabel = computed(() => {
+  if (state.sessionResumeLoading) return '正在加载会话'
+  if (liveImage2Line.value) {
+    const elapsed = lineElapsedText(liveImage2Line.value)
+    const title = isImage2PendingReplacementLine(liveImage2Line.value) ? '正在载入图片结果' : '图片模型正在生成'
+    return elapsed ? `${title} · 已用时 ${elapsed}` : title
+  }
+  return `正在${exactPhaseLabel.value}`
+})
 const realSessionTitle = computed(() => {
   const title = state.session?.title?.trim() || ''
   return title && title !== 'neo' ? title : ''
@@ -286,7 +302,29 @@ const composerDropHint = computed(() => {
 })
 const currentContextTokens = computed(() => Number(state.status?.metrics?.estimatedInputTokens ?? state.status?.usage?.inputTokens ?? 0))
 const showCompressionWarning = computed(() => currentContextTokens.value > CONTEXT_COMPRESSION_WARNING_TOKENS)
-const filteredSessions = computed(() => state.sessions || [])
+const composerRunning = computed(() => active.value || state.busy)
+const filteredSessions = computed(() => {
+  const query = sessionSearch.value.trim().toLocaleLowerCase()
+  const sessions = state.sessions || []
+  if (!query) return sessions
+  return sessions.filter((session) => [
+    session.title,
+    session.sessionId,
+    session.updatedAt,
+    session.createdAt,
+  ].some((value) => String(value || '').toLocaleLowerCase().includes(query)))
+})
+const sessionTotalPages = computed(() => Math.max(1, Math.ceil(filteredSessions.value.length / SESSION_PAGE_SIZE)))
+const paginatedSessions = computed(() => {
+  const start = (sessionPage.value - 1) * SESSION_PAGE_SIZE
+  return filteredSessions.value.slice(start, start + SESSION_PAGE_SIZE)
+})
+const sessionPageNumbers = computed(() => {
+  const total = sessionTotalPages.value
+  const start = Math.max(1, Math.min(sessionPage.value - 2, total - 4))
+  const end = Math.min(total, start + 4)
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index)
+})
 const activePanelLabel = computed(() => ({
   chat: '对话工作台',
   sessions: '会话管理',
@@ -306,6 +344,14 @@ watch(theme, applyTheme, { immediate: true })
 watch(realSessionTitle, (title) => {
   document.title = title || '对话工作台'
 }, { immediate: true })
+
+watch(sessionSearch, () => {
+  sessionPage.value = 1
+})
+
+watch(sessionTotalPages, (total) => {
+  if (sessionPage.value > total) sessionPage.value = total
+})
 
 onMounted(async () => {
   await Promise.all([fetchState(), fetchPromptLibrary()])
@@ -780,7 +826,10 @@ function localizeSystemText(text) {
 }
 
 function lineTitle(line) {
-  if (line.kind === 'tool') return isPlanToolLine(line) ? '任务计划' : exactToolName(line)
+  if (line.kind === 'tool') {
+    const name = exactToolName(line)
+    return isPlanToolLine(line) ? '任务计划' : LINE_TITLE_LABELS[name] || name
+  }
   if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
   if (line.kind === 'user') return '你'
@@ -1287,9 +1336,33 @@ function renderImage2Stage(line) {
 function renderImage2Skeleton(line) {
   const text = String(line?.text || '')
   const failed = /\bfail(?:ed)?\b|image\s+(?:generate|edit)\s+failed/i.test(text)
-  const title = failed ? '图片生成失败' : isImage2PendingReplacementLine(line) ? '正在整理图片结果…' : '正在生成图片…'
-  const detail = failed ? firstNonEmptyLine(text, ['failed', 'image generate failed', 'image edit failed']) : '图片生成可能需要几十秒，请稍候'
-  return `<div class="image2-stage ${failed ? 'failed' : 'loading'}"><div class="image2-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="image2-stage-text"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></div></div>`
+  const pendingResult = isImage2PendingReplacementLine(line)
+  const metadata = image2InvocationMetadata(line)
+  const elapsed = lineElapsedText(line)
+  const title = failed ? '图片生成失败' : pendingResult ? '图片已生成，正在载入结果' : metadata.mode === 'edit' ? '图片模型正在修改图片' : '图片模型正在生成图片'
+  const detail = failed
+    ? firstNonEmptyLine(text, ['failed', 'image generate failed', 'image edit failed'])
+    : pendingResult
+      ? `正在解析图片文件并创建预览${elapsed ? ` · 已用时 ${elapsed}` : ''}`
+      : `生成任务已提交，等待图片模型返回${elapsed ? ` · 已用时 ${elapsed}` : ''}`
+  const chips = [metadata.mode === 'edit' ? '图片修改' : metadata.mode ? '图片生成' : '', metadata.model, metadata.size].filter(Boolean)
+  const prompt = metadata.prompt ? `<p class="image2-stage-prompt"><span>提示词</span>${escapeHtml(truncateSummary(metadata.prompt, 160))}</p>` : ''
+  const activeStep = pendingResult ? 2 : 1
+  const steps = ['提交请求', metadata.mode === 'edit' ? '模型修改' : '模型生成', '载入结果']
+    .map((label, index) => `<span class="image2-stage-step ${index < activeStep ? 'done' : index === activeStep ? failed ? 'failed' : 'active' : ''}"><i></i>${escapeHtml(label)}</span>`)
+    .join('')
+  return `<div class="image2-stage ${failed ? 'failed' : 'loading'}"><div class="image2-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="image2-stage-text"><div class="image2-stage-heading"><strong>${escapeHtml(title)}</strong>${chips.length ? `<div>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}</div><span>${escapeHtml(detail)}</span>${prompt}<div class="image2-stage-progress">${steps}</div></div></div>`
+}
+
+function image2InvocationMetadata(line) {
+  const parsed = parseFirstJsonObject(line?.text || '') || {}
+  const input = parsed.input || parsed.arguments || parsed.args || parsed
+  return {
+    mode: String(input.mode || '').toLowerCase(),
+    model: String(input.model || ''),
+    size: String(input.size || ''),
+    prompt: String(input.prompt || ''),
+  }
 }
 
 function firstNonEmptyLine(text, ignored = []) {
@@ -2318,7 +2391,7 @@ function linkify(value) {
                   <span v-if="line.live" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
-                <div v-if="isImage2ResultLine(line)" class="image2-result-shell">
+                <div v-if="isImage2Line(line)" class="image2-result-shell">
                   <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
                   <button type="button" class="image2-detail-button" @click="openToolDetail(line)">查看调用详情</button>
                 </div>
@@ -2426,8 +2499,13 @@ function linkify(value) {
               </div>
               <div>
                 <button type="button" class="ghost" :disabled="state.uploadingFiles" @click="triggerFilePicker">{{ state.uploadingFiles ? '上传中…' : '上传附件' }}</button>
-                <button type="button" class="ghost" @click="interrupt">停止</button>
-                <button type="submit" class="primary" :disabled="state.uploadingFiles || (!input.trim() && !state.attachments.length)">发送 ↵</button>
+                <button
+                  :type="composerRunning ? 'button' : 'submit'"
+                  :class="['primary', 'composer-action', { stop: composerRunning }]"
+                  :disabled="!composerRunning && (state.uploadingFiles || (!input.trim() && !state.attachments.length))"
+                  :aria-label="composerRunning ? '停止当前运行' : '发送消息'"
+                  @click="composerRunning ? interrupt() : undefined"
+                >{{ composerRunning ? '停止' : '发送 ↵' }}</button>
               </div>
             </div>
           </form>
@@ -2461,10 +2539,18 @@ function linkify(value) {
             <div><h2>会话管理</h2><p>恢复、删除或新建会话。正在运行的会话可以重新接入。</p></div>
             <button class="primary" @click="newSession">+ 新建会话</button>
           </div>
+          <div class="session-toolbar">
+            <label class="session-search">
+              <span>搜索会话</span>
+              <input v-model="sessionSearch" type="search" placeholder="输入会话标题或 ID" autocomplete="off" />
+            </label>
+            <span class="session-count">{{ filteredSessions.length }} / {{ state.sessions.length }} 个会话</span>
+          </div>
           <div v-if="state.sessionsLoading" class="empty-state">正在加载会话…</div>
-          <div v-else-if="!filteredSessions.length" class="empty-state">暂无已保存会话。</div>
-          <div class="session-list">
-            <article v-for="session in filteredSessions" :key="session.sessionId" class="session-card">
+          <div v-else-if="!state.sessions.length" class="empty-state">暂无已保存会话。</div>
+          <div v-else-if="!filteredSessions.length" class="empty-state">没有找到匹配的会话。</div>
+          <div v-else class="session-list">
+            <article v-for="session in paginatedSessions" :key="session.sessionId" class="session-card">
               <div>
                 <strong>{{ session.title || '未命名会话' }}</strong>
                 <p>{{ session.sessionId }}</p>
@@ -2477,6 +2563,19 @@ function linkify(value) {
               </div>
             </article>
           </div>
+          <nav v-if="!state.sessionsLoading && filteredSessions.length" class="session-pagination" aria-label="会话分页">
+            <button type="button" :disabled="sessionPage === 1" @click="sessionPage -= 1">上一页</button>
+            <button
+              v-for="page in sessionPageNumbers"
+              :key="page"
+              type="button"
+              :class="{ active: page === sessionPage }"
+              :aria-current="page === sessionPage ? 'page' : undefined"
+              @click="sessionPage = page"
+            >{{ page }}</button>
+            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="sessionPage += 1">下一页</button>
+            <span>第 {{ sessionPage }} / {{ sessionTotalPages }} 页</span>
+          </nav>
         </div>
       </section>
 
