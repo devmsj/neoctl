@@ -62,6 +62,8 @@ WSL/PM2 服务器可使用 `bin/` 下的运维脚本：
 ./bin/status.sh   # 查看进程与 HTTP 健康状态
 ```
 
+WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 WSL IP 刷新 Windows 的 `22` 和 `5173` 端口转发。
+
 ## 单页应用能力
 
 已实现：
