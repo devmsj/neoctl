@@ -26,7 +26,7 @@ export function resolveBundledRipgrepBinary(env: NodeJS.ProcessEnv = process.env
   }
 
   throw new Error(
-    `Bundled ripgrep binary not found for ${platformKey}. Run npm run vendor:rg before using the grep tool.`,
+    `Required bundled ripgrep binary not found for ${platformKey}. Reinstall neoctl or restore the Git-managed vendor/ripgrep resources.`,
   );
 }
 

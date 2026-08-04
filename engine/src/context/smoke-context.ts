@@ -4,7 +4,7 @@ import { QueryEngine } from "../core/query-engine.js";
 import { applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing, insertRuntimeContextBeforeLatestUser } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createToolResultMessage } from "../types/messages.js";
-import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
+import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
 import { DefaultContextManager } from "./context-manager.js";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
 
@@ -149,6 +149,20 @@ async function main(): Promise<void> {
     modelCompacted.summary?.includes("Pending Work") === true &&
     modelCompacted.messages.some((message) => message.metadata?.modelDriven === true);
 
+  const manualOnly = new ManualOnlyCompactor(modelCompactor);
+  const automaticDisabled = await manualOnly.compact(longHistory, {
+    autoCompactMaxChars: 1,
+    estimatedInputTokens: 1000,
+    contextWindowTokens: 1000,
+  });
+  const reactiveDisabled = await manualOnly.reactiveCompact?.(longHistory, new Error("prompt too long"), {
+    keepRecentMessages: 1,
+  });
+  const automaticDisabledOk =
+    automaticDisabled.changed === false &&
+    reactiveDisabled?.changed === false &&
+    summaryGateway.compactCalls === 1;
+
   const gateway = new ContextOverflowThenSuccessGateway();
   const engine = new QueryEngine({
     modelGateway: gateway,
@@ -179,8 +193,25 @@ async function main(): Promise<void> {
     gateway.sawSystemContext &&
     events.includes("terminal:completed");
 
-  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && reactiveOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, reactiveOk, telemetryOk, events, calls: gateway.calls }, null, 2));
+  const defaultGateway = new ContextOverflowThenSuccessGateway();
+  const defaultEngine = new QueryEngine({
+    modelGateway: defaultGateway,
+    tools: new ToolRegistry(),
+    contextManager,
+    maxTurns: 4,
+  });
+  const defaultEvents: string[] = [];
+  for await (const event of defaultEngine.sendUserText("do not compact automatically")) {
+    defaultEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+  }
+  const defaultAutomaticDisabledOk =
+    defaultGateway.calls === 1 &&
+    !defaultGateway.sawBoundaryOnRetry &&
+    defaultEvents.includes("error") &&
+    defaultEvents.includes("terminal:prompt_too_long");
+
+  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && automaticDisabledOk && reactiveOk && defaultAutomaticDisabledOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, automaticDisabledOk, reactiveOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

@@ -33,9 +33,23 @@ main().catch((error) => {
 });
 
 async function main() {
-  const release = await getJson(LATEST_RELEASE_URL);
   const keys = ALL ? Object.keys(TARGETS) : [platformKey()];
+  const pendingKeys = [];
+
   for (const key of keys) {
+    const executable = key.startsWith("win32-") ? "rg.exe" : "rg";
+    const targetPath = path.join(VENDOR_ROOT, key, executable);
+    if (!FORCE && fs.existsSync(targetPath)) {
+      console.error(`[ripgrep] using existing ${path.relative(PROJECT_ROOT, targetPath)}`);
+    } else {
+      pendingKeys.push(key);
+    }
+  }
+
+  if (pendingKeys.length === 0) return;
+
+  const release = await getJson(LATEST_RELEASE_URL);
+  for (const key of pendingKeys) {
     await installTarget(release, key);
   }
 }

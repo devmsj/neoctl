@@ -184,6 +184,30 @@ export class NoopCompactor implements Compactor {
   }
 }
 
+/**
+ * Default runtime policy: explicit compact commands remain available, while
+ * normal turns and context-error retries never rewrite conversation history.
+ */
+export class ManualOnlyCompactor implements Compactor {
+  constructor(private readonly delegate: Compactor) {}
+
+  async compact(messages: readonly Message[], _options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return this.delegate.manualCompact?.(messages, options) ?? { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async pureCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return this.delegate.pureCompact?.(messages, options) ?? { messages: [...messages], changed: false, reason: "none" };
+  }
+
+  async reactiveCompact(messages: readonly Message[], _error: Error, _options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return { messages: [...messages], changed: false, reason: "none" };
+  }
+}
+
 export function estimateMessagesChars(messages: readonly Message[]): number {
   return messages.reduce((total, message) => total + serializeMessage(message).length, 0);
 }

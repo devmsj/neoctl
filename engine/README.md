@@ -7,7 +7,7 @@ neoctl 是一个用 TypeScript 编写的本地 AI 工程代理运行时。项目
 - **流式多轮 Agent Loop**：模型输出、thinking、工具调用、工具结果和终止状态都通过统一事件流传递。
 - **OpenAI 兼容模型网关**：支持 `/v1/responses` 与 `/v1/chat/completions`，`OPENAI_ENDPOINT=auto` 时会优先尝试 Responses API，并在兼容网关不支持时回退到 Chat Completions。
 - **内置工程工具集**：文件读写、文本替换、命令执行、目录列表、ripgrep 搜索、Web 搜索、计划展示、子代理和后台任务控制。
-- **上下文预算与压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用、预算大型工具结果，并支持自动、手动和错误恢复压缩。
+- **上下文预算与手动压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用并预算大型工具结果；默认不自动压缩会话，用户可通过 `/compact` 主动压缩。
 - **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览。
 - **子代理与后台任务**：同一套 query loop 可运行同步子代理、后台子代理、fork 子代理，以及后台 shell 任务。
 - **TTY REPL 体验**：Ink UI、slash command 补全、Markdown 渲染、流式状态栏、token 使用统计、剪贴板文本/图片粘贴、会话标题和终端标题更新。
@@ -91,7 +91,9 @@ MODEL_MAX_RETRIES=2
 ```bash
 npm run typecheck       # TypeScript 类型检查
 npm run build           # 编译到 dist，并复制模型元数据
-npm run vendor:rg       # 下载/安装当前平台的 ripgrep 到 vendor/ripgrep
+npm run vendor:rg       # 显式补齐当前平台的 ripgrep 到 vendor/ripgrep
+npm run vendor:rg:all   # 显式补齐全部支持平台的 ripgrep
+npm run verify:rg       # 校验六个平台资源完整且已由 Git 跟踪
 npm run standalone      # 构建当前平台的便携可执行分发目录
 npm run standalone:clean # 清理 standalone 构建产物
 npm run smoke:core      # 核心 query loop 冒烟测试
@@ -105,7 +107,7 @@ npm run smoke:anthropic # Anthropic Messages mapper 冒烟测试
 npm run smoke:openai -- "Say pong"
 ```
 
-`postinstall` 会以 optional 模式尝试安装 ripgrep；如果失败或需要重装，可手动运行 `npm run vendor:rg`。
+六个支持平台的 `vendor/ripgrep/<platform>-<arch>/rg[.exe]`、manifest 和许可证文件都是不可缺失的发布资源，并全部由 Git 纳管。`postinstall` 会校验安装包内资源，`prepack` 还会校验 Git 跟踪状态；缺失、空文件、格式错误或未纳管都会直接导致安装/发布失败。`vendor:rg` 仅用于显式补齐资源，网络受限时可临时设置 HTTP/HTTPS 代理后执行。
 
 `postinstall` 还会运行 `scripts/patch-ink-clear-terminal.cjs`，对 Ink 的满屏重绘逻辑做一个本地兼容 patch：Ink 在动态输出高度达到终端高度时原本会调用 `ansiEscapes.clearTerminal`，该序列在现代终端中包含 `ESC[3J`，会清空 scrollback buffer，导致 TTY REPL 在长 Markdown 输出或子代理活动期间出现“滚动条冲顶/归零”的现象。patch 会把该分支替换为只清可见屏幕的 `ESC[2J ESC[H`，保留终端 scrollback。升级 Ink 后如果脚本提示找不到预期代码，需要重新检查 `node_modules/ink/build/ink.js` 的满屏渲染分支。
 
@@ -188,12 +190,12 @@ src/
 2. 根据 compact boundary 选择参与模型调用的消息。
 3. 对大型工具结果做预算处理；启用 session 时会将超大结果写到 `.agent/sessions/<session>/tool-results/` 并用预览替换。
 4. 修复缺失的 tool_use/tool_result 配对，避免模型 API 拒绝历史。
-5. 估算 context metrics，并按预算触发压缩。
+5. 估算 context metrics；默认不按预算自动压缩。
 6. 流式调用模型网关。
 7. 收集 assistant 文本、thinking、tool_use 和 usage。
 8. 如有工具调用，按并发安全规则执行工具，把 tool_result 放入下一轮。
 9. 无工具调用时结束；如果因输出 token 达限且没有工具调用，会尝试提高输出预算继续。
-10. 遇到 context length 错误时会进行一次 reactive compact 后重试。
+10. 遇到 context length 错误时直接返回模型错误，不自动改写历史或压缩后重试。
 
 事件类型定义在 `src/types/events.ts`，包括 `state`、`context.metrics`、`assistant.delta`、`thinking.delta`、`tool.started`、`tool.finished`、`usage`、`terminal` 等。
 
@@ -294,7 +296,7 @@ REPL 当前注册的内置工具：
 压缩实现位于 `src/context/compaction.ts`：
 
 - `DeterministicCompactor` 提供可预测的 snip、microcompact、summary fallback。
-- `ModelDrivenCompactor` 使用当前模型生成摘要，支持 autocompact、manual compact、pure compact 和 reactive compact。
+- 默认运行时使用 `ManualOnlyCompactor`，仅保留 manual compact 和 pure compact；显式注入其它 `Compactor` 时仍可用于测试或定制策略。
 - 当工具结果过大时，session 模式下 `FileToolResultMemory` 会把完整结果写入文件，仅把预览和路径留在上下文中。
 
 ## 会话持久化
