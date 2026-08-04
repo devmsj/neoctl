@@ -41,6 +41,15 @@ npm run dev:ui
 npm run build
 ```
 
+## 生产部署
+
+```bash
+npm ci
+npm start
+```
+
+`npm start` 会先自动执行 `npm run build`，再启动 `server.mjs`。请不要直接复用旧 `dist` 目录或只执行 `node server.mjs`，否则部署版可能继续运行旧的前端构建产物。
+
 ## 单页应用能力
 
 已实现：
