@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-10",
+  "updatedAt": "2026-08-04",
   "notes": [
     "Static model metadata used for local REPL telemetry. Values are best-effort and should be refreshed when providers update model cards.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
@@ -8,7 +8,7 @@
     "reasoningEfforts lists the exact reasoning.effort values the /model command may set; omitted/empty means no supported effort enum is configured for that model."
   ],
   "sources": {
-    "openai-models": "https://platform.openai.com/docs/models",
+    "openai-models": "https://developers.openai.com/api/docs/models",
     "anthropic-models": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
     "anthropic-context-windows": "https://docs.anthropic.com/en/docs/build-with-claude/context-windows",
     "gemini-models": "https://ai.google.dev/gemini-api/docs/models",
@@ -18,6 +18,70 @@
     "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning"
   },
   "models": [
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "openai",
+      "modelIds": [
+        "gpt-5.6",
+        "gpt-5.6-sol"
+      ],
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2026-02-16",
+      "reasoning": true,
+      "imageInput": true,
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "provider": "openai",
+      "modelIds": [
+        "gpt-5.6-terra"
+      ],
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2026-02-16",
+      "reasoning": true,
+      "imageInput": true,
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "openai",
+      "modelIds": [
+        "gpt-5.6-luna"
+      ],
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "knowledgeCutoff": "2026-02-16",
+      "reasoning": true,
+      "imageInput": true,
+      "source": "openai-models",
+      "reasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
     {
       "id": "gpt-5.5",
       "provider": "openai",

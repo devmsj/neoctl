@@ -3486,7 +3486,7 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
   openai: [
     { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
     { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
-    { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.5" },
+    { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.6" },
     { key: "fallbackModel", label: "Fallback model", envKey: "OPENAI_FALLBACK_MODEL", scope: "provider" },
     { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
     ...SHARED_LOGIN_FIELDS,
@@ -3900,7 +3900,7 @@ function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
 
 function defaultModelForLoginProvider(provider: LoginProviderName): string {
   if (provider === "anthropic") return "claude-sonnet-4-6";
-  return "gpt-5.5";
+  return "gpt-5.6";
 }
 
 function loginFormViewHeight(state: LoginFormState): number {

@@ -22,7 +22,7 @@ MODEL_PROVIDER=openai
 # OpenAI provider settings
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_BASE_URL=https://api.openai.com
-# OPENAI_MODEL=gpt-5.5
+# OPENAI_MODEL=gpt-5.6
 # OPENAI_FALLBACK_MODEL=
 # OPENAI_ENDPOINT=auto
 

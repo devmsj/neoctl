@@ -216,7 +216,7 @@ export function cliHelpText(binaryName = "neo"): string {
     `  ${binaryName} -web`,
     `  ${binaryName} -web --port 3001`,
     `  ${binaryName} -model`,
-    `  ${binaryName} -model gpt-5.5 high`,
+    `  ${binaryName} -model gpt-5.6 high`,
     `  ${binaryName} -new`,
     "",
     "Inside the REPL, use the original slash form such as /help or /model.",

@@ -34,7 +34,7 @@ export interface AnthropicProviderConfig extends BaseModelProviderConfig {
 
 export type ModelProviderConfig = OpenAIProviderConfig | AnthropicProviderConfig;
 
-const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+const DEFAULT_OPENAI_MODEL = "gpt-5.6";
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
 

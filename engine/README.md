@@ -57,7 +57,7 @@ MODEL_PROVIDER=openai
 # OpenAI provider settings
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_BASE_URL=https://api.openai.com
-OPENAI_MODEL=gpt-5.5
+OPENAI_MODEL=gpt-5.6
 OPENAI_FALLBACK_MODEL=
 OPENAI_ENDPOINT=auto
 
@@ -118,7 +118,7 @@ neo -help
 neo -web
 neo -web --port 3001
 neo -model
-neo -model gpt-5.5 high
+neo -model gpt-5.6 high
 neo -new
 ```
 
@@ -217,7 +217,7 @@ src/
 | `MODEL_PROVIDER` | `openai` 或 `anthropic` |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 供应者专属 API Key；只读取当前 `MODEL_PROVIDER` 对应的一组变量 |
 | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | 供应者专属服务地址；OpenAI 默认 `https://api.openai.com`，Anthropic 默认 `https://api.anthropic.com` |
-| `OPENAI_MODEL` / `ANTHROPIC_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.5`，Anthropic 默认 `claude-sonnet-4-6` |
+| `OPENAI_MODEL` / `ANTHROPIC_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.6`，Anthropic 默认 `claude-sonnet-4-6` |
 | `OPENAI_FALLBACK_MODEL` / `ANTHROPIC_FALLBACK_MODEL` | 供应者专属 fallback model |
 | `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；Anthropic 固定使用 Messages API |
 | `ANTHROPIC_VERSION` | Anthropic 专用 API version header，默认 `2023-06-01` |
