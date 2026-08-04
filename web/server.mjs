@@ -114,6 +114,19 @@ async function routeRequest(req, res) {
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
     }
+    if (req.method === 'POST' && url.pathname === '/api/prompt-library/reorder') {
+      const body = await readJsonBody(req);
+      const ids = Array.isArray(body?.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+      if (!ids.length || new Set(ids).size !== ids.length) return sendJson(res, { error: 'invalid prompt order' }, 400);
+      const items = await readPromptLibrary();
+      const byId = new Map(items.map((item) => [item.id, item]));
+      if (ids.some((id) => !byId.has(id))) return sendJson(res, { error: 'prompt order contains unknown id' }, 400);
+      const ordered = ids.map((id) => byId.get(id));
+      const included = new Set(ids);
+      ordered.push(...items.filter((item) => !included.has(item.id)));
+      await writePromptLibrary(ordered);
+      return sendJson(res, { ok: true, items: ordered });
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
       return serveUploadedFile(res, storedName);
@@ -253,6 +266,7 @@ function normalizePromptItem(item) {
     id: String(item.id || createPromptId()).trim(),
     title,
     content,
+    usage: String(item.usage || '').trim(),
   };
 }
 

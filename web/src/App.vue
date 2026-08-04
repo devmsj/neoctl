@@ -126,6 +126,7 @@ function createEmptyPromptDraft() {
     id: '',
     title: '',
     content: '',
+    usage: '',
   }
 }
 
@@ -142,6 +143,7 @@ function normalizePromptItem(item) {
     id: String(item.id || createPromptId()).trim(),
     title,
     content,
+    usage: String(item.usage || '').trim(),
   }
 }
 
@@ -209,6 +211,14 @@ const state = reactive({
   activePanel: 'chat',
   toolDetailLineId: undefined,
   imagePreview: undefined,
+  confirmDialog: {
+    open: false,
+    title: '',
+    message: '',
+    confirmLabel: '确认',
+    cancelLabel: '取消',
+    tone: 'warning',
+  },
   promptLibrary: [],
   promptLibraryLoading: true,
   promptManagerOpen: false,
@@ -241,6 +251,9 @@ const loginProvider = ref('')
 const loginValues = reactive({})
 const promptDraft = reactive(createEmptyPromptDraft())
 const draggingPromptId = ref('')
+const sortingPromptId = ref('')
+const promptSortTargetId = ref('')
+const promptSortPosition = ref('before')
 let es
 let toastTimer
 let scrollRaf = 0
@@ -253,6 +266,7 @@ let requestedTheme = theme.value
 let fastModeMutationQueue = Promise.resolve()
 let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
+let confirmDialogResolver
 const renderedLineCache = new Map()
 
 const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
@@ -372,6 +386,7 @@ onBeforeUnmount(() => {
   activeThemeTransition?.skipTransition()
   clearThemeTransitionVisuals()
   document.body.classList.remove('tool-detail-open', 'image-preview-open')
+  if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
 })
@@ -467,6 +482,7 @@ function syncPromptDraft(item) {
   promptDraft.id = item?.id || ''
   promptDraft.title = item?.title || ''
   promptDraft.content = item?.content || ''
+  promptDraft.usage = item?.usage || ''
 }
 
 function togglePromptManager() {
@@ -504,6 +520,7 @@ async function savePromptItem() {
     id: promptDraft.id || createPromptId(),
     title: promptDraft.title,
     content: promptDraft.content,
+    usage: promptDraft.usage,
   })
   if (!normalized) {
     notify('标题和内容不能为空')
@@ -525,9 +542,15 @@ async function deletePromptItem() {
     syncPromptDraft(createEmptyPromptDraft())
     return
   }
-  if (!confirm('确定删除这个提示词吗？')) return
   const removed = state.promptLibrary.find((item) => item.id === id)
   if (!removed) return
+  const confirmed = await requestConfirmation({
+    title: '删除提示词？',
+    message: `“${removed.title}”删除后无法恢复。`,
+    confirmLabel: '确认删除',
+    tone: 'danger',
+  })
+  if (!confirmed) return
   try {
     const result = await postJson('/api/prompt-library/delete', { id })
     syncPromptLibrary(result.items)
@@ -535,7 +558,7 @@ async function deletePromptItem() {
     notify(error.message || String(error))
     return
   }
-  if (activeAppPrompt.value?.id === removed.id) void clearAppPrompt()
+  if (activeAppPrompt.value?.id === removed.id) void clearAppPrompt({ confirm: false })
   notify('已删除提示词')
 }
 
@@ -545,10 +568,27 @@ async function applyPromptItem(item) {
     notify('提示词无效')
     return
   }
+  const current = activeAppPrompt.value
+  const isDifferentPrompt = current && (
+    current.id !== normalized.id
+    || String(current.content || '').trim() !== normalized.content
+  )
+  if (isDifferentPrompt) {
+    const samePromptUpdated = current.id === normalized.id
+    const confirmed = await requestConfirmation({
+      title: samePromptUpdated ? '更新当前提示词？' : '切换当前提示词？',
+      message: samePromptUpdated
+        ? `“${normalized.title}”的内容已经变化。重新应用会影响模型对后续问题的理解和回答方式。`
+        : `将从“${current.title || current.id || '当前提示词'}”切换为“${normalized.title}”。提示词变化会影响模型对后续问题的理解和回答方式。`,
+      confirmLabel: samePromptUpdated ? '确认更新' : '确认切换',
+    })
+    if (!confirmed) return
+  }
   try {
     const result = await postJson('/api/app-prompt', {
       id: normalized.id,
       title: normalized.title,
+      usage: normalized.usage,
       source: 'sidebar-library',
       content: normalized.content,
     })
@@ -566,7 +606,17 @@ async function applyPromptItem(item) {
   }
 }
 
-async function clearAppPrompt() {
+async function clearAppPrompt(options = {}) {
+  if (!activeAppPrompt.value) return
+  if (options.confirm !== false) {
+    const confirmed = await requestConfirmation({
+      title: '清除当前提示词？',
+      message: '清除后，模型将不再遵循当前应用提示词，这会改变它对后续问题的理解和回答方式。',
+      confirmLabel: '确认清除',
+      tone: 'danger',
+    })
+    if (!confirmed) return
+  }
   try {
     const result = await postJson('/api/app-prompt', { clear: true })
     if (result?.ok !== false) {
@@ -581,6 +631,28 @@ async function clearAppPrompt() {
     }
     notify(message || '清空提示词失败')
   }
+}
+
+function requestConfirmation(options) {
+  if (confirmDialogResolver) resolveConfirmation(false)
+  Object.assign(state.confirmDialog, {
+    open: true,
+    title: String(options?.title || '请确认'),
+    message: String(options?.message || ''),
+    confirmLabel: String(options?.confirmLabel || '确认'),
+    cancelLabel: String(options?.cancelLabel || '取消'),
+    tone: options?.tone === 'danger' ? 'danger' : 'warning',
+  })
+  return new Promise((resolve) => {
+    confirmDialogResolver = resolve
+  })
+}
+
+function resolveConfirmation(confirmed) {
+  const resolve = confirmDialogResolver
+  confirmDialogResolver = undefined
+  state.confirmDialog.open = false
+  resolve?.(confirmed === true)
 }
 
 function handlePromptDragStart(event, item) {
@@ -652,6 +724,55 @@ function handlePromptDragEnd() {
   draggingPromptId.value = ''
   state.composerDropActive = false
   state.composerDropMode = 'prompt'
+}
+
+function handlePromptSortDragStart(event, item) {
+  sortingPromptId.value = item.id
+  promptSortTargetId.value = ''
+  if (!event?.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('application/x-neoctl-prompt-sort-id', item.id)
+  event.dataTransfer.setData('text/plain', item.title)
+}
+
+function handlePromptSortDragOver(event, item) {
+  const sourceId = sortingPromptId.value || event?.dataTransfer?.getData('application/x-neoctl-prompt-sort-id')
+  if (!sourceId || sourceId === item.id) return
+  event.preventDefault()
+  const rect = event.currentTarget?.getBoundingClientRect?.()
+  promptSortTargetId.value = item.id
+  promptSortPosition.value = rect && event.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+async function handlePromptSortDrop(event, targetItem) {
+  event.preventDefault()
+  const sourceId = event?.dataTransfer?.getData('application/x-neoctl-prompt-sort-id') || sortingPromptId.value
+  const position = promptSortPosition.value
+  resetPromptSortState()
+  if (!sourceId || sourceId === targetItem.id) return
+  const current = [...state.promptLibrary]
+  const sourceIndex = current.findIndex((item) => item.id === sourceId)
+  if (sourceIndex < 0) return
+  const [source] = current.splice(sourceIndex, 1)
+  const targetIndex = current.findIndex((item) => item.id === targetItem.id)
+  if (targetIndex < 0) return
+  current.splice(targetIndex + (position === 'after' ? 1 : 0), 0, source)
+  state.promptLibrary = current
+  try {
+    const result = await postJson('/api/prompt-library/reorder', { ids: current.map((item) => item.id) })
+    syncPromptLibrary(result.items, state.selectedPromptId)
+    notify('提示词顺序已更新')
+  } catch (error) {
+    await fetchPromptLibrary()
+    notify(error.message || String(error))
+  }
+}
+
+function resetPromptSortState() {
+  sortingPromptId.value = ''
+  promptSortTargetId.value = ''
+  promptSortPosition.value = 'before'
 }
 
 async function submit() {
@@ -768,7 +889,14 @@ async function newSession() {
 }
 
 async function deleteSession(sessionId) {
-  if (!confirm('确定要删除这个已保存会话吗？')) return
+  const session = state.sessions.find((item) => item.sessionId === sessionId)
+  const confirmed = await requestConfirmation({
+    title: '删除会话？',
+    message: `“${session?.title || sessionId || '这个会话'}”删除后无法恢复。`,
+    confirmLabel: '确认删除',
+    tone: 'danger',
+  })
+  if (!confirmed) return
   await postJson('/api/sessions/delete', { sessionId })
   await openSessions()
 }
@@ -863,6 +991,10 @@ function isPlanToolLine(line) {
 
 function isInlineRichToolLine(line) {
   return isPlanToolLine(line) || isImage2Line(line) || isExposeDownloadsLine(line) || isXhsArtifactLine(line)
+}
+
+function isPromptUsageLine(line) {
+  return line?.kind === 'meta' && String(line?.title || '') === '提示词用法'
 }
 
 function shouldCollapseToolLine(line) {
@@ -1582,6 +1714,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.confirmDialog.open) {
+    event.preventDefault()
+    resolveConfirmation(false)
+    return
+  }
   if (event.key === 'Escape' && state.imagePreview) {
     event.preventDefault()
     closeImagePreview()
@@ -2359,25 +2496,6 @@ function linkify(value) {
           </article>
         </div>
       </section>
-
-      <div class="sidebar-footer">
-        <button @click="newSession">
-          <span class="nav-button-content">
-            <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 4.5v11M4.5 10h11" />
-            </svg>
-            <span>新建会话</span>
-          </span>
-        </button>
-        <button @click="interrupt">
-          <span class="nav-button-content">
-            <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <rect x="5.5" y="5.5" width="9" height="9" rx="1.75" />
-            </svg>
-            <span>中断任务</span>
-          </span>
-        </button>
-      </div>
     </aside>
 
     <main class="workspace">
@@ -2406,7 +2524,7 @@ function linkify(value) {
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
           <div ref="transcript" class="transcript">
-            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live }]">
+            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line) }]">
               <div :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
                   <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" transform="rotate(45 10 10)" />
@@ -2621,7 +2739,7 @@ function linkify(value) {
             <aside class="prompt-library-panel">
               <div class="prompt-library-head">
                 <strong>提示词列表</strong>
-                <span>{{ state.promptLibrary.length }} 个</span>
+                <span>{{ state.promptLibrary.length }} 个 · 拖拽排序</span>
               </div>
               <div class="prompt-library-list">
                 <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
@@ -2630,12 +2748,24 @@ function linkify(value) {
                   v-else
                   v-for="item in state.promptLibrary"
                   :key="item.id"
-                  :class="['prompt-library-item', { active: selectedPrompt?.id === item.id, applied: activeAppPrompt?.id === item.id }]"
+                  :class="['prompt-library-item', {
+                    active: selectedPrompt?.id === item.id,
+                    applied: activeAppPrompt?.id === item.id,
+                    dragging: sortingPromptId === item.id,
+                    'drop-before': promptSortTargetId === item.id && promptSortPosition === 'before',
+                    'drop-after': promptSortTargetId === item.id && promptSortPosition === 'after',
+                  }]"
                   type="button"
+                  draggable="true"
                   @click="selectPromptItem(item)"
                   @dblclick="applyPromptItem(item)"
+                  @dragstart="handlePromptSortDragStart($event, item)"
+                  @dragover="handlePromptSortDragOver($event, item)"
+                  @drop="handlePromptSortDrop($event, item)"
+                  @dragend="resetPromptSortState"
                 >
                   <strong>{{ item.title }}</strong>
+                  <span v-if="item.usage">用法：{{ item.usage }}</span>
                 </button>
               </div>
             </aside>
@@ -2661,6 +2791,10 @@ function linkify(value) {
                 <label class="prompt-editor-field prompt-editor-field-full">
                   <span>提示词内容</span>
                   <textarea v-model="promptDraft.content" rows="14" placeholder="这里填写应用层 system prompt 内容"></textarea>
+                </label>
+                <label class="prompt-editor-field prompt-editor-field-full">
+                  <span>用法（选填）</span>
+                  <textarea v-model="promptDraft.usage" rows="4" placeholder="例如：适合用于评审方案；请先提供目标、约束和相关文件。应用后会在对话中显示这段提示。"></textarea>
                 </label>
               </div>
             </section>
@@ -2707,6 +2841,22 @@ function linkify(value) {
 
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>
+
+  <Teleport to="body">
+    <div v-if="state.confirmDialog.open" class="confirm-dialog-backdrop" @click.self="resolveConfirmation(false)">
+      <section class="confirm-dialog" role="alertdialog" aria-modal="true" :aria-label="state.confirmDialog.title">
+        <div :class="['confirm-dialog-icon', `tone-${state.confirmDialog.tone}`]" aria-hidden="true">!</div>
+        <div class="confirm-dialog-content">
+          <h3>{{ state.confirmDialog.title }}</h3>
+          <p>{{ state.confirmDialog.message }}</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button type="button" class="ghost" @click="resolveConfirmation(false)">{{ state.confirmDialog.cancelLabel }}</button>
+          <button type="button" :class="['primary', { danger: state.confirmDialog.tone === 'danger' }]" @click="resolveConfirmation(true)">{{ state.confirmDialog.confirmLabel }}</button>
+        </div>
+      </section>
+    </div>
+  </Teleport>
 
   <Teleport to="body">
     <div v-if="state.imagePreview" class="image-preview-backdrop" @click.self="closeImagePreview">

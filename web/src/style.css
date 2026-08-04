@@ -152,7 +152,7 @@ html.theme-transitioning::view-transition-new(root) {
   display: grid;
   gap: 4px;
 }
-.nav button, .sidebar-footer button, .ghost, .primary, .session-actions button, .chips button, .link-button, .compact-button, .fast-mode-button {
+.nav button, .ghost, .primary, .session-actions button, .chips button, .link-button, .compact-button, .fast-mode-button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
@@ -250,7 +250,10 @@ html.theme-transitioning::view-transition-new(root) {
 .muted { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .prompt-stack {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
   overflow: hidden;
 }
@@ -296,8 +299,10 @@ html.theme-transitioning::view-transition-new(root) {
 .prompt-list {
   display: grid;
   gap: 6px;
-  max-height: 360px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
+  align-content: start;
 }
 .prompt-list-empty {
   display: grid;
@@ -426,6 +431,7 @@ html.theme-transitioning::view-transition-new(root) {
   align-content: start;
 }
 .prompt-library-item {
+  position: relative;
   display: grid;
   align-content: start;
   gap: 8px;
@@ -438,7 +444,25 @@ html.theme-transitioning::view-transition-new(root) {
   transform: translateY(0);
   transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
 }
+.prompt-library-item[draggable="true"] { cursor: grab; }
+.prompt-library-item.dragging { opacity: .42; cursor: grabbing; }
+.prompt-library-item.drop-before::before,
+.prompt-library-item.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  background: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+.prompt-library-item.drop-before::before { top: -6px; }
+.prompt-library-item.drop-after::after { bottom: -6px; }
 .prompt-library-item span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--muted);
   font-size: 12px;
 }
@@ -487,27 +511,6 @@ html.theme-transitioning::view-transition-new(root) {
 }
 .prompt-editor-field-full {
   grid-column: 1 / -1;
-}
-
-.sidebar-footer {
-  margin-top: auto;
-  position: sticky;
-  bottom: 0;
-  left: 0;
-  z-index: 2;
-  border-top: 1px solid var(--line);
-  padding: 12px;
-  display: grid;
-  gap: 8px;
-  background: rgba(250, 250, 251, 0.98);
-}
-.sidebar-footer button {
-  padding: 9px 10px;
-  text-align: left;
-  border: 1px solid var(--line);
-  background: #fff;
-  display: flex;
-  align-items: center;
 }
 
 .workspace {
@@ -636,6 +639,17 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .message.user .message-marker { color: var(--black); }
 .message.tool .message-marker { color: var(--green); }
 .message.thinking .message-marker { color: var(--amber); }
+.message.prompt-usage {
+  margin: 10px 0;
+  padding: 15px 16px;
+  border: 1px solid color-mix(in srgb, var(--purple) 36%, var(--line));
+  border-left: 4px solid var(--purple);
+  background: linear-gradient(135deg, var(--purple-soft), var(--surface) 72%);
+  box-shadow: 0 10px 28px rgba(86, 34, 168, .09);
+}
+.message.prompt-usage .message-marker { color: var(--purple); }
+.message.prompt-usage .message-head strong { color: var(--purple); }
+.message.prompt-usage .message-text { font-size: 14px; line-height: 1.7; }
 .message-marker.spinning .message-marker-icon {
   animation: diamond-spin 1.8s linear infinite;
 }
@@ -2240,6 +2254,74 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   line-height: 1.45;
   text-align: center;
 }
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 340;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 10, 14, .56);
+  backdrop-filter: blur(8px);
+  animation: tool-modal-fade .16s ease-out both;
+}
+.confirm-dialog {
+  width: min(500px, calc(100vw - 48px));
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .3);
+  animation: tool-modal-enter .2s cubic-bezier(.2,.72,.2,1) both;
+}
+.confirm-dialog-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--amber) 15%, var(--surface));
+  color: var(--amber);
+  font-size: 20px;
+  font-weight: 800;
+}
+.confirm-dialog-icon.tone-danger {
+  background: color-mix(in srgb, var(--red) 14%, var(--surface));
+  color: var(--red);
+}
+.confirm-dialog-content h3 {
+  margin: 1px 0 7px;
+  font-size: 17px;
+}
+.confirm-dialog-content p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.confirm-dialog-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding-top: 4px;
+}
+.confirm-dialog-actions .ghost,
+.confirm-dialog-actions .primary {
+  min-width: 88px;
+}
+.primary.danger {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+.primary.danger:hover:not(:disabled) {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 84%, #000);
+  color: #fff;
+}
 .link-button { color: var(--purple); padding: 0; margin-top: 8px; }
 .queued {
   border-top: 1px solid var(--line);
@@ -2795,11 +2877,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 :root[data-theme='dark'] .topbar {
   background: rgba(18, 18, 23, .88);
 }
-:root[data-theme='dark'] .sidebar-footer {
-  background: rgba(15, 15, 19, .98);
-}
 :root[data-theme='dark'] .mini-button,
-:root[data-theme='dark'] .sidebar-footer button,
 :root[data-theme='dark'] .ghost,
 :root[data-theme='dark'] .status-card,
 :root[data-theme='dark'] .chat-panel,

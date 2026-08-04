@@ -21,7 +21,7 @@
   "dependencies": {
     "highlight.js": "^11.11.1",
     "marked": "^18.0.3",
-    "neoctl": "git+https://gitee.com/masjie/scaffold.git#d2f59cdd59687c47295b55ec9ab9b414e5146971",
+    "neoctl": "git+https://gitee.com/masjie/scaffold.git#bffc5325a2f822649780b8854406b4dcb36ca1c6",
     "vue": "^3.5.13"
   },
   "devDependencies": {
