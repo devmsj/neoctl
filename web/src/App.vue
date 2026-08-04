@@ -789,7 +789,7 @@ function lineTitle(line) {
 }
 
 function exactToolName(line) {
-  return String(line?.title || line?.metadata?.tool || 'tool').trim() || 'tool'
+  return String(line?.toolName || 'tool').trim() || 'tool'
 }
 
 function lineToolKindText(line) {
@@ -882,7 +882,7 @@ function toolTextField(text, labels) {
 }
 
 function isImage2Line(line) {
-  return line?.kind === 'tool' && String(line?.title || '').toLowerCase() === 'image2'
+  return line?.kind === 'tool' && String(line?.toolName || '').toLowerCase() === 'image2'
 }
 
 function isImage2LiveLine(line) {
@@ -1912,26 +1912,7 @@ function mimeExtension(mimeType) {
 }
 
 function isGeneratedImageLine(line) {
-  const title = String(line?.title || '').toLowerCase()
-  return title === 'image2'
-    || line?.metadata?.tool === 'image2'
-    || line?.metadata?.generatedImages === true
-    || isImage2OutputImageLine(line)
-    || (line?.kind === 'tool' && /^Generated image \d+$/i.test(String(line?.text || '').trim()))
-}
-
-function isImage2OutputImageLine(line) {
-  if (line?.kind !== 'tool' || line?.title || directLineImagePreviews(line).length === 0) return false
-  const lines = state.lines || []
-  const index = lines.findIndex((item) => String(item?.id) === String(line?.id))
-  if (index < 0) return false
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const previous = lines[cursor]
-    if (isImage2Line(previous)) return true
-    if (previous?.kind === 'tool' && !previous?.title && directLineImagePreviews(previous).length > 0) continue
-    return false
-  }
-  return false
+  return line?.kind === 'tool' && String(line?.parentToolName || '').toLowerCase() === 'image2'
 }
 
 function removeOmittedImageDetails(line) {

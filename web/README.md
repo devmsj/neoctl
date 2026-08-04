@@ -43,6 +43,8 @@ npm run build
 
 ## 生产部署
 
+请使用 Node.js 20 或更高版本。
+
 ```bash
 npm ci
 npm start
