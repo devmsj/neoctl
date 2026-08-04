@@ -656,16 +656,18 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .message-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .message-head strong { font-size: 14px; }
 .message-head span { color: var(--muted); font-size: 12px; }
-.tool-kind-pill {
+.tool-status-pill {
   display: inline-flex;
   align-items: center;
   height: 18px;
   padding: 0 6px;
   color: var(--green) !important;
   background: var(--green-soft);
-  border-left: 2px solid var(--green);
   font-size: 11px;
+  font-weight: 650;
 }
+.tool-status-pill.status-running { color: var(--purple) !important; background: var(--purple-soft); }
+.tool-status-pill.status-failed { color: var(--red) !important; background: color-mix(in srgb, var(--red) 12%, var(--surface)); }
 .tool-result-summary {
   width: min(760px, 100%);
   min-width: 0;
@@ -706,23 +708,6 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .tool-result-summary.status-failed .tool-result-summary-icon { color: var(--red); }
 .tool-result-summary-main {
   min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-.tool-result-summary-main > div {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.tool-result-summary-main strong {
-  font-size: 14px;
-  font-weight: 650;
-}
-.tool-result-summary-main span {
-  color: var(--faint);
-  font-size: 11px;
-  letter-spacing: .06em;
-  text-transform: uppercase;
 }
 .tool-result-summary-main p {
   min-width: 0;

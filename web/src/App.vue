@@ -957,7 +957,7 @@ function localizeSystemText(text) {
 }
 
 function lineTitle(line) {
-  if (line.kind === 'tool') {
+  if (line.kind === 'tool' || line.toolName) {
     const name = exactToolName(line)
     return isPlanToolLine(line) ? '任务计划' : LINE_TITLE_LABELS[name] || name
   }
@@ -970,19 +970,6 @@ function lineTitle(line) {
 
 function exactToolName(line) {
   return String(line?.toolName || 'tool').trim() || 'tool'
-}
-
-function lineToolKindText(line) {
-  if (line?.kind !== 'tool') return ''
-  if (line.toolKind) return line.toolKind
-  const name = exactToolName(line).toLowerCase()
-  if (name === 'image2') return '作图'
-  if (name.includes('xhs_artifact_editor') || name === 'edit' || name === 'write' || name.includes('apply_patch')) return '编辑'
-  if (name === 'exec' || name.includes('shell') || name.includes('command')) return '执行'
-  if (name.includes('download')) return '下载'
-  if (name.includes('read') || name.includes('load') || name.includes('list') || name.includes('grep') || name.includes('search') || name.includes('query')) return '查询'
-  if (name.includes('plan')) return '计划'
-  return '工具'
 }
 
 function isPlanToolLine(line) {
@@ -1034,10 +1021,10 @@ function closeImagePreview() {
 }
 
 function toolResultStatus(line) {
-  if (line?.live) return { key: 'running', label: '执行中' }
+  if (line?.live) return { key: 'running', label: '运行中' }
   const parsed = parseFirstJsonObject(line?.text || '')
   const failed = parsed?.ok === false || parsed?.error || parsed?.output?.error || /fail|error/i.test(String(line?.titleStatus || '')) || /(^|\s)(error|failed|failure):/i.test(String(line?.text || ''))
-  return failed ? { key: 'failed', label: '执行失败' } : { key: 'completed', label: '执行完成' }
+  return failed ? { key: 'failed', label: '失败' } : { key: 'completed', label: '成功' }
 }
 
 function toolResultSummary(line) {
@@ -1050,27 +1037,27 @@ function toolResultSummary(line) {
   if (name === 'exec' || name.includes('shell') || name.includes('command')) {
     const description = output?.description || output?.command || toolTextField(raw, ['目的', 'description', 'command'])
     const suffix = output?.exitCode !== undefined ? ` · exit ${output.exitCode}` : ''
-    return truncateSummary(`${description || '命令执行结束'}${suffix}`, 150)
+    return truncateSummary(`${description || '查看命令输出'}${suffix}`, 150)
   }
   if (name === 'read' || name.includes('read')) {
     const range = output?.startLine && output?.endLine ? ` · ${output.startLine}-${output.endLine} 行` : ''
-    return truncateSummary(`${output?.path || toolTextField(raw, ['file', 'path']) || '文件读取完成'}${range}`, 150)
+    return truncateSummary(`${output?.path || toolTextField(raw, ['file', 'path']) || '读取内容'}${range}`, 150)
   }
   if (name === 'write' || name === 'edit' || name.includes('apply_patch')) {
     const operation = output?.operation ? ` · ${output.operation}` : ''
     const path = output?.path || /^(?:create|edit|write)\s+(.+?)(?:,|$)/im.exec(raw)?.[1]
-    return truncateSummary(`${path || '文件更新完成'}${operation}`, 150)
+    return truncateSummary(`${path || '更新内容'}${operation}`, 150)
   }
   if (name === 'list') {
     const count = output?.returnedEntries ?? output?.totalFiles
-    return truncateSummary(`${output?.path || toolTextField(raw, ['path']) || '目录读取完成'}${count !== undefined ? ` · ${count} 项` : ''}`, 150)
+    return truncateSummary(`${output?.path || toolTextField(raw, ['path']) || '目录内容'}${count !== undefined ? ` · ${count} 项` : ''}`, 150)
   }
   if (name === 'grep' || name.includes('search') || name.includes('query')) {
     const count = output?.matchCount ?? output?.matches?.length ?? output?.results?.length
-    return truncateSummary(`${output?.query || output?.pattern || output?.path || '搜索完成'}${count !== undefined ? ` · ${count} 条` : ''}`, 150)
+    return truncateSummary(`${output?.query || output?.pattern || output?.path || '搜索结果'}${count !== undefined ? ` · ${count} 条` : ''}`, 150)
   }
-  const firstLine = raw.split(/\r?\n/).map((item) => item.trim()).find(Boolean)
-  return truncateSummary(firstLine || `${exactToolName(line)} 已完成`, 150)
+  const firstLine = raw.split(/\r?\n/).map((item) => item.trim()).find((item) => item && !/^(?:ok|success|successful|completed|done|failure|failed|error)$/i.test(item))
+  return truncateSummary(firstLine || '查看工具输出', 150)
 }
 
 function truncateSummary(value, maxLength) {
@@ -2533,9 +2520,9 @@ function linkify(value) {
               <div class="message-body">
                 <div class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
-                  <span v-if="lineToolKindText(line)" class="tool-kind-pill">{{ lineToolKindText(line) }}</span>
-                  <span v-if="line.titleStatus">{{ line.titleStatus }}</span>
-                  <span v-if="line.live" class="live-pill">实时</span>
+                  <span v-if="shouldCollapseToolLine(line)" :class="['tool-status-pill', `status-${toolResultStatus(line).key}`]">{{ toolResultStatus(line).label }}</span>
+                  <span v-else-if="line.kind !== 'tool' && !line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
+                  <span v-if="line.live && line.kind !== 'tool' && !line.toolName" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="isImage2Line(line)" class="image2-result-shell">
@@ -2549,10 +2536,9 @@ function linkify(value) {
                     </svg>
                   </div>
                   <div class="tool-result-summary-main">
-                    <div><strong>{{ toolResultStatus(line).label }}</strong><span>{{ lineToolKindText(line) }}</span></div>
                     <p>{{ toolResultSummary(line) }}</p>
                   </div>
-                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">查看结果</button>
+                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">查看详情</button>
                 </div>
                 <template v-else>
                   <template v-if="isXhsArtifactLine(line)">
@@ -2872,10 +2858,10 @@ function linkify(value) {
 
   <Teleport to="body">
     <div v-if="toolDetailLine" class="tool-result-modal-backdrop" @click.self="closeToolDetail">
-      <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)} 执行结果`">
+      <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)}详情`">
         <header class="tool-result-modal-head">
           <div>
-            <span class="tool-result-modal-kicker">工具执行结果</span>
+            <span class="tool-result-modal-kicker">工具详情</span>
             <div class="tool-result-modal-title">
               <strong>{{ lineTitle(toolDetailLine) }}</strong>
               <span :class="['tool-result-modal-status', `status-${toolResultStatus(toolDetailLine).key}`]">{{ toolResultStatus(toolDetailLine).label }}</span>
