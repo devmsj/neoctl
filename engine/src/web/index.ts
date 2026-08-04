@@ -225,6 +225,7 @@ interface WebSetAppPromptPayload {
   content?: string;
   id?: string;
   title?: string;
+  usage?: string;
   source?: string;
   clear?: boolean;
 }
@@ -589,8 +590,18 @@ export class WebRepl {
             content: payload.content ?? "",
             id: payload.id,
             title: payload.title,
+            usage: payload.usage,
             source: payload.source,
           } satisfies AppPromptInput);
+      const usage = payload.usage?.trim();
+      if (!shouldClear && usage) {
+        this.append({
+          kind: "meta",
+          title: "提示词用法",
+          text: usage,
+          format: "markdown",
+        });
+      }
       this.broadcastSync();
       return { ok: true, appPrompt };
     } catch (error) {
