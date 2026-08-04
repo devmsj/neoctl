@@ -52,6 +52,16 @@ npm start
 
 `npm start` 会先自动执行 `npm run build`，再启动 `server.mjs`。请不要直接复用旧 `dist` 目录或只执行 `node server.mjs`，否则部署版可能继续运行旧的前端构建产物。
 
+WSL/PM2 服务器可使用 `bin/` 下的运维脚本：
+
+```bash
+./bin/deploy.sh   # 拉取、安装、构建并重启
+./bin/start.sh    # 启动生产服务
+./bin/stop.sh     # 停止服务
+./bin/restart.sh  # 重启服务
+./bin/status.sh   # 查看进程与 HTTP 健康状态
+```
+
 ## 单页应用能力
 
 已实现：
