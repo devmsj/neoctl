@@ -41,22 +41,79 @@ export class XhsArtifactRegistry {
 export function createOpenXhsArtifactEditorTool(options) {
   return {
     name: 'open_xhs_artifact_editor',
-    description:
-      'Open a user-editable Xiaohongshu post editor in the web conversation. JSON/payload is only the transport format; the web UI renders it like a Xiaohongshu post with image carousel, title, body, topics, and editing controls.',
+    description: [
+      'Create or update the user-editable Xiaohongshu post editor shown in the web conversation.',
+      'Always pass the exact structured payload; never pass Markdown, analysis, a content blob, or alternate field names.',
+      'Exact input example: {"artifact_id":"omit for a new draft; reuse after read_xhs_artifact when revising","payload":{"title":"published post title only","body":"final publish-ready post body only","interaction":"optional CTA/activity rules only","hashtags":["#topic"],"images":[{"url":"actual image URL or absolute local image path; empty only for a planned placeholder","caption":"what this image shows","overlay":"text visibly printed on the image","note":"internal shooting/design note"}],"review":"internal review notes, never part of body"}}.',
+      'Field boundaries are strict: body must not contain the title, hashtags, image plan, review, JSON, or Markdown section headings. hashtags must be an array. images must be an array of objects, never prose.',
+      'For a generated or uploaded image, put the exact returned URL or absolute file path in images[].url. Never put a prompt, caption, Markdown image syntax, image id, or descriptive sentence in url. If no real file exists yet, use url:"" and put the plan in caption/note.',
+      'To revise an existing editor: first call read_xhs_artifact with its id, preserve the user-edited fields, then call this tool with artifact_id set to that same id and the complete revised payload.',
+    ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Draft title.' },
+        artifact_id: {
+          type: 'string',
+          description: 'Existing artifact id to update. Omit for a new editor. Before using this, call read_xhs_artifact with the same id.',
+        },
         payload: {
           type: 'object',
-          description: 'Structured Xiaohongshu post data: title, body, images, interaction, hashtags, review.',
-          additionalProperties: true,
-        },
-        content: {
-          type: 'string',
-          description: 'Optional Markdown or JSON content. The UI will parse it into editable post fields.',
+          description: 'Complete editor state. Use only the exact fields declared here.',
+          properties: {
+            title: {
+              type: 'string',
+              description: 'Final Xiaohongshu post title only. Do not include cover text, body, hashtags, or alternatives.',
+            },
+            body: {
+              type: 'string',
+              description: 'Final publish-ready正文 only. Do not include the title, hashtags, image descriptions/plans, review notes, JSON, or Markdown headings such as “正文”.',
+            },
+            interaction: {
+              type: 'string',
+              description: 'Optional CTA, giveaway, or activity rules shown separately from正文. Use an empty string when absent.',
+            },
+            hashtags: {
+              type: 'array',
+              description: 'Topic tags only, one string per tag, preferably including #. Never put them in body.',
+              items: { type: 'string' },
+            },
+            images: {
+              type: 'array',
+              description: 'Ordered image carousel. Each item is one actual image or one explicit placeholder slot; never pass a string or Markdown list.',
+              items: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: 'Actual http(s) URL, /api/ image URL, or absolute local image file path. Use "" only if the image has not been created. Never put descriptive prose here.',
+                  },
+                  caption: {
+                    type: 'string',
+                    description: 'Short description of what the image shows. This is not正文 and is not the image URL.',
+                  },
+                  overlay: {
+                    type: 'string',
+                    description: 'Exact words visibly printed on the image/cover. Use "" if there is no overlaid text.',
+                  },
+                  note: {
+                    type: 'string',
+                    description: 'Internal shooting, generation, layout, or design note. Use "" if absent.',
+                  },
+                },
+                required: ['url', 'caption', 'overlay', 'note'],
+                additionalProperties: false,
+              },
+            },
+            review: {
+              type: 'string',
+              description: 'Internal compliance/style review notes. Never copy this into正文. Use "" when absent.',
+            },
+          },
+          required: ['title', 'body', 'interaction', 'hashtags', 'images', 'review'],
+          additionalProperties: false,
         },
       },
+      required: ['payload'],
       additionalProperties: false,
     },
     metadata: {
@@ -67,23 +124,26 @@ export function createOpenXhsArtifactEditorTool(options) {
       maxResultSizeChars: 60000,
     },
     validate(input) {
-      const payload = input?.payload && typeof input.payload === 'object' ? input.payload : parsePayload(input?.content);
-      const content = typeof input?.content === 'string' ? input.content : '';
-      if (!payload && !content.trim()) throw new Error('provide payload or content');
+      const payload = validateEditorPayload(input?.payload);
       return {
-        title: firstText(input?.title, payload?.title, payload?.main_title, payload?.cover_title, '小红书笔记').slice(0, 160),
-        payload: normalizePayload(payload || { body: content }),
-        content,
+        artifactId: String(input?.artifact_id || '').trim(),
+        title: payload.title,
+        payload,
+        content: '',
       };
     },
     async execute(input, context) {
-      const artifact = options.registry.add({
-        title: input.title,
-        payload: input.payload,
-        content: input.content,
-        sessionId: context.session?.sessionId,
-      });
-      return { ok: true, output: { artifact: clientArtifact(artifact) }, summary: `Opened Xiaohongshu editor ${artifact.id}` };
+      const artifact = input.artifactId
+        ? options.registry.update(input.artifactId, { title: input.title, payload: input.payload, content: input.content })
+        : options.registry.add({
+            title: input.title,
+            payload: input.payload,
+            content: input.content,
+            sessionId: context.session?.sessionId,
+          });
+      if (!artifact) throw new Error(`xhs artifact not found: ${input.artifactId}; call read_xhs_artifact first or omit artifact_id to create a new editor`);
+      const action = input.artifactId ? 'Updated' : 'Opened';
+      return { ok: true, output: { artifact: clientArtifact(artifact), action: action.toLowerCase() }, summary: `${action} Xiaohongshu editor ${artifact.id}` };
     },
   };
 }
@@ -91,7 +151,7 @@ export function createOpenXhsArtifactEditorTool(options) {
 export function createReadXhsArtifactTool(options) {
   return {
     name: 'read_xhs_artifact',
-    description: 'Read the latest user-edited Xiaohongshu artifact by id before revising or continuing collaboration.',
+    description: 'Read the latest user-edited Xiaohongshu editor state. Before revising, call this with the artifact id, preserve the returned user edits, then call open_xhs_artifact_editor with artifact_id set to the same id and a complete exact payload.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'Artifact id returned by open_xhs_artifact_editor.' } },
@@ -213,6 +273,59 @@ function normalizePayload(value) {
   };
 }
 
+function validateEditorPayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('payload must be an object with exactly: title, body, interaction, hashtags, images, review');
+  }
+
+  const title = requireEditorString(value.title, 'payload.title').trim().slice(0, 160);
+  const body = requireEditorString(value.body, 'payload.body').trim();
+  const interaction = requireEditorString(value.interaction, 'payload.interaction').trim();
+  const review = requireEditorString(value.review, 'payload.review').trim();
+  if (!title) throw new Error('payload.title must contain the final post title');
+  if (!body) throw new Error('payload.body must contain the final publish-ready正文 only');
+  if (!Array.isArray(value.hashtags)) throw new Error('payload.hashtags must be an array of tag strings');
+  if (!Array.isArray(value.images)) throw new Error('payload.images must be an array of image objects, not prose or Markdown');
+
+  const hashtags = value.hashtags.map((tag, index) => {
+    if (typeof tag !== 'string') throw new Error(`payload.hashtags[${index}] must be a string`);
+    return tag;
+  });
+  const images = value.images.map((image, index) => validateEditorImage(image, index));
+
+  return {
+    title,
+    body,
+    interaction,
+    hashtags: normalizeTags(hashtags),
+    images,
+    review,
+  };
+}
+
+function validateEditorImage(value, index) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`payload.images[${index}] must be an object with url, caption, overlay, note`);
+  }
+  const rawUrl = requireEditorString(value.url, `payload.images[${index}].url`).trim();
+  const url = safeImageUrl(rawUrl);
+  if (rawUrl && !url) {
+    throw new Error(`payload.images[${index}].url must be an actual http(s) URL, /api/ image URL, or absolute local image path; put descriptions in caption/note`);
+  }
+  return {
+    id: `image-${index + 1}`,
+    url,
+    caption: requireEditorString(value.caption, `payload.images[${index}].caption`).trim(),
+    overlay: requireEditorString(value.overlay, `payload.images[${index}].overlay`).trim(),
+    note: requireEditorString(value.note, `payload.images[${index}].note`).trim(),
+  };
+}
+
+function requireEditorString(value, field) {
+  if (typeof value !== 'string') throw new Error(`${field} must be a string`);
+  return value;
+}
+
 function firstImageList(...values) {
   for (const value of values) {
     const images = normalizeImages(value);
@@ -246,9 +359,9 @@ function normalizeImages(value) {
 function safeImageUrl(...values) {
   const url = firstText(...values);
   if (!url || /^data:/i.test(url)) return '';
-  if (/^(?:https?:|blob:|\/api\/)/i.test(url)) return url.slice(0, 2048);
+  if (/^(?:https?:|\/api\/)/i.test(url)) return url.slice(0, 2048);
   if (isLocalFilePath(url)) return `/api/local-images/${encodeURIComponent(Buffer.from(url, 'utf8').toString('base64url'))}`;
-  return url.slice(0, 2048);
+  return '';
 }
 
 function isLocalFilePath(value) {
