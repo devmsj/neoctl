@@ -7,6 +7,9 @@ import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
 import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from '../downloads.mjs';
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from '../artifacts.mjs';
 import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
+import { installRuntimeRouterIdleCleanup } from '../runtime-router-cleanup.mjs';
+
+installRuntimeRouterIdleCleanup();
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
@@ -15,11 +18,12 @@ const appHost = process.env.VITE_HOST || '127.0.0.1';
 const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
+const xhsArtifactsDir = path.resolve(process.env.NEO_XHS_ARTIFACTS_DIR || path.join(process.cwd(), '.neoctl-web', 'xhs-artifacts'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 'skills');
 const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
 const downloadRegistry = new DownloadRegistry();
-const xhsArtifactRegistry = new XhsArtifactRegistry();
+const xhsArtifactRegistry = new XhsArtifactRegistry({ storageDir: xhsArtifactsDir });
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
   workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
@@ -138,7 +142,7 @@ async function routeRequest(req, res) {
     }
     if ((req.method === 'GET' || req.method === 'PUT') && url.pathname.startsWith('/api/xhs-artifacts/')) {
       const id = decodeURIComponent(url.pathname.slice('/api/xhs-artifacts/'.length));
-      return serveXhsArtifact(xhsArtifactRegistry, req, res, id, readJsonBody);
+      return serveXhsArtifact(xhsArtifactRegistry, req, res, id, readJsonBody, url.searchParams.get('sessionId') || undefined);
     }
     return proxyToRuntime(req, res, url);
   } catch (error) {

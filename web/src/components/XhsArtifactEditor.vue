@@ -1,10 +1,14 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 const props = defineProps({
   artifact: {
     type: Object,
     required: true,
+  },
+  sessionId: {
+    type: String,
+    default: '',
   },
 })
 
@@ -31,10 +35,13 @@ const isReadonly = computed(() => mode.value === 'readonly')
 const isEditOnly = computed(() => mode.value === 'edit')
 const activeImage = computed(() => draft.images[activeImageIndex.value] || null)
 
-watch(() => props.artifact?.id, () => {
+watch(() => [props.artifact?.id, props.artifact?.updatedAt], () => {
   Object.assign(draft, createDraft(props.artifact))
   activeImageIndex.value = 0
+  void loadLatestArtifact()
 })
+
+onMounted(() => { void loadLatestArtifact() })
 
 function setMode(nextMode) {
   mode.value = nextMode
@@ -55,15 +62,20 @@ function stepImage(direction) {
 }
 
 function createDraft(artifact) {
-  const payload = normalizePayload(artifact?.payload || parsePayload(artifact?.content))
+  const payload = artifact?.payload || {}
   return {
     id: artifact?.id || '',
-    title: firstText(payload.title, artifact?.title),
-    body: richText(payload.body),
-    interaction: interactionText(payload.interaction),
-    hashtags: payload.hashtags || [],
-    images: payload.images?.length ? payload.images : [],
-    review: richText(payload.review),
+    title: typeof payload.title === 'string' ? payload.title : '',
+    body: typeof payload.body === 'string' ? payload.body : '',
+    interaction: typeof payload.interaction === 'string' ? payload.interaction : '',
+    hashtags: Array.isArray(payload.hashtags) ? [...payload.hashtags] : [],
+    images: Array.isArray(payload.images) ? payload.images.map((image) => ({
+      url: typeof image?.url === 'string' ? image.url : '',
+      caption: typeof image?.caption === 'string' ? image.caption : '',
+      overlay: typeof image?.overlay === 'string' ? image.overlay : '',
+      note: typeof image?.note === 'string' ? image.note : '',
+    })) : [],
+    review: typeof payload.review === 'string' ? payload.review : '',
   }
 }
 
@@ -131,7 +143,6 @@ function fileToImage(file) {
       caption: file.name.replace(/\.[^.]+$/, ''),
       overlay: '',
       note: `本地上传：${file.name}`,
-      sourceName: file.name,
     })
     reader.onerror = () => reject(reader.error || new Error('图片读取失败'))
     reader.readAsDataURL(file)
@@ -159,8 +170,6 @@ async function fileToImageViaUpload(file) {
     caption: file.name.replace(/\.[^.]+$/, ''),
     overlay: '',
     note: file.name,
-    sourceName: file.name,
-    upload: body.file,
   }
 }
 
@@ -174,7 +183,7 @@ function readFileAsDataUrl(file) {
 }
 
 function createEmptyImage(index) {
-  return { id: `image-${index + 1}`, url: '', caption: `配图 ${index + 1}`, overlay: '', note: '' }
+  return { url: '', caption: `配图 ${index + 1}`, overlay: '', note: '' }
 }
 
 function scheduleSave() {
@@ -186,7 +195,7 @@ function scheduleSave() {
 async function saveNow() {
   if (!draft.id || isReadonly.value) return
   try {
-    const res = await fetch(`/api/xhs-artifacts/${encodeURIComponent(draft.id)}`, {
+    const res = await fetch(artifactApiUrl(draft.id), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -209,164 +218,33 @@ async function saveNow() {
   }
 }
 
-function normalizePayload(value) {
-  const root = value && typeof value === 'object' ? value : {}
-  const payload = root.web_editor_payload || root.post || root.draft || root.payload || root
-  const content = payload.content && typeof payload.content === 'object' ? payload.content : {}
-  const imageCards = firstImageList(payload.image_cards, payload.images, payload.image_plan, payload.imagePlan, payload.cards, payload.visuals)
-  return {
-    title: firstText(payload.title, payload.main_title, payload.cover_title, payload.final_title, content.final_title, payload.title_options, content.title_options, payload.titles),
-    body: richText(content.body || payload.body || payload.caption || payload.copy || payload.text || payload.main_body),
-    interaction: interactionText(payload.interaction || payload.rules || payload.activity_rules || payload.cta || payload.call_to_action),
-    hashtags: normalizeTags(content.hashtags || payload.hashtags || payload.tags || payload.topics),
-    images: normalizeImages(imageCards),
-    review: richText(payload.review || payload.check || payload.self_check || payload.safety_check),
+async function loadLatestArtifact() {
+  const id = String(props.artifact?.id || '')
+  if (!id) return
+  try {
+    const res = await fetch(artifactApiUrl(id))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error || !body?.artifact) throw new Error(body?.error || `load ${res.status}`)
+    if (String(props.artifact?.id || '') !== id) return
+    const currentUpdatedAt = Number(props.artifact?.updatedAt || props.artifact?.createdAt || 0)
+    const latestUpdatedAt = Number(body.artifact.updatedAt || body.artifact.createdAt || 0)
+    if (latestUpdatedAt <= currentUpdatedAt) return
+    Object.assign(draft, createDraft(body.artifact))
+    emit('saved', body.artifact)
+  } catch (error) {
+    emit('error', error.message || String(error))
   }
 }
 
-function parsePayload(content) {
-  const parsed = parseFirstJsonObject(content)
-  if (parsed && typeof parsed === 'object') return parsed
-  const text = String(content || '')
-  return {
-    title: markdownSection(text, ['标题', '主标题', '小红书标题']),
-    body: markdownSection(text, ['正文', '笔记正文', '发布文案']),
-    images: markdownSection(text, ['配图建议', '配图', '图片方案', 'image_cards']),
-    interaction: markdownSection(text, ['互动/活动规则', '互动', '活动规则']),
-    hashtags: markdownSection(text, ['话题标签', '标签', 'hashtags']),
-    review: markdownSection(text, ['品牌词与风格自检', '自检', 'review']),
-  }
-}
-
-function parseFirstJsonObject(text) {
-  const raw = String(text || '')
-  const start = raw.indexOf('{')
-  if (start < 0) return null
-  for (let end = raw.length; end > start; end = raw.lastIndexOf('}', end - 1)) {
-    if (end <= start) break
-    try { return JSON.parse(raw.slice(start, end + 1)) } catch {}
-  }
-  return null
-}
-
-function normalizeImages(value) {
-  const list = Array.isArray(value) ? value : String(value || '').split(/\r?\n/).filter(Boolean)
-  return list.map((item, index) => {
-    if (item && typeof item === 'object') {
-      return {
-        id: firstText(item.id, item.key, `image-${index + 1}`),
-        url: safeImageUrl(item.url, item.src, item.imageUrl, item.image_url, item.preview_url, item.previewUrl, item.local_path, item.path),
-        caption: firstText(item.caption, item.title, item.role, item.scene, item.description, item.text, item.visual, item.visual_brief, item.shot, item.copy, `配图 ${index + 1}`),
-        overlay: firstText(item.overlay, item.overlay_text?.main, item.overlay_text?.sub, item.overlay_text, item.cover_text, item.key_text, item.headline),
-        note: richText(item.note || item.direction || item.prompt || item.detail || item.layout || item.frame || item.visual_brief || item.design_notes || item.replace_instruction),
-      }
-    }
-    const text = String(item || '').replace(/^\d+[.)、\s-]*/, '').trim()
-    return { ...createEmptyImage(index), caption: text || `配图 ${index + 1}` }
-  })
-}
-
-function firstImageList(...values) {
-  for (const value of values) {
-    const images = normalizeImages(value)
-    if (images.some(hasUsefulImageInfo)) return value
-  }
-  return values.find((value) => Array.isArray(value) && value.length) || values.find(Boolean)
-}
-
-function hasUsefulImageInfo(image) {
-  return Boolean(image.url || image.caption || image.overlay || image.note)
-}
-
-function safeImageUrl(...values) {
-  const url = firstText(...values)
-  if (!url || /^data:/i.test(url)) return ''
-  if (/^(?:https?:|blob:|\/api\/)/i.test(url)) return url
-  if (isLocalFilePath(url)) return `/api/local-images/${encodeURIComponent(btoa(unescape(encodeURIComponent(url))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''))}`
-  return url
-}
-
-function isLocalFilePath(value) {
-  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/')
+function artifactApiUrl(id) {
+  const url = new URL(`/api/xhs-artifacts/${encodeURIComponent(id)}`, window.location.origin)
+  if (props.sessionId) url.searchParams.set('sessionId', props.sessionId)
+  return `${url.pathname}${url.search}`
 }
 
 function normalizeTags(value) {
-  const text = Array.isArray(value) ? value.map(asText).join(' ') : asText(value)
+  const text = String(value || '')
   return [...new Set(text.split(/[\s,，、]+/).map((tag) => tag.trim()).filter(Boolean).map((tag) => tag.startsWith('#') ? tag : `#${tag}`))]
-}
-
-function interactionText(value) {
-  if (value === undefined || value === null) return ''
-  if (typeof value === 'string') return cleanInteractionLines(value)
-  if (typeof value === 'number') return String(value)
-  if (typeof value === 'boolean') return ''
-  if (Array.isArray(value)) return cleanInteractionLines(value.map(interactionText).filter(Boolean).join('\n'))
-  if (typeof value === 'object') {
-    return cleanInteractionLines([
-      value.type,
-      value.action_text,
-      value.activity_time,
-      value.prize,
-      value.winner_count,
-      value.claim_note,
-      value.risk_note,
-      value.note,
-      value.description,
-      value.text,
-      value.content,
-    ].map(richText).filter(Boolean).join('\n'))
-  }
-  return cleanInteractionLines(String(value))
-}
-
-function cleanInteractionLines(value) {
-  return String(value || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !/^(?:true|false|未设置|无|none|null|undefined)$/i.test(line))
-    .join('\n')
-}
-
-function markdownSection(text, headings) {
-  for (const heading of headings) {
-    const match = new RegExp(`(?:^|\\n)#{1,4}\\s*${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n#{1,4}\\s+|$)`, 'i').exec(String(text || ''))
-    if (match?.[1]?.trim()) return match[1].trim()
-  }
-  return ''
-}
-
-function firstText(...values) {
-  for (const value of values) {
-    const text = asText(value)
-    if (text) return text
-  }
-  return ''
-}
-
-function richText(value) {
-  if (value === undefined || value === null) return ''
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (Array.isArray(value)) return value.map(richText).filter(Boolean).join('\n')
-  if (typeof value === 'object') {
-    const preferred = firstText(value.title, value.caption, value.text, value.content, value.description, value.scene, value.name)
-    if (preferred) return preferred
-    return Object.values(value).map(richText).filter(Boolean).join('\n')
-  }
-  return String(value).trim()
-}
-
-function asText(value) {
-  if (value === undefined || value === null) return ''
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(' / ')
-  if (typeof value === 'object') return firstText(value.title, value.caption, value.text, value.content, value.description, value.scene, value.name)
-  return String(value).trim()
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 </script>
 

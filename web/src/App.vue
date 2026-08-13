@@ -13,6 +13,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
+import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../xhs-artifact-contract.mjs'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -44,7 +45,6 @@ const SESSION_PAGE_SIZE = 10
 const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
 const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
-const XHS_ARTIFACT_EDITOR_HINT = 'System hint from web UI: when you produce a complete Xiaohongshu/Miaochengjian post draft, call open_xhs_artifact_editor using its exact structured payload schema; never send Markdown/content or alternate field names. payload.body is only the final publish-ready正文 (no title, hashtags, image plan, review, JSON, or section headings). payload.hashtags is an array. payload.images is an ordered array of {url, caption, overlay, note}: url is only an actual http(s)/api URL or absolute local image path; copy exact paths returned by image tools, never put prompts or descriptions in url; use url:"" for an uncreated placeholder and put the plan in caption/note. Before revising an existing editor, call read_xhs_artifact, preserve user edits, then call open_xhs_artifact_editor with artifact_id set to the same id and the complete revised payload.'
 const ATTACHMENT_MANIFEST_START = '<<ATTACHMENT_MANIFEST>>'
 const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
@@ -102,6 +102,8 @@ const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
 const THEME_STORAGE_KEY = 'neoctl-web.theme'
 const runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
+let allowRuntimeSessionChange = !runtimeSessionId
+let runtimeSessionRepairing = false
 
 const DEFAULT_APP_PROMPT_LIBRARY = [
   {
@@ -178,10 +180,12 @@ function runtimeUrl(url) {
   return `${target.pathname}${target.search}${target.hash}`
 }
 
-function rememberRuntimeSession(session) {
+function rememberRuntimeSession(session, force = false) {
   const sessionId = session?.sessionId || ''
   if (!sessionId || sessionId === runtimeSessionId) return
+  if (!force && !allowRuntimeSessionChange && runtimeSessionId) return
   runtimeSessionId = sessionId
+  allowRuntimeSessionChange = false
   sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
 }
 
@@ -434,6 +438,11 @@ function connectEvents() {
 }
 
 function applySync(payload) {
+  const incomingSessionId = String(payload.session?.sessionId || '')
+  if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
+    repairRuntimeSessionBinding()
+    return
+  }
   const shouldFollow = isTranscriptNearBottom()
   state.lines = payload.lines || []
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
@@ -451,7 +460,7 @@ function applySync(payload) {
   state.cwd = payload.cwd || ''
   if (!state.fastModeMutating) state.fastMode = payload.fastMode === true
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
-  rememberRuntimeSession(payload.session)
+  rememberRuntimeSession(payload.session, allowRuntimeSessionChange)
   if (state.sessionResumeLoading) {
     const sessionId = payload.session?.sessionId || ''
     if (state.pendingResumeSessionId && sessionId === state.pendingResumeSessionId) {
@@ -870,6 +879,7 @@ async function openSessions() {
 }
 
 async function resumeSession(sessionId) {
+  allowRuntimeSessionChange = true
   state.pendingResumeSessionId = sessionId
   state.sessionResumeLoading = true
   state.activePanel = 'chat'
@@ -881,6 +891,7 @@ async function resumeSession(sessionId) {
 }
 
 async function newSession() {
+  allowRuntimeSessionChange = true
   const result = await postJson('/api/sessions/new', {})
   if (result?.ok !== false) {
     state.activePanel = 'chat'
@@ -1380,21 +1391,31 @@ function isXhsArtifactLine(line) {
 }
 
 function xhsArtifactForLine(line) {
-  const parsed = parseFirstJsonObject(line?.text || '')
-  const artifact = line?.artifact || parsed?.artifact || parsed?.output?.artifact || parsed?.result?.artifact || parseXhsArtifactSummary(line?.text)
-  if (!artifact?.id) return null
+  const artifact = parseXhsArtifactToolOutput(line?.artifact) || parseXhsArtifactToolOutput(line?.text)
+  if (!artifact) return null
   const id = String(artifact.id)
-  if (!state.xhsArtifacts[id] || line?.artifact) state.xhsArtifacts[id] = artifact
+  const current = state.xhsArtifacts[id]
+  const selected = selectNewestXhsArtifact(current, artifact)
+  if (selected !== current) state.xhsArtifacts[id] = selected
   return state.xhsArtifacts[id]
 }
 
-function parseXhsArtifactSummary(text) {
-  const value = String(text || '')
-  const id = /\bid:\s*([^\s]+)/i.exec(value)?.[1]
-  if (!id) return null
-  const title = /\btitle:\s*([\s\S]*?)\s+(?:payload|content):\s*/i.exec(value)?.[1]?.trim() || '小红书笔记'
-  const content = /\bcontent:\s*([\s\S]*)$/i.exec(value)?.[1]?.trim() || ''
-  return { id, type: 'xhs-post', title, payload: parseFirstJsonObject(content) || {}, content }
+async function repairRuntimeSessionBinding() {
+  if (runtimeSessionRepairing || !runtimeSessionId) return
+  runtimeSessionRepairing = true
+  try {
+    const res = await fetch(runtimeUrl('/api/sessions/resume'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: runtimeSessionId }),
+    })
+    const result = await res.json().catch(() => ({}))
+    if (!res.ok || result?.ok === false) throw new Error(result.error || `resume ${res.status}`)
+  } catch (error) {
+    notify(`会话恢复失败：${error.message || error}`)
+  } finally {
+    runtimeSessionRepairing = false
+  }
 }
 
 function handleXhsArtifactSaved(artifact) {
@@ -2545,6 +2566,7 @@ function linkify(value) {
                     <XhsArtifactEditor
                       v-if="xhsArtifactForLine(line)"
                       :artifact="xhsArtifactForLine(line)"
+                      :session-id="state.session?.sessionId || ''"
                       @saved="handleXhsArtifactSaved"
                       @error="handleXhsArtifactError"
                     />

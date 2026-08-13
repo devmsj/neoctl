@@ -10,6 +10,9 @@ export function createWorkspaceRuntimeManager(options) {
   const registry = new SessionWorkspaceRegistry(registryFile, workspaceRoot);
 
   class WorkspaceWebRepl extends WebRepl {
+    syncScheduled = false;
+    backpressuredSubscribers = new WeakSet();
+
     snapshot(includeCatalog = false) {
       return {
         ...super.snapshot(includeCatalog),
@@ -54,6 +57,29 @@ export function createWorkspaceRuntimeManager(options) {
         this.append({ kind: 'error', text: message });
         return { ok: false, error: message };
       }
+    }
+
+    broadcastSync() {
+      if (this.syncScheduled) return;
+      this.syncScheduled = true;
+      setImmediate(() => {
+        this.syncScheduled = false;
+        const payload = this.snapshot(false);
+        for (const res of this.subscribers) {
+          if (res.destroyed || res.writableEnded) continue;
+          if (res.writableLength > 8 * 1024 * 1024) {
+            if (!this.backpressuredSubscribers.has(res)) {
+              this.backpressuredSubscribers.add(res);
+              res.once('drain', () => {
+                this.backpressuredSubscribers.delete(res);
+                this.broadcastSync();
+              });
+            }
+            continue;
+          }
+          this.send(res, 'sync', payload);
+        }
+      });
     }
   }
 
