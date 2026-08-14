@@ -251,6 +251,7 @@ const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
 const transcript = ref(null)
+const mobileMenu = ref(null)
 const loginProvider = ref('')
 const loginValues = reactive({})
 const promptDraft = reactive(createEmptyPromptDraft())
@@ -1622,7 +1623,7 @@ function renderImageGrid(images) {
     const src = escapeHtml(item.previewUrl)
     const caption = escapeHtml(imageCaption(item, index))
     const download = escapeHtml(imageDownloadName(item, index))
-    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
+    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
   }).join('')
   return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
@@ -2191,9 +2192,10 @@ function collectLineImageItems(line, images) {
 function normalizeImagePreview(item) {
   if (!item || typeof item !== 'object') return undefined
   const mimeType = item.mimeType || item.thumbnail?.mimeType || item.original?.mimeType || 'image/png'
-  const previewUrl = item.thumbnailSrc || item.thumbnail?.src || item.previewUrl || item.src || item.originalSrc || item.original?.src || dataToImageSrc(item.data, mimeType)
-  if (!previewUrl) return undefined
-  const originalUrl = item.originalSrc || item.original?.src || item.src || item.previewUrl || previewUrl
+  const rawPreviewUrl = item.thumbnailSrc || item.thumbnail?.src || item.previewUrl || item.src || item.originalSrc || item.original?.src || dataToImageSrc(item.data, mimeType)
+  if (!rawPreviewUrl) return undefined
+  const previewUrl = scopedImageUrl(rawPreviewUrl)
+  const originalUrl = scopedImageUrl(item.originalSrc || item.original?.src || item.src || item.previewUrl || rawPreviewUrl)
   return {
     label: item.label,
     mimeType,
@@ -2500,6 +2502,28 @@ function escapeHtml(value) {
 function linkify(value) {
   return value.replace(/(https?:\/\/[^\s<]+)/g, '<a target="_blank" rel="noreferrer noopener" href="$1">$1</a>')
 }
+
+function scopedImageUrl(value) {
+  const url = String(value || '')
+  return url.startsWith('/api/images/') ? runtimeUrl(url) : url
+}
+
+function closeMobileMenu() {
+  mobileMenu.value?.removeAttribute('open')
+}
+
+function openMobilePanel(panel) {
+  closeMobileMenu()
+  if (panel === 'sessions') return openSessions()
+  if (panel === 'prompts') return openPromptManager()
+  if (panel === 'settings') return openLogin()
+  state.activePanel = 'chat'
+}
+
+function createMobileSession() {
+  closeMobileMenu()
+  return newSession()
+}
 </script>
 
 <template>
@@ -2594,9 +2618,23 @@ function linkify(value) {
           <svg class="ui-icon crumb-icon" viewBox="0 0 20 20" aria-hidden="true">
             <path d="M4.5 6.5h4v4h-4zM11.5 6.5h4v4h-4zM8.5 8.5h3M10 5.5v9M8.5 11.5h3M4.5 13.5h4v4h-4zM11.5 13.5h4v4h-4z" />
           </svg>
-          <span>工作空间 / {{ activePanelLabel }}</span>
+          <span><span class="workspace-prefix">工作空间 / </span>{{ activePanelLabel }}</span>
         </div>
         <div class="top-actions">
+          <details ref="mobileMenu" class="mobile-nav-menu">
+            <summary aria-label="打开导航菜单" title="导航菜单">
+              <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M4 5.5h12M4 10h12M4 14.5h12" />
+              </svg>
+            </summary>
+            <nav>
+              <button type="button" :class="{ active: state.activePanel === 'chat' }" @click="openMobilePanel('chat')">对话</button>
+              <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
+              <button type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
+              <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">模型配置</button>
+              <button type="button" @click="createMobileSession">新建会话</button>
+            </nav>
+          </details>
           <button class="ghost mobile-theme-toggle" type="button" :aria-label="themeToggleLabel" :title="themeToggleLabel" @click="toggleTheme">
             <svg v-if="isDarkTheme" class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
               <circle cx="10" cy="10" r="3.2" />
@@ -2606,8 +2644,8 @@ function linkify(value) {
               <path d="M15.8 12.4A6.1 6.1 0 0 1 7.6 4.2 6.1 6.1 0 1 0 15.8 12.4Z" />
             </svg>
           </button>
-          <button class="ghost" @click="openLogin()">配置模型</button>
-          <button class="primary" @click="newSession">+ 新建</button>
+          <button class="ghost desktop-config-button" @click="openLogin()">配置模型</button>
+          <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
         </div>
       </header>
 
@@ -2654,7 +2692,7 @@ function linkify(value) {
                     <div v-if="images.length" class="message-image-attachments">
                       <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
                         <button type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
-                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" />
+                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
                         </button>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <a class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
@@ -2709,6 +2747,29 @@ function linkify(value) {
             </div>
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
             <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
+            <details class="mobile-session-options">
+              <summary>
+                <span>会话选项</span>
+                <small>{{ exactPhaseLabel }}</small>
+              </summary>
+              <div class="mobile-session-options-body">
+                <dl>
+                  <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
+                  <div><dt>上下文</dt><dd>{{ composerContextValue }}</dd></div>
+                  <div><dt>Token</dt><dd>↑ {{ composerInputTokens }} / ↓ {{ composerOutputTokens }}</dd></div>
+                </dl>
+                <div class="mobile-session-actions">
+                  <button
+                    type="button"
+                    :class="['fast-mode-button', { active: state.fastMode, syncing: state.fastModeMutating }]"
+                    :aria-pressed="state.fastMode"
+                    @click="toggleFastMode"
+                  ><span>{{ state.fastMode ? '快速模式' : '启用快速模式' }}</span></button>
+                  <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
+                </div>
+                <p v-if="showCompressionWarning" class="mobile-compression-warning">上下文已超过 100k，建议压缩。</p>
+              </div>
+            </details>
             <div class="composer-footer">
               <div class="composer-metrics" aria-label="运行状态指标">
                 <span class="metric-chip model-chip"><em>模型</em><strong>{{ modelName }}</strong></span>
