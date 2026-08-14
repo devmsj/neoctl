@@ -261,6 +261,9 @@ const promptSortPosition = ref('before')
 let es
 let toastTimer
 let scrollRaf = 0
+let syncRaf = 0
+let pendingSyncPayload
+let hasReceivedEventSync = false
 let clockTimer
 let metricsRaf = 0
 let activeThemeTransition
@@ -383,6 +386,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (es) es.close()
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
+  if (syncRaf) cancelAnimationFrame(syncRaf)
+  pendingSyncPayload = undefined
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
   if (clockTimer) clearInterval(clockTimer)
   themeTransitionRunId += 1
@@ -422,19 +427,110 @@ async function fetchPromptLibrary() {
 
 function connectEvents() {
   if (es) es.close()
+  if (syncRaf) cancelAnimationFrame(syncRaf)
+  syncRaf = 0
+  pendingSyncPayload = undefined
+  hasReceivedEventSync = false
   state.connecting = true
   es = new EventSource(runtimeUrl('/events'))
   es.addEventListener('open', () => {
+    hasReceivedEventSync = false
     state.connected = true
     state.connecting = false
   })
   es.addEventListener('error', () => {
+    flushQueuedSync()
     state.connected = false
     state.connecting = false
   })
   es.addEventListener('sync', (event) => {
-    applySync(JSON.parse(event.data))
+    // The first snapshot on every connection carries catalogs that later
+    // snapshots intentionally omit, so it must never be coalesced away.
+    if (!hasReceivedEventSync) {
+      hasReceivedEventSync = true
+      applyRawSync(event.data)
+      return
+    }
+    queueSync(event.data)
   })
+  es.addEventListener('delta', (event) => {
+    // A queued structural snapshot must land before later line deltas, or its
+    // animation-frame callback could overwrite text that already arrived.
+    flushQueuedSync()
+    applyRawDelta(event.data)
+  })
+}
+
+// The runtime publishes complete conversation snapshots. Processing each one as
+// soon as it arrives makes a long session fall behind the stream: the browser
+// spends its time rendering obsolete intermediate states after the model has
+// already finished. Keep only the newest snapshot until the next paint.
+function queueSync(rawPayload) {
+  pendingSyncPayload = rawPayload
+  if (syncRaf) return
+  syncRaf = requestAnimationFrame(() => {
+    syncRaf = 0
+    applyPendingSync()
+  })
+}
+
+function flushQueuedSync() {
+  if (syncRaf) cancelAnimationFrame(syncRaf)
+  syncRaf = 0
+  applyPendingSync()
+}
+
+function applyPendingSync() {
+  const payload = pendingSyncPayload
+  pendingSyncPayload = undefined
+  if (payload) applyRawSync(payload)
+}
+
+function applyRawSync(rawPayload) {
+  try {
+    applySync(JSON.parse(rawPayload))
+  } catch (error) {
+    notify(`运行状态同步失败：${error.message || error}`)
+  }
+}
+
+function applyRawDelta(rawPayload) {
+  try {
+    applyDelta(JSON.parse(rawPayload))
+  } catch (error) {
+    notify(`流式增量同步失败：${error.message || error}`)
+    void fetchState()
+  }
+}
+
+function applyDelta(payload) {
+  const incomingSessionId = String(payload.sessionId || '')
+  if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
+    repairRuntimeSessionBinding()
+    return
+  }
+  const shouldFollow = isTranscriptNearBottom()
+  for (const operation of payload.operations || []) {
+    if (operation.type === 'line.append') {
+      if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
+        state.lines.push(operation.line)
+      }
+      continue
+    }
+    const index = state.lines.findIndex((line) => String(line.id) === String(operation.id))
+    if (index < 0) throw new Error(`找不到增量消息行 ${operation.id}`)
+    const line = state.lines[index]
+    if (operation.type === 'line.text.append') {
+      state.lines[index] = { ...line, text: `${line.text || ''}${operation.text || ''}` }
+    } else if (operation.type === 'line.patch') {
+      state.lines[index] = { ...line, ...(operation.patch || {}) }
+    }
+  }
+  if (payload.status) state.status = payload.status
+  updateComposerMetricTargets()
+  state.connected = true
+  state.connecting = false
+  if (shouldFollow) scheduleTranscriptScrollBottom()
 }
 
 function applySync(payload) {
@@ -1048,27 +1144,30 @@ function toolResultSummary(line) {
   if (name === 'exec' || name.includes('shell') || name.includes('command')) {
     const description = output?.description || output?.command || toolTextField(raw, ['目的', 'description', 'command'])
     const suffix = output?.exitCode !== undefined ? ` · exit ${output.exitCode}` : ''
-    return truncateSummary(`${description || '查看命令输出'}${suffix}`, 150)
+    return description ? truncateSummary(`${description}${suffix}`, 150) : ''
   }
   if (name === 'read' || name.includes('read')) {
     const range = output?.startLine && output?.endLine ? ` · ${output.startLine}-${output.endLine} 行` : ''
-    return truncateSummary(`${output?.path || toolTextField(raw, ['file', 'path']) || '读取内容'}${range}`, 150)
+    const path = output?.path || toolTextField(raw, ['file', 'path'])
+    return path ? truncateSummary(`${path}${range}`, 150) : ''
   }
   if (name === 'write' || name === 'edit' || name.includes('apply_patch')) {
     const operation = output?.operation ? ` · ${output.operation}` : ''
     const path = output?.path || /^(?:create|edit|write)\s+(.+?)(?:,|$)/im.exec(raw)?.[1]
-    return truncateSummary(`${path || '更新内容'}${operation}`, 150)
+    return path ? truncateSummary(`${path}${operation}`, 150) : ''
   }
   if (name === 'list') {
     const count = output?.returnedEntries ?? output?.totalFiles
-    return truncateSummary(`${output?.path || toolTextField(raw, ['path']) || '目录内容'}${count !== undefined ? ` · ${count} 项` : ''}`, 150)
+    const path = output?.path || toolTextField(raw, ['path'])
+    return path ? truncateSummary(`${path}${count !== undefined ? ` · ${count} 项` : ''}`, 150) : ''
   }
   if (name === 'grep' || name.includes('search') || name.includes('query')) {
     const count = output?.matchCount ?? output?.matches?.length ?? output?.results?.length
-    return truncateSummary(`${output?.query || output?.pattern || output?.path || '搜索结果'}${count !== undefined ? ` · ${count} 条` : ''}`, 150)
+    const subject = output?.query || output?.pattern || output?.path
+    return subject ? truncateSummary(`${subject}${count !== undefined ? ` · ${count} 条` : ''}`, 150) : ''
   }
   const firstLine = raw.split(/\r?\n/).map((item) => item.trim()).find((item) => item && !/^(?:ok|success|successful|completed|done|failure|failed|error)$/i.test(item))
-  return truncateSummary(firstLine || '查看工具输出', 150)
+  return truncateSummary(firstLine || '', 150)
 }
 
 function truncateSummary(value, maxLength) {
@@ -1342,7 +1441,7 @@ function isSkillReadLine(line) {
 }
 
 function renderSkillReadResult(line) {
-  return sanitizeMarkdown(marked.parse(`已阅读技能${skillReadName(line?.text || '')}`))
+  return sanitizeMarkdown(marked.parse(`技能${skillReadName(line?.text || '')}`))
 }
 
 function skillReadName(text) {
@@ -1355,7 +1454,7 @@ function skillReadName(text) {
 }
 
 function renderImageNoteResult(line) {
-  return sanitizeMarkdown(marked.parse(`已分析并记录图片${imageNoteLabel(line?.text || '')}`))
+  return sanitizeMarkdown(marked.parse(`图片记录${imageNoteLabel(line?.text || '')}`))
 }
 
 function imageNoteLabel(text) {
@@ -1435,9 +1534,9 @@ function renderExposeDownloadsResult(line) {
     const size = item.sizeBytes || item.size ? formatBytes(item.sizeBytes || item.size) : ''
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
     const meta = [size, expires].filter(Boolean).join(' · ')
-    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong><span>${escapeHtml(meta || '已生成')}</span></span><span class="download-action">点击下载</span></a>`
+    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</span><span class="download-action">下载</span></a>`
   }).join('')
-  return `<div class="download-result"><div class="download-result-header"><strong>文件已准备好</strong><span>点击下方链接下载</span></div><div class="download-grid">${cards}</div></div>`
+  return `<div class="download-result"><div class="download-grid">${cards}</div></div>`
 }
 
 function parseExposeDownloads(text) {
@@ -1498,24 +1597,12 @@ function renderImage2Stage(line) {
 }
 
 function renderImage2Skeleton(line) {
-  const text = String(line?.text || '')
-  const failed = /\bfail(?:ed)?\b|image\s+(?:generate|edit)\s+failed/i.test(text)
-  const pendingResult = isImage2PendingReplacementLine(line)
   const metadata = image2InvocationMetadata(line)
-  const elapsed = lineElapsedText(line)
-  const title = failed ? '图片生成失败' : pendingResult ? '图片已生成，正在载入结果' : metadata.mode === 'edit' ? '图片模型正在修改图片' : '图片模型正在生成图片'
-  const detail = failed
-    ? firstNonEmptyLine(text, ['failed', 'image generate failed', 'image edit failed'])
-    : pendingResult
-      ? `正在解析图片文件并创建预览${elapsed ? ` · 已用时 ${elapsed}` : ''}`
-      : `生成任务已提交，等待图片模型返回${elapsed ? ` · 已用时 ${elapsed}` : ''}`
-  const chips = [metadata.mode === 'edit' ? '图片修改' : metadata.mode ? '图片生成' : '', metadata.model, metadata.size].filter(Boolean)
-  const prompt = metadata.prompt ? `<p class="image2-stage-prompt"><span>提示词</span>${escapeHtml(truncateSummary(metadata.prompt, 160))}</p>` : ''
-  const activeStep = pendingResult ? 2 : 1
-  const steps = ['提交请求', metadata.mode === 'edit' ? '模型修改' : '模型生成', '载入结果']
-    .map((label, index) => `<span class="image2-stage-step ${index < activeStep ? 'done' : index === activeStep ? failed ? 'failed' : 'active' : ''}"><i></i>${escapeHtml(label)}</span>`)
-    .join('')
-  return `<div class="image2-stage ${failed ? 'failed' : 'loading'}"><div class="image2-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="image2-stage-text"><div class="image2-stage-heading"><strong>${escapeHtml(title)}</strong>${chips.length ? `<div>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}</div><span>${escapeHtml(detail)}</span>${prompt}<div class="image2-stage-progress">${steps}</div></div></div>`
+  const prompt = metadata.prompt
+    ? `<div class="image2-stage-prompt"><p>${escapeHtml(truncateSummary(metadata.prompt, 240))}</p></div>`
+    : ''
+  const diamonds = Array.from({ length: 11 }, (_, index) => `<i class="diamond-${index + 1}"></i>`).join('')
+  return `<div class="image2-stage"><div class="image2-diamond-field" aria-hidden="true">${diamonds}<b></b></div>${prompt}</div>`
 }
 
 function image2InvocationMetadata(line) {
@@ -1527,11 +1614,6 @@ function image2InvocationMetadata(line) {
     size: String(input.size || ''),
     prompt: String(input.prompt || ''),
   }
-}
-
-function firstNonEmptyLine(text, ignored = []) {
-  const ignoreSet = new Set(ignored.map((item) => item.toLowerCase()))
-  return String(text || '').split(/\r?\n/).map((line) => line.trim()).find((line) => line && !ignoreSet.has(line.toLowerCase())) || '请展开工具输出查看详情'
 }
 
 function renderImageGrid(images) {
@@ -1550,11 +1632,7 @@ function renderImage2Result(line) {
   const text = String(line.text || '')
   const status = /\bfail(?:ed)?\b|failed/i.test(text) ? '生成失败' : /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
   const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, parsed.size, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
-  const parts = [`<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>`]
-  const details = [parsed.provider && `provider: ${parsed.provider}`, parsed.background && `background: ${parsed.background}`, parsed.usage && `usage: ${parsed.usage}`].filter(Boolean)
-  if (details.length) parts.push(`<div class="image2-details">${escapeHtml(details.join(' · '))}</div>`)
-  parts.push('</div>')
-  return parts.join('')
+  return `<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div></div>`
 }
 
 function renderImage2Detail(line) {
@@ -2073,6 +2151,10 @@ function userMessageOwner(group) {
 
 function generatedImageLinesAfter(line) {
   const lines = state.lines || []
+  const toolUseId = String(line?.toolUseId || '')
+  if (toolUseId) {
+    return lines.filter((item) => isGeneratedImageLine(item) && String(item?.parentToolUseId || '') === toolUseId)
+  }
   const index = lines.findIndex((item) => item?.id === line?.id)
   if (index < 0) return []
   const result = []
@@ -2541,25 +2623,20 @@ function linkify(value) {
               <div class="message-body">
                 <div class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
-                  <span v-if="shouldCollapseToolLine(line)" :class="['tool-status-pill', `status-${toolResultStatus(line).key}`]">{{ toolResultStatus(line).label }}</span>
+                  <span v-if="shouldCollapseToolLine(line) && toolResultStatus(line).key === 'failed'" class="tool-status-pill status-failed">失败</span>
                   <span v-else-if="line.kind !== 'tool' && !line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
                   <span v-if="line.live && line.kind !== 'tool' && !line.toolName" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="isImage2Line(line)" class="image2-result-shell">
                   <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
-                  <button type="button" class="image2-detail-button" @click="openToolDetail(line)">查看调用详情</button>
+                  <button v-if="isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                 </div>
-                <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">
-                  <div class="tool-result-summary-icon" aria-hidden="true">
-                    <svg class="ui-icon" viewBox="0 0 20 20">
-                      <path d="M5 5.5h10v9H5zM7.5 8h5M7.5 11h3.5" />
-                    </svg>
-                  </div>
-                  <div class="tool-result-summary-main">
+                <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`, { 'compact-only': !toolResultSummary(line) }]">
+                  <div v-if="toolResultSummary(line)" class="tool-result-summary-main">
                     <p>{{ toolResultSummary(line) }}</p>
                   </div>
-                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">查看详情</button>
+                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">详情</button>
                 </div>
                 <template v-else>
                   <template v-if="isXhsArtifactLine(line)">
@@ -2883,7 +2960,6 @@ function linkify(value) {
       <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)}详情`">
         <header class="tool-result-modal-head">
           <div>
-            <span class="tool-result-modal-kicker">工具详情</span>
             <div class="tool-result-modal-title">
               <strong>{{ lineTitle(toolDetailLine) }}</strong>
               <span :class="['tool-result-modal-status', `status-${toolResultStatus(toolDetailLine).key}`]">{{ toolResultStatus(toolDetailLine).label }}</span>

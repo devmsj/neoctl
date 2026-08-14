@@ -201,7 +201,7 @@ async function proxy(req, res) {
 
     for await (const chunk of upstream.body) {
       if (res.destroyed) break;
-      res.write(chunk);
+      if (!res.write(chunk) && !await waitForDrainOrClose(res)) break;
     }
     if (!res.writableEnded) res.end();
   } catch (error) {
@@ -212,6 +212,28 @@ async function proxy(req, res) {
     if (error?.name === 'AbortError' || isTerminatedSocket || res.destroyed) return;
     throw error;
   }
+}
+
+function waitForDrainOrClose(res) {
+  if (res.destroyed) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      res.off('error', onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve(true);
+    };
+    const onClose = () => {
+      cleanup();
+      resolve(false);
+    };
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+    res.once('error', onClose);
+  });
 }
 
 async function serveStatic(res, url) {
