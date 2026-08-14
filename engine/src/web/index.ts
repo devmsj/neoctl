@@ -635,6 +635,22 @@ export class WebRepl {
     }
   }
 
+  imagePayload(messageId: string, blockIndex: number): { body: Buffer; mimeType: string } | undefined {
+    if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
+    const message = this.runtime.engine.getHistoryMessages().find((item) => item.id === messageId);
+    const block = message?.blocks[blockIndex];
+    if (!block || block.type !== "image") return undefined;
+    const resolved = resolveImageBlockDataSync(block)?.trim();
+    if (!resolved) return undefined;
+    const dataUrl = /^data:([^;,]+);base64,([\s\S]*)$/iu.exec(resolved);
+    const mimeType = (dataUrl?.[1] ?? block.mimeType).toLowerCase();
+    if (!mimeType.startsWith("image/")) return undefined;
+    const base64 = (dataUrl?.[2] ?? resolved).replace(/\s+/gu, "");
+    if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return undefined;
+    const body = Buffer.from(base64, "base64");
+    return body.length ? { body, mimeType } : undefined;
+  }
+
   async setFastMode(enabled: boolean): Promise<{ ok: true; fastMode: boolean } | { ok: false; error: string }> {
     try {
       const fastMode = await this.runtime.engine.setFastMode(enabled);
@@ -837,6 +853,7 @@ export class WebRepl {
     this.reduce(event);
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
       this.pendingUserImageEchoLabels = undefined;
+      renderMessageImages(event.message, (line) => this.append(line));
       this.broadcastSync();
       return;
     }
@@ -1041,7 +1058,6 @@ export class WebRepl {
 
     const promptPayload = buildWebPromptPayload(command.text, attachments);
     this.append({ kind: "user", text: promptPayload.displayText });
-    for (const line of imageLinesForBlocks("user", promptPayload.blocks)) this.append(line);
     const optimisticImageLabels = (promptPayload.blocks ?? [])
       .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
       .map((block) => block.label as string);
@@ -1220,6 +1236,11 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
+    const imageMatch = /^\/api\/images\/([^/]+)\/(\d+)$/u.exec(url.pathname);
+    if (req.method === "GET" && imageMatch) {
+      const payload = repl.imagePayload(decodeURIComponent(imageMatch[1]), Number(imageMatch[2]));
+      return payload ? sendImage(res, payload) : sendJson(res, { error: "image not found" }, 404);
+    }
     if (req.method === "GET" && url.pathname === "/api/app-prompt") return sendJson(res, repl.appPrompt());
     if (req.method === "POST" && url.pathname === "/api/app-prompt") {
       const body = await readJsonBody<WebSetAppPromptPayload>(req);
@@ -1282,6 +1303,15 @@ async function sendFile(res: ServerResponse, filepath: string, contentType: stri
 function sendJson(res: ServerResponse, value: unknown, status = 200): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(JSON.stringify(value));
+}
+
+function sendImage(res: ServerResponse, payload: { body: Buffer; mimeType: string }): void {
+  res.writeHead(200, {
+    "Content-Type": payload.mimeType,
+    "Content-Length": String(payload.body.length),
+    "Cache-Control": "private, max-age=31536000, immutable",
+  });
+  res.end(payload.body);
 }
 
 async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
@@ -1709,7 +1739,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) return true;
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   let rendered = false;
-  for (const block of message.blocks) {
+  for (const [blockIndex, block] of message.blocks.entries()) {
     if (block.type === "text") {
       const kind = kindForRole(message.role);
       if (kind === "meta") continue;
@@ -1717,7 +1747,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       else append({ kind, text: block.text });
       rendered = true;
     } else if (block.type === "image") {
-      const line = imageLineForBlock(message.role, block);
+      const line = imageLineForBlock(message.role, block, message.id, blockIndex);
       if (!line) continue;
       append({ ...line, parentToolName });
       rendered = true;
@@ -1750,9 +1780,9 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
   let rendered = false;
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   const parentToolUseId = message.blocks.find((block) => block.type === "tool_result")?.toolUseId;
-  for (const block of message.blocks) {
+  for (const [blockIndex, block] of message.blocks.entries()) {
     if (block.type !== "image") continue;
-    const line = imageLineForBlock(message.role, block);
+    const line = imageLineForBlock(message.role, block, message.id, blockIndex);
     if (!line) continue;
     append({ ...line, parentToolName, parentToolUseId });
     rendered = true;
@@ -1760,33 +1790,18 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
   return rendered;
 }
 
-function imageLinesForBlocks(role: Message["role"], blocks: readonly MessageBlock[] | undefined): Omit<UiLine, "id">[] {
-  if (!blocks?.length) return [];
-  return blocks
-    .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image")
-    .map((block) => imageLineForBlock(role, block))
-    .filter((line): line is Omit<UiLine, "id"> => Boolean(line));
-}
-
-function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>): Omit<UiLine, "id"> | undefined {
+function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>, messageId: string, blockIndex: number): Omit<UiLine, "id"> | undefined {
   const kind = kindForRole(role);
   if (kind === "meta") return undefined;
   return {
     kind,
     text: block.label ?? `[image ${block.mimeType}]`,
     image: {
-      src: imageBlockToDataUrl(block),
+      src: `/api/images/${encodeURIComponent(messageId)}/${blockIndex}`,
       label: block.label,
       mimeType: block.mimeType,
     },
   };
-}
-
-function imageBlockToDataUrl(block: Extract<MessageBlock, { type: "image" }>): string {
-  const data = resolveImageBlockDataSync(block);
-  if (!data) return "";
-  if (data.startsWith("data:")) return data;
-  return `data:${block.mimeType};base64,${data}`;
 }
 
 function assistantText(message: Message): string | undefined {

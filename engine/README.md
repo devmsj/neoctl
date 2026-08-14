@@ -8,7 +8,7 @@ neoctl 是一个用 TypeScript 编写的本地 AI 工程代理运行时。项目
 - **OpenAI 兼容模型网关**：支持 `/v1/responses` 与 `/v1/chat/completions`，`OPENAI_ENDPOINT=auto` 时会优先尝试 Responses API，并在兼容网关不支持时回退到 Chat Completions。
 - **内置工程工具集**：文件读写、文本替换、命令执行、目录列表、ripgrep 搜索、Web 搜索、计划展示、子代理和后台任务控制。
 - **上下文预算与手动压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用并预算大型工具结果；默认不自动压缩会话，用户可通过 `/compact` 主动压缩。
-- **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览。
+- **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览；Web 恢复快照只返回图片引用，图片通过独立接口按需加载，避免多图会话被 base64 阻塞。
 - **子代理与后台任务**：同一套 query loop 可运行同步子代理、后台子代理、fork 子代理，以及后台 shell 任务。
 - **TTY REPL 体验**：Ink UI、slash command 补全、Markdown 渲染、流式状态栏、token 使用统计、剪贴板文本/图片粘贴、会话标题和终端标题更新。
 
