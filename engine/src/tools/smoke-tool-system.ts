@@ -10,7 +10,7 @@ import { grepTool } from "./builtins/grep-tool.js";
 import { createOpenAIImageGenerationTool, DEFAULT_IMAGE_TIMEOUT_MS } from "./builtins/image-generation-tool.js";
 import { createSearchTool } from "./builtins/search-tool.js";
 import type { SearchProvider } from "./builtins/search-providers.js";
-import { createSearchProvider } from "./builtins/search-providers.js";
+import { createSearchProvider, openAIResponsesUrl } from "./builtins/search-providers.js";
 import { planTool } from "./builtins/plan-tool.js";
 import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
@@ -416,9 +416,11 @@ async function main(): Promise<void> {
     webSearchFindsUrl: webSearchOutput.results?.[0]?.url === "https://example.com/mock",
     webSearchDefaultsToOpenAI: defaultOpenAISearchProvider.name === "openai",
     webSearchExplicitExaOverride: explicitExaSearchProvider.name === "exa",
-    webSearchFallbackWithoutOpenAIConfig: fallbackSearchProvider.name === "exa",
-    webSearchPromptAllowsProviderSwitch: searchToolPrompt.includes("switch providers") && searchToolPrompt.includes("provider field"),
-    webSearchPromptDiscouragesExplicitProvider: searchToolPrompt.includes("do not explicitly set provider") && searchToolPrompt.includes("user requests") && searchToolPrompt.includes("persistently unavailable"),
+    webSearchDefaultsToOpenAIWithoutConfig: fallbackSearchProvider.name === "openai",
+    webSearchResponsesUrlAddsV1: openAIResponsesUrl("https://api.openai.com") === "https://api.openai.com/v1/responses",
+    webSearchResponsesUrlPreservesV1: openAIResponsesUrl("https://api.openai.com/v1/") === "https://api.openai.com/v1/responses",
+    webSearchPromptUsesOpenAIDefault: searchToolPrompt.includes("OpenAI is the default"),
+    webSearchPromptFallsBackToExa: searchToolPrompt.includes("exa") && searchToolPrompt.includes("unavailable") && searchToolPrompt.includes("partially unavailable"),
     image2OnlyToolName: imageTool.name === "image2" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
     image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
     image2DefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,

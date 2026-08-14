@@ -28,8 +28,13 @@ for (const [platformKey, executable, format] of TARGETS) {
   }
 
   const executablePath = path.join(VENDOR_ROOT, platformKey, executable);
-  if (format !== "pe" && (fs.statSync(executablePath).mode & 0o111) === 0) {
-    throw new Error(`Required ripgrep binary is not executable: ${path.relative(PROJECT_ROOT, executablePath)}`);
+  // Packages published from Windows can lose POSIX executable mode bits in the
+  // generated tarball. Restore them during postinstall before validating.
+  if (process.platform !== "win32" && format !== "pe" && (fs.statSync(executablePath).mode & 0o111) === 0) {
+    fs.chmodSync(executablePath, fs.statSync(executablePath).mode | 0o755);
+    if ((fs.statSync(executablePath).mode & 0o111) === 0) {
+      throw new Error(`Required ripgrep binary is not executable: ${path.relative(PROJECT_ROOT, executablePath)}`);
+    }
   }
   assertBinaryFormat(executablePath, format, platformKey);
   const manifestPath = path.join(VENDOR_ROOT, platformKey, "manifest.json");

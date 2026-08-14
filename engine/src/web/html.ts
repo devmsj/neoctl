@@ -247,6 +247,25 @@ es.addEventListener('sync', (event) => {
   updateInputPlaceholder();
   scheduleRender();
 });
+es.addEventListener('delta', (event) => {
+  const payload = JSON.parse(event.data);
+  for (const operation of payload.operations || []) {
+    if (operation.type === 'line.append') {
+      if (!state.lines.some((line) => String(line.id) === String(operation.line && operation.line.id))) state.lines.push(operation.line);
+      continue;
+    }
+    const index = state.lines.findIndex((line) => String(line.id) === String(operation.id));
+    if (index < 0) {
+      location.reload();
+      return;
+    }
+    const line = state.lines[index];
+    if (operation.type === 'line.text.append') state.lines[index] = { ...line, text: String(line.text || '') + String(operation.text || '') };
+    else if (operation.type === 'line.patch') state.lines[index] = { ...line, ...(operation.patch || {}) };
+  }
+  if (payload.status) state.status = payload.status;
+  scheduleRender();
+});
 
 function scheduleRender() {
   if (renderPending) return;

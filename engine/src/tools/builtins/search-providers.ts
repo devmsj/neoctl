@@ -54,13 +54,13 @@ export interface OpenAISearchProviderConfig {
   maxOutputTokens?: number;
 }
 
-export const DEFAULT_SEARCH_PROVIDER = "exa";
+export const DEFAULT_SEARCH_PROVIDER = "openai";
 export const DEFAULT_EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const DEFAULT_EXA_MCP_TOOL_NAME = "web_search_exa";
 export const DEFAULT_OPENAI_SEARCH_MODEL = "gpt-4.1-mini";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
-export const DEFAULT_OPENAI_WEB_SEARCH_TOOL_TYPE = "web_search_preview";
-export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
+export const DEFAULT_OPENAI_WEB_SEARCH_TOOL_TYPE = "web_search";
+export const DEFAULT_SEARCH_TIMEOUT_MS = 120_000;
 
 export class SearchProviderError extends Error {
   constructor(
@@ -77,9 +77,6 @@ function resolveSearchProviderName(config: SearchProviderConfig, env: NodeJS.Pro
   const explicit = config.provider ?? env.SEARCH_PROVIDER ?? env.WEB_SEARCH_PROVIDER;
   if (explicit?.trim()) return explicit.trim().toLowerCase();
 
-  const modelProvider = env.MODEL_PROVIDER;
-  if (modelProvider?.trim().toLowerCase() === "openai") return "openai";
-  if (env.OPENAI_API_KEY?.trim()) return "openai";
   return DEFAULT_SEARCH_PROVIDER;
 }
 
@@ -229,7 +226,7 @@ async function callOpenAIWebSearch(options: OpenAIWebSearchRequestOptions): Prom
   options.signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    const response = await fetch(`${options.baseUrl}/v1/responses`, {
+    const response = await fetch(openAIResponsesUrl(options.baseUrl), {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -495,6 +492,11 @@ function parseOpenAISearchContextSize(value: string | undefined): "low" | "mediu
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+export function openAIResponsesUrl(baseUrl: string): string {
+  const normalized = stripTrailingSlash(baseUrl.trim());
+  return `${normalized.endsWith("/v1") ? normalized : `${normalized}/v1`}/responses`;
 }
 
 function dropUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {

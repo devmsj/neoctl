@@ -27,12 +27,12 @@ const MAX_TEXT_CHARS = 1600;
 export function createSearchTool(options: CreateSearchToolOptions = {}): Tool<WebSearchToolInput> {
   return {
     name: "search",
-    description: "Search the web for current information. Uses a pluggable provider backend; defaults to OpenAI GPT search when the model provider is OpenAI, otherwise Exa MCP. Use grep for local workspace text lookup. You may switch providers with the provider field, but do not explicitly set provider unless the user requests a specific provider or the default/current search provider remains unavailable after retrying.",
+    description: "Search the web for current information. OpenAI Responses web search is the default provider and inherits the configured OpenAI URL and API key. Use Exa's official MCP service only when OpenAI search is unavailable or only partially available for the requested queries. Use grep for local workspace text lookup. Do not explicitly select Exa unless the user requests it or OpenAI has failed or returned incomplete availability.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Web search query." },
-        provider: { type: "string", description: "Optional backend provider name. Defaults to SEARCH_PROVIDER/WEB_SEARCH_PROVIDER, then OpenAI when MODEL_PROVIDER=openai, then exa. Leave unset unless the user asks for a specific provider or the default/current provider is persistently unavailable." },
+        provider: { type: "string", description: "Optional backend provider name. OpenAI is the default. Select exa only when the user requests it or OpenAI search is unavailable or partially unavailable for the requested queries." },
         numResults: { type: "integer", description: `Maximum number of results to return, 1-${MAX_NUM_RESULTS}. Defaults to ${DEFAULT_NUM_RESULTS}.` },
         includeDomains: {
           type: "array",

@@ -272,7 +272,7 @@ REPL 当前注册的内置工具：
 - `read` 对大文件使用 offset/limit 分段读取，避免一次性塞满上下文。
 - `list` 默认跳过 `.git`、`node_modules`、`dist`、`build`、`coverage` 等重目录。
 - `grep` 不依赖系统 PATH，会调用 `vendor/ripgrep` 中的平台二进制；支持 glob、大小写模式、fixed strings、隐藏文件、上下文行、结果数和列宽限制。
-- `search` 默认优先使用显式 `SEARCH_PROVIDER` / `WEB_SEARCH_PROVIDER`；未显式配置且当前模型提供者为 OpenAI（`MODEL_PROVIDER=openai` 或存在 `OPENAI_API_KEY`）时走 OpenAI Responses API 的 GPT web search，否则走 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。模型也可以在单次工具调用里通过 `provider` 字段切换后端，但工具提示会要求：除非用户明确要求特定 provider，或默认/当前搜索 provider 在重试后持续不可用，否则不要显式指定 `provider`，让系统默认选择生效。
+- `search` 默认使用 OpenAI Responses API 的 `web_search`，URL、Key 和模型分别继承 `OPENAI_SEARCH_*`，未单独配置时继承 `OPENAI_*`。Base URL 会同时兼容带 `/v1` 和不带 `/v1` 的写法。只有 OpenAI 搜索不可用或对部分查询不可用时，模型才切换到 Exa 官方 `https://mcp.exa.ai/mcp` 的 `web_search_exa`。OpenAI 搜索可通过 `OPENAI_SEARCH_API_KEY`、`OPENAI_SEARCH_BASE_URL`、`OPENAI_SEARCH_MODEL`、`OPENAI_SEARCH_TOOL_TYPE`、`OPENAI_SEARCH_CONTEXT_SIZE` 配置；Exa 可通过 `EXA_MCP_URL`、`EXA_MCP_TOOL_NAME` 配置；两者超时可用 `SEARCH_TIMEOUT_MS` 配置。
 - `image2` 按 OpenAI 图片生成官方接口实现，底层请求 `POST /v1/images/generations`；底层 OpenAI 图片模型只允许 `gpt-image-2`，默认也是 `gpt-image-2`。可用 `OPENAI_IMAGE_API_KEY` / `OPENAI_API_KEY`、`OPENAI_IMAGE_BASE_URL` / `OPENAI_BASE_URL`、`OPENAI_IMAGE_MODEL`、`OPENAI_IMAGE_TIMEOUT_MS` 配置，其中 `OPENAI_IMAGE_MODEL` 若不是 `gpt-image-2` 会被 image2 校验拒绝。只有 `MODEL_PROVIDER=openai` 时 REPL/Web 运行时会注册该工具；切换到 Anthropic 等其他 provider 后会移除该工具，并在系统提示中要求模型告知用户当前模型/供应者不具备绘图工具。
 
 ### 命令执行

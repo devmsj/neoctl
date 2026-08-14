@@ -129,6 +129,8 @@ interface UiLine {
   text: string;
   toolName?: string;
   parentToolName?: string;
+  toolUseId?: string;
+  parentToolUseId?: string;
   title?: string;
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
@@ -228,6 +230,24 @@ interface WebSetAppPromptPayload {
   usage?: string;
   source?: string;
   clear?: boolean;
+}
+
+type WebLineOperation =
+  | { type: "line.append"; line: UiLine }
+  | { type: "line.text.append"; id: number; text: string }
+  | { type: "line.patch"; id: number; patch: Partial<UiLine> };
+
+interface WebDeltaPayload {
+  protocolVersion: 2;
+  sessionId?: string;
+  operations: WebLineOperation[];
+  status: UiStatus;
+}
+
+interface WebSubscriber {
+  response: ServerResponse;
+  blocked: boolean;
+  needsSync: boolean;
 }
 
 interface WebBackgroundSessionRun {
@@ -412,7 +432,11 @@ function webRuntimeScopeKey(scope: WebRuntimeScope): string {
 }
 
 export class WebRepl {
-  private readonly subscribers = new Set<ServerResponse>();
+  private readonly subscribers = new Set<WebSubscriber>();
+  private eventSequence = 0;
+  private pendingDeltaOperations: WebLineOperation[] = [];
+  private pendingDeltaStatus = false;
+  private pendingDeltaTimer: NodeJS.Timeout | undefined;
   private lineId = 0;
   private assistantLineId: number | undefined;
   private thinkingLineId: number | undefined;
@@ -444,16 +468,17 @@ export class WebRepl {
   }
 
   subscribe(res: ServerResponse): void {
-    this.subscribers.add(res);
+    const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false };
+    this.subscribers.add(subscriber);
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
-    this.send(res, "sync", this.snapshot(true));
+    this.send(subscriber, "sync", this.snapshot(true));
     reqKeepAlive(res);
-    res.on("close", () => this.subscribers.delete(res));
+    res.on("close", () => this.subscribers.delete(subscriber));
   }
 
   snapshot(includeCatalog = false) {
@@ -666,16 +691,18 @@ export class WebRepl {
     return { ok: true, cancelled: had };
   }
 
-  private append(line: Omit<UiLine, "id">): number {
+  private append(line: Omit<UiLine, "id">, streaming = false): number {
     const id = ++this.lineId;
-    this.lines.push({ id, ...line });
-    this.broadcastSync();
+    const nextLine = { id, ...line };
+    this.lines.push(nextLine);
+    if (streaming) this.broadcastDelta({ type: "line.append", line: nextLine });
+    else this.broadcastSync();
     return id;
   }
 
-  private updateLine(id: number, updater: (text: string) => string): void {
-    this.lines = this.lines.map((line) => line.id === id ? { ...line, text: updater(line.text) } : line);
-    this.broadcastSync();
+  private appendLineText(id: number, text: string): void {
+    this.lines = this.lines.map((line) => line.id === id ? { ...line, text: line.text + text } : line);
+    this.broadcastDelta({ type: "line.text.append", id, text });
   }
 
   private replaceLineText(id: number, text: string): void {
@@ -790,6 +817,7 @@ export class WebRepl {
   private finalizeLiveLine(id: number | undefined): void {
     if (id === undefined) return;
     this.lines = this.lines.map((line) => line.id === id ? { ...line, live: false } : line);
+    this.queueDeltaOperation({ type: "line.patch", id, patch: { live: false } });
   }
 
   private finalizeThinkingLine(): void {
@@ -812,22 +840,26 @@ export class WebRepl {
       this.broadcastSync();
       return;
     }
-    if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "tool_call.delta" || event.type === "retrying") {
+    if (event.type === "tool_call.delta") {
+      this.queueDeltaStatus();
+      return;
+    }
+    if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "retrying") {
       this.broadcastSync();
       return;
     }
     if (event.type === "assistant.delta") {
       this.finalizeThinkingLine();
-      const id = this.assistantLineId ?? this.append({ kind: "assistant", text: "", live: true });
+      const id = this.assistantLineId ?? this.append({ kind: "assistant", text: "", live: true }, true);
       this.assistantLineId = id;
-      this.updateLine(id, (text) => text + event.text);
+      this.appendLineText(id, event.text);
       return;
     }
     if (event.type === "thinking.delta") {
-      const id = this.thinkingLineId ?? this.finalizedThinkingLineId ?? this.append(thinkingLine("", true));
+      const id = this.thinkingLineId ?? this.finalizedThinkingLineId ?? this.append(thinkingLine("", true), true);
       this.thinkingLineId = id;
       this.finalizedThinkingLineId = undefined;
-      this.updateLine(id, (text) => text + event.text);
+      this.appendLineText(id, event.text);
       return;
     }
     if (event.type === "message") {
@@ -1088,15 +1120,87 @@ export class WebRepl {
     }
   }
 
-  private send(res: ServerResponse, event: string, data: unknown): void {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  private send(subscriber: WebSubscriber, event: string, data: unknown): void {
+    if (subscriber.blocked) {
+      subscriber.needsSync = true;
+      return;
+    }
+    const eventId = ++this.eventSequence;
+    const frame = `id: ${eventId}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    if (subscriber.response.write(frame)) return;
+    subscriber.blocked = true;
+    subscriber.response.once("drain", () => {
+      subscriber.blocked = false;
+      if (!subscriber.needsSync || subscriber.response.destroyed) return;
+      subscriber.needsSync = false;
+      this.send(subscriber, "sync", this.snapshot(false));
+    });
+  }
+
+  private broadcastDelta(operation: WebLineOperation): void {
+    this.queueDeltaOperation(operation);
+  }
+
+  private queueDeltaOperation(operation: WebLineOperation): void {
+    this.pendingDeltaOperations.push(operation);
+    this.scheduleDeltaFlush();
+  }
+
+  private queueDeltaStatus(): void {
+    this.pendingDeltaStatus = true;
+    this.scheduleDeltaFlush();
+  }
+
+  private scheduleDeltaFlush(): void {
+    if (this.pendingDeltaTimer) return;
+    this.pendingDeltaTimer = setTimeout(() => this.flushDeltaOperations(), 25);
+    this.pendingDeltaTimer.unref?.();
+  }
+
+  private flushDeltaOperations(): void {
+    this.pendingDeltaTimer = undefined;
+    if (this.pendingDeltaOperations.length === 0 && !this.pendingDeltaStatus) return;
+    const operations = compactLineOperations(this.pendingDeltaOperations);
+    this.pendingDeltaOperations = [];
+    this.pendingDeltaStatus = false;
+    const payload: WebDeltaPayload = {
+      protocolVersion: 2,
+      sessionId: this.runtime.engine.snapshot().session?.sessionId,
+      operations,
+      status: this.status,
+    };
+    for (const subscriber of this.subscribers) this.send(subscriber, "delta", payload);
+  }
+
+  private discardPendingDeltaOperations(): void {
+    if (this.pendingDeltaTimer) clearTimeout(this.pendingDeltaTimer);
+    this.pendingDeltaTimer = undefined;
+    this.pendingDeltaOperations = [];
+    this.pendingDeltaStatus = false;
   }
 
   private broadcastSync(): void {
+    this.discardPendingDeltaOperations();
     const payload = this.snapshot(false);
-    for (const res of this.subscribers) this.send(res, "sync", payload);
+    for (const subscriber of this.subscribers) this.send(subscriber, "sync", payload);
   }
+}
+
+export function compactLineOperations(operations: WebLineOperation[]): WebLineOperation[] {
+  const compacted: WebLineOperation[] = [];
+  for (const operation of operations) {
+    const previous = compacted.at(-1);
+    if (operation.type === "line.text.append" && previous?.type === "line.text.append" && previous.id === operation.id) {
+      previous.text += operation.text;
+      continue;
+    }
+    if (operation.type === "line.patch" && previous?.type === "line.patch" && previous.id === operation.id) {
+      previous.patch = { ...previous.patch, ...operation.patch };
+      continue;
+    }
+    compacted.push(operation.type === "line.patch" ? { ...operation, patch: { ...operation.patch } } : { ...operation });
+  }
+  return compacted;
 }
 
 function reqKeepAlive(res: ServerResponse): void {
@@ -1636,7 +1740,7 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    append(formatToolResultLine(block.name, block.output, block.ok), block.toolUseId);
+    append({ ...formatToolResultLine(block.name, block.output, block.ok), toolUseId: block.toolUseId }, block.toolUseId);
     rendered = true;
   }
   return rendered;
@@ -1645,11 +1749,12 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
 function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
   let rendered = false;
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
+  const parentToolUseId = message.blocks.find((block) => block.type === "tool_result")?.toolUseId;
   for (const block of message.blocks) {
     if (block.type !== "image") continue;
     const line = imageLineForBlock(message.role, block);
     if (!line) continue;
-    append({ ...line, parentToolName });
+    append({ ...line, parentToolName, parentToolUseId });
     rendered = true;
   }
   return rendered;
@@ -1730,7 +1835,7 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
-  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
+  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
   return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
 }
