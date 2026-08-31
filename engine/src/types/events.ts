@@ -12,12 +12,20 @@ export interface PromptCacheSectionMetric {
 
 export interface PromptCacheDiagnostics {
   systemPromptHash: string;
+  stableSystemPromptHash: string;
+  dynamicSystemPromptHash: string;
   toolDefinitionsHash: string;
+  stablePrefixHash: string;
+  promptCacheKey: string;
   messagePrefixHash: string;
+  implicitBreakpointIndex?: number;
+  implicitBreakpointHash?: string;
+  priorImplicitBreakpointHash?: string;
   promptSections: PromptCacheSectionMetric[];
   stablePromptTokens: number;
   dynamicPromptTokens: number;
   toolDefinitionTokens: number;
+  cacheablePrefixTokens: number;
 }
 
 export interface ContextMetrics {

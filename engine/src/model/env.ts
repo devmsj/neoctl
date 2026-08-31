@@ -15,7 +15,7 @@ export interface DefaultDotEnvLoadResult {
 }
 
 const USER_DOT_ENV_TEMPLATE = `# Neo CLI model configuration
-# Keep provider-specific credentials/settings isolated. Choose the active provider here.
+# OpenAI model configuration.
 
 MODEL_PROVIDER=openai
 
@@ -23,15 +23,7 @@ MODEL_PROVIDER=openai
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_BASE_URL=https://api.openai.com
 # OPENAI_MODEL=gpt-5.6
-# OPENAI_FALLBACK_MODEL=
 # OPENAI_ENDPOINT=auto
-
-# Anthropic provider settings
-# ANTHROPIC_API_KEY=your-anthropic-api-key
-# ANTHROPIC_BASE_URL=https://api.anthropic.com
-# ANTHROPIC_MODEL=claude-sonnet-4-6
-# ANTHROPIC_FALLBACK_MODEL=
-# ANTHROPIC_VERSION=2023-06-01
 
 # Shared model runtime settings
 # MODEL_REASONING_EFFORT=high

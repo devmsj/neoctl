@@ -33,7 +33,6 @@ export interface RunAgentOptions {
   parentMessages?: readonly Message[];
   dependencies: RunAgentDependencies;
   model?: string;
-  fallbackModel?: string;
   maxTurns?: number;
   abortSignal?: AbortSignal;
   fork?: boolean;
@@ -87,7 +86,6 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     for await (const event of query(messages, dependencies, {
       agentId: options.agentId,
       model: resolveAgentModel(options.agent, options.model),
-      fallbackModel: options.fallbackModel,
       maxTurns,
       queryOrigin: "subagent",
       abortSignal: options.abortSignal,

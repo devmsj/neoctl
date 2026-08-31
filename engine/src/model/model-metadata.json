@@ -9,11 +9,8 @@
   ],
   "sources": {
     "openai-models": "https://developers.openai.com/api/docs/models",
-    "anthropic-models": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-    "anthropic-context-windows": "https://docs.anthropic.com/en/docs/build-with-claude/context-windows",
     "gemini-models": "https://ai.google.dev/gemini-api/docs/models",
     "mistral-known-limitations": "https://docs.mistral.ai/resources/known-limitations",
-    "anthropic-vision": "https://docs.anthropic.com/en/docs/build-with-claude/vision",
     "mistral-vision": "https://docs.mistral.ai/capabilities/vision",
     "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning"
   },
@@ -539,43 +536,6 @@
       "reasoning": false,
       "imageInput": false,
       "source": "openai-models"
-    },
-    {
-      "id": "claude-opus-4-7",
-      "provider": "anthropic",
-      "modelIds": [
-        "claude-opus-4-7"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 128000,
-      "reasoning": true,
-      "imageInput": true,
-      "source": "anthropic-models"
-    },
-    {
-      "id": "claude-sonnet-4-6",
-      "provider": "anthropic",
-      "modelIds": [
-        "claude-sonnet-4-6"
-      ],
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 64000,
-      "reasoning": true,
-      "imageInput": true,
-      "source": "anthropic-models"
-    },
-    {
-      "id": "claude-haiku-4-5",
-      "provider": "anthropic",
-      "modelIds": [
-        "claude-haiku-4-5",
-        "claude-haiku-4-5-20251001"
-      ],
-      "contextWindowTokens": 200000,
-      "maxOutputTokens": 64000,
-      "reasoning": true,
-      "imageInput": true,
-      "source": "anthropic-models"
     },
     {
       "id": "gemini-3.1-pro-preview",

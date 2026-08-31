@@ -9,7 +9,6 @@ const DEFAULT_MAX_TOOL_RESULT_LINES = 500;
 
 export interface SessionPromptExportSnapshot {
   model?: string;
-  fallbackModel?: string;
   reasoning?: unknown;
   systemPrompt?: string;
   baseSystemPrompt?: string;
@@ -170,7 +169,6 @@ function renderPromptSnapshot(lines: string[], snapshot: SessionPromptExportSnap
 
   lines.push("### Model Settings");
   lines.push(`- Model: ${snapshot.model ?? "<default>"}`);
-  lines.push(`- Fallback model: ${snapshot.fallbackModel ?? "<none>"}`);
   lines.push(`- Reasoning: ${formatInlineValue(snapshot.reasoning ?? "<default>")}`);
   lines.push("");
 

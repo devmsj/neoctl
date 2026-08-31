@@ -48,7 +48,7 @@ npm run standalone
 - Windows：`%APPDATA%\neo\.env`
 - macOS/Linux：`~/.config/neo/.env`
 
-可以运行 `/login` 交互式填写并保存，也可以手动编辑。推荐格式是：`MODEL_PROVIDER` 只选择当前供应者；供应者专属的 key、base URL、model 分别写在 `OPENAI_*` / `ANTHROPIC_*` 下；跨供应者共用的运行参数保留 `MODEL_*`。
+可以运行 `/login` 交互式填写并保存，也可以手动编辑。OpenAI 的 key、base URL、model 写在 `OPENAI_*` 下；共享运行参数保留 `MODEL_*`。
 
 ```env
 # Active provider
@@ -58,22 +58,7 @@ MODEL_PROVIDER=openai
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_BASE_URL=https://api.openai.com
 OPENAI_MODEL=gpt-5.6
-OPENAI_FALLBACK_MODEL=
 OPENAI_ENDPOINT=auto
-
-# Anthropic provider settings
-ANTHROPIC_API_KEY=your-anthropic-api-key
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-ANTHROPIC_MODEL=claude-sonnet-4-6
-ANTHROPIC_FALLBACK_MODEL=
-ANTHROPIC_VERSION=2023-06-01
-
-# Anthropic provider settings
-ANTHROPIC_API_KEY=your-anthropic-api-key
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-ANTHROPIC_MODEL=claude-sonnet-4-6
-ANTHROPIC_FALLBACK_MODEL=
-ANTHROPIC_VERSION=2023-06-01
 
 # Shared model runtime settings
 MODEL_REASONING_EFFORT=high
@@ -103,7 +88,6 @@ npm run smoke:session   # 会话持久化冒烟测试
 npm run smoke:agents    # 子代理/任务冒烟测试
 npm run smoke:skills    # skill 模块冒烟测试
 npm run smoke:responses # OpenAI Responses mapper 冒烟测试
-npm run smoke:anthropic # Anthropic Messages mapper 冒烟测试
 npm run smoke:openai -- "Say pong"
 ```
 
@@ -117,12 +101,16 @@ npm run smoke:openai -- "Say pong"
 
 ```bash
 neo -help
+neo run "总结当前仓库"
+echo "检查当前改动" | neo run --json
 neo -web
 neo -web --port 3001
 neo -model
 neo -model gpt-5.6 high
 neo -new
 ```
+
+`neo run [prompt]` 会执行一次 Agent 请求并退出，适合 shell、脚本和 CI。省略 prompt 或传入 `-` 时从 stdin 读取；`--json` 输出逐行 JSON（NDJSON）事件；`--model` 和 `--reasoning` 可只覆盖本次运行的模型设置。成功退出码为 `0`，运行失败为 `1`，参数错误为 `2`，收到中断为 `130`。
 
 `neo -web` / `neo --web` 会启动本地浏览器 UI，默认监听 `127.0.0.1:3000`，可通过 `--host`、`--port` 参数或 `NEO_WEB_HOST`、`NEO_WEB_PORT` 环境变量调整。
 
@@ -201,11 +189,9 @@ src/
 
 ## 模型层
 
-模型访问通过 `ModelGateway` 抽象。当前内置 provider 包括 OpenAI 与 Anthropic：
+模型访问通过 `ModelGateway` 抽象。当前内置 provider 为 OpenAI：
 
 - `openai-adapter.ts`：端点选择、认证、超时、重试、Responses→Chat fallback。
-- `anthropic-adapter.ts`：Anthropic Messages API provider，默认 `https://api.anthropic.com/v1/messages`，使用 `x-api-key` 与 `anthropic-version` 请求头。
-- `anthropic-mapper.ts`：Anthropic Messages 请求、tool use / tool result、thinking、SSE 流事件归一化。
 - `openai-responses-mapper.ts`：Responses API 请求和流事件归一化。
 - `openai-chat-mapper.ts`：Chat Completions 请求和流事件归一化。
 - `http-transport.ts` / `sse-decoder.ts`：HTTP 请求与 SSE 流解析。
@@ -216,13 +202,11 @@ src/
 
 | 变量 | 说明 |
 | --- | --- |
-| `MODEL_PROVIDER` | `openai` 或 `anthropic` |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 供应者专属 API Key；只读取当前 `MODEL_PROVIDER` 对应的一组变量 |
-| `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | 供应者专属服务地址；OpenAI 默认 `https://api.openai.com`，Anthropic 默认 `https://api.anthropic.com` |
-| `OPENAI_MODEL` / `ANTHROPIC_MODEL` | 供应者专属默认模型；OpenAI 默认 `gpt-5.6`，Anthropic 默认 `claude-sonnet-4-6` |
-| `OPENAI_FALLBACK_MODEL` / `ANTHROPIC_FALLBACK_MODEL` | 供应者专属 fallback model |
-| `OPENAI_ENDPOINT` | OpenAI 专用，`responses`、`chat` 或 `auto`；Anthropic 固定使用 Messages API |
-| `ANTHROPIC_VERSION` | Anthropic 专用 API version header，默认 `2023-06-01` |
+| `MODEL_PROVIDER` | `openai` |
+| `OPENAI_API_KEY` | OpenAI API Key |
+| `OPENAI_BASE_URL` | OpenAI 服务地址，默认 `https://api.openai.com` |
+| `OPENAI_MODEL` | 默认模型，默认为 `gpt-5.6` |
+| `OPENAI_ENDPOINT` | `responses`、`chat` 或 `auto` |
 | `MODEL_REASONING_EFFORT` | 共享运行设置：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
 | `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
@@ -357,7 +341,7 @@ REPL 当前注册的内置工具：
 
 ## Skill 模块
 
-`src/skills` 提供可复用 prompt workflow 与插件化 catalog。设计参考：Claude Code 的 `SKILL.md` + frontmatter 目录形态、OpenAI Agents SDK 的 tools / agents-as-tools / guardrails 组合方式，以及 OpenClaw 的多目录、插件目录和 skill gating 思路。默认 REPL 运行时当前未注册 skill catalog，嵌入方可按需装配。
+`src/skills` 提供可复用 prompt workflow 与插件化 catalog。设计参考通用的 `SKILL.md` + frontmatter 目录形态、OpenAI Agents SDK 的 tools / agents-as-tools / guardrails 组合方式，以及 OpenClaw 的多目录、插件目录和 skill gating 思路。默认 REPL 运行时当前未注册 skill catalog，嵌入方可按需装配。
 
 核心能力：
 

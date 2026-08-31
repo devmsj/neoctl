@@ -102,20 +102,13 @@ OPENAI_MODEL=gpt-5.6
 OPENAI_ENDPOINT=auto
 ```
 
-Anthropic 示例：
-
-```env
-MODEL_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your-api-key
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-ANTHROPIC_MODEL=claude-sonnet-4-6
-```
-
 运行时也可以通过 npm 安装：
 
 ```bash
 npm install -g neoctl
 neo -help
+neo run "总结当前仓库"
+echo "检查当前改动" | neo run --json
 ```
 
 完整的模型配置、REPL 命令和运行时架构请参阅 [`engine/README.md`](engine/README.md)。Web 部署和界面能力请参阅 [`web/README.md`](web/README.md)。

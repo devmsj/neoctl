@@ -4,8 +4,10 @@ import type { ToolDefinition } from "../tools/tool.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import type { PromptCacheDiagnostics, PromptCacheSectionMetric } from "../types/events.js";
 import { estimateTextTokens } from "./context-metrics.js";
+import { buildPromptCacheIdentity } from "./prompt-cache-key.js";
 
 export interface BuildPromptCacheDiagnosticsInput {
+  model?: string;
   systemPrompt: string;
   promptSections: readonly PromptSection[];
   tools: readonly ToolDefinition[];
@@ -16,16 +18,35 @@ export function buildPromptCacheDiagnostics(input: BuildPromptCacheDiagnosticsIn
   const promptSections = input.promptSections.map(sectionMetric);
   const toolsSerialized = serializeToolDefinitions(input.tools);
   const messagesSerialized = input.messages.map(serializeMessageForHash).join("\n");
+  const identity = buildPromptCacheIdentity(input.systemPrompt, input.tools, input.model, input.messages);
+  const implicitBreakpoints = input.messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => (message.role === "user" && !message.isMeta) || message.role === "tool_result");
+  const currentBreakpoint = implicitBreakpoints.at(-1)?.index;
+  const priorBreakpoint = implicitBreakpoints.at(-2)?.index;
 
   return {
     systemPromptHash: stableHash(input.systemPrompt),
+    stableSystemPromptHash: stableHash(identity.stableSystemPrompt),
+    dynamicSystemPromptHash: stableHash(identity.dynamicSystemPrompt),
     toolDefinitionsHash: stableHash(toolsSerialized),
+    stablePrefixHash: identity.stablePrefixHash,
+    promptCacheKey: identity.key,
     messagePrefixHash: stableHash(messagesSerialized),
+    implicitBreakpointIndex: currentBreakpoint,
+    implicitBreakpointHash: hashMessagesThrough(input.messages, currentBreakpoint),
+    priorImplicitBreakpointHash: hashMessagesThrough(input.messages, priorBreakpoint),
     promptSections,
     stablePromptTokens: sumTokens(promptSections.filter((section) => section.cacheStable)),
     dynamicPromptTokens: sumTokens(promptSections.filter((section) => !section.cacheStable)),
     toolDefinitionTokens: estimateTextTokens(toolsSerialized),
+    cacheablePrefixTokens: estimateTextTokens(identity.stableSystemPrompt) + estimateTextTokens(toolsSerialized) + estimateTextTokens(identity.stableRuntimeContext),
   };
+}
+
+function hashMessagesThrough(messages: readonly Message[], index: number | undefined): string | undefined {
+  if (index === undefined) return undefined;
+  return stableHash(messages.slice(0, index + 1).map(serializeMessageForHash).join("\n"));
 }
 
 function sectionMetric(section: PromptSection): PromptCacheSectionMetric {

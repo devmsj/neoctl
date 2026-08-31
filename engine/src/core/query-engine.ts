@@ -27,7 +27,6 @@ const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 export interface QueryEngineOptions {
   agentId?: string;
   model?: string;
-  fallbackModel?: string;
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
@@ -64,7 +63,6 @@ export class QueryEngine {
   private sessionStore?: SessionStore;
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
-  private currentFallbackModel?: string;
   private currentFastMode = false;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
@@ -77,7 +75,6 @@ export class QueryEngine {
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
     this.currentModel = options.model;
-    this.currentFallbackModel = options.fallbackModel;
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
     this.currentModelGateway = options.modelGateway;
     this.appPromptStore = options.appPromptStore ?? new InMemoryAppPromptStore();
@@ -90,7 +87,6 @@ export class QueryEngine {
     return new QueryEngine({
       ...this.options,
       model: this.currentModel,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       modelGateway: this.currentModelGateway,
       appPromptStore: this.appPromptStore,
@@ -170,7 +166,6 @@ export class QueryEngine {
     });
     initMessage.metadata = {
       ...initMessage.metadata,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
     };
     yield {
@@ -182,7 +177,6 @@ export class QueryEngine {
     const queryOptions: QueryOptions = {
       agentId: this.agentId,
       model: this.currentModel,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       queryOrigin: this.options.queryOrigin ?? "repl",
       serviceTier: this.currentFastMode ? "priority" : undefined,
@@ -223,17 +217,15 @@ export class QueryEngine {
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 
-  setModelProvider(settings: { modelGateway: ModelGateway; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }): void {
+  setModelProvider(settings: { modelGateway: ModelGateway; model?: string; reasoning?: ReasoningConfig | null }): void {
     this.currentModelGateway = settings.modelGateway;
     this.currentModel = settings.model?.trim() || undefined;
-    this.currentFallbackModel = settings.fallbackModel?.trim() || undefined;
     this.currentReasoning = settings.reasoning === null ? null : cloneReasoningConfig(settings.reasoning);
   }
 
-  getModelSettings(): { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null } {
+  getModelSettings(): { model?: string; reasoning?: ReasoningConfig | null } {
     return {
       model: this.currentModel,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
     };
   }
@@ -293,12 +285,11 @@ export class QueryEngine {
     return result;
   }
 
-  snapshot(): { agentId: string; messages: number; model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
+  snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
       model: this.currentModel,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       fastMode: this.currentFastMode,
       lastTerminalReason: this.lastTerminalReason,
@@ -335,6 +326,7 @@ export class QueryEngine {
       tools,
       cachedToolsAndPromptTokens: computeStaticTokens(systemPrompt, tools),
       cacheDiagnostics: buildPromptCacheDiagnostics({
+        model: this.currentModel,
         systemPrompt,
         promptSections,
         tools,
@@ -380,7 +372,6 @@ export class QueryEngine {
       .join("\n");
     return {
       model: this.currentModel,
-      fallbackModel: this.currentFallbackModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       systemPrompt: context.systemPrompt,
       baseSystemPrompt: context.systemPrompt,
@@ -479,7 +470,6 @@ export class QueryEngine {
         agentId: `${this.agentId}-session-title`,
         modelGateway: this.currentModelGateway,
         model: this.currentModel,
-        fallbackModel: this.currentFallbackModel,
         kind,
         previousTitle: state.title,
         messages: this.history,
@@ -513,7 +503,6 @@ async function generateSessionTitle(input: {
   agentId: string;
   modelGateway: ModelGateway;
   model?: string;
-  fallbackModel?: string;
   kind: SessionTitleKind;
   previousTitle?: string;
   messages: readonly Message[];
@@ -534,7 +523,6 @@ async function generateSessionTitle(input: {
       prompt,
       dependencies: { modelGateway: input.modelGateway, tools: new ToolRegistry() },
       model: input.model,
-      fallbackModel: input.fallbackModel,
       maxTurns: 1,
       abortSignal: input.abortSignal,
     });

@@ -28,10 +28,24 @@ const danglingToolUse: Message = {
   blocks: [{ type: "tool_use", id: "call_missing_result", name: "smoke_tool", input: { text: "missing" } }],
 };
 const danglingToolResult = createToolResultMessage({ id: "call_missing_use", name: "smoke_tool", input: { text: "missing" } }, true, "missing");
+const stableRuntimeContext: Message = {
+  ...createTextMessage("user", "project memory"),
+  isMeta: true,
+  metadata: { runtimeContext: true, cacheStableRuntimeContext: true },
+};
 
 const plain = buildResponsesRequest(
   { messages: [createTextMessage("user", "hello")], tools: [], stream: true, serviceTier: "fast" },
   { model: "gpt-test" },
+);
+const cached = buildResponsesRequest(
+  {
+    messages: [stableRuntimeContext, createTextMessage("user", "hello")],
+    systemPrompt: "## Stable\ncache me\n\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n\n## Dynamic\nchanges",
+    tools: [tool],
+    stream: true,
+  },
+  { model: "gpt-5.6" },
 );
 const withTools = buildResponsesRequest(
   { messages: [createTextMessage("user", "hello")], tools: [tool], stream: true },
@@ -70,6 +84,15 @@ const chatWithSystemState = buildChatRequest(
   { messages: [createTextMessage("system", "Internal continuation state from context compaction.")], tools: [], stream: true },
   { model: "gpt-test" },
 );
+const cachedChat = buildChatRequest(
+  {
+    messages: [createTextMessage("user", "hello")],
+    systemPrompt: "stable\n\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n\ndynamic",
+    tools: [tool],
+    stream: true,
+  },
+  { model: "gpt-5.6" },
+);
 const danglingChat = buildChatRequest(
   { messages: [danglingToolUse, danglingToolResult], tools: [tool], stream: true },
   { model: "gpt-test" },
@@ -80,9 +103,23 @@ const danglingInput = dangling.input as Array<Record<string, unknown>>;
 const chatMessages = chat.messages as Array<Record<string, unknown>>;
 const chatWithSystemStateMessages = chatWithSystemState.messages as Array<Record<string, unknown>>;
 const danglingChatMessages = danglingChat.messages as Array<Record<string, unknown>>;
+const cachedChatJson = JSON.stringify(cachedChat.messages);
+const cachedInput = cached.input as Array<Record<string, unknown>>;
+const cachedInputJson = JSON.stringify(cachedInput);
+const cachedBreakpoints = cachedInputJson.match(/prompt_cache_breakpoint/g)?.length ?? 0;
 const chatAssistant = chatMessages.find((message) => message.role === "assistant") as Record<string, unknown> | undefined;
 const ok =
   plain.store === false &&
+  typeof plain.prompt_cache_key === "string" &&
+  cached.instructions === undefined &&
+  cached.prompt_cache_options &&
+  cachedBreakpoints === 2 &&
+  !cachedInputJson.includes("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__") &&
+  cachedInputJson.indexOf("cache me") < cachedInputJson.indexOf("project memory") &&
+  cachedInputJson.indexOf("project memory") < cachedInputJson.indexOf("changes") &&
+  typeof cachedChat.prompt_cache_key === "string" &&
+  !cachedChatJson.includes("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__") &&
+  cachedChatJson.indexOf("stable") < cachedChatJson.indexOf("dynamic") &&
   plain.service_tier === "fast" &&
   withTools.store === true &&
   continuation.store === true &&

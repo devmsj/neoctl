@@ -321,7 +321,6 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const engine = new QueryEngine({
     agentId: options.agentId ?? "main",
     model: modelConfig?.model,
-    fallbackModel: modelConfig?.fallbackModel,
     reasoning: modelConfig?.defaultReasoning,
     queryOrigin: "web",
     modelGateway,
@@ -379,7 +378,7 @@ function syncImageGenerationTool(runtime: WebRuntime, provider: ModelProviderNam
 
 
 function formatCreatedEnvNotice(dotEnvPath: string): string {
-  return `Created default config file: ${dotEnvPath}\nSet MODEL_PROVIDER and the matching provider section (OPENAI_API_KEY or ANTHROPIC_API_KEY), then restart neo.`;
+  return `Created default config file: ${dotEnvPath}\nSet OPENAI_API_KEY, then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -668,7 +667,7 @@ export class WebRepl {
 
   async saveLogin(providerValue: string, values: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
     const provider = parseLoginProvider(providerValue);
-    if (!provider) return { ok: false, error: "provider must be openai or anthropic" };
+    if (!provider) return { ok: false, error: "provider must be openai" };
     const payload: LoginFormPayload = { ...createLoginFormPayload(this.runtime.envPath, provider), provider, values };
     const validationError = validateLoginFormPayload(payload);
     if (validationError) return { ok: false, error: validationError };
@@ -680,7 +679,7 @@ export class WebRepl {
       const innerGateway = createModelGatewayFromConfig(config);
       this.runtime.modelGateway.setInner(innerGateway);
       this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
-      this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
+      this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
       syncImageGenerationTool(this.runtime, config.provider);
       this.runtime.defaultReasoning = config.defaultReasoning;
       const metrics = await this.runtime.engine.contextMetrics();
@@ -1469,7 +1468,7 @@ async function handleModelCommand(command: Extract<ReturnType<typeof parseReplCo
           const innerGateway = createModelGatewayFromConfig(config);
           runtime.modelGateway.setInner(innerGateway);
           runtime.agentRuntime.modelGateway = runtime.modelGateway;
-          runtime.engine.setModelProvider({ modelGateway: runtime.modelGateway, model: config.model, fallbackModel: config.fallbackModel, reasoning: config.defaultReasoning });
+          runtime.engine.setModelProvider({ modelGateway: runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
           syncImageGenerationTool(runtime, config.provider);
           runtime.defaultReasoning = config.defaultReasoning;
         }
@@ -1517,15 +1516,15 @@ async function persistModelCommandSettings(runtime: WebRuntime, command: Extract
 }
 
 function currentModelProvider(): ModelProviderName {
-  return parseLoginProvider(process.env.MODEL_PROVIDER) ?? (process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai");
+  return "openai";
 }
 
 function parseLoginProvider(value: string | undefined): ModelProviderName | undefined {
-  if (value === "openai" || value === "anthropic") return value;
+  if (value === "openai") return value;
   return undefined;
 }
 
-const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "anthropic"];
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
@@ -1541,16 +1540,7 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
     { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
     { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
     { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.6" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "OPENAI_FALLBACK_MODEL", scope: "provider" },
     { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
-    ...SHARED_LOGIN_FIELDS,
-  ],
-  anthropic: [
-    { key: "apiKey", label: "API key", envKey: "ANTHROPIC_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-ant-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "ANTHROPIC_BASE_URL", scope: "provider", placeholder: "https://api.anthropic.com" },
-    { key: "model", label: "Model", envKey: "ANTHROPIC_MODEL", scope: "provider", required: true, placeholder: "claude-sonnet-4-6" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "ANTHROPIC_FALLBACK_MODEL", scope: "provider" },
-    { key: "version", label: "Anthropic version", envKey: "ANTHROPIC_VERSION", scope: "provider", placeholder: "2023-06-01" },
     ...SHARED_LOGIN_FIELDS,
   ],
 };
@@ -1558,7 +1548,6 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
 const DEPRECATED_MODEL_ENV_KEYS = [
   "MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_ID", "MODEL_FALLBACK_ID", "MODEL_ENDPOINT", "OPENAI_PROVIDER",
   "OPENAI_REASONING_EFFORT", "OPENAI_REASONING_SUMMARY", "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_TIMEOUT_MS", "OPENAI_STREAM_IDLE_TIMEOUT_MS", "OPENAI_MAX_RETRIES",
-  "ANTHROPIC_REASONING_EFFORT", "ANTHROPIC_REASONING_SUMMARY", "ANTHROPIC_MAX_OUTPUT_TOKENS", "ANTHROPIC_TIMEOUT_MS", "ANTHROPIC_STREAM_IDLE_TIMEOUT_MS", "ANTHROPIC_MAX_RETRIES",
 ];
 
 function createLoginFormPayload(envPath: string, provider?: LoginProviderName): LoginFormPayload {
@@ -1582,18 +1571,15 @@ function loginValuesForProvider(provider: LoginProviderName, env: Record<string,
   return values;
 }
 
-function guessLoginProvider(env: Record<string, string>): LoginProviderName {
-  if (env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY) return "anthropic";
+function guessLoginProvider(_env: Record<string, string>): LoginProviderName {
   return currentModelProvider();
 }
 
-function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
-  if (provider === "anthropic") return "https://api.anthropic.com";
+function defaultBaseUrlForLoginProvider(_provider: LoginProviderName): string {
   return "https://api.openai.com";
 }
 
-function defaultModelForLoginProvider(provider: LoginProviderName): string {
-  if (provider === "anthropic") return "claude-sonnet-4-6";
+function defaultModelForLoginProvider(_provider: LoginProviderName): string {
   return "gpt-5.6";
 }
 
@@ -1643,8 +1629,7 @@ function stripEnvQuotes(value: string): string {
   return value;
 }
 
-function modelEnvKeyForProvider(provider: ModelProviderName): "OPENAI_MODEL" | "ANTHROPIC_MODEL" {
-  if (provider === "anthropic") return "ANTHROPIC_MODEL";
+function modelEnvKeyForProvider(_provider: ModelProviderName): "OPENAI_MODEL" {
   return "OPENAI_MODEL";
 }
 
@@ -1712,10 +1697,9 @@ function validateModelReasoningArgument(modelId: string | undefined, reasoning: 
   return undefined;
 }
 
-function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | null | undefined): string {
+function formatModelSettings(settings: { model?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | null | undefined): string {
   const window = resolveContextWindowTokens(settings.model);
   const lines = ["Model settings:", `  Model: ${settings.model ?? "<provider default>"}`];
-  if (settings.fallbackModel) lines.push(`  Fallback: ${settings.fallbackModel}`);
   lines.push(`  Reasoning effort: ${formatReasoningSetting(settings.reasoning)}`);
   if (defaultReasoning?.effort) lines.push(`  Env default reasoning: ${defaultReasoning.effort}`);
   if (window.model) {

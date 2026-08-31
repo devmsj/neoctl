@@ -18,7 +18,6 @@ export interface OpenAIAdapterOptions {
   credentialProvider?: CredentialProvider;
   baseUrl?: string;
   model: string;
-  fallbackModel?: string;
   endpoint?: OpenAIEndpointPreference;
   timeoutMs?: number;
   streamIdleTimeoutMs?: number;

@@ -195,16 +195,17 @@ export function parseCliReplCommandArgs(argv: string[]): CliReplCommandParseResu
   return { line, definition };
 }
 
-const cliCommandUsages = ["-web [--host <host>] [--port <port>]", ...replCommandDefinitions.map((command) => command.usage.replace(/^\//, "-"))];
+const cliCommandUsages = ["run [options] [prompt]", "-web [--host <host>] [--port <port>]", ...replCommandDefinitions.map((command) => command.usage.replace(/^\//, "-"))];
 const cliUsageWidth = Math.max(...cliCommandUsages.map((usage) => usage.length));
 
 export function cliHelpText(binaryName = "neo"): string {
   return [
     `Usage: ${binaryName} [command]`,
     "",
-    "Use -web/--web to start the browser UI. Other CLI commands mirror REPL slash commands; use '-' or '--' in place of '/'.",
+    "Use run for a non-interactive request and -web/--web for the browser UI. Other CLI commands mirror REPL slash commands; use '-' or '--' in place of '/'.",
     "",
     "Commands:",
+    `  ${"run [options] [prompt]".padEnd(cliUsageWidth)}  Run one agent request and exit`,
     `  ${"-web [--host <host>] [--port <port>]".padEnd(cliUsageWidth)}  Start the local browser UI`,
     ...replCommandDefinitions.map((command) => {
       const usage = command.usage.replace(/^\//, "-");
@@ -213,6 +214,8 @@ export function cliHelpText(binaryName = "neo"): string {
     "",
     "Examples:",
     `  ${binaryName} -help`,
+    `  ${binaryName} run "summarize this repository"`,
+    `  "review this diff" | ${binaryName} run --json`,
     `  ${binaryName} -web`,
     `  ${binaryName} -web --port 3001`,
     `  ${binaryName} -model`,

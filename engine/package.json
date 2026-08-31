@@ -49,7 +49,7 @@
     "smoke:skills": "tsx src/skills/smoke-skills.ts",
     "smoke:secrets": "tsx src/secrets/smoke-secrets.ts",
     "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",
-    "smoke:anthropic": "tsx src/model/smoke-anthropic-mapper.ts",
+    "smoke:cli": "tsx src/repl/smoke-run-command.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {

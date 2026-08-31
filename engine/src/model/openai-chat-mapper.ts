@@ -1,4 +1,5 @@
 import { createTextMessage, createThinkingMessage } from "../types/messages.js";
+import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
@@ -26,10 +27,12 @@ export interface OpenAIChatMapperOptions {
 
 export function buildChatRequest(request: ModelRequest, options: OpenAIChatMapperOptions): Record<string, unknown> {
   const tools = buildChatTools(request.tools);
+  const model = request.model ?? options.model;
+  const promptCache = buildPromptCacheIdentity(request.instructions ?? request.systemPrompt, request.tools, model, request.messages);
   const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
   const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined);
   return dropUndefined({
-    model: request.model ?? options.model,
+    model,
     messages: buildChatMessages(request, { includeReasoningContent: options.includeReasoningContent }),
     tools: tools.length ? tools : undefined,
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
@@ -38,6 +41,7 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
     thinking: chatThinkingOption(request.model ?? options.model, reasoning, reasoningDisabled),
     metadata: options.includeMetadata === false ? undefined : request.metadata,
     service_tier: request.serviceTier,
+    prompt_cache_key: promptCache.key,
     ...((request.providerOptions?.chat as Record<string, unknown> | undefined) ?? {}),
   });
 }

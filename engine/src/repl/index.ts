@@ -48,6 +48,7 @@ import { getNeoctlHome } from "../paths.js";
 import { FileSystemSkillCatalog } from "../skills/skill-filesystem.js";
 import { createSkillAwareCanUseTool, createSkillTool, requireSkillName, type SkillCatalog, type SkillDescriptor } from "../skills/skill-tool.js";
 import { createSkillManagementTools } from "../skills/skill-management-tools.js";
+import { executeRunCommand, parseRunCliArgs, readRunPrompt, runCliHelpText } from "./run-command.js";
 
 const e = React.createElement;
 interface ReplRuntime {
@@ -272,6 +273,10 @@ interface LoginFormState {
 }
 
 async function main(argv = process.argv.slice(2)): Promise<void> {
+  if (argv[0] === "run") {
+    await runNonInteractive(argv.slice(1));
+    return;
+  }
   const webArgs = parseWebCliArgs(argv);
   if (webArgs) {
     await runWebServer(webArgs);
@@ -295,6 +300,51 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   });
   await instance.waitUntilExit();
   console.log("bye.");
+}
+
+async function runNonInteractive(argv: string[]): Promise<void> {
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    console.log(runCliHelpText(binaryName()));
+    return;
+  }
+  const parsed = parseRunCliArgs(argv);
+  if (!parsed.ok) {
+    console.error(`${parsed.error}\n\n${runCliHelpText(binaryName())}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  let prompt: string;
+  try {
+    prompt = await readRunPrompt(parsed.options.prompt, stdin);
+  } catch (error) {
+    console.error(`${error instanceof Error ? error.message : String(error)}\n\n${runCliHelpText(binaryName())}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const runtime = await createRuntime({ queryOrigin: "cli" });
+  if (parsed.options.model || parsed.options.reasoning) {
+    const current = runtime.engine.getModelSettings();
+    const reasoning = parsed.options.reasoning === undefined
+      ? current.reasoning
+      : parsed.options.reasoning === "off"
+        ? null
+        : parsed.options.reasoning === "default"
+          ? undefined
+          : { effort: parsed.options.reasoning };
+    runtime.engine.setModel(parsed.options.model ?? current.model, reasoning, true);
+  }
+
+  const abortController = new AbortController();
+  const abort = () => abortController.abort();
+  process.once("SIGINT", abort);
+  try {
+    const result = await executeRunCommand(runtime.engine, prompt, parsed.options, { stdout, stderr: process.stderr }, abortController.signal);
+    process.exitCode = result.exitCode;
+  } finally {
+    process.removeListener("SIGINT", abort);
+  }
 }
 
 function parseWebCliArgs(argv: string[]): string[] | undefined {
@@ -368,7 +418,7 @@ function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSou
   };
 }
 
-async function createRuntime(): Promise<ReplRuntime> {
+async function createRuntime(options: { queryOrigin?: string } = {}): Promise<ReplRuntime> {
   const envLoad = loadDefaultDotEnvFiles({ override: true });
   const modelConfig = readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
@@ -422,8 +472,8 @@ async function createRuntime(): Promise<ReplRuntime> {
 
   const engine = new QueryEngine({
     agentId: "main",
+    queryOrigin: options.queryOrigin,
     model: modelConfig?.model,
-    fallbackModel: modelConfig?.fallbackModel,
     reasoning: modelConfig?.defaultReasoning,
     modelGateway,
     tools,
@@ -472,7 +522,7 @@ function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderNa
 
 
 function formatCreatedEnvNotice(path: string): string {
-  return `Created default config file: ${path}\nSet MODEL_PROVIDER and the matching provider section (OPENAI_API_KEY or ANTHROPIC_API_KEY), then restart neo.`;
+  return `Created default config file: ${path}\nSet OPENAI_API_KEY, then restart neo.`;
 }
 
 function parseResumeFlag(value: string | undefined): boolean {
@@ -3033,7 +3083,6 @@ async function handleModelCommand(
           runtime.engine.setModelProvider({
             modelGateway: runtime.modelGateway,
             model: config.model,
-            fallbackModel: config.fallbackModel,
             reasoning: config.defaultReasoning,
           });
           syncImageGenerationTool(runtime, config.provider);
@@ -3095,11 +3144,10 @@ async function persistModelCommandSettings(
 }
 
 function currentModelProvider(): LoginProviderName {
-  return parseLoginProvider(process.env.MODEL_PROVIDER) ?? (process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai");
+  return "openai";
 }
 
-function modelEnvKeyForProvider(provider: LoginProviderName): "OPENAI_MODEL" | "ANTHROPIC_MODEL" {
-  if (provider === "anthropic") return "ANTHROPIC_MODEL";
+function modelEnvKeyForProvider(_provider: LoginProviderName): "OPENAI_MODEL" {
   return "OPENAI_MODEL";
 }
 
@@ -3131,13 +3179,12 @@ function validateModelReasoningArgument(modelId: string | undefined, reasoning: 
   return undefined;
 }
 
-function formatModelSettings(settings: { model?: string; fallbackModel?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | null | undefined): string {
+function formatModelSettings(settings: { model?: string; reasoning?: ReasoningConfig | null }, defaultReasoning: ReasoningConfig | null | undefined): string {
   const window = resolveContextWindowTokens(settings.model);
   const lines = [
     "Model settings:",
     `  Model: ${settings.model ?? "<provider default>"}`,
   ];
-  if (settings.fallbackModel) lines.push(`  Fallback: ${settings.fallbackModel}`);
   lines.push(`  Reasoning effort: ${formatReasoningSetting(settings.reasoning)}`);
   if (defaultReasoning?.effort) lines.push(`  Env default reasoning: ${defaultReasoning.effort}`);
   if (window.model) {
@@ -3471,7 +3518,7 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
   return lines;
 }
 
-const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "anthropic"];
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
@@ -3487,16 +3534,7 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
     { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
     { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
     { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.6" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "OPENAI_FALLBACK_MODEL", scope: "provider" },
     { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
-    ...SHARED_LOGIN_FIELDS,
-  ],
-  anthropic: [
-    { key: "apiKey", label: "API key", envKey: "ANTHROPIC_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-ant-..." },
-    { key: "baseUrl", label: "Base URL", envKey: "ANTHROPIC_BASE_URL", scope: "provider", placeholder: "https://api.anthropic.com" },
-    { key: "model", label: "Model", envKey: "ANTHROPIC_MODEL", scope: "provider", required: true, placeholder: "claude-sonnet-4-6" },
-    { key: "fallbackModel", label: "Fallback model", envKey: "ANTHROPIC_FALLBACK_MODEL", scope: "provider" },
-    { key: "version", label: "Anthropic version", envKey: "ANTHROPIC_VERSION", scope: "provider", placeholder: "2023-06-01" },
     ...SHARED_LOGIN_FIELDS,
   ],
 };
@@ -3514,12 +3552,6 @@ const DEPRECATED_MODEL_ENV_KEYS = [
   "OPENAI_TIMEOUT_MS",
   "OPENAI_STREAM_IDLE_TIMEOUT_MS",
   "OPENAI_MAX_RETRIES",
-  "ANTHROPIC_REASONING_EFFORT",
-  "ANTHROPIC_REASONING_SUMMARY",
-  "ANTHROPIC_MAX_OUTPUT_TOKENS",
-  "ANTHROPIC_TIMEOUT_MS",
-  "ANTHROPIC_STREAM_IDLE_TIMEOUT_MS",
-  "ANTHROPIC_MAX_RETRIES",
 ];
 
 function pagedPageCount(state: PagedBrowserState<unknown>): number {
@@ -3821,7 +3853,6 @@ async function submitLoginForm(
     runtime.engine.setModelProvider({
       modelGateway: runtime.modelGateway,
       model: config.model,
-      fallbackModel: config.fallbackModel,
       reasoning: config.defaultReasoning,
     });
     syncImageGenerationTool(runtime, config.provider);
@@ -3884,22 +3915,19 @@ function loginValuesForProvider(provider: LoginProviderName, env: Record<string,
 }
 
 function parseLoginProvider(value: string | undefined): LoginProviderName | undefined {
-  if (value === "openai" || value === "anthropic") return value;
+  if (value === "openai") return value;
   return undefined;
 }
 
-function guessLoginProvider(env: Record<string, string>): LoginProviderName {
-  if (env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY) return "anthropic";
+function guessLoginProvider(_env: Record<string, string>): LoginProviderName {
   return "openai";
 }
 
-function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
-  if (provider === "anthropic") return "https://api.anthropic.com";
+function defaultBaseUrlForLoginProvider(_provider: LoginProviderName): string {
   return "https://api.openai.com";
 }
 
-function defaultModelForLoginProvider(provider: LoginProviderName): string {
-  if (provider === "anthropic") return "claude-sonnet-4-6";
+function defaultModelForLoginProvider(_provider: LoginProviderName): string {
   return "gpt-5.6";
 }
 
@@ -3946,7 +3974,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
       );
     }),
     e(Text, { color: "gray" }, fitToWidth("↑/↓ field · ←/→ cursor · type edit · Tab cycle choices · Enter save · Esc back/cancel", contentWidth)),
-    e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_* / ANTHROPIC_*; shared runtime fields save as MODEL_*.", contentWidth)),
+    e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_*; shared runtime fields save as MODEL_*.", contentWidth)),
   );
 }
 
@@ -3999,17 +4027,15 @@ function updateEnvContent(content: string, updates: Record<string, string | unde
     const grouped = groupLoginEnvEntries(missing);
     appendEnvGroup(updatedLines, "# Neo active provider", grouped.active);
     appendEnvGroup(updatedLines, "# OpenAI provider settings", grouped.openai);
-    appendEnvGroup(updatedLines, "# Anthropic provider settings", grouped.anthropic);
     appendEnvGroup(updatedLines, "# Shared model runtime settings", grouped.shared);
   }
   return `${updatedLines.join("\n").replace(/\n*$/u, "")}\n`;
 }
 
-function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "anthropic" | "shared", Array<[string, string]>> {
+function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "shared", Array<[string, string]>> {
   return {
     active: entries.filter(([key]) => key === "MODEL_PROVIDER"),
     openai: entries.filter(([key]) => key.startsWith("OPENAI_")),
-    anthropic: entries.filter(([key]) => key.startsWith("ANTHROPIC_")),
     shared: entries.filter(([key]) => key.startsWith("MODEL_") && key !== "MODEL_PROVIDER"),
   };
 }

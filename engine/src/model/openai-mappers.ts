@@ -3,6 +3,7 @@ import type { ToolDefinition } from "../tools/tool.js";
 import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
 import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 
 export interface ToolBuffer {
   callId: string;
@@ -10,7 +11,11 @@ export interface ToolBuffer {
   argumentsBuffer: string;
 }
 
-export function buildResponsesInput(messages: readonly Message[]): unknown[] {
+export interface BuildResponsesInputOptions {
+  markStableRuntimeContextBreakpoint?: boolean;
+}
+
+export function buildResponsesInput(messages: readonly Message[], options: BuildResponsesInputOptions = {}): unknown[] {
   const input: unknown[] = [];
   const pairs = collectToolPairs(messages);
 
@@ -33,6 +38,9 @@ export function buildResponsesInput(messages: readonly Message[]): unknown[] {
     }
 
     const content = responsesInputContentFromBlocks(message.blocks);
+    if (options.markStableRuntimeContextBreakpoint && message.metadata?.cacheStableRuntimeContext === true) {
+      markLastTextContentBreakpoint(content);
+    }
     if (content.length === 0) continue;
     if (message.role === "system") {
       input.push({ role: "developer", content });
@@ -51,8 +59,10 @@ export function buildChatMessages(request: ModelRequest, options: BuildChatMessa
   const messages: unknown[] = [];
   const pairs = collectToolPairs(request.messages);
   const instructions = request.instructions ?? request.systemPrompt;
+  const promptCache = buildPromptCacheIdentity(instructions, request.tools, request.model, request.messages);
   let pendingReasoningContent: string | undefined;
-  if (instructions) messages.push({ role: "system", content: instructions });
+  if (promptCache.stableSystemPrompt) messages.push({ role: "system", content: promptCache.stableSystemPrompt });
+  if (promptCache.dynamicSystemPrompt) messages.push({ role: "system", content: promptCache.dynamicSystemPrompt });
 
   for (const message of request.messages) {
     const text = textFromBlocks(message.blocks);
@@ -223,6 +233,17 @@ function textFromBlocks(blocks: readonly MessageBlock[]): string {
 function thinkingFromBlocks(blocks: readonly MessageBlock[]): string | undefined {
   const text = blocks.filter((block): block is { type: "thinking"; text: string } => block.type === "thinking").map((block) => block.text).join("\n").trim();
   return text || undefined;
+}
+
+function markLastTextContentBreakpoint(content: unknown[]): void {
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const block = content[index];
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+    const record = block as Record<string, unknown>;
+    if (record.type !== "input_text") continue;
+    content[index] = { ...record, prompt_cache_breakpoint: { mode: "explicit" } };
+    return;
+  }
 }
 
 function responsesInputContentFromBlocks(blocks: readonly MessageBlock[]): Record<string, unknown>[] {

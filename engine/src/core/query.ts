@@ -34,7 +34,6 @@ import { buildImageRegistry } from "./image-registry.js";
 export interface QueryOptions {
   agentId: string;
   model?: string;
-  fallbackModel?: string;
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   serviceTier?: ModelRequest["serviceTier"];
@@ -94,7 +93,6 @@ export async function* query(
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const initialState = createInitialState(messages, {
     model: options.model,
-    fallbackModel: options.fallbackModel,
   });
   initialState.maxOutputTokensOverride = options.maxOutputTokensOverride;
 
@@ -267,6 +265,7 @@ async function prepareMessagesForQuery(
     tools: telemetry.toolDefinitions,
     cachedToolsAndPromptTokens: staticTokens,
     cacheDiagnostics: buildPromptCacheDiagnostics({
+      model: telemetry.model,
       systemPrompt: telemetry.systemPrompt,
       promptSections: context.promptSections,
       tools: telemetry.toolDefinitions,
@@ -288,6 +287,7 @@ async function prepareMessagesForQuery(
     tools: telemetry.toolDefinitions,
     cachedToolsAndPromptTokens: staticTokens,
     cacheDiagnostics: buildPromptCacheDiagnostics({
+      model: telemetry.model,
       systemPrompt: telemetry.systemPrompt,
       promptSections: context.promptSections,
       tools: telemetry.toolDefinitions,
@@ -327,7 +327,6 @@ async function* callModelForTurn(
   try {
     for await (const event of dependencies.modelGateway.stream({
       model: activeModel,
-      fallbackModel: state.fallbackModel ?? options.fallbackModel,
       messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
       tools: telemetry.toolDefinitions,
@@ -345,12 +344,6 @@ async function* callModelForTurn(
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
 
-      if (event.type === "fallback_started") {
-        activeModel = event.toModel;
-        assistantMessages.length = 0;
-        toolUses.length = 0;
-        yield { type: "message", message: createTextMessage("progress", `Fallback model started: ${event.fromModel} -> ${event.toModel}`) };
-      }
     }
   } catch (error) {
     const attempts = state.reactiveCompactAttempts ?? 0;

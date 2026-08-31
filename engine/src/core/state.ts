@@ -41,7 +41,6 @@ export interface QueryState {
   modelInputMessages?: Message[];
   previousResponseId?: string;
   currentModel?: string;
-  fallbackModel?: string;
   queryTracking: QueryTracking;
   maxOutputTokensRecoveryCount: number;
   /** @deprecated Use reactiveCompactAttempts instead */
@@ -54,13 +53,12 @@ export interface QueryState {
 
 export const MAX_REACTIVE_COMPACT_ATTEMPTS = 3;
 
-export function createInitialState(messages: Message[], options?: { model?: string; fallbackModel?: string }): QueryState {
+export function createInitialState(messages: Message[], options?: { model?: string }): QueryState {
   const chainId = cryptoId("chain");
   return {
     phase: "ready",
     messages: [...messages],
     currentModel: options?.model,
-    fallbackModel: options?.fallbackModel,
     queryTracking: {
       chainId,
       depth: 0,

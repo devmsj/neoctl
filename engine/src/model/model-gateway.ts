@@ -27,7 +27,6 @@ export interface TextFormat {
 
 export interface ModelRequest {
   model?: string;
-  fallbackModel?: string;
   messages: readonly Message[];
   systemPrompt?: string;
   instructions?: string;
@@ -57,7 +56,6 @@ export type ModelStreamEvent =
   | { type: "response_incomplete"; responseId?: string; reason?: string; usage?: ModelUsage }
   | { type: "usage"; usage: ModelUsage }
   | { type: "retrying"; error: Error; attempt: number; delayMs: number }
-  | { type: "fallback_started"; fromModel: string; toModel: string; reason: string }
   | { type: "provider_event"; event: unknown }
   | { type: "error"; error: Error }
   | { type: "retry"; reason: string; attempt: number };

@@ -1,7 +1,7 @@
 import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
-import { applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing, insertRuntimeContextBeforeLatestUser } from "../core/message-pipeline.js";
+import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createToolResultMessage } from "../types/messages.js";
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
@@ -58,13 +58,22 @@ async function main(): Promise<void> {
 
   const contextManager = new DefaultContextManager({ currentDate: () => "2026-05-05" });
   const runtime = await contextManager.build({ agentId: "main", messages: [createTextMessage("user", "hello")] });
-  const runtimeContextMessages = insertRuntimeContextBeforeLatestUser([], runtime.userContext, runtime.systemContext);
+  const firstHistory = [createTextMessage("user", "first")];
+  const secondHistory = [...firstHistory, createTextMessage("assistant", "answer"), createTextMessage("user", "second")];
+  const runtimeContextMessages = applyRuntimeContextForPromptCache(firstHistory, runtime.userContext, runtime.systemContext);
+  const nextRuntimeContextMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, runtime.systemContext);
+  const lastRuntimeBlock = runtimeContextMessages.at(-1)?.blocks[0];
   const contextOk =
     runtime.userContext.currentDate === "2026-05-05" &&
     Boolean(runtime.systemContext.cwd) &&
     !runtime.systemPrompt.includes("## System Context") &&
     runtimeContextMessages[0]?.metadata?.userContext === true &&
-    runtimeContextMessages[0]?.metadata?.systemContext === true;
+    runtimeContextMessages[0]?.metadata?.systemContext === true &&
+    runtimeContextMessages[0]?.blocks[0]?.type === "text" &&
+    nextRuntimeContextMessages[0]?.blocks[0]?.type === "text" &&
+    runtimeContextMessages[0].blocks[0].text === nextRuntimeContextMessages[0].blocks[0].text &&
+    lastRuntimeBlock?.type === "text" &&
+    lastRuntimeBlock.text === "first";
 
   const toolResult = createToolResultMessage({ id: "call_big", name: "big", input: {} }, true, "x".repeat(120));
   const budgeted = applyToolResultBudget([toolResult], { maxSerializedLength: 20 });
@@ -180,6 +189,9 @@ async function main(): Promise<void> {
     if (event.type === "context.metrics") {
       telemetryOk ||= Boolean(
         event.metrics.cacheDiagnostics?.systemPromptHash &&
+        event.metrics.cacheDiagnostics.stablePrefixHash &&
+        event.metrics.cacheDiagnostics.promptCacheKey &&
+        event.metrics.cacheDiagnostics.cacheablePrefixTokens >= 0 &&
         event.metrics.cacheDiagnostics.toolDefinitionsHash &&
         event.metrics.cacheDiagnostics.promptSections.length > 0,
       );

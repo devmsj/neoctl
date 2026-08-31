@@ -1,4 +1,5 @@
 import { createTextMessage, createThinkingMessage } from "../types/messages.js";
+import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
@@ -25,11 +26,24 @@ export interface OpenAIResponsesMapperOptions {
 
 export function buildResponsesRequest(request: ModelRequest, options: OpenAIResponsesMapperOptions): Record<string, unknown> {
   const tools = buildResponsesTools(request.tools);
+  const model = request.model ?? options.model;
+  const promptCache = buildPromptCacheIdentity(request.instructions ?? request.systemPrompt, request.tools, model, request.messages);
+  const explicitCaching = supportsExplicitPromptCaching(model);
+  const stableRuntimeCount = request.messages[0]?.metadata?.cacheStableRuntimeContext === true ? 1 : 0;
+  const stableRuntimeInput = buildResponsesInput(request.messages.slice(0, stableRuntimeCount), {
+    markStableRuntimeContextBreakpoint: explicitCaching,
+  });
+  const conversationInput = buildResponsesInput(request.messages.slice(stableRuntimeCount));
+  const input = [
+    ...(promptCache.stableSystemPrompt ? [developerInput(promptCache.stableSystemPrompt, explicitCaching)] : []),
+    ...stableRuntimeInput,
+    ...(promptCache.dynamicSystemPrompt ? [developerInput(promptCache.dynamicSystemPrompt)] : []),
+    ...conversationInput,
+  ];
   const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
   return dropUndefined({
-    model: request.model ?? options.model,
-    instructions: request.instructions ?? request.systemPrompt,
-    input: buildResponsesInput(request.messages),
+    model,
+    input,
     tools: tools.length ? tools : undefined,
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     previous_response_id: request.previousResponseId,
@@ -38,9 +52,30 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
     service_tier: request.serviceTier,
+    prompt_cache_key: promptCache.key,
+    prompt_cache_options: explicitCaching ? { mode: "implicit" } : undefined,
     store: shouldStoreResponse(request, tools.length),
     ...((request.providerOptions?.responses as Record<string, unknown> | undefined) ?? {}),
   });
+}
+
+function developerInput(text: string, explicitBreakpoint = false): Record<string, unknown> {
+  return {
+    role: "developer",
+    content: [{
+      type: "input_text",
+      text,
+      ...(explicitBreakpoint ? { prompt_cache_breakpoint: { mode: "explicit" } } : {}),
+    }],
+  };
+}
+
+function supportsExplicitPromptCaching(model: string): boolean {
+  const match = /(?:^|[-_])gpt-(\d+)\.(\d+)(?:[-_]|$)/i.exec(model);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 5 || (major === 5 && minor >= 6);
 }
 
 export async function* normalizeResponsesStream(

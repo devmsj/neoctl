@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 import type { AppPromptStore } from "../app/app-prompt.js";
 import type { ToolUseContext } from "../tools/tool.js";
 import type { Message } from "../types/messages.js";
@@ -18,7 +17,6 @@ export interface ContextBuildInput extends EffectiveSystemPromptOptions {
   enabledTools?: readonly string[];
   toolUseContext?: ToolUseContext;
   omitProjectMemory?: boolean;
-  disableGitContext?: boolean;
 }
 
 export interface UserContext {
@@ -30,13 +28,6 @@ export interface UserContext {
 export interface SystemContext {
   cwd: string;
   platform: NodeJS.Platform;
-  git?: GitContext;
-}
-
-export interface GitContext {
-  branch?: string;
-  recentCommit?: string;
-  status?: string;
 }
 
 export interface RuntimeContext {
@@ -64,7 +55,7 @@ export interface AppPromptContextManagerOptions {
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
   private userContextCache?: UserContext;
-  private stableSystemContextCache?: SystemContext;
+  private systemContextCache?: SystemContext;
 
   constructor(private readonly options: DefaultContextManagerOptions = {}) {
     this.cwd = resolve(options.cwd ?? process.cwd());
@@ -83,7 +74,7 @@ export class DefaultContextManager implements ContextManager {
 
     const systemPrompt = buildEffectiveSystemPrompt(promptSections, input);
     const userContext = input.omitProjectMemory ? stripProjectMemory(this.getUserContext(cwd)) : this.getUserContext(cwd);
-    const systemContext = input.disableGitContext ? stripGitContext(this.getSystemContext(cwd)) : this.getSystemContext(cwd);
+    const systemContext = this.getSystemContext(cwd);
 
     return { systemPrompt, promptSections, userContext, systemContext };
   }
@@ -99,25 +90,12 @@ export class DefaultContextManager implements ContextManager {
   }
 
   private getSystemContext(cwd: string): SystemContext {
-    const stable = this.getStableSystemContext(cwd);
-    const status = readGitStatus(cwd);
-    const git = stable.git || status !== undefined
-      ? { ...stable.git, status: status ?? "clean" }
-      : undefined;
-    return {
-      ...stable,
-      ...(git ? { git } : {}),
-    };
-  }
-
-  private getStableSystemContext(cwd: string): SystemContext {
-    if (this.stableSystemContextCache) return this.stableSystemContextCache;
-    this.stableSystemContextCache = {
+    if (this.systemContextCache) return this.systemContextCache;
+    this.systemContextCache = {
       cwd,
       platform: process.platform,
-      git: readStableGitContext(cwd),
     };
-    return this.stableSystemContextCache;
+    return this.systemContextCache;
   }
 }
 
@@ -172,32 +150,8 @@ function readProjectMemory(cwd: string, memoryFileNames: readonly string[]): { c
   return parts.length ? { content: parts.join("\n\n"), files } : {};
 }
 
-function readStableGitContext(cwd: string): GitContext | undefined {
-  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const recentCommit = git(cwd, ["log", "-1", "--oneline"]);
-  if (!branch && !recentCommit) return undefined;
-  return { branch, recentCommit };
-}
-
-function readGitStatus(cwd: string): string | undefined {
-  return git(cwd, ["status", "--short"]);
-}
-
-function git(cwd: string, args: readonly string[]): string | undefined {
-  try {
-    return execFileSync("git", [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function stripProjectMemory(context: UserContext): UserContext {
   const { projectMemory: _projectMemory, memoryFiles: _memoryFiles, ...rest } = context;
-  return rest;
-}
-
-function stripGitContext(context: SystemContext): SystemContext {
-  const { git: _git, ...rest } = context;
   return rest;
 }
 
