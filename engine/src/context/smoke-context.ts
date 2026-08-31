@@ -5,7 +5,7 @@ import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolRes
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createToolResultMessage } from "../types/messages.js";
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
-import { DefaultContextManager } from "./context-manager.js";
+import { AdditionalPromptContextManager, DefaultContextManager } from "./context-manager.js";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
 
 class ContextOverflowThenSuccessGateway implements ModelGateway {
@@ -58,6 +58,14 @@ async function main(): Promise<void> {
 
   const contextManager = new DefaultContextManager({ currentDate: () => "2026-05-05" });
   const runtime = await contextManager.build({ agentId: "main", messages: [createTextMessage("user", "hello")] });
+  const extendedRuntime = await new AdditionalPromptContextManager(contextManager, [{
+    name: "Web Plugin",
+    content: "stable plugin contract",
+    cacheStable: true,
+  }]).build({ agentId: "main", messages: [createTextMessage("user", "hello")] });
+  const extensionOk =
+    extendedRuntime.promptSections.some((section) => section.name === "Web Plugin" && section.cacheStable === true) &&
+    splitSystemPromptPrefix(extendedRuntime.systemPrompt).stablePrefix.includes("stable plugin contract");
   const firstHistory = [createTextMessage("user", "first")];
   const secondHistory = [...firstHistory, createTextMessage("assistant", "answer"), createTextMessage("user", "second")];
   const runtimeContextMessages = applyRuntimeContextForPromptCache(firstHistory, runtime.userContext, runtime.systemContext);
@@ -222,8 +230,8 @@ async function main(): Promise<void> {
     defaultEvents.includes("error") &&
     defaultEvents.includes("terminal:prompt_too_long");
 
-  const ok = promptOk && contextOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && automaticDisabledOk && reactiveOk && defaultAutomaticDisabledOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, automaticDisabledOk, reactiveOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
+  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && automaticDisabledOk && reactiveOk && defaultAutomaticDisabledOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, automaticDisabledOk, reactiveOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

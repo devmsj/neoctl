@@ -42,9 +42,10 @@ const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
 const IMAGE_MIN_QUALITY = 0.62
 const SESSION_PAGE_SIZE = 10
-const IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
-const IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
-const DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
+// Kept only to hide hints already persisted by older web clients. New requests never append them.
+const LEGACY_IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
+const LEGACY_IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
+const LEGACY_DOWNLOAD_EXPOSURE_HINT = 'System hint from web UI: if your final answer produces, creates, modifies, exports, packages, or identifies local files that the user should receive, you must call the expose_downloads tool with all relevant absolute file paths before your final textual response. Do not paste absolute paths as the primary delivery method; expose them as browser downloads.'
 const ATTACHMENT_MANIFEST_START = '<<ATTACHMENT_MANIFEST>>'
 const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
@@ -366,10 +367,6 @@ const activePanelLabel = computed(() => ({
 const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
-const runtimeContextEntryCount = computed(() => {
-  const prompt = state.runtimeContext?.prompt || {}
-  return 3 + (prompt.userContextPrompt ? 1 : 0) + (prompt.appPrompt ? 1 : 0)
-})
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
@@ -983,10 +980,7 @@ async function submit() {
   const attachments = [...state.attachments]
   const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
-  const submitText = appendHiddenAttachmentManifest(
-    textWithDownloadExposureHint(textWithAttachmentLabels(textWithImageToolHint(text, imageAttachments), imageAttachments)),
-    fileAttachments
-  )
+  const submitText = textWithAttachmentLabels(text, imageAttachments)
   cacheMessageImagePreviews(imageAttachments)
   input.value = ''
   state.attachments = []
@@ -995,7 +989,7 @@ async function submit() {
     const res = await fetch(runtimeUrl('/api/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: submitText, attachments: imageAttachments }),
+      body: JSON.stringify({ text: submitText, attachments: [...imageAttachments, ...fileAttachments] }),
     })
     const body = await res.json()
     if (!res.ok || body?.error) throw new Error(body.error || `submit ${res.status}`)
@@ -1519,10 +1513,6 @@ function runtimeToolSchema(tool) {
   return JSON.stringify(tool?.inputSchema || {}, null, 2)
 }
 
-function runtimeContextJson(value) {
-  return JSON.stringify(value ?? {}, null, 2)
-}
-
 function runtimeSectionLabel(section) {
   return section?.cacheStable ? '稳定缓存段' : '动态段'
 }
@@ -1568,14 +1558,6 @@ function openRuntimeToolDetail(tool) {
     meta: tool.strict ? '严格模式' : '兼容模式',
     description: tool.description || '',
     schema: runtimeToolSchema(tool),
-  }
-}
-
-function openRuntimeDataDetail(title, value, raw = false) {
-  state.runtimeContextDetail = {
-    kind: 'context',
-    title,
-    content: raw ? String(value || '') : runtimeContextJson(value),
   }
 }
 
@@ -2255,54 +2237,15 @@ function textWithAttachmentLabels(text, attachments) {
   return text.trim() ? `${text.trim()}\n\n${suffix}` : suffix
 }
 
-function appendHiddenAttachmentManifest(text, attachments) {
-  if (!attachments.length) return text
-  const manifest = [
-    ATTACHMENT_MANIFEST_START,
-    'The user uploaded files for this turn. These paths are hidden from the UI.',
-    'Use local tools such as exec to inspect them when helpful.',
-    ...attachments.map((attachment, index) => [
-      `- file${index + 1}: ${attachment.name || `attachment-${index + 1}`}`,
-      `  path: ${attachment.absolutePath}`,
-      `  mimeType: ${attachment.mimeType || 'application/octet-stream'}`,
-      `  size: ${Number(attachment.size || 0)} bytes`,
-    ].join('\n')),
-    ATTACHMENT_MANIFEST_END,
-  ].join('\n')
-  return [text.trim(), manifest].filter(Boolean).join('\n\n')
-}
-
-function textWithImageToolHint(text, attachments) {
-  const hints = []
-  if (looksLikeImageGenerationRequest(text)) hints.push(IMAGE_GENERATION_HINT)
-  if (attachments.some((attachment) => attachment.kind === 'image') && looksLikeImageOperationRequest(text)) hints.push(IMAGE_OPERATION_HINT)
-  if (!hints.length) return text
-  return [text.trim(), ...hints].filter(Boolean).join('\n\n')
-}
-
-function textWithDownloadExposureHint(text) {
-  return [String(text || '').trim(), DOWNLOAD_EXPOSURE_HINT, XHS_ARTIFACT_EDITOR_HINT].filter(Boolean).join('\n\n')
-}
-
-function looksLikeImageGenerationRequest(text) {
-  const value = String(text || '').toLowerCase()
-  return /绘制|画一张|画个|生成图片|生成一张图|做一张图|出图|配图|插画|海报|封面|头像|draw|illustrate|generate (?:an? )?image|create (?:an? )?image|make (?:an? )?image|render|poster|cover art|concept art|portrait|mascot/.test(value)
-}
-
-function looksLikeImageOperationRequest(text) {
-  const value = String(text || '').toLowerCase()
-  return /修改|编辑|改图|重绘|换背景|去除|移除|修复|润色|调整|变成|改成|替换|加上|添加|保留|风格|edit|modify|change|replace|remove|retouch|inpaint|outpaint|background|style/.test(value)
-}
-
 function stripImageLabels(text) {
   return String(text).replace(/\s*\[img#\d+\]\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim()
 }
 
 function stripImageOperationHint(text) {
   return String(text)
-    .replace(IMAGE_GENERATION_HINT, '')
-    .replace(IMAGE_OPERATION_HINT, '')
-    .replace(DOWNLOAD_EXPOSURE_HINT, '')
+    .replace(LEGACY_IMAGE_GENERATION_HINT, '')
+    .replace(LEGACY_IMAGE_OPERATION_HINT, '')
+    .replace(LEGACY_DOWNLOAD_EXPOSURE_HINT, '')
     .replace(XHS_ARTIFACT_EDITOR_HINT, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
@@ -2377,14 +2320,10 @@ function directLineImagePreviews(line) {
 
 function userMessageGroup(line) {
   if (line?.kind !== 'user') return [line]
+  const messageId = String(line?.messageId || '')
+  if (!messageId) return [line]
   const lines = state.lines || []
-  const index = lines.findIndex((item) => String(item?.id) === String(line?.id))
-  if (index < 0) return [line]
-  let start = index
-  while (start > 0 && lines[start - 1]?.kind === 'user') start -= 1
-  let end = start
-  while (end + 1 < lines.length && lines[end + 1]?.kind === 'user') end += 1
-  return lines.slice(start, end + 1)
+  return lines.filter((item) => item?.kind === 'user' && String(item?.messageId || '') === messageId)
 }
 
 function userGroupHasImages(group) {
@@ -2903,7 +2842,6 @@ function createMobileSession() {
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
                 <button type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
                 <button type="button" @click="openRuntimeContextModal('tools')"><span>工具</span><strong>{{ runtimeTools.length }}</strong></button>
-                <button type="button" @click="openRuntimeContextModal('context')"><span>上下文</span><strong>{{ runtimeContextEntryCount }}</strong></button>
               </div>
               <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" @click="fetchRuntimeContext">重试</button>
               <span v-else class="runtime-context-syncing">同步中</span>
@@ -3354,7 +3292,7 @@ function createMobileSession() {
       <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="运行上下文">
         <header class="runtime-context-modal-head">
           <div>
-            <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : state.runtimeContextModal === 'tools' ? '可用工具' : '上下文' }}</strong>
+            <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : '可用工具' }}</strong>
           </div>
           <button type="button" aria-label="关闭" @click="closeRuntimeContextModal">×</button>
         </header>
@@ -3371,30 +3309,13 @@ function createMobileSession() {
             </button>
           </div>
 
-          <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-context-index runtime-tool-index">
+          <div v-else class="runtime-context-index runtime-tool-index">
             <button v-for="tool in runtimeTools" :key="tool.name" type="button" class="runtime-context-index-item" @click="openRuntimeToolDetail(tool)">
               <span><code>{{ tool.name }}</code><small>{{ runtimeToolSummary(tool) }}</small></span>
               <b>›</b>
             </button>
           </div>
 
-          <div v-else class="runtime-context-index">
-            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('系统上下文', state.runtimeContext?.prompt?.systemContext)">
-              <span><strong>系统上下文</strong><small>工作目录 · 系统平台</small></span><b>›</b>
-            </button>
-            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('用户上下文', state.runtimeContext?.prompt?.userContext)">
-              <span><strong>用户上下文</strong><small>日期 · 项目记忆</small></span><b>›</b>
-            </button>
-            <button v-if="state.runtimeContext?.prompt?.userContextPrompt" type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('用户上下文提示词', state.runtimeContext.prompt.userContextPrompt, true)">
-              <span><strong>用户上下文提示词</strong><small>模型输入前缀</small></span><b>›</b>
-            </button>
-            <button v-if="state.runtimeContext?.prompt?.appPrompt" type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('应用提示词', state.runtimeContext.prompt.appPrompt)">
-              <span><strong>应用提示词</strong><small>已启用</small></span><b>›</b>
-            </button>
-            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('运行能力', state.runtimeContext?.capabilities)">
-              <span><strong>运行能力</strong><small>命令 · 智能体 · 技能 · 插件</small></span><b>›</b>
-            </button>
-          </div>
         </div>
       </section>
     </div>

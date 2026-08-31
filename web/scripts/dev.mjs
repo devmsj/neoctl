@@ -4,8 +4,8 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
-import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from '../downloads.mjs';
-import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from '../artifacts.mjs';
+import { createDefaultWebPlugins } from '../default-plugins.mjs';
+import { createWebPluginHost } from '../plugins.mjs';
 import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from '../runtime-router-cleanup.mjs';
 import { createCpaQuotaMonitor } from '../cpa-quota.mjs';
@@ -24,10 +24,10 @@ const xhsArtifactsDir = path.resolve(process.env.NEO_XHS_ARTIFACTS_DIR || path.j
 const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(process.cwd(), '.neoctl-web', 'cpa-config.json'));
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(process.cwd(), '.neoctl-web', 'memory-monitor.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
-const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 'skills');
-const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
-const downloadRegistry = new DownloadRegistry();
-const xhsArtifactRegistry = new XhsArtifactRegistry({ storageDir: xhsArtifactsDir });
+const pluginHost = createWebPluginHost({
+  plugins: createDefaultWebPlugins({ xhsArtifactsDir }),
+  enabled: process.env.NEO_WEB_PLUGINS,
+});
 const cpaQuotaMonitor = createCpaQuotaMonitor({ configFile: cpaConfigFile });
 const memoryMonitor = createMemoryMonitor({
   storageFile: memoryMonitorFile,
@@ -39,12 +39,9 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
   workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
-    skillRoots: [scaffoldSkillRoot, xhsSkillRoot],
-    externalTools: [
-      createExposeDownloadsTool({ registry: downloadRegistry }),
-      createOpenXhsArtifactEditorTool({ registry: xhsArtifactRegistry }),
-      createReadXhsArtifactTool({ registry: xhsArtifactRegistry }),
-    ],
+    externalTools: pluginHost.tools,
+    externalPromptSections: pluginHost.promptSections,
+    plugins: pluginHost.ids,
   }),
 });
 
@@ -112,6 +109,7 @@ async function startPromptLibraryProxy() {
 async function routeRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://${host}:${runtimePort}`);
   try {
+    if (await pluginHost.route(req, res, url, { readJsonBody, sendJson })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });
     }
@@ -165,14 +163,6 @@ async function routeRequest(req, res) {
       const body = await readJsonBody(req);
       const file = await storeUploadedFile(body);
       return sendJson(res, { ok: true, file });
-    }
-    if (req.method === 'GET' && url.pathname.startsWith('/api/downloads/')) {
-      const id = decodeURIComponent(url.pathname.slice('/api/downloads/'.length));
-      return serveDownload(downloadRegistry, req, res, id);
-    }
-    if ((req.method === 'GET' || req.method === 'PUT') && url.pathname.startsWith('/api/xhs-artifacts/')) {
-      const id = decodeURIComponent(url.pathname.slice('/api/xhs-artifacts/'.length));
-      return serveXhsArtifact(xhsArtifactRegistry, req, res, id, readJsonBody, url.searchParams.get('sessionId') || undefined);
     }
     return proxyToRuntime(req, res, url);
   } catch (error) {

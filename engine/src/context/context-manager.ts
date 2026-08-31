@@ -52,6 +52,30 @@ export interface AppPromptContextManagerOptions {
   cacheStable?: boolean;
 }
 
+export class AdditionalPromptContextManager implements ContextManager {
+  private readonly sections: PromptSection[];
+
+  constructor(
+    private readonly base: ContextManager,
+    sections: readonly PromptSection[] = [],
+  ) {
+    this.sections = sections
+      .filter((section) => section.name.trim() && section.content.trim())
+      .map((section) => ({ ...section, name: section.name.trim(), content: section.content.trim() }));
+  }
+
+  async build(input: ContextBuildInput): Promise<RuntimeContext> {
+    const runtimeContext = await this.base.build(input);
+    if (this.sections.length === 0) return runtimeContext;
+    const promptSections = [...runtimeContext.promptSections, ...this.sections];
+    return {
+      ...runtimeContext,
+      promptSections,
+      systemPrompt: buildEffectiveSystemPrompt(promptSections, input),
+    };
+  }
+}
+
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
   private userContextCache?: UserContext;

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { DefaultContextManager, QueryEngine } from 'neoctl';
+import { QueryEngine } from 'neoctl';
 import { WebRepl } from 'neoctl/web/index.js';
 
 export function createWorkspaceRuntimeManager(options) {
@@ -112,20 +112,11 @@ function createWorkspaceEngine(source, cwd, sessionId, resume) {
     ...source.options,
     cwd,
     model: settings.model,
-    fallbackModel: settings.fallbackModel,
     reasoning: settings.reasoning,
-    contextManager: freshContextManager(source.options.contextManager, cwd),
     session: source.options.session
       ? { ...source.options.session, sessionId, resume }
       : undefined,
   });
-}
-
-function freshContextManager(source, cwd) {
-  if (source?.catalog && typeof source.constructor === 'function') {
-    return new source.constructor(source.catalog, new DefaultContextManager({ cwd }));
-  }
-  return new DefaultContextManager({ cwd });
 }
 
 function registerEngineSync(repl) {

@@ -26,6 +26,7 @@ const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 
 export interface QueryEngineOptions {
   agentId?: string;
+  cwd?: string;
   model?: string;
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
@@ -34,6 +35,7 @@ export interface QueryEngineOptions {
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
+  contextManagerFactory?: (cwd?: string) => ContextManager;
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
@@ -78,9 +80,10 @@ export class QueryEngine {
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
     this.currentModelGateway = options.modelGateway;
     this.appPromptStore = options.appPromptStore ?? new InMemoryAppPromptStore();
-    this.contextManager = options.contextManager
-      ? new AppPromptContextManager(options.contextManager, this.appPromptStore)
-      : new AppPromptContextManager(new DefaultContextManager(), this.appPromptStore);
+    const baseContextManager = options.contextManagerFactory?.(options.cwd)
+      ?? options.contextManager
+      ?? new DefaultContextManager({ cwd: options.cwd });
+    this.contextManager = new AppPromptContextManager(baseContextManager, this.appPromptStore);
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
@@ -124,7 +127,7 @@ export class QueryEngine {
     if (this.options.session?.enabled === false || !this.options.session) return [];
     return SessionStore.list({
       agentId: this.agentId,
-      cwd: process.cwd(),
+      cwd: this.options.cwd ?? process.cwd(),
       rootDir: this.options.session.rootDir,
       limit,
     });
@@ -137,7 +140,7 @@ export class QueryEngine {
       throw new Error("cannot delete the active session");
     }
     return SessionStore.delete({
-      cwd: process.cwd(),
+      cwd: this.options.cwd ?? process.cwd(),
       sessionId,
       rootDir: this.options.session.rootDir,
     });
@@ -182,6 +185,7 @@ export class QueryEngine {
       serviceTier: this.currentFastMode ? "priority" : undefined,
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
       maxTurns: this.options.maxTurns,
+      workspaceCwd: this.options.cwd,
       abortSignal: options.abortSignal,
     };
 
@@ -344,7 +348,7 @@ export class QueryEngine {
     const toolContext: ToolUseContext = {
       agentId: this.agentId,
       tools: this.options.tools,
-      appState: new InMemoryAppState(this.agentId),
+      appState: new InMemoryAppState(this.agentId, this.options.cwd),
       toolResultMemory: this.sessionStore?.toolResultMemory,
       secrets: this.options.secrets,
       secretRedactions: this.options.secretRedactions,
@@ -428,7 +432,7 @@ export class QueryEngine {
     this.cancelPendingTitleWork();
     this.sessionStore = await SessionStore.open({
       agentId: this.agentId,
-      cwd: process.cwd(),
+      cwd: this.options.cwd ?? process.cwd(),
       sessionId: options.sessionId,
       rootDir: this.options.session.rootDir,
       resume: options.resume,

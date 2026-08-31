@@ -138,6 +138,25 @@ WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 
 
 首次订阅、切换/新建会话、修改模型、保存模型配置或切换应用提示词时会发布新 revision。客户端读取速度较慢时，服务端会在 SSE drain 后补发最新上下文，不会用普通 `sync` 事件替代。`GET /api/runtime-context` 提供相同结构的即时快照，可用于首次加载或断线恢复。
 
+### Web 插件
+
+下载和小红书编辑器以 Web 后端插件提供。插件统一声明工具、稳定系统提示词段和 HTTP 路由，前端发送消息时不会再追加工具提示。插件按 id 固定排序，启停只在服务启动时解析，避免运行中改变工具集合和缓存键。
+
+`NEO_WEB_PLUGINS` 支持以下值：
+
+```bash
+# 默认启用所有标记为默认启用的插件
+npm run dev
+
+# 关闭全部 Web 插件
+NEO_WEB_PLUGINS=none npm run dev
+
+# 仅启用指定插件
+NEO_WEB_PLUGINS=downloads,xhs-artifact npm run dev
+```
+
+可用插件为 `downloads` 和 `xhs-artifact`。`GET /api/plugins` 返回插件版本、启用状态和工具列表；修改开关后需要重启服务。
+
 暂未实现：
 
 - 绘图工具/画布能力。等待 `neoctl` 后续提供绘图运行时后再接。

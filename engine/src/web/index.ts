@@ -31,6 +31,8 @@ import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument } from "../repl/commands.js";
 import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { CompactionResult } from "../context/compaction.js";
+import { AdditionalPromptContextManager, DefaultContextManager } from "../context/context-manager.js";
+import type { PromptSection } from "../context/prompts.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
@@ -129,6 +131,7 @@ interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
+  messageId?: string;
   toolName?: string;
   parentToolName?: string;
   toolUseId?: string;
@@ -179,8 +182,14 @@ export interface CreateWebRuntimeOptions {
   resume?: boolean;
   /** Override the QueryEngine agent id. Defaults to main. */
   agentId?: string;
+  /** Workspace root used by context, tools, and session storage. */
+  cwd?: string;
   /** Additional tools to register in the web runtime. */
   externalTools?: readonly Tool[];
+  /** Stable or dynamic prompt sections supplied by the embedding application. */
+  externalPromptSections?: readonly PromptSection[];
+  /** Enabled embedding plugin ids exposed in runtime metadata. */
+  plugins?: readonly string[];
 }
 
 export interface WebRuntimeScope {
@@ -218,12 +227,22 @@ interface LoginFormPayload {
   values: Record<string, string>;
 }
 
-interface WebAttachmentPayload {
+interface WebImageAttachmentPayload {
   kind: "image";
   label: string;
   mimeType: string;
   data: string;
 }
+
+interface WebFileAttachmentPayload {
+  kind: "file";
+  name: string;
+  mimeType: string;
+  size: number;
+  absolutePath: string;
+}
+
+type WebAttachmentPayload = WebImageAttachmentPayload | WebFileAttachmentPayload;
 
 interface WebSetAppPromptPayload {
   content?: string;
@@ -313,7 +332,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     const dummyContext = {
       agentId: "main",
       tools,
-      appState: new InMemoryAppState("main"),
+      appState: new InMemoryAppState("main", options.cwd),
       emit: () => undefined,
     };
     return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
@@ -323,14 +342,20 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const appPromptStore = new InMemoryAppPromptStore();
   const engine = new QueryEngine({
     agentId: options.agentId ?? "main",
+    cwd: options.cwd,
     model: modelConfig?.model,
     reasoning: modelConfig?.defaultReasoning,
     queryOrigin: "web",
     modelGateway,
     tools,
+    contextManagerFactory: (cwd) => new AdditionalPromptContextManager(
+      new DefaultContextManager({ cwd }),
+      options.externalPromptSections,
+    ),
     appPromptStore,
     taskNotificationSource: createTaskNotificationSource(taskStore),
     commands: replCommandDefinitions.map((command) => command.usage),
+    plugins: options.plugins,
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
@@ -454,6 +479,7 @@ export class WebRepl {
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
   private pendingUserImageEchoLabels: string[] | undefined;
+  private pendingUserImageEchoMessageId: string | undefined;
   private runtimeContextRevision = 0;
   private runtimeContextPublishQueue: Promise<void> = Promise.resolve();
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
@@ -771,6 +797,8 @@ export class WebRepl {
     this.interruptArmed = false;
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
+    this.pendingUserImageEchoLabels = undefined;
+    this.pendingUserImageEchoMessageId = undefined;
     this.finalizeForegroundView();
     this.finalizeLiveToolLines();
     this.busy = false;
@@ -818,6 +846,8 @@ export class WebRepl {
     this.interruptArmed = false;
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
+    this.pendingUserImageEchoLabels = undefined;
+    this.pendingUserImageEchoMessageId = undefined;
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined };
     this.append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
@@ -864,8 +894,10 @@ export class WebRepl {
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
+      const messageId = this.pendingUserImageEchoMessageId;
       this.pendingUserImageEchoLabels = undefined;
-      renderMessageImages(event.message, (line) => this.append(line));
+      this.pendingUserImageEchoMessageId = undefined;
+      renderMessageImages(event.message, (line) => this.append(line), messageId);
       this.broadcastSync();
       return;
     }
@@ -1071,11 +1103,13 @@ export class WebRepl {
     }
 
     const promptPayload = buildWebPromptPayload(command.text, attachments);
-    this.append({ kind: "user", text: promptPayload.displayText });
+    const optimisticMessageId = `web-user-${this.lineId + 1}`;
+    this.append({ kind: "user", text: promptPayload.displayText, messageId: optimisticMessageId });
     const optimisticImageLabels = (promptPayload.blocks ?? [])
       .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
       .map((block) => block.label as string);
     this.pendingUserImageEchoLabels = optimisticImageLabels.length ? optimisticImageLabels : undefined;
+    this.pendingUserImageEchoMessageId = optimisticImageLabels.length ? optimisticMessageId : undefined;
     const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
@@ -1108,6 +1142,7 @@ export class WebRepl {
       this.interruptArmed = false;
       this.finalizeForegroundView();
       this.pendingUserImageEchoLabels = undefined;
+      this.pendingUserImageEchoMessageId = undefined;
       const queuedText = this.queuedInput;
       const queuedAttach = this.queuedAttachments;
       this.queuedInput = undefined;
@@ -1370,9 +1405,21 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 
 function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is WebAttachmentPayload => {
-    if (!isRecord(item)) return false;
-    return item.kind === "image" && typeof item.label === "string" && /^\[img#\d+\]$/.test(item.label) && typeof item.mimeType === "string" && item.mimeType.startsWith("image/") && typeof item.data === "string";
+  return value.slice(0, 20).flatMap((item): WebAttachmentPayload[] => {
+    if (!isRecord(item)) return [];
+    if (item.kind === "image" && typeof item.label === "string" && /^\[img#\d+\]$/.test(item.label) && typeof item.mimeType === "string" && item.mimeType.startsWith("image/") && typeof item.data === "string") {
+      return [{ kind: "image", label: item.label, mimeType: item.mimeType, data: item.data }];
+    }
+    if (item.kind === "file" && typeof item.name === "string" && typeof item.mimeType === "string" && typeof item.size === "number" && Number.isFinite(item.size) && typeof item.absolutePath === "string" && path.isAbsolute(item.absolutePath)) {
+      return [{
+        kind: "file",
+        name: path.basename(item.name).slice(0, 180),
+        mimeType: item.mimeType.slice(0, 160),
+        size: Math.max(0, Math.round(item.size)),
+        absolutePath: path.resolve(item.absolutePath),
+      }];
+    }
+    return [];
   });
 }
 
@@ -1420,8 +1467,12 @@ async function resetStatus(runtime: WebRuntime): Promise<UiStatus> {
 }
 
 function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[]): { text: string; displayText: string; blocks?: MessageBlock[] } {
-  const activeAttachments = attachments.filter((attachment) => displayText.includes(attachment.label));
-  if (activeAttachments.length === 0) return { text: displayText, displayText };
+  const activeAttachments = attachments.filter((attachment): attachment is WebImageAttachmentPayload => attachment.kind === "image" && displayText.includes(attachment.label));
+  const fileManifest = buildWebFileAttachmentManifest(attachments.filter((attachment): attachment is WebFileAttachmentPayload => attachment.kind === "file"));
+  if (activeAttachments.length === 0) {
+    const text = [displayText.trim(), fileManifest].filter(Boolean).join("\n\n");
+    return { text, displayText };
+  }
   const blocks: MessageBlock[] = [];
   let cursor = 0;
   while (cursor < displayText.length) {
@@ -1434,12 +1485,28 @@ function buildWebPromptPayload(displayText: string, attachments: readonly WebAtt
     blocks.push({ type: "image", mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
     cursor = next.index + next.attachment.label.length;
   }
+  pushTextBlock(blocks, fileManifest ? `\n\n${fileManifest}` : "");
   const text = blocks.map((block) => block.type === "text" ? block.text : block.type === "image" ? block.label ?? "[image]" : "").join("");
-  return { text, displayText: text, blocks };
+  return { text, displayText, blocks };
 }
 
-function nextWebAttachmentOccurrence(text: string, attachments: readonly WebAttachmentPayload[], start: number): { index: number; attachment: WebAttachmentPayload } | undefined {
-  let best: { index: number; attachment: WebAttachmentPayload } | undefined;
+function buildWebFileAttachmentManifest(attachments: readonly WebFileAttachmentPayload[]): string {
+  if (attachments.length === 0) return "";
+  return [
+    "<<ATTACHMENT_MANIFEST>>",
+    "Files attached by the user for this turn:",
+    ...attachments.map((attachment, index) => [
+      `- file${index + 1}: ${attachment.name || `attachment-${index + 1}`}`,
+      `  path: ${attachment.absolutePath}`,
+      `  mimeType: ${attachment.mimeType || "application/octet-stream"}`,
+      `  size: ${attachment.size} bytes`,
+    ].join("\n")),
+    "<</ATTACHMENT_MANIFEST>>",
+  ].join("\n");
+}
+
+function nextWebAttachmentOccurrence(text: string, attachments: readonly WebImageAttachmentPayload[], start: number): { index: number; attachment: WebImageAttachmentPayload } | undefined {
+  let best: { index: number; attachment: WebImageAttachmentPayload } | undefined;
   for (const attachment of attachments) {
     const index = text.indexOf(attachment.label, start);
     if (index === -1) continue;
@@ -1775,23 +1842,23 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
     if (block.type === "text") {
       const kind = kindForRole(message.role);
       if (kind === "meta") continue;
-      if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, previewStyle: "summary" });
-      else append({ kind, text: block.text });
+      if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, messageId: message.id, previewStyle: "summary" });
+      else append({ kind, text: block.text, messageId: message.id });
       rendered = true;
     } else if (block.type === "image") {
       const line = imageLineForBlock(message.role, block, message.id, blockIndex);
       if (!line) continue;
-      append({ ...line, parentToolName });
+      append({ ...line, messageId: message.id, parentToolName });
       rendered = true;
     } else if (block.type === "thinking") {
       if (options.includeThinkingBlocks === false) continue;
-      append(thinkingLine(block.text));
+      append({ ...thinkingLine(block.text), messageId: message.id });
       rendered = true;
     } else if (block.type === "tool_use" && options.includeToolUseBlocks) {
-      append({ ...formatToolUse(block), live: false });
+      append({ ...formatToolUse(block), messageId: message.id, live: false });
       rendered = true;
     } else if (block.type === "tool_result") {
-      append(formatToolResultLine(block.name, block.output, block.ok));
+      append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id });
       rendered = true;
     }
   }
@@ -1802,13 +1869,13 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    append({ ...formatToolResultLine(block.name, block.output, block.ok), toolUseId: block.toolUseId }, block.toolUseId);
+    append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id, toolUseId: block.toolUseId }, block.toolUseId);
     rendered = true;
   }
   return rendered;
 }
 
-function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number): boolean {
+function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number, messageId = message.id): boolean {
   let rendered = false;
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   const parentToolUseId = message.blocks.find((block) => block.type === "tool_result")?.toolUseId;
@@ -1816,7 +1883,7 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
     if (block.type !== "image") continue;
     const line = imageLineForBlock(message.role, block, message.id, blockIndex);
     if (!line) continue;
-    append({ ...line, parentToolName, parentToolUseId });
+    append({ ...line, messageId, parentToolName, parentToolUseId });
     rendered = true;
   }
   return rendered;
