@@ -34,6 +34,16 @@ NEO_RUNTIME_MAX_SESSIONS=64
 NEO_SESSION_MAX_SUBSCRIBERS=32
 ```
 
+右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，循环保留最近 24 小时，数据原子写入 `.neoctl-web/memory-monitor.json`；该功能仅观测和展示，不会自动回收会话或重启进程。
+
+```env
+# 可选：内存采样间隔与落盘保留窗口（毫秒）
+NEO_MEMORY_SAMPLE_MS=60000
+NEO_MEMORY_RETENTION_MS=86400000
+```
+
+模型配置页可填写 CPA 管理地址和密码；配置成功后，右侧栏显示 Codex 凭据的周额度。配置默认保存在 `.neoctl-web/cpa-config.json`，也可通过 `NEO_CPA_CONFIG_FILE` 指定路径。
+
 Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo web` 相同的后端能力：
 
 - `/events`：SSE 流式同步

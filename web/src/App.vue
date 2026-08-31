@@ -97,6 +97,7 @@ const LOGIN_FIELD_LABELS = {
   'Stream idle timeout ms': '流式空闲超时（毫秒）',
   'Max retries': '最大重试次数',
 }
+const CPA_PASSWORD_MASK = '••••••••••••••••••'
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
 const THEME_STORAGE_KEY = 'neoctl-web.theme'
@@ -212,6 +213,10 @@ const state = reactive({
   interactive: {},
   sessions: [],
   login: undefined,
+  cpaConfig: { url: '', password: '', hasPassword: false, loaded: false },
+  cpaQuotas: [],
+  cpaQuotaIndex: 0,
+  memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
   imagePreview: undefined,
@@ -259,6 +264,7 @@ const draggingPromptId = ref('')
 const sortingPromptId = ref('')
 const promptSortTargetId = ref('')
 const promptSortPosition = ref('before')
+const memoryHoverIndex = ref(-1)
 let es
 let toastTimer
 let scrollRaf = 0
@@ -266,11 +272,9 @@ let syncRaf = 0
 let pendingSyncPayload
 let hasReceivedEventSync = false
 let clockTimer
+let cpaStateTimer
+let memoryStateTimer
 let metricsRaf = 0
-let activeThemeTransition
-let themeRevealAnimation
-let themeTransitionRunId = 0
-let requestedTheme = theme.value
 let fastModeMutationQueue = Promise.resolve()
 let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
@@ -361,6 +365,28 @@ const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || acti
 const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
 const isDarkTheme = computed(() => theme.value === 'dark')
 const themeToggleLabel = computed(() => isDarkTheme.value ? '切换到日间模式' : '切换到夜间模式')
+const currentCpaQuota = computed(() => {
+  if (!state.cpaQuotas.length) return null
+  return state.cpaQuotas[state.cpaQuotaIndex % state.cpaQuotas.length] || state.cpaQuotas[0]
+})
+const memoryCurrent = computed(() => state.memory?.current || null)
+const memoryTrendPoints = computed(() => {
+  const entries = (state.memory?.history || []).filter((entry) => Number.isFinite(Number(entry?.rss)))
+  const values = entries.map((entry) => Number(entry.rss))
+  if (!values.length) return []
+  const minimum = Math.min(...values)
+  const maximum = Math.max(...values)
+  const range = Math.max(1, maximum - minimum)
+  return values.map((value, index) => ({
+    entry: entries[index],
+    x: values.length === 1 ? 130 : index / (values.length - 1) * 260,
+    y: values.length === 1 ? 22 : 40 - (value - minimum) / range * 36,
+  }))
+})
+const memoryTrendPath = computed(() => memoryTrendPoints.value.map((point, index) => (
+  `${index ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+)).join(' '))
+const memoryHoveredPoint = computed(() => memoryTrendPoints.value[memoryHoverIndex.value] || null)
 
 watch(theme, applyTheme, { immediate: true })
 
@@ -377,9 +403,11 @@ watch(sessionTotalPages, (total) => {
 })
 
 onMounted(async () => {
-  await Promise.all([fetchState(), fetchPromptLibrary()])
+  await Promise.all([fetchState(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
+  cpaStateTimer = setInterval(fetchCpaState, 60_000)
+  memoryStateTimer = setInterval(fetchMemoryState, 60_000)
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
 })
@@ -391,10 +419,8 @@ onBeforeUnmount(() => {
   pendingSyncPayload = undefined
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
   if (clockTimer) clearInterval(clockTimer)
-  themeTransitionRunId += 1
-  themeRevealAnimation?.cancel()
-  activeThemeTransition?.skipTransition()
-  clearThemeTransitionVisuals()
+  if (cpaStateTimer) clearInterval(cpaStateTimer)
+  if (memoryStateTimer) clearInterval(memoryStateTimer)
   document.body.classList.remove('tool-detail-open', 'image-preview-open')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
@@ -988,6 +1014,43 @@ async function resumeSession(sessionId) {
   }
 }
 
+async function fetchCpaState() {
+  try {
+    const res = await fetch(runtimeUrl('/api/cpa-quota'))
+    if (!res.ok) throw new Error(`cpa-quota ${res.status}`)
+    const body = await res.json()
+    state.cpaQuotas = Array.isArray(body?.quotas) ? body.quotas : []
+    if (state.cpaQuotaIndex >= state.cpaQuotas.length) state.cpaQuotaIndex = 0
+    if (body?.config) {
+      if (!state.cpaConfig.loaded) {
+        state.cpaConfig.url = String(body.config.url || '')
+        state.cpaConfig.password = body.config.hasPassword ? CPA_PASSWORD_MASK : ''
+        state.cpaConfig.loaded = true
+      }
+      state.cpaConfig.hasPassword = Boolean(body.config.hasPassword)
+    }
+  } catch {
+    state.cpaQuotas = []
+    state.cpaQuotaIndex = 0
+  }
+}
+
+async function fetchMemoryState() {
+  try {
+    const res = await fetch(runtimeUrl('/api/memory'))
+    if (!res.ok) throw new Error(`memory ${res.status}`)
+    const body = await res.json()
+    state.memory = {
+      current: body?.current || null,
+      history: Array.isArray(body?.history) ? body.history : [],
+      sampleMs: Number(body?.sampleMs) || 60_000,
+      retentionMs: Number(body?.retentionMs) || 86_400_000,
+    }
+  } catch {
+    // Memory monitoring is observational and must not interrupt chat usage.
+  }
+}
+
 async function newSession() {
   disconnectRuntimeEvents()
   runtimeTabId = randomRuntimeId()
@@ -1029,6 +1092,7 @@ async function openLogin(provider) {
     loginProvider.value = body.provider
     Object.keys(loginValues).forEach((key) => delete loginValues[key])
     Object.assign(loginValues, body.values || {})
+    await fetchCpaState()
   } catch (error) {
     notify(error.message || String(error))
   }
@@ -1039,8 +1103,83 @@ async function switchLoginProvider() {
 }
 
 async function saveLogin() {
-  const result = await postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } })
-  if (result?.ok !== false) notify('模型配置已保存')
+  const [result, cpaResult] = await Promise.all([
+    postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } }),
+    postJson('/api/cpa-config', {
+      url: state.cpaConfig.url,
+      password: state.cpaConfig.password === CPA_PASSWORD_MASK ? '' : state.cpaConfig.password,
+      preservePassword: state.cpaConfig.hasPassword && (!state.cpaConfig.password || state.cpaConfig.password === CPA_PASSWORD_MASK),
+    }),
+  ])
+  state.cpaQuotas = Array.isArray(cpaResult?.quotas) ? cpaResult.quotas : []
+  state.cpaQuotaIndex = 0
+  state.cpaConfig.loaded = true
+  state.cpaConfig.hasPassword = Boolean(cpaResult?.config?.hasPassword)
+  state.cpaConfig.password = state.cpaConfig.hasPassword ? CPA_PASSWORD_MASK : ''
+  if (result?.ok !== false && cpaResult?.ok !== false) notify('模型配置已保存')
+}
+
+function quotaPercent(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '—'
+  return `${number.toFixed(number % 1 ? 1 : 0)}%`
+}
+
+function formatQuotaReset(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function rotateCpaQuota(direction) {
+  const count = state.cpaQuotas.length
+  if (count < 2) return
+  state.cpaQuotaIndex = (state.cpaQuotaIndex + direction + count) % count
+}
+
+function quotaAccountLabel(value) {
+  const account = String(value || '').trim()
+  if (!account) return 'Codex 凭据'
+  const [name, domain] = account.split('@')
+  if (!domain || name.length <= 3) return account
+  return `${name.slice(0, 3)}***@${domain}`
+}
+
+function formatMemoryBytes(value) {
+  const bytes = Number(value)
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  const mb = bytes / 1024 / 1024
+  return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`
+}
+
+function formatMemoryTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '等待采样'
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function formatMemoryTooltipTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function updateMemoryHover(event) {
+  const count = memoryTrendPoints.value.length
+  if (!count) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)))
+  memoryHoverIndex.value = count === 1 ? 0 : Math.round(ratio * (count - 1))
+}
+
+function clearMemoryHover() {
+  memoryHoverIndex.value = -1
 }
 
 async function postJson(url, body) {
@@ -1875,84 +2014,8 @@ function applyTheme(value) {
   }
 }
 
-function clearThemeTransitionVisuals() {
-  const root = document.documentElement
-  root.classList.remove('theme-transitioning')
-  root.style.removeProperty('--theme-transition-x')
-  root.style.removeProperty('--theme-transition-y')
-}
-
-function toggleTheme(event) {
-  const nextTheme = requestedTheme === 'dark' ? 'light' : 'dark'
-  requestedTheme = nextTheme
-  const trigger = event?.currentTarget
-  const rect = trigger?.getBoundingClientRect()
-  const originX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
-  const originY = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-
-  if (activeThemeTransition) {
-    themeTransitionRunId += 1
-    themeRevealAnimation?.cancel()
-    themeRevealAnimation = undefined
-    activeThemeTransition.skipTransition()
-    clearThemeTransitionVisuals()
-    theme.value = nextTheme
-    return
-  }
-
-  if (!document.startViewTransition || reduceMotion) {
-    theme.value = nextTheme
-    return
-  }
-
-  const root = document.documentElement
-  const radius = Math.hypot(
-    Math.max(originX, window.innerWidth - originX),
-    Math.max(originY, window.innerHeight - originY),
-  )
-  root.style.setProperty('--theme-transition-x', `${originX}px`)
-  root.style.setProperty('--theme-transition-y', `${originY}px`)
-  root.classList.add('theme-transitioning')
-  const runId = ++themeTransitionRunId
-  let transition
-  try {
-    transition = document.startViewTransition(async () => {
-      if (runId !== themeTransitionRunId) return
-      theme.value = nextTheme
-      await nextTick()
-    })
-    activeThemeTransition = transition
-  } catch {
-    clearThemeTransitionVisuals()
-    theme.value = nextTheme
-    return
-  }
-
-  transition.ready.then(() => {
-    if (runId !== themeTransitionRunId || activeThemeTransition !== transition) return
-    themeRevealAnimation = root.animate(
-      {
-        clipPath: [
-          `circle(0px at ${originX}px ${originY}px)`,
-          `circle(${radius}px at ${originX}px ${originY}px)`,
-        ],
-      },
-      {
-        duration: 2000,
-        easing: 'cubic-bezier(.22,.68,.18,1)',
-        fill: 'both',
-        pseudoElement: '::view-transition-new(root)',
-      },
-    )
-  }).catch(() => {})
-
-  transition.finished.finally(() => {
-    if (activeThemeTransition === transition) activeThemeTransition = undefined
-    if (runId !== themeTransitionRunId) return
-    themeRevealAnimation = undefined
-    clearThemeTransitionVisuals()
-  })
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
 }
 
 async function handlePaste(event) {
@@ -2644,9 +2707,6 @@ function createMobileSession() {
     <main class="workspace">
       <header class="topbar">
         <div class="crumb">
-          <svg class="ui-icon crumb-icon" viewBox="0 0 20 20" aria-hidden="true">
-            <path d="M4.5 6.5h4v4h-4zM11.5 6.5h4v4h-4zM8.5 8.5h3M10 5.5v9M8.5 11.5h3M4.5 13.5h4v4h-4zM11.5 13.5h4v4h-4z" />
-          </svg>
           <span><span class="workspace-prefix">工作空间 / </span>{{ activePanelLabel }}</span>
         </div>
         <div class="top-actions">
@@ -2855,6 +2915,68 @@ function createMobileSession() {
               <small>{{ task.description || task.agentId || task.taskId }}</small>
             </div>
           </section>
+          <section v-if="currentCpaQuota" class="quota-card">
+            <div class="quota-card-head">
+              <div>
+                <span>周额度 · {{ quotaAccountLabel(currentCpaQuota.account) }}</span>
+                <strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong>
+              </div>
+              <div class="quota-card-controls">
+                <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="上一个凭据" @click="rotateCpaQuota(-1)">‹</button>
+                <small>{{ state.cpaQuotas.length > 1 ? `${state.cpaQuotaIndex + 1}/${state.cpaQuotas.length}` : '剩余' }}</small>
+                <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="下一个凭据" @click="rotateCpaQuota(1)">›</button>
+              </div>
+            </div>
+            <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="currentCpaQuota.remainingPercent" aria-valuemin="0" aria-valuemax="100">
+              <span :style="{ width: `${currentCpaQuota.remainingPercent}%` }"></span>
+            </div>
+            <div class="quota-card-foot">
+              <span>已使用 {{ quotaPercent(currentCpaQuota.usedPercent) }}</span>
+              <span>续期时间 {{ formatQuotaReset(currentCpaQuota.resetAt) }}</span>
+            </div>
+            <div class="quota-card-update">更新于 {{ formatQuotaReset(currentCpaQuota.updatedAt) }}</div>
+          </section>
+          <section class="quota-card memory-card">
+            <div class="memory-card-head">
+              <div>
+                <span>服务端内存</span>
+                <strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong>
+              </div>
+              <small>RSS</small>
+            </div>
+            <div v-if="memoryTrendPath" class="memory-chart" @mousemove="updateMemoryHover" @mouseleave="clearMemoryHover">
+              <svg class="memory-trend" viewBox="0 0 260 44" preserveAspectRatio="none" role="img" aria-label="最近一小时 RSS 趋势">
+                <path :d="memoryTrendPath" />
+                <circle
+                  v-for="(point, index) in memoryTrendPoints"
+                  :key="point.entry.at"
+                  :class="['memory-trend-point', { active: index === memoryHoverIndex }]"
+                  :cx="point.x"
+                  :cy="point.y"
+                  :r="index === memoryHoverIndex ? 3.2 : 1.5"
+                  tabindex="0"
+                  @focus="memoryHoverIndex = index"
+                  @blur="clearMemoryHover"
+                />
+              </svg>
+              <div
+                v-if="memoryHoveredPoint"
+                class="memory-tooltip"
+                :style="{ left: `clamp(58px, ${memoryHoveredPoint.x / 260 * 100}%, calc(100% - 58px))`, top: `${memoryHoveredPoint.y / 44 * 100}%` }"
+              >
+                <strong>{{ formatMemoryBytes(memoryHoveredPoint.entry.rss) }}</strong>
+                <span>{{ formatMemoryTooltipTime(memoryHoveredPoint.entry.at) }}</span>
+              </div>
+            </div>
+            <div v-else class="memory-trend-empty">—</div>
+            <div class="memory-stats">
+              <div><span>V8 堆</span><strong>{{ formatMemoryBytes(memoryCurrent?.heapUsed) }}</strong></div>
+              <div><span>外部内存</span><strong>{{ formatMemoryBytes(memoryCurrent?.external) }}</strong></div>
+            </div>
+            <div class="memory-card-foot">
+              <span>更新于 {{ formatMemoryTime(memoryCurrent?.at) }}</span>
+            </div>
+          </section>
         </aside>
       </section>
 
@@ -3001,6 +3123,17 @@ function createMobileSession() {
               </select>
               <input v-else v-model="loginValues[field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.placeholder || field.envKey" />
               <small>{{ field.envKey }}</small>
+            </label>
+            <div class="settings-section-title">
+              <strong>CPA 额度信息</strong>
+            </div>
+            <label>
+              <span>CPA URL</span>
+              <input v-model="state.cpaConfig.url" type="text" placeholder="例如：http://127.0.0.1:8317" autocomplete="off" />
+            </label>
+            <label>
+              <span>管理密码</span>
+              <input v-model="state.cpaConfig.password" type="password" placeholder="管理端密码" autocomplete="new-password" />
             </label>
           </form>
         </div>

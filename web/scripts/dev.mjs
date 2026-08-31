@@ -8,6 +8,8 @@ import { createExposeDownloadsTool, DownloadRegistry, serveDownload } from '../d
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, serveXhsArtifact, XhsArtifactRegistry } from '../artifacts.mjs';
 import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from '../runtime-router-cleanup.mjs';
+import { createCpaQuotaMonitor } from '../cpa-quota.mjs';
+import { createMemoryMonitor } from '../memory-monitor.mjs';
 
 installRuntimeRouterIdleCleanup();
 
@@ -19,11 +21,19 @@ const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
 const xhsArtifactsDir = path.resolve(process.env.NEO_XHS_ARTIFACTS_DIR || path.join(process.cwd(), '.neoctl-web', 'xhs-artifacts'));
+const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(process.cwd(), '.neoctl-web', 'cpa-config.json'));
+const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(process.cwd(), '.neoctl-web', 'memory-monitor.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const scaffoldSkillRoot = path.resolve(process.cwd(), '..', 'scaffold', '.neo', 'skills');
 const xhsSkillRoot = path.resolve(process.cwd(), '..', '小红书尾浪');
 const downloadRegistry = new DownloadRegistry();
 const xhsArtifactRegistry = new XhsArtifactRegistry({ storageDir: xhsArtifactsDir });
+const cpaQuotaMonitor = createCpaQuotaMonitor({ configFile: cpaConfigFile });
+const memoryMonitor = createMemoryMonitor({
+  storageFile: memoryMonitorFile,
+  sampleMs: process.env.NEO_MEMORY_SAMPLE_MS,
+  retentionMs: process.env.NEO_MEMORY_RETENTION_MS,
+});
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
   workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
@@ -63,6 +73,8 @@ await runWebServer(['--host', host, '--port', String(upstreamPort)], {
   createRuntime: workspaceRuntime.createRuntime,
   createRepl: workspaceRuntime.createRepl,
 });
+await cpaQuotaMonitor.start();
+await memoryMonitor.start();
 await startPromptLibraryProxy();
 
 const childEnv = Object.fromEntries(
@@ -102,6 +114,24 @@ async function routeRequest(req, res) {
   try {
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/cpa-quota') {
+      return sendJson(res, cpaQuotaMonitor.getPublicState());
+    }
+    if (req.method === 'GET' && url.pathname === '/api/memory') {
+      return sendJson(res, memoryMonitor.getPublicState());
+    }
+    if (req.method === 'POST' && url.pathname === '/api/cpa-config') {
+      const body = await readJsonBody(req);
+      const current = cpaQuotaMonitor.getPublicState();
+      const password = body?.preservePassword && current.config.hasPassword
+        ? undefined
+        : String(body?.password || '');
+      return sendJson(res, { ok: true, ...(await cpaQuotaMonitor.updateConfig({
+        url: body?.url,
+        password,
+        preservePassword: body?.preservePassword,
+      })) });
     }
     if (req.method === 'POST' && url.pathname === '/api/prompt-library') {
       const body = await readJsonBody(req);
