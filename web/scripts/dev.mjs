@@ -14,7 +14,7 @@ installRuntimeRouterIdleCleanup();
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
 const upstreamPort = Number(process.env.NEO_RUNTIME_UPSTREAM_PORT || runtimePort + 1);
-const appHost = process.env.VITE_HOST || '127.0.0.1';
+const appHost = process.env.VITE_HOST || '0.0.0.0';
 const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));

@@ -2780,6 +2780,9 @@ function createMobileSession() {
               <summary>
                 <span>会话选项</span>
                 <small>{{ exactPhaseLabel }}</small>
+                <svg class="mobile-session-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="m3 4.5 3 3 3-3" />
+                </svg>
               </summary>
               <div class="mobile-session-options-body">
                 <dl>
