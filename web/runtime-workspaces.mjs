@@ -8,10 +8,23 @@ export function createWorkspaceRuntimeManager(options) {
   const workspaceRoot = path.resolve(options.workspaceRoot || path.join(projectRoot, 'workspace'));
   const registryFile = path.resolve(options.registryFile || path.join(projectRoot, '.neoctl-web', 'session-workspaces.json'));
   const registry = new SessionWorkspaceRegistry(registryFile, workspaceRoot);
+  const maxSubscribers = positiveNumber(process.env.NEO_SESSION_MAX_SUBSCRIBERS, 32);
 
   class WorkspaceWebRepl extends WebRepl {
     syncScheduled = false;
-    backpressuredSubscribers = new WeakSet();
+
+    subscribe(res) {
+      if (this.subscribers.size >= maxSubscribers) {
+        res.writeHead(503, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Retry-After': '30',
+        });
+        res.end('too many live viewers for this session');
+        return;
+      }
+      super.subscribe(res);
+    }
 
     snapshot(includeCatalog = false) {
       return {
@@ -65,19 +78,10 @@ export function createWorkspaceRuntimeManager(options) {
       setImmediate(() => {
         this.syncScheduled = false;
         const payload = this.snapshot(false);
-        for (const res of this.subscribers) {
+        for (const subscriber of this.subscribers) {
+          const res = subscriber.response;
           if (res.destroyed || res.writableEnded) continue;
-          if (res.writableLength > 8 * 1024 * 1024) {
-            if (!this.backpressuredSubscribers.has(res)) {
-              this.backpressuredSubscribers.add(res);
-              res.once('drain', () => {
-                this.backpressuredSubscribers.delete(res);
-                this.broadcastSync();
-              });
-            }
-            continue;
-          }
-          this.send(res, 'sync', payload);
+          this.send(subscriber, 'sync', payload);
         }
       });
     }
@@ -205,4 +209,9 @@ class SessionWorkspaceRegistry {
 function isInsideRoot(candidate, root) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }

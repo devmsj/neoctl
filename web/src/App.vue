@@ -100,7 +100,7 @@ const LOGIN_FIELD_LABELS = {
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
 const THEME_STORAGE_KEY = 'neoctl-web.theme'
-const runtimeTabId = getOrCreateRuntimeTabId()
+let runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
 let allowRuntimeSessionChange = !runtimeSessionId
 let runtimeSessionRepairing = false
@@ -406,8 +406,10 @@ async function fetchState() {
     const res = await fetch(runtimeUrl('/api/state'))
     if (!res.ok) throw new Error(`state ${res.status}`)
     applySync(await res.json())
+    return true
   } catch (error) {
     notify(`运行时不可用：${error.message || error}`)
+    return false
   }
 }
 
@@ -976,24 +978,32 @@ async function openSessions() {
 }
 
 async function resumeSession(sessionId) {
-  allowRuntimeSessionChange = true
   state.pendingResumeSessionId = sessionId
   state.sessionResumeLoading = true
   state.activePanel = 'chat'
-  const result = await postJson('/api/sessions/resume', { sessionId })
-  if (result?.ok === false) {
+  const connected = await bindRuntimeSession(sessionId)
+  if (!connected) {
     state.sessionResumeLoading = false
     state.pendingResumeSessionId = ''
   }
 }
 
 async function newSession() {
+  disconnectRuntimeEvents()
+  runtimeTabId = randomRuntimeId()
+  runtimeSessionId = ''
   allowRuntimeSessionChange = true
-  const result = await postJson('/api/sessions/new', {})
-  if (result?.ok !== false) {
+  sessionStorage.setItem(RUNTIME_TAB_ID_KEY, runtimeTabId)
+  sessionStorage.removeItem(RUNTIME_SESSION_ID_KEY)
+  state.sessionResumeLoading = true
+  state.pendingResumeSessionId = ''
+  const connected = await fetchState()
+  if (connected) {
     state.activePanel = 'chat'
     notify('已创建新会话')
+    connectEvents()
   }
+  state.sessionResumeLoading = false
 }
 
 async function deleteSession(sessionId) {
@@ -1504,18 +1514,37 @@ async function repairRuntimeSessionBinding() {
   if (runtimeSessionRepairing || !runtimeSessionId) return
   runtimeSessionRepairing = true
   try {
-    const res = await fetch(runtimeUrl('/api/sessions/resume'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: runtimeSessionId }),
-    })
-    const result = await res.json().catch(() => ({}))
-    if (!res.ok || result?.ok === false) throw new Error(result.error || `resume ${res.status}`)
+    const connected = await bindRuntimeSession(runtimeSessionId)
+    if (!connected) throw new Error('无法重新绑定目标会话')
   } catch (error) {
     notify(`会话恢复失败：${error.message || error}`)
   } finally {
     runtimeSessionRepairing = false
   }
+}
+
+async function bindRuntimeSession(sessionId) {
+  const targetSessionId = String(sessionId || '').trim()
+  if (!targetSessionId) return false
+  disconnectRuntimeEvents()
+  runtimeSessionId = targetSessionId
+  allowRuntimeSessionChange = false
+  sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, targetSessionId)
+  const connected = await fetchState()
+  if (!connected || String(state.session?.sessionId || '') !== targetSessionId) return false
+  connectEvents()
+  return true
+}
+
+function disconnectRuntimeEvents() {
+  if (es) es.close()
+  es = undefined
+  if (syncRaf) cancelAnimationFrame(syncRaf)
+  syncRaf = 0
+  pendingSyncPayload = undefined
+  hasReceivedEventSync = false
+  state.connected = false
+  state.connecting = true
 }
 
 function handleXhsArtifactSaved(artifact) {

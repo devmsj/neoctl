@@ -17,6 +17,21 @@ npm run dev
 
 每个新建对话会自动创建独立工作目录：`workspace/YYMMDDHHMMSS`。可通过 `NEO_WORKSPACE_ROOT` 覆盖 `workspace` 根目录；会话恢复时会自动回到该会话原有的工作目录。
 
+同一个 `sessionId` 只保留一个运行时。多个浏览器标签页或用户打开同一会话时会共享实时输出和输入队列，不会各自启动一份并发 Agent。会话运行时在无人连接且没有前台或后台任务后自动回收。
+
+可通过以下环境变量限制常驻内存和旁观连接：
+
+```env
+# 空闲运行时回收时间，默认 15 分钟，最小 60 秒
+NEO_RUNTIME_IDLE_MS=900000
+
+# 最多保留的空闲 session 运行时，默认 64；活跃运行时不会被强制驱逐
+NEO_RUNTIME_MAX_SESSIONS=64
+
+# 每个 session 最多同时连接的 SSE 客户端，默认 32
+NEO_SESSION_MAX_SUBSCRIBERS=32
+```
+
 Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo web` 相同的后端能力：
 
 - `/events`：SSE 流式同步

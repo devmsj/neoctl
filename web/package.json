@@ -10,6 +10,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:ui": "vite",
     "test:xhs": "node --test artifacts.test.mjs",
+    "test:runtime": "node --test runtime-router-cleanup.test.mjs",
     "build": "vite build",
     "prestart": "npm run build",
     "start": "node server.mjs",
