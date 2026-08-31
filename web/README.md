@@ -48,6 +48,7 @@ Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo w
 
 - `/events`：SSE 流式同步
 - `/api/state`：运行时状态
+- `/api/runtime-context`：当前 Agent 的完整系统提示词、上下文和工具协议快照
 - `/api/submit`：提交用户消息和附件
 - `/api/interrupt`：中断当前任务
 - `/api/sessions/*`：会话列表、恢复、新建、删除
@@ -106,6 +107,36 @@ WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 
 - 模型登录/配置表单
 - 图片粘贴附件，沿用 neo web 的 `[img#N]` 协议
 - Render.com 风格的侧边栏、顶部栏、卡片和工作台布局
+
+### 运行上下文订阅协议
+
+浏览器连接 `/events` 后，除会话用的 `sync` / `delta` 事件外，还会收到 `runtime.context` 事件。事件数据为 JSON，当前 `protocolVersion` 为 `1`，主要字段如下：
+
+```json
+{
+  "protocolVersion": 1,
+  "revision": 1,
+  "sessionId": "...",
+  "model": "gpt-5.6-sol",
+  "prompt": {
+    "systemPrompt": "合成后的完整系统提示词",
+    "sections": [
+      { "name": "Agent Scaffold", "content": "...", "cacheStable": true, "chars": 123 }
+    ],
+    "appPrompt": {},
+    "userContext": {},
+    "systemContext": {}
+  },
+  "tools": [
+    { "name": "read", "description": "...", "inputSchema": {}, "strict": false }
+  ],
+  "capabilities": {
+    "commands": [], "agents": [], "skills": [], "plugins": []
+  }
+}
+```
+
+首次订阅、切换/新建会话、修改模型、保存模型配置或切换应用提示词时会发布新 revision。客户端读取速度较慢时，服务端会在 SSE drain 后补发最新上下文，不会用普通 `sync` 事件替代。`GET /api/runtime-context` 提供相同结构的即时快照，可用于首次加载或断线恢复。
 
 暂未实现：
 

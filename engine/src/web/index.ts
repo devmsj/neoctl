@@ -36,6 +36,8 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
 import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./plan-payload.js";
+import { createWebRuntimeContextPayload, type WebRuntimeContextPayload } from "./runtime-context-protocol.js";
 
 const require = createRequire(import.meta.url);
 const markedPackageDir = path.dirname(require.resolve("marked/package.json"));
@@ -248,6 +250,7 @@ interface WebSubscriber {
   response: ServerResponse;
   blocked: boolean;
   needsSync: boolean;
+  needsRuntimeContext: boolean;
 }
 
 interface WebBackgroundSessionRun {
@@ -451,6 +454,8 @@ export class WebRepl {
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
   private pendingUserImageEchoLabels: string[] | undefined;
+  private runtimeContextRevision = 0;
+  private runtimeContextPublishQueue: Promise<void> = Promise.resolve();
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
   private backgroundTaskCount: number;
@@ -467,7 +472,7 @@ export class WebRepl {
   }
 
   subscribe(res: ServerResponse): void {
-    const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false };
+    const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false, needsRuntimeContext: false };
     this.subscribers.add(subscriber);
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -476,6 +481,7 @@ export class WebRepl {
       "X-Accel-Buffering": "no",
     });
     this.send(subscriber, "sync", this.snapshot(true));
+    this.publishRuntimeContext([subscriber]);
     reqKeepAlive(res);
     res.on("close", () => this.subscribers.delete(subscriber));
   }
@@ -496,6 +502,10 @@ export class WebRepl {
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
     };
+  }
+
+  async runtimeContext(): Promise<WebRuntimeContextPayload> {
+    return this.buildRuntimeContext(this.runtimeContextRevision);
   }
 
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -585,6 +595,7 @@ export class WebRepl {
     this.liveToolLineIds.clear();
     if (line) this.append(line);
     this.broadcastSync();
+    this.publishRuntimeContext();
   }
 
   async deleteSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -627,6 +638,7 @@ export class WebRepl {
         });
       }
       this.broadcastSync();
+      this.publishRuntimeContext();
       return { ok: true, appPrompt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -685,6 +697,7 @@ export class WebRepl {
       const metrics = await this.runtime.engine.contextMetrics();
       this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
       this.append(systemLine(`Saved ${provider} login to ${this.runtime.envPath}\n${formatModelSettings(this.runtime.engine.getModelSettings(), this.runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
+      this.publishRuntimeContext();
       return { ok: true };
     } catch (error) {
       const message = `Login save failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -978,6 +991,7 @@ export class WebRepl {
       this.runtime.usage.reset();
       this.status = await resetStatus(this.runtime);
       this.append(systemLine("transcript reset"));
+      this.publishRuntimeContext();
       return;
     }
     if (command.type === "state") {
@@ -1029,6 +1043,7 @@ export class WebRepl {
         this.append(await handleModelCommand(command, this.runtime));
         const metrics = await this.runtime.engine.contextMetrics();
         this.setStatus({ ...this.status, phase: "ready", detail: undefined, metrics, activityTick: this.status.activityTick + 1 });
+        this.publishRuntimeContext();
       } finally {
         this.setBusy(false);
       }
@@ -1137,7 +1152,8 @@ export class WebRepl {
 
   private send(subscriber: WebSubscriber, event: string, data: unknown): void {
     if (subscriber.blocked) {
-      subscriber.needsSync = true;
+      if (event === "runtime.context") subscriber.needsRuntimeContext = true;
+      else subscriber.needsSync = true;
       return;
     }
     const eventId = ++this.eventSequence;
@@ -1146,9 +1162,40 @@ export class WebRepl {
     subscriber.blocked = true;
     subscriber.response.once("drain", () => {
       subscriber.blocked = false;
-      if (!subscriber.needsSync || subscriber.response.destroyed) return;
-      subscriber.needsSync = false;
-      this.send(subscriber, "sync", this.snapshot(false));
+      if (subscriber.response.destroyed) return;
+      if (subscriber.needsSync) {
+        subscriber.needsSync = false;
+        this.send(subscriber, "sync", this.snapshot(false));
+      }
+      if (subscriber.needsRuntimeContext) {
+        subscriber.needsRuntimeContext = false;
+        this.publishRuntimeContext([subscriber]);
+      }
+    });
+  }
+
+  private async buildRuntimeContext(revision: number): Promise<WebRuntimeContextPayload> {
+    const snapshot = await this.runtime.engine.promptExportSnapshot();
+    return createWebRuntimeContextPayload(snapshot, {
+      revision,
+      sessionId: this.runtime.engine.snapshot().session?.sessionId,
+    });
+  }
+
+  private publishRuntimeContext(targets?: WebSubscriber[]): void {
+    this.runtimeContextPublishQueue = this.runtimeContextPublishQueue.then(async () => {
+      const revision = ++this.runtimeContextRevision;
+      const payload = await this.buildRuntimeContext(revision);
+      const subscribers = targets ?? [...this.subscribers];
+      for (const subscriber of subscribers) {
+        if (!subscriber.response.destroyed && this.subscribers.has(subscriber)) this.send(subscriber, "runtime.context", payload);
+      }
+    }).catch((error) => {
+      const payload = { protocolVersion: 1, message: error instanceof Error ? error.message : String(error) };
+      const subscribers = targets ?? [...this.subscribers];
+      for (const subscriber of subscribers) {
+        if (!subscriber.response.destroyed && this.subscribers.has(subscriber)) this.send(subscriber, "runtime.context.error", payload);
+      }
     });
   }
 
@@ -1235,6 +1282,7 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
+    if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     const imageMatch = /^\/api\/images\/([^/]+)\/(\d+)$/u.exec(url.pathname);
     if (req.method === "GET" && imageMatch) {
       const payload = repl.imagePayload(decodeURIComponent(imageMatch[1]), Number(imageMatch[2]));
@@ -1833,7 +1881,7 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
-  if (toolUse.name === "plan" && isPlanToolPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: planToolBodyTitle(toolUse.input), text: formatPlanToolPayload(toolUse.input), collapsible: true };
+  if (toolUse.name === "plan" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), collapsible: true };
   if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
   return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
@@ -1885,36 +1933,6 @@ function toolUsePurpose(toolName: string, input: unknown): string | undefined {
   return undefined;
 }
 
-interface PlanToolPayloadLike extends Record<string, unknown> {
-  title?: string;
-  note?: string;
-  summary?: string;
-  items: PlanItemLike[];
-}
-
-interface PlanItemLike {
-  description: string;
-  status: "pending" | "in_progress" | "completed";
-}
-
-function isPlanToolPayload(value: unknown): value is PlanToolPayloadLike {
-  if (!isRecord(value) || !Array.isArray(value.items)) return false;
-  return value.items.every((item) => isRecord(item) && typeof item.description === "string" && (item.status === "pending" || item.status === "in_progress" || item.status === "completed"));
-}
-
-function planToolBodyTitle(payload: PlanToolPayloadLike): string | undefined {
-  const title = payload.title?.trim();
-  return title ? title : undefined;
-}
-
-function formatPlanToolPayload(payload: PlanToolPayloadLike): string {
-  const sections: string[] = [];
-  if (payload.summary?.trim()) sections.push(payload.summary.trim());
-  if (payload.note?.trim()) sections.push(payload.note.trim());
-  sections.push(payload.items.map((item) => item.status === "completed" ? `- ~~${item.description.trim()}~~` : item.status === "in_progress" ? `- ▶ ${item.description.trim()}` : `- ${item.description.trim()}`).join("\n"));
-  return sections.filter(Boolean).join("\n");
-}
-
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
   if ((toolName === "edit" || toolName === "write") && isRecord(output) && isEditToolOutput(output)) return { text: formatEditToolDiff(output, ok), format: "diff", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
   if (isExecOutput(output)) return { text: formatExecToolResult(output, ok), format: "plain", summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
@@ -1924,7 +1942,7 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   if (toolName === "image2" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
   if (toolName === "expose_downloads") return { text: formatExposeDownloadsToolResult(output, ok), full: true, bodyTitle: ok ? "请点击下载" : "下载准备失败" };
-  if (toolName === "plan" && isPlanToolPayload(output)) return { text: formatPlanToolPayload(output), full: true, bodyTitle: planToolBodyTitle(output) };
+  if (toolName === "plan" && isWebPlanPayload(output)) return { text: serializeWebPlanPayload(output), full: true, bodyTitle: webPlanBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
 }

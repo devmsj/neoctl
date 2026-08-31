@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { createWebRuntimeContextPayload, WEB_RUNTIME_CONTEXT_PROTOCOL_VERSION } from "./runtime-context-protocol.js";
+
+const payload = createWebRuntimeContextPayload({
+  model: "gpt-5.6-sol",
+  systemPrompt: "stable\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\ndynamic",
+  promptSections: [
+    { name: "Agent Scaffold", content: "stable", cacheStable: true },
+    { name: "Runtime", content: "dynamic", cacheStable: false },
+  ],
+  toolDefinitions: [{
+    name: "read",
+    description: "Read a file",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    strict: false,
+  }],
+  commands: ["/help"],
+  agents: [],
+  skills: ["documents"],
+  plugins: [],
+  userContext: { currentDate: "2026-08-31" },
+  systemContext: { cwd: "C:/workspace", platform: "win32" },
+}, { revision: 3, sessionId: "session-1", generatedAt: "2026-08-31T00:00:00.000Z" });
+
+assert.equal(payload.protocolVersion, WEB_RUNTIME_CONTEXT_PROTOCOL_VERSION);
+assert.equal(payload.revision, 3);
+assert.equal(payload.prompt.stableSections, 1);
+assert.equal(payload.prompt.dynamicSections, 1);
+assert.equal(payload.prompt.sections[1].content, "dynamic");
+assert.equal(payload.tools[0].inputSchema.properties?.path.type, "string");
+assert.deepEqual(payload.capabilities.skills, ["documents"]);
+
+console.log("runtime context protocol smoke ok");

@@ -196,6 +196,11 @@ const state = reactive({
   lines: [],
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
+  runtimeContext: undefined,
+  runtimeContextLoading: true,
+  runtimeContextError: '',
+  runtimeContextModal: '',
+  runtimeContextDetail: undefined,
   fastMode: false,
   fastModeMutating: false,
   busy: false,
@@ -359,6 +364,12 @@ const activePanelLabel = computed(() => ({
   settings: '模型配置',
 }[state.activePanel] || state.activePanel))
 const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
+const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
+const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
+const runtimeContextEntryCount = computed(() => {
+  const prompt = state.runtimeContext?.prompt || {}
+  return 3 + (prompt.userContextPrompt ? 1 : 0) + (prompt.appPrompt ? 1 : 0)
+})
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
@@ -403,7 +414,7 @@ watch(sessionTotalPages, (total) => {
 })
 
 onMounted(async () => {
-  await Promise.all([fetchState(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
+  await Promise.all([fetchState(), fetchRuntimeContext(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
@@ -421,7 +432,7 @@ onBeforeUnmount(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (cpaStateTimer) clearInterval(cpaStateTimer)
   if (memoryStateTimer) clearInterval(memoryStateTimer)
-  document.body.classList.remove('tool-detail-open', 'image-preview-open')
+  document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
@@ -436,6 +447,22 @@ async function fetchState() {
   } catch (error) {
     notify(`运行时不可用：${error.message || error}`)
     return false
+  }
+}
+
+async function fetchRuntimeContext() {
+  state.runtimeContextLoading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/runtime-context'))
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(payload.error || `runtime-context ${res.status}`)
+    applyRuntimeContext(payload)
+    return true
+  } catch (error) {
+    state.runtimeContextError = error.message || String(error)
+    return false
+  } finally {
+    state.runtimeContextLoading = false
   }
 }
 
@@ -488,6 +515,32 @@ function connectEvents() {
     flushQueuedSync()
     applyRawDelta(event.data)
   })
+  es.addEventListener('runtime.context', (event) => {
+    try {
+      applyRuntimeContext(JSON.parse(event.data))
+    } catch (error) {
+      state.runtimeContextError = error.message || String(error)
+    }
+  })
+  es.addEventListener('runtime.context.error', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      state.runtimeContextError = payload.message || '运行上下文同步失败'
+    } catch {
+      state.runtimeContextError = '运行上下文同步失败'
+    }
+  })
+}
+
+function applyRuntimeContext(payload) {
+  if (Number(payload?.protocolVersion) !== 1) throw new Error(`不支持的运行上下文协议版本：${payload?.protocolVersion ?? '未知'}`)
+  const incomingRevision = Number(payload.revision || 0)
+  const currentRevision = Number(state.runtimeContext?.revision || 0)
+  const sameSession = !payload.sessionId || !state.runtimeContext?.sessionId || payload.sessionId === state.runtimeContext.sessionId
+  if (sameSession && incomingRevision < currentRevision) return
+  state.runtimeContext = payload
+  state.runtimeContextLoading = false
+  state.runtimeContextError = ''
 }
 
 // The runtime publishes complete conversation snapshots. Processing each one as
@@ -1456,6 +1509,76 @@ function shouldMarkdown(line) {
   return !['ansi', 'plain', 'diff'].includes(line.format) && ['assistant', 'thinking', 'system', 'tool'].includes(line.kind)
 }
 
+function runtimeToolSummary(tool) {
+  const description = String(tool?.description || '').split(/\n\s*\n/)[0].replace(/\s+/g, ' ').trim()
+  if (!description) return '未提供说明'
+  return description.length > 150 ? `${description.slice(0, 150)}…` : description
+}
+
+function runtimeToolSchema(tool) {
+  return JSON.stringify(tool?.inputSchema || {}, null, 2)
+}
+
+function runtimeContextJson(value) {
+  return JSON.stringify(value ?? {}, null, 2)
+}
+
+function runtimeSectionLabel(section) {
+  return section?.cacheStable ? '稳定缓存段' : '动态段'
+}
+
+function openRuntimeContextModal(kind) {
+  state.runtimeContextModal = kind
+  state.runtimeContextDetail = undefined
+  document.body.classList.add('runtime-context-open')
+}
+
+function closeRuntimeContextModal() {
+  state.runtimeContextDetail = undefined
+  state.runtimeContextModal = ''
+  document.body.classList.remove('runtime-context-open')
+}
+
+function closeRuntimeContextDetail() {
+  state.runtimeContextDetail = undefined
+}
+
+function openRuntimePromptDetail(section) {
+  state.runtimeContextDetail = {
+    kind: 'prompt',
+    title: section.name,
+    meta: runtimeSectionLabel(section),
+    content: section.content,
+  }
+}
+
+function openRuntimeFullPromptDetail() {
+  state.runtimeContextDetail = {
+    kind: 'prompt',
+    title: '完整系统提示词',
+    meta: `${compactNumber(state.runtimeContext?.prompt?.chars || 0)} 字符`,
+    content: state.runtimeContext?.prompt?.systemPrompt || '',
+  }
+}
+
+function openRuntimeToolDetail(tool) {
+  state.runtimeContextDetail = {
+    kind: 'tool',
+    title: tool.name,
+    meta: tool.strict ? '严格模式' : '兼容模式',
+    description: tool.description || '',
+    schema: runtimeToolSchema(tool),
+  }
+}
+
+function openRuntimeDataDetail(title, value, raw = false) {
+  state.runtimeContextDetail = {
+    kind: 'context',
+    title,
+    content: raw ? String(value || '') : runtimeContextJson(value),
+  }
+}
+
 function renderLine(line) {
   if (isPlanToolLine(line)) return renderPlanResult(line)
   if (isImage2ResultLine(line)) return renderImage2Result(line)
@@ -1493,19 +1616,41 @@ function renderPlanResult(line) {
   const plan = parsePlanResult(line)
   const items = Array.isArray(plan?.items) ? plan.items : []
   if (!plan || !items.length) return sanitizeMarkdown(marked.parse(lineText(line) || ''))
+  const counts = countPlanItems(items)
   const completed = Number.isFinite(Number(plan.completed))
     ? Number(plan.completed)
-    : items.filter((item) => normalizePlanStatus(item?.status) === 'completed').length
-  const total = Number.isFinite(Number(plan.total)) ? Number(plan.total) : items.length
+    : counts.completed
+  const total = Number.isFinite(Number(plan.total)) ? Number(plan.total) : counts.total
   const progress = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0
   const title = escapeHtml(plan.title || '任务计划')
-  const rows = items.map((item, index) => {
-    const status = normalizePlanStatus(item?.status)
-    const icon = status === 'completed' ? '✓' : status === 'in_progress' ? '●' : status === 'failed' ? '!' : String(index + 1)
-    return `<li class="plan-item status-${status}"><span class="plan-item-marker" aria-hidden="true">${icon}</span><span class="plan-item-text">${escapeHtml(item?.description || `步骤 ${index + 1}`)}</span><span class="plan-item-status">${planStatusLabel(status)}</span></li>`
-  }).join('')
+  const rows = renderPlanItems(items)
   const note = plan.note ? `<div class="plan-note"><span>说明</span><p>${escapeHtml(plan.note)}</p></div>` : ''
   return `<section class="plan-card"><div class="plan-card-head"><div><span class="plan-kicker">执行计划</span><strong>${title}</strong></div><span class="plan-progress-label">${completed} / ${total}</span></div><div class="plan-progress-track" aria-label="计划进度 ${Math.round(progress)}%"><span style="width:${progress.toFixed(2)}%"></span></div><ol class="plan-items">${rows}</ol>${note}</section>`
+}
+
+function renderPlanItems(items, depth = 0) {
+  return items.map((item, index) => {
+    const status = normalizePlanStatus(item?.status)
+    const icon = status === 'completed' ? '✓' : status === 'in_progress' ? '●' : status === 'failed' ? '!' : String(index + 1)
+    const children = Array.isArray(item?.subitems) ? item.subitems : []
+    const nested = children.length
+      ? `<ol class="plan-subitems" aria-label="${escapeHtml(item?.description || `步骤 ${index + 1}`)}的子步骤">${renderPlanItems(children, depth + 1)}</ol>`
+      : ''
+    return `<li class="plan-item status-${status}" data-plan-depth="${depth}"><div class="plan-item-row"><span class="plan-item-marker" aria-hidden="true">${icon}</span><span class="plan-item-text">${escapeHtml(item?.description || `步骤 ${index + 1}`)}</span><span class="plan-item-status">${planStatusLabel(status)}</span></div>${nested}</li>`
+  }).join('')
+}
+
+function countPlanItems(items) {
+  return items.reduce((counts, item) => {
+    counts.total += 1
+    if (normalizePlanStatus(item?.status) === 'completed') counts.completed += 1
+    if (Array.isArray(item?.subitems) && item.subitems.length) {
+      const nested = countPlanItems(item.subitems)
+      counts.total += nested.total
+      counts.completed += nested.completed
+    }
+    return counts
+  }, { total: 0, completed: 0 })
 }
 
 function parsePlanResult(line) {
@@ -1969,6 +2114,16 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.runtimeContextDetail) {
+    event.preventDefault()
+    closeRuntimeContextDetail()
+    return
+  }
+  if (event.key === 'Escape' && state.runtimeContextModal) {
+    event.preventDefault()
+    closeRuntimeContextModal()
+    return
+  }
   if (event.key === 'Escape' && state.confirmDialog.open) {
     event.preventDefault()
     resolveConfirmation(false)
@@ -2741,6 +2896,19 @@ function createMobileSession() {
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
           <div ref="transcript" class="transcript">
+            <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
+              <div class="runtime-context-bar-title">
+                <strong>运行上下文</strong>
+              </div>
+              <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
+                <button type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
+                <button type="button" @click="openRuntimeContextModal('tools')"><span>工具</span><strong>{{ runtimeTools.length }}</strong></button>
+                <button type="button" @click="openRuntimeContextModal('context')"><span>上下文</span><strong>{{ runtimeContextEntryCount }}</strong></button>
+              </div>
+              <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" @click="fetchRuntimeContext">重试</button>
+              <span v-else class="runtime-context-syncing">同步中</span>
+            </section>
+
             <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line) }]">
               <div :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
@@ -3177,6 +3345,80 @@ function createMobileSession() {
           <img :src="state.imagePreview.src" :alt="state.imagePreview.caption || '图片预览'" />
         </div>
         <footer v-if="state.imagePreview.caption" class="image-preview-caption">{{ state.imagePreview.caption }}</footer>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.runtimeContextModal" class="runtime-context-modal-backdrop" @click.self="closeRuntimeContextModal">
+      <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="运行上下文">
+        <header class="runtime-context-modal-head">
+          <div>
+            <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : state.runtimeContextModal === 'tools' ? '可用工具' : '上下文' }}</strong>
+          </div>
+          <button type="button" aria-label="关闭" @click="closeRuntimeContextModal">×</button>
+        </header>
+
+        <div class="runtime-context-modal-content">
+          <div v-if="state.runtimeContextModal === 'prompt'" class="runtime-context-index">
+            <button type="button" class="runtime-context-index-item featured" @click="openRuntimeFullPromptDetail">
+              <span><strong>完整系统提示词</strong><small>{{ compactNumber(state.runtimeContext?.prompt?.chars || 0) }} 字符</small></span>
+              <b>›</b>
+            </button>
+            <button v-for="(section, index) in runtimePromptSections" :key="`${section.name}-${index}`" type="button" class="runtime-context-index-item" @click="openRuntimePromptDetail(section)">
+              <span><strong>{{ section.name }}</strong><small>{{ runtimeSectionLabel(section) }} · {{ compactNumber(section.chars || 0) }} 字符</small></span>
+              <b>›</b>
+            </button>
+          </div>
+
+          <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-context-index runtime-tool-index">
+            <button v-for="tool in runtimeTools" :key="tool.name" type="button" class="runtime-context-index-item" @click="openRuntimeToolDetail(tool)">
+              <span><code>{{ tool.name }}</code><small>{{ runtimeToolSummary(tool) }}</small></span>
+              <b>›</b>
+            </button>
+          </div>
+
+          <div v-else class="runtime-context-index">
+            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('系统上下文', state.runtimeContext?.prompt?.systemContext)">
+              <span><strong>系统上下文</strong><small>工作目录 · 系统平台</small></span><b>›</b>
+            </button>
+            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('用户上下文', state.runtimeContext?.prompt?.userContext)">
+              <span><strong>用户上下文</strong><small>日期 · 项目记忆</small></span><b>›</b>
+            </button>
+            <button v-if="state.runtimeContext?.prompt?.userContextPrompt" type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('用户上下文提示词', state.runtimeContext.prompt.userContextPrompt, true)">
+              <span><strong>用户上下文提示词</strong><small>模型输入前缀</small></span><b>›</b>
+            </button>
+            <button v-if="state.runtimeContext?.prompt?.appPrompt" type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('应用提示词', state.runtimeContext.prompt.appPrompt)">
+              <span><strong>应用提示词</strong><small>已启用</small></span><b>›</b>
+            </button>
+            <button type="button" class="runtime-context-index-item" @click="openRuntimeDataDetail('运行能力', state.runtimeContext?.capabilities)">
+              <span><strong>运行能力</strong><small>命令 · 智能体 · 技能 · 插件</small></span><b>›</b>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.runtimeContextDetail" class="runtime-context-detail-backdrop" @click.self="closeRuntimeContextDetail">
+      <section class="runtime-context-detail-modal" role="dialog" aria-modal="true" :aria-label="state.runtimeContextDetail.title">
+        <header class="runtime-context-modal-head">
+          <div>
+            <span v-if="state.runtimeContextDetail.meta" class="runtime-context-kicker">{{ state.runtimeContextDetail.meta }}</span>
+            <strong>{{ state.runtimeContextDetail.title }}</strong>
+          </div>
+          <button type="button" aria-label="返回" @click="closeRuntimeContextDetail">×</button>
+        </header>
+        <div class="runtime-context-detail-content">
+          <template v-if="state.runtimeContextDetail.kind === 'tool'">
+            <h3>说明</h3>
+            <p>{{ state.runtimeContextDetail.description || '—' }}</p>
+            <h3>输入参数结构</h3>
+            <pre>{{ state.runtimeContextDetail.schema }}</pre>
+          </template>
+          <pre v-else>{{ state.runtimeContextDetail.content }}</pre>
+        </div>
       </section>
     </div>
   </Teleport>

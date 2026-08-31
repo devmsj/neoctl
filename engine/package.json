@@ -50,6 +50,8 @@
     "smoke:secrets": "tsx src/secrets/smoke-secrets.ts",
     "smoke:responses": "tsx src/model/smoke-responses-mapper.ts",
     "smoke:cli": "tsx src/repl/smoke-run-command.ts",
+    "smoke:web-plan": "tsx src/web/smoke-plan-payload.ts",
+    "smoke:web-context": "tsx src/web/smoke-runtime-context-protocol.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"
   },
   "devDependencies": {
