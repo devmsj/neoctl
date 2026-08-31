@@ -26,21 +26,56 @@ export function createWebPluginHost(options = {}) {
     ids: enabled.map((plugin) => plugin.id),
     tools,
     promptSections: enabled.flatMap((plugin) => plugin.promptSections),
+    runtimePlugins(sessionId) {
+      const overrides = options.settings?.sessionOverrides(sessionId) || {};
+      return {
+        externalPlugins: catalog.map((plugin) => ({
+          id: plugin.id,
+          name: plugin.name,
+          version: plugin.version,
+          globallyEnabled: enabledIds.has(plugin.id),
+          tools: plugin.tools,
+          promptSections: plugin.promptSections,
+        })),
+        sessionPluginOverrides: overrides,
+        persistSessionPluginOverrides: (resolvedSessionId, next) => options.settings?.setSessionOverrides(resolvedSessionId, next),
+        resolveSessionPluginOverrides: (resolvedSessionId) => options.settings?.sessionOverrides(resolvedSessionId) || {},
+      };
+    },
     snapshot() {
+      const configuredIds = new Set(options.settings?.globalEnabledIds() ?? [...enabledIds]);
       return {
         items: catalog.map((plugin) => ({
           id: plugin.id,
           name: plugin.name,
           version: plugin.version,
           enabled: enabledIds.has(plugin.id),
+          configuredEnabled: configuredIds.has(plugin.id),
           tools: plugin.tools.map((tool) => tool.name),
         })),
         restartRequired: true,
+        locked: options.locked === true,
       };
     },
     async route(req, res, url, helpers = {}) {
       if (req.method === 'GET' && url.pathname === '/api/plugins') {
         helpers.sendJson?.(res, this.snapshot());
+        return true;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/plugins/global') {
+        if (options.locked) {
+          helpers.sendJson?.(res, { error: 'plugins are locked by NEO_WEB_PLUGINS' }, 409);
+          return true;
+        }
+        const body = await helpers.readJsonBody?.(req);
+        const requested = Array.isArray(body?.enabledIds) ? body.enabledIds.map(String) : [];
+        const unknown = requested.filter((id) => !ids.includes(id));
+        if (unknown.length) {
+          helpers.sendJson?.(res, { error: `unknown web plugin: ${unknown.join(', ')}` }, 400);
+          return true;
+        }
+        await options.settings?.setGlobalEnabled(requested);
+        helpers.sendJson?.(res, { ok: true, enabledIds: [...new Set(requested)].sort(), restartRequired: true });
         return true;
       }
       for (const plugin of enabled) {
@@ -53,6 +88,12 @@ export function createWebPluginHost(options = {}) {
 
 export function resolveEnabledPluginIds(catalog, configured) {
   const available = new Set(catalog.map((plugin) => plugin.id));
+  if (Array.isArray(configured)) {
+    const requested = configured.map(String);
+    const unknown = requested.filter((id) => !available.has(id));
+    if (unknown.length) throw new Error(`unknown web plugin: ${unknown.join(', ')}`);
+    return new Set(requested);
+  }
   const raw = configured === undefined || configured === null ? '' : String(configured).trim();
   if (!raw) return new Set(catalog.filter((plugin) => plugin.defaultEnabled !== false).map((plugin) => plugin.id));
   if (raw.toLowerCase() === 'none') return new Set();

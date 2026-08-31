@@ -921,6 +921,22 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   white-space: nowrap;
 }
 .runtime-context-index-item b { color: var(--purple); font-family: var(--mono); font-size: 20px; font-weight: 400; }
+.runtime-plugin-list { display: grid; gap: 8px; }
+.runtime-plugin-row {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.runtime-plugin-row > span { min-width: 0; display: grid; gap: 4px; }
+.runtime-plugin-row strong { font-size: 12px; }
+.runtime-plugin-row small { color: var(--muted); font-size: 10px; }
+.runtime-plugin-row select { min-width: 112px; border: 1px solid var(--line); padding: 7px 8px; background: var(--surface); color: var(--text); }
+.runtime-context-empty { padding: 28px; color: var(--faint); text-align: center; }
 .runtime-context-detail-content h3 {
   margin: 0 0 8px;
   color: var(--muted);
@@ -3165,8 +3181,25 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   padding-top: 18px;
   border-top: 1px solid var(--line-soft);
 }
+.queued > div { flex: 0 0 auto; display: flex; gap: 6px; }
 .settings-section-title strong { font-size: 15px; }
 .settings-section-title span { color: var(--faint); font-size: 12px; font-weight: 400; }
+.plugin-settings-title { align-items: center; }
+.plugin-settings-list { grid-column: 1 / -1; display: grid; gap: 8px; }
+.settings-form .plugin-settings-row {
+  min-height: 58px;
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.plugin-settings-row > span { min-width: 0; display: grid; gap: 3px; }
+.plugin-settings-row small { font-family: inherit; font-size: 11px; }
+.settings-form .plugin-settings-row input { width: 18px; height: 18px; padding: 0; }
 .capability-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
 .capability-card { border: 1px solid var(--line); padding: 18px; background: #fff; min-height: 92px; }
 .toast { position: fixed; right: 24px; bottom: 24px; background: #050505; color: #fff; padding: 12px 16px; box-shadow: var(--shadow); z-index: 10; max-width: 420px; }

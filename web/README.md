@@ -34,7 +34,7 @@ NEO_RUNTIME_MAX_SESSIONS=64
 NEO_SESSION_MAX_SUBSCRIBERS=32
 ```
 
-右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，循环保留最近 24 小时，数据原子写入 `.neoctl-web/memory-monitor.json`；该功能仅观测和展示，不会自动回收会话或重启进程。
+右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，接口单次最多返回最近 60 个点；落盘数据默认最多保留 1440 个点且不超过 256 KiB，并原子写入 `.neoctl-web/memory-monitor.json`。可通过 `NEO_MEMORY_MAX_PERSISTED_SAMPLES` 和 `NEO_MEMORY_MAX_PERSISTED_BYTES` 进一步收紧限制；该功能仅观测和展示，不会自动回收会话或重启进程。
 
 ```env
 # 可选：内存采样间隔与落盘保留窗口（毫秒）
@@ -140,7 +140,11 @@ WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 
 
 ### Web 插件
 
-下载和小红书编辑器以 Web 后端插件提供。插件统一声明工具、稳定系统提示词段和 HTTP 路由，前端发送消息时不会再追加工具提示。插件按 id 固定排序，启停只在服务启动时解析，避免运行中改变工具集合和缓存键。
+下载和小红书编辑器以 Web 后端插件提供。插件统一声明工具、稳定系统提示词段和 HTTP 路由，前端发送消息时不会再追加工具提示。插件按 id 固定排序。
+
+- 全局开关位于“模型配置”，保存到 `.neoctl-web/plugins.json`，重启后生效。
+- 会话开关位于“运行上下文 → 插件”，支持跟随全局、启用和关闭，从下一轮请求生效并随会话持久化。
+- `NEO_WEB_PLUGINS` 可作为部署级强制白名单；设置后全局界面只读。
 
 `NEO_WEB_PLUGINS` 支持以下值：
 
@@ -155,7 +159,11 @@ NEO_WEB_PLUGINS=none npm run dev
 NEO_WEB_PLUGINS=downloads,xhs-artifact npm run dev
 ```
 
-可用插件为 `downloads` 和 `xhs-artifact`。`GET /api/plugins` 返回插件版本、启用状态和工具列表；修改开关后需要重启服务。
+可用插件为 `downloads` 和 `xhs-artifact`。`GET /api/plugins` 返回全局状态，`GET/POST /api/session-plugins` 管理当前会话状态。
+
+### 消息排队
+
+模型运行中继续发送的消息会自动排队，多次发送按换行合并为下一条消息。当前轮结束后自动发送；排队内容可以取消，也可以打断当前回答后立即发送。
 
 暂未实现：
 

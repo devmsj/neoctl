@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
 import { createDefaultWebPlugins } from '../default-plugins.mjs';
 import { createWebPluginHost } from '../plugins.mjs';
+import { createWebPluginSettings } from '../plugin-settings.mjs';
 import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from '../runtime-router-cleanup.mjs';
 import { createCpaQuotaMonitor } from '../cpa-quota.mjs';
@@ -23,25 +24,31 @@ const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process
 const xhsArtifactsDir = path.resolve(process.env.NEO_XHS_ARTIFACTS_DIR || path.join(process.cwd(), '.neoctl-web', 'xhs-artifacts'));
 const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(process.cwd(), '.neoctl-web', 'cpa-config.json'));
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(process.cwd(), '.neoctl-web', 'memory-monitor.json'));
+const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(process.cwd(), '.neoctl-web', 'plugins.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
+const pluginEnv = process.env.NEO_WEB_PLUGINS;
 const pluginHost = createWebPluginHost({
   plugins: createDefaultWebPlugins({ xhsArtifactsDir }),
-  enabled: process.env.NEO_WEB_PLUGINS,
+  enabled: pluginEnv?.trim() ? pluginEnv : pluginSettings.globalEnabledIds(),
+  locked: Boolean(pluginEnv?.trim()),
+  settings: pluginSettings,
 });
 const cpaQuotaMonitor = createCpaQuotaMonitor({ configFile: cpaConfigFile });
 const memoryMonitor = createMemoryMonitor({
   storageFile: memoryMonitorFile,
   sampleMs: process.env.NEO_MEMORY_SAMPLE_MS,
   retentionMs: process.env.NEO_MEMORY_RETENTION_MS,
+  publicSamples: process.env.NEO_MEMORY_PUBLIC_SAMPLES,
+  maxPersistedSamples: process.env.NEO_MEMORY_MAX_PERSISTED_SAMPLES,
+  maxPersistedBytes: process.env.NEO_MEMORY_MAX_PERSISTED_BYTES,
 });
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
   workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
-    externalTools: pluginHost.tools,
-    externalPromptSections: pluginHost.promptSections,
-    plugins: pluginHost.ids,
+    ...pluginHost.runtimePlugins(runtimeOptions.sessionId),
   }),
 });
 

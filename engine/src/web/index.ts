@@ -31,7 +31,7 @@ import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument } from "../repl/commands.js";
 import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { CompactionResult } from "../context/compaction.js";
-import { AdditionalPromptContextManager, DefaultContextManager } from "../context/context-manager.js";
+import { DefaultContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
@@ -61,6 +61,25 @@ export interface WebRuntime {
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
   envNotice?: string;
+  pluginSupport?: WebRuntimePluginSupport;
+}
+
+export interface WebRuntimePluginDefinition {
+  id: string;
+  name: string;
+  version: string;
+  globallyEnabled: boolean;
+  tools: readonly Tool[];
+  promptSections?: readonly PromptSection[];
+}
+
+interface WebRuntimePluginSupport {
+  catalog: WebRuntimePluginDefinition[];
+  overrides: Record<string, boolean>;
+  basePromptSections: PromptSection[];
+  basePluginIds: string[];
+  persist?: (sessionId: string, overrides: Record<string, boolean>) => Promise<void>;
+  resolve?: (sessionId: string) => Promise<Record<string, boolean>> | Record<string, boolean>;
 }
 
 export interface UsageTotals {
@@ -190,6 +209,12 @@ export interface CreateWebRuntimeOptions {
   externalPromptSections?: readonly PromptSection[];
   /** Enabled embedding plugin ids exposed in runtime metadata. */
   plugins?: readonly string[];
+  /** Switchable plugins supplied by the embedding application. */
+  externalPlugins?: readonly WebRuntimePluginDefinition[];
+  /** Per-session plugin overrides. Missing ids inherit the global setting. */
+  sessionPluginOverrides?: Readonly<Record<string, boolean>>;
+  persistSessionPluginOverrides?: WebRuntimePluginSupport["persist"];
+  resolveSessionPluginOverrides?: WebRuntimePluginSupport["resolve"];
 }
 
 export interface WebRuntimeScope {
@@ -312,6 +337,9 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const communicationLogger = new CommunicationLogger();
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
+  const pluginCatalog = normalizeWebRuntimePlugins(options.externalPlugins);
+  const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
+  const activePlugins = activeWebRuntimePlugins(pluginCatalog, pluginOverrides);
   const tools = new ToolRegistry();
   tools.register(editTool);
   tools.register(writeTool);
@@ -324,6 +352,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
   for (const tool of options.externalTools ?? []) tools.register(tool);
+  for (const plugin of activePlugins) for (const tool of plugin.tools) tools.register(tool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   tools.register(createAgentTool(agentRuntime));
@@ -348,14 +377,15 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     queryOrigin: "web",
     modelGateway,
     tools,
-    contextManagerFactory: (cwd) => new AdditionalPromptContextManager(
-      new DefaultContextManager({ cwd }),
-      options.externalPromptSections,
-    ),
+    contextManagerFactory: (cwd) => new DefaultContextManager({ cwd }),
+    additionalPromptSections: [
+      ...(options.externalPromptSections ?? []),
+      ...activePlugins.flatMap((plugin) => plugin.promptSections ?? []),
+    ],
     appPromptStore,
     taskNotificationSource: createTaskNotificationSource(taskStore),
     commands: replCommandDefinitions.map((command) => command.usage),
-    plugins: options.plugins,
+    plugins: [...(options.plugins ?? []), ...activePlugins.map((plugin) => plugin.id)],
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
@@ -379,7 +409,39 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
+    pluginSupport: pluginCatalog.length ? {
+      catalog: pluginCatalog,
+      overrides: pluginOverrides,
+      basePromptSections: [...(options.externalPromptSections ?? [])],
+      basePluginIds: [...(options.plugins ?? [])],
+      persist: options.persistSessionPluginOverrides,
+      resolve: options.resolveSessionPluginOverrides,
+    } : undefined,
   };
+}
+
+function normalizeWebRuntimePlugins(value: readonly WebRuntimePluginDefinition[] | undefined): WebRuntimePluginDefinition[] {
+  if (!Array.isArray(value)) return [];
+  const plugins = value.map((plugin) => ({
+    ...plugin,
+    id: plugin.id.trim(),
+    name: plugin.name.trim() || plugin.id.trim(),
+    version: plugin.version.trim() || "0.0.0",
+    tools: [...plugin.tools],
+    promptSections: [...(plugin.promptSections ?? [])],
+  })).filter((plugin) => plugin.id);
+  plugins.sort((left, right) => left.id.localeCompare(right.id));
+  if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) throw new Error("duplicate web runtime plugin id");
+  return plugins;
+}
+
+function normalizePluginOverrides(value: Readonly<Record<string, boolean>> | undefined, catalog: readonly WebRuntimePluginDefinition[]): Record<string, boolean> {
+  const available = new Set(catalog.map((plugin) => plugin.id));
+  return Object.fromEntries(Object.entries(value ?? {}).filter(([id, enabled]) => available.has(id) && typeof enabled === "boolean"));
+}
+
+function activeWebRuntimePlugins(catalog: readonly WebRuntimePluginDefinition[], overrides: Readonly<Record<string, boolean>>): WebRuntimePluginDefinition[] {
+  return catalog.filter((plugin) => plugin.globallyEnabled && overrides[plugin.id] !== false);
 }
 
 function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
@@ -534,6 +596,77 @@ export class WebRepl {
     return this.buildRuntimeContext(this.runtimeContextRevision);
   }
 
+  sessionPlugins() {
+    const support = this.runtime.pluginSupport;
+    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (!support) return { sessionId, busy: this.busy, items: [] };
+    return {
+      sessionId,
+      busy: this.busy,
+      items: support.catalog.map((plugin) => {
+        const override = support.overrides[plugin.id];
+        return {
+          id: plugin.id,
+          name: plugin.name,
+          version: plugin.version,
+          globallyEnabled: plugin.globallyEnabled,
+          mode: override === undefined ? "inherit" : override ? "enabled" : "disabled",
+          effectiveEnabled: plugin.globallyEnabled && override !== false,
+          tools: plugin.tools.map((tool) => tool.name),
+          promptSections: plugin.promptSections?.length ?? 0,
+        };
+      }),
+    };
+  }
+
+  async setSessionPlugins(value: unknown): Promise<{ ok: true; state: ReturnType<WebRepl["sessionPlugins"]> } | { ok: false; error: string }> {
+    if (this.busy) return { ok: false, error: "cannot change session plugins while a response is running" };
+    if (!isRecord(value)) return { ok: false, error: "plugin overrides must be an object" };
+    const support = this.runtime.pluginSupport;
+    if (!support) return { ok: false, error: "web plugins are not configured" };
+    const available = new Set(support.catalog.map((plugin) => plugin.id));
+    const overrides: Record<string, boolean> = {};
+    for (const [id, mode] of Object.entries(value)) {
+      if (!available.has(id)) return { ok: false, error: `unknown web plugin: ${id}` };
+      if (mode === "enabled" || mode === true) overrides[id] = true;
+      else if (mode === "disabled" || mode === false) overrides[id] = false;
+      else if (mode !== "inherit" && mode !== null && mode !== undefined) return { ok: false, error: `invalid plugin mode: ${id}` };
+    }
+    try {
+      await this.applySessionPluginOverrides(overrides, true);
+      return { ok: true, state: this.sessionPlugins() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async loadSessionPlugins(sessionId: string): Promise<void> {
+    const support = this.runtime.pluginSupport;
+    if (!support?.resolve || !sessionId) return;
+    await this.applySessionPluginOverrides(await support.resolve(sessionId), false);
+  }
+
+  private async applySessionPluginOverrides(overrides: Record<string, boolean>, persist: boolean): Promise<void> {
+    const support = this.runtime.pluginSupport;
+    if (!support) return;
+    const normalized = normalizePluginOverrides(overrides, support.catalog);
+    for (const plugin of support.catalog) for (const tool of plugin.tools) this.runtime.tools.unregister(tool.name);
+    const activePlugins = activeWebRuntimePlugins(support.catalog, normalized);
+    for (const plugin of activePlugins) for (const tool of plugin.tools) this.runtime.tools.register(tool);
+    support.overrides = normalized;
+    this.runtime.engine.setRuntimePlugins(
+      [...support.basePluginIds, ...activePlugins.map((plugin) => plugin.id)],
+      [...support.basePromptSections, ...activePlugins.flatMap((plugin) => plugin.promptSections ?? [])],
+    );
+    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (persist && sessionId && support.persist) await support.persist(sessionId, normalized);
+    const metrics = await this.runtime.engine.contextMetrics();
+    this.runtime.initialMetrics = metrics;
+    this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
+    this.broadcastSync();
+    this.publishRuntimeContext();
+  }
+
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
@@ -543,13 +676,37 @@ export class WebRepl {
     } else if (this.busy && command.type === "sessions") {
       await this.detachRunningForeground("session browser");
     } else if (this.busy) {
-      this.queuedInput = text;
-      this.queuedAttachments = attachments;
+      this.enqueueInput(text, attachments);
       this.broadcastSync();
       return { ok: true };
     }
     this.startRun(text, attachments);
     return { ok: true };
+  }
+
+  submitImmediately(text: string, attachments: WebAttachmentPayload[] = []): { ok: true; interrupted: boolean } {
+    if (!this.busy) {
+      this.startRun(text, attachments);
+      return { ok: true, interrupted: false };
+    }
+    this.enqueueInput(text, attachments);
+    return this.sendQueuedNow();
+  }
+
+  sendQueuedNow(): { ok: true; interrupted: boolean } {
+    const queuedText = this.queuedInput;
+    const queuedAttachments = this.queuedAttachments ?? [];
+    if (queuedText === undefined) return { ok: true, interrupted: false };
+    this.queuedInput = undefined;
+    this.queuedAttachments = undefined;
+    const interrupted = this.stopForegroundRun("Interrupted to send queued web input");
+    this.startRun(queuedText, queuedAttachments);
+    return { ok: true, interrupted };
+  }
+
+  private enqueueInput(text: string, attachments: WebAttachmentPayload[]): void {
+    this.queuedInput = mergeWebQueuedInput(this.queuedInput, text);
+    this.queuedAttachments = [...(this.queuedAttachments ?? []), ...attachments].slice(0, 20);
   }
 
   private startRun(text: string, attachments: WebAttachmentPayload[] = []): void {
@@ -583,6 +740,7 @@ export class WebRepl {
       await this.runtime.engine.initialize();
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
+      await this.loadSessionPlugins(snapshot.sessionId);
       await this.refreshSessionView(systemLine(formatResume(snapshot)));
       return { ok: true };
     } catch (error) {
@@ -599,6 +757,7 @@ export class WebRepl {
       await this.runtime.engine.initialize();
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
+      await this.loadSessionPlugins(snapshot.sessionId);
       await this.refreshSessionView(systemLine(`new session ${snapshot.sessionId}`));
       return { ok: true };
     } catch (error) {
@@ -1318,6 +1477,11 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
+    if (req.method === "GET" && url.pathname === "/api/session-plugins") return sendJson(res, repl.sessionPlugins());
+    if (req.method === "POST" && url.pathname === "/api/session-plugins") {
+      const body = await readJsonBody<{ overrides?: unknown }>(req);
+      return sendJson(res, await repl.setSessionPlugins(body.overrides));
+    }
     const imageMatch = /^\/api\/images\/([^/]+)\/(\d+)$/u.exec(url.pathname);
     if (req.method === "GET" && imageMatch) {
       const payload = repl.imagePayload(decodeURIComponent(imageMatch[1]), Number(imageMatch[2]));
@@ -1336,8 +1500,13 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
       return sendJson(res, await repl.submit(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
+    if (req.method === "POST" && url.pathname === "/api/submit-now") {
+      const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
+      return sendJson(res, repl.submitImmediately(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
+    }
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
     if (req.method === "POST" && url.pathname === "/api/queue/cancel") return sendJson(res, repl.cancelQueue());
+    if (req.method === "POST" && url.pathname === "/api/queue/send-now") return sendJson(res, repl.sendQueuedNow());
     if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions());
     if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
       const body = await readJsonBody<{ sessionId?: string }>(req);
@@ -1503,6 +1672,10 @@ function buildWebFileAttachmentManifest(attachments: readonly WebFileAttachmentP
     ].join("\n")),
     "<</ATTACHMENT_MANIFEST>>",
   ].join("\n");
+}
+
+export function mergeWebQueuedInput(current: string | undefined, next: string): string {
+  return [current?.trimEnd(), next.trim()].filter(Boolean).join("\n");
 }
 
 function nextWebAttachmentOccurrence(text: string, attachments: readonly WebImageAttachmentPayload[], start: number): { index: number; attachment: WebImageAttachmentPayload } | undefined {

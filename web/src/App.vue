@@ -202,6 +202,8 @@ const state = reactive({
   runtimeContextError: '',
   runtimeContextModal: '',
   runtimeContextDetail: undefined,
+  globalPlugins: { items: [], locked: false, restartRequired: true, loading: false },
+  sessionPlugins: { items: [], busy: false, loading: false },
   fastMode: false,
   fastModeMutating: false,
   busy: false,
@@ -336,6 +338,13 @@ const composerDropHint = computed(() => {
 const currentContextTokens = computed(() => Number(state.status?.metrics?.estimatedInputTokens ?? state.status?.usage?.inputTokens ?? 0))
 const showCompressionWarning = computed(() => currentContextTokens.value > CONTEXT_COMPRESSION_WARNING_TOKENS)
 const composerRunning = computed(() => active.value || state.busy)
+const composerHasDraft = computed(() => Boolean(input.value.trim() || state.attachments.length))
+const composerActionLabel = computed(() => {
+  if (!composerRunning.value) return '发送 ↵'
+  if (composerHasDraft.value) return '打断并发送'
+  if (state.queuedInput) return '立即发送'
+  return '停止'
+})
 const filteredSessions = computed(() => {
   const query = sessionSearch.value.trim().toLocaleLowerCase()
   const sessions = state.sessions || []
@@ -367,6 +376,7 @@ const activePanelLabel = computed(() => ({
 const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
+const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
@@ -411,7 +421,7 @@ watch(sessionTotalPages, (total) => {
 })
 
 onMounted(async () => {
-  await Promise.all([fetchState(), fetchRuntimeContext(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
+  await Promise.all([fetchState(), fetchRuntimeContext(), fetchSessionPlugins(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
@@ -461,6 +471,51 @@ async function fetchRuntimeContext() {
   } finally {
     state.runtimeContextLoading = false
   }
+}
+
+async function fetchGlobalPlugins() {
+  state.globalPlugins.loading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/plugins'))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `plugins ${res.status}`)
+    state.globalPlugins = {
+      items: Array.isArray(body.items) ? body.items.map((item) => ({ ...item })) : [],
+      locked: body.locked === true,
+      restartRequired: body.restartRequired !== false,
+      loading: false,
+    }
+  } catch (error) {
+    state.globalPlugins.loading = false
+    notify(error.message || String(error))
+  }
+}
+
+async function saveGlobalPlugins() {
+  const enabledIds = state.globalPlugins.items.filter((item) => item.configuredEnabled !== false).map((item) => item.id)
+  const result = await postJson('/api/plugins/global', { enabledIds })
+  const enabled = new Set(result.enabledIds || enabledIds)
+  state.globalPlugins.items = state.globalPlugins.items.map((item) => ({ ...item, configuredEnabled: enabled.has(item.id) }))
+  notify('插件配置已保存，重启后生效')
+}
+
+async function fetchSessionPlugins() {
+  state.sessionPlugins.loading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/session-plugins'))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `session-plugins ${res.status}`)
+    state.sessionPlugins = { ...body, items: Array.isArray(body.items) ? body.items : [], loading: false }
+  } catch (error) {
+    state.sessionPlugins.loading = false
+    notify(error.message || String(error))
+  }
+}
+
+async function updateSessionPlugin(item, mode) {
+  const overrides = Object.fromEntries(state.sessionPlugins.items.map((entry) => [entry.id, entry.id === item.id ? mode : entry.mode]))
+  const result = await postJson('/api/session-plugins', { overrides })
+  state.sessionPlugins = { ...result.state, loading: false }
 }
 
 async function fetchPromptLibrary() {
@@ -614,6 +669,7 @@ function applyDelta(payload) {
 
 function applySync(payload) {
   const incomingSessionId = String(payload.session?.sessionId || '')
+  const previousSessionId = String(state.session?.sessionId || '')
   if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
     repairRuntimeSessionBinding()
     return
@@ -636,6 +692,7 @@ function applySync(payload) {
   if (!state.fastModeMutating) state.fastMode = payload.fastMode === true
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session, allowRuntimeSessionChange)
+  if (incomingSessionId && incomingSessionId !== previousSessionId) void fetchSessionPlugins()
   if (state.sessionResumeLoading) {
     const sessionId = payload.session?.sessionId || ''
     if (state.pendingResumeSessionId && sessionId === state.pendingResumeSessionId) {
@@ -998,13 +1055,40 @@ async function submit() {
   }
 }
 
+async function interruptAndSubmit() {
+  if (!composerHasDraft.value) {
+    if (state.queuedInput) await sendQueuedNow()
+    else await interrupt()
+    return
+  }
+  const text = input.value
+  const attachments = [...state.attachments]
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
+  const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
+  const submitText = textWithAttachmentLabels(text, imageAttachments)
+  cacheMessageImagePreviews(imageAttachments)
+  input.value = ''
+  state.attachments = []
+  autosize()
+  try {
+    await postJson('/api/submit-now', { text: submitText, attachments: [...imageAttachments, ...fileAttachments] })
+  } catch (error) {
+    notify(error.message || String(error))
+  }
+}
+
 async function interrupt() {
   await fetch(runtimeUrl('/api/interrupt'), { method: 'POST' })
 }
 
 async function retractQueuedInput() {
-  const result = await postJson('/api/interrupt', {})
+  const result = await postJson('/api/queue/cancel', {})
   if (result?.ok !== false) notify('已撤回排队消息')
+}
+
+async function sendQueuedNow() {
+  const result = await postJson('/api/queue/send-now', {})
+  if (result?.ok !== false) notify('已打断并发送排队消息')
 }
 
 async function compressSession() {
@@ -1139,7 +1223,7 @@ async function openLogin(provider) {
     loginProvider.value = body.provider
     Object.keys(loginValues).forEach((key) => delete loginValues[key])
     Object.assign(loginValues, body.values || {})
-    await fetchCpaState()
+    await Promise.all([fetchCpaState(), fetchGlobalPlugins()])
   } catch (error) {
     notify(error.message || String(error))
   }
@@ -1521,6 +1605,7 @@ function openRuntimeContextModal(kind) {
   state.runtimeContextModal = kind
   state.runtimeContextDetail = undefined
   document.body.classList.add('runtime-context-open')
+  if (kind === 'plugins') void fetchSessionPlugins()
 }
 
 function closeRuntimeContextModal() {
@@ -2842,6 +2927,7 @@ function createMobileSession() {
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
                 <button type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
                 <button type="button" @click="openRuntimeContextModal('tools')"><span>工具</span><strong>{{ runtimeTools.length }}</strong></button>
+                <button type="button" @click="openRuntimeContextModal('plugins')"><span>插件</span><strong>{{ effectiveSessionPluginCount }}</strong></button>
               </div>
               <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" @click="fetchRuntimeContext">重试</button>
               <span v-else class="runtime-context-syncing">同步中</span>
@@ -2907,8 +2993,11 @@ function createMobileSession() {
           </div>
 
           <div v-if="state.queuedInput" class="queued">
-            <span>已排队的下一条消息：{{ state.queuedInput }}</span>
-            <button type="button" @click="retractQueuedInput">撤回</button>
+            <span>已排队：{{ state.queuedInput }}</span>
+            <div>
+              <button type="button" @click="sendQueuedNow">立即发送</button>
+              <button type="button" @click="retractQueuedInput">取消</button>
+            </div>
           </div>
 
           <form
@@ -2994,9 +3083,9 @@ function createMobileSession() {
                   :type="composerRunning ? 'button' : 'submit'"
                   :class="['primary', 'composer-action', { stop: composerRunning }]"
                   :disabled="!composerRunning && (state.uploadingFiles || (!input.trim() && !state.attachments.length))"
-                  :aria-label="composerRunning ? '停止当前运行' : '发送消息'"
-                  @click="composerRunning ? interrupt() : undefined"
-                >{{ composerRunning ? '停止' : '发送 ↵' }}</button>
+                  :aria-label="composerActionLabel"
+                  @click="composerRunning ? interruptAndSubmit() : undefined"
+                >{{ composerActionLabel }}</button>
               </div>
             </div>
           </form>
@@ -3241,6 +3330,16 @@ function createMobileSession() {
               <span>管理密码</span>
               <input v-model="state.cpaConfig.password" type="password" placeholder="管理端密码" autocomplete="new-password" />
             </label>
+            <div class="settings-section-title plugin-settings-title">
+              <strong>全局插件</strong>
+              <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存插件</button>
+            </div>
+            <div class="plugin-settings-list">
+              <label v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
+                <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
+                <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked" />
+              </label>
+            </div>
           </form>
         </div>
       </section>
@@ -3292,7 +3391,7 @@ function createMobileSession() {
       <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="运行上下文">
         <header class="runtime-context-modal-head">
           <div>
-            <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : '可用工具' }}</strong>
+            <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : state.runtimeContextModal === 'tools' ? '可用工具' : '会话插件' }}</strong>
           </div>
           <button type="button" aria-label="关闭" @click="closeRuntimeContextModal">×</button>
         </header>
@@ -3309,11 +3408,25 @@ function createMobileSession() {
             </button>
           </div>
 
-          <div v-else class="runtime-context-index runtime-tool-index">
+          <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-context-index runtime-tool-index">
             <button v-for="tool in runtimeTools" :key="tool.name" type="button" class="runtime-context-index-item" @click="openRuntimeToolDetail(tool)">
               <span><code>{{ tool.name }}</code><small>{{ runtimeToolSummary(tool) }}</small></span>
               <b>›</b>
             </button>
+          </div>
+
+          <div v-else class="runtime-plugin-list">
+            <div v-if="state.sessionPlugins.loading" class="runtime-context-empty">同步中</div>
+            <template v-else>
+              <label v-for="plugin in state.sessionPlugins.items" :key="plugin.id" class="runtime-plugin-row">
+                <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
+                <select :value="plugin.mode" :disabled="state.busy || !plugin.globallyEnabled" @change="updateSessionPlugin(plugin, $event.target.value)">
+                  <option value="inherit">跟随全局</option>
+                  <option value="enabled">启用</option>
+                  <option value="disabled">关闭</option>
+                </select>
+              </label>
+            </template>
           </div>
 
         </div>

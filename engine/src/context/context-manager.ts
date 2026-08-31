@@ -53,15 +53,17 @@ export interface AppPromptContextManagerOptions {
 }
 
 export class AdditionalPromptContextManager implements ContextManager {
-  private readonly sections: PromptSection[];
+  private sections: PromptSection[];
 
   constructor(
     private readonly base: ContextManager,
     sections: readonly PromptSection[] = [],
   ) {
-    this.sections = sections
-      .filter((section) => section.name.trim() && section.content.trim())
-      .map((section) => ({ ...section, name: section.name.trim(), content: section.content.trim() }));
+    this.sections = normalizeAdditionalPromptSections(sections);
+  }
+
+  setSections(sections: readonly PromptSection[]): void {
+    this.sections = normalizeAdditionalPromptSections(sections);
   }
 
   async build(input: ContextBuildInput): Promise<RuntimeContext> {
@@ -74,6 +76,12 @@ export class AdditionalPromptContextManager implements ContextManager {
       systemPrompt: buildEffectiveSystemPrompt(promptSections, input),
     };
   }
+}
+
+function normalizeAdditionalPromptSections(sections: readonly PromptSection[]): PromptSection[] {
+  return sections
+      .filter((section) => section.name.trim() && section.content.trim())
+      .map((section) => ({ ...section, name: section.name.trim(), content: section.content.trim() }));
 }
 
 export class DefaultContextManager implements ContextManager {

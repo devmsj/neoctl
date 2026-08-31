@@ -1,6 +1,8 @@
 import { InMemoryAppState } from "../app/app-state.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
 import { AppPromptContextManager, DefaultContextManager, type ContextManager } from "../context/context-manager.js";
+import { AdditionalPromptContextManager } from "../context/context-manager.js";
+import type { PromptSection } from "../context/prompts.js";
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
@@ -36,6 +38,7 @@ export interface QueryEngineOptions {
   tools: ToolRegistry;
   contextManager?: ContextManager;
   contextManagerFactory?: (cwd?: string) => ContextManager;
+  additionalPromptSections?: readonly PromptSection[];
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
@@ -73,6 +76,7 @@ export class QueryEngine {
   private readonly sessionTitleListeners = new Set<(snapshot: SessionStoreSnapshot | undefined) => void>();
   private readonly appPromptStore: AppPromptStore;
   private readonly contextManager: ContextManager;
+  private readonly additionalPromptContextManager: AdditionalPromptContextManager;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
@@ -83,7 +87,8 @@ export class QueryEngine {
     const baseContextManager = options.contextManagerFactory?.(options.cwd)
       ?? options.contextManager
       ?? new DefaultContextManager({ cwd: options.cwd });
-    this.contextManager = new AppPromptContextManager(baseContextManager, this.appPromptStore);
+    this.additionalPromptContextManager = new AdditionalPromptContextManager(baseContextManager, options.additionalPromptSections);
+    this.contextManager = new AppPromptContextManager(this.additionalPromptContextManager, this.appPromptStore);
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
@@ -232,6 +237,12 @@ export class QueryEngine {
       model: this.currentModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
     };
+  }
+
+  setRuntimePlugins(pluginIds: readonly string[], promptSections: readonly PromptSection[]): void {
+    this.options.plugins = [...pluginIds];
+    this.options.additionalPromptSections = promptSections.map((section) => ({ ...section }));
+    this.additionalPromptContextManager.setSections(promptSections);
   }
 
   isFastMode(): boolean {
