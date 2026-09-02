@@ -323,6 +323,7 @@ let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 const renderedLineCache = new Map()
+const toolPresentationCache = new WeakMap()
 const pendingLineText = new Map()
 const LINE_TEXT_FRAME_MS = 34
 const LINE_TEXT_MAX_BACKLOG = 72
@@ -1613,16 +1614,34 @@ function closeImagePreview() {
 }
 
 function toolResultStatus(line) {
-  if (line?.live) return { key: 'running', label: '运行中' }
-  const parsed = parseFirstJsonObject(line?.text || '')
-  const failed = parsed?.ok === false || parsed?.error || parsed?.output?.error || /fail|error/i.test(String(line?.titleStatus || '')) || /(^|\s)(error|failed|failure):/i.test(String(line?.text || ''))
-  return failed ? { key: 'failed', label: '失败' } : { key: 'completed', label: '成功' }
+  return toolResultPresentation(line).status
 }
 
 function toolResultSummary(line) {
+  return toolResultPresentation(line).summary
+}
+
+function toolResultPresentation(line) {
   const name = exactToolName(line).toLowerCase()
   const raw = String(line?.text || '')
+  const live = line?.live === true
+  const titleStatus = String(line?.titleStatus || '')
+  if (line && typeof line === 'object') {
+    const cached = toolPresentationCache.get(line)
+    if (cached && cached.name === name && cached.raw === raw && cached.live === live && cached.titleStatus === titleStatus) return cached
+  }
   const parsed = parseFirstJsonObject(raw)
+  const failed = parsed?.ok === false || parsed?.error || parsed?.output?.error || /fail|error/i.test(titleStatus) || /(^|\s)(error|failed|failure):/i.test(raw)
+  const status = live
+    ? { key: 'running', label: '运行中' }
+    : failed ? { key: 'failed', label: '失败' } : { key: 'completed', label: '成功' }
+  const summary = summarizeToolResult(name, raw, parsed)
+  const presentation = { name, raw, live, titleStatus, status, summary }
+  if (line && typeof line === 'object') toolPresentationCache.set(line, presentation)
+  return presentation
+}
+
+function summarizeToolResult(name, raw, parsed) {
   const output = parsed?.output && typeof parsed.output === 'object' ? parsed.output : parsed
   const error = output?.error || parsed?.error
   if (error) return truncateSummary(String(error), 150)
@@ -2207,17 +2226,49 @@ function downloadHref(item) {
 
 function parseFirstJsonObject(text) {
   const raw = String(text || '')
-  const starts = []
-  for (let index = raw.indexOf('{'); index >= 0; index = raw.indexOf('{', index + 1)) starts.push(index)
-  for (const start of starts) {
-    for (let end = raw.length; end > start; end = raw.lastIndexOf('}', end - 1)) {
-      if (end <= start) break
-      try {
-        return JSON.parse(raw.slice(start, end + 1))
-      } catch {}
-    }
+  if (!raw.includes('{')) return null
+  const candidates = balancedJsonObjectCandidates(raw)
+  candidates.sort((left, right) => left.start - right.start || right.end - left.end)
+  for (const { start, end } of candidates) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1))
+    } catch {}
   }
   return null
+}
+
+function balancedJsonObjectCandidates(raw) {
+  const candidates = []
+  const stack = []
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      else if (character === '\n' || character === '\r') {
+        // Raw newlines are invalid inside JSON strings. Recover so a malformed
+        // source snippet cannot hide a valid JSON object later in the output.
+        inString = false
+        escaped = false
+      }
+      continue
+    }
+    if (stack.length && character === '"') {
+      inString = true
+      continue
+    }
+    if (character === '{') {
+      stack.push(index)
+      continue
+    }
+    if (character === '}' && stack.length) {
+      candidates.push({ start: stack.pop(), end: index })
+    }
+  }
+  return candidates
 }
 
 function formatDownloadExpiry(value) {
