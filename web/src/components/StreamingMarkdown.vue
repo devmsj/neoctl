@@ -1,17 +1,14 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as smd from 'streaming-markdown'
 
 const props = defineProps({
-  initialText: { type: String, default: '' },
-  chunks: { type: Array, default: () => [] },
+  text: { type: String, default: '' },
 })
 
 const root = ref(null)
 let parser
-let processedChunks = 0
-let seededText = ''
-let animateText = true
+let processedText = ''
 
 function safeUrl(value) {
   const text = String(value || '').trim()
@@ -24,18 +21,6 @@ function createRenderer(element) {
   const renderer = smd.default_renderer(element)
   return {
     ...renderer,
-    add_text(data, text) {
-      if (!text) return
-      const parent = data.nodes[data.index]
-      if (!animateText) {
-        parent.appendChild(document.createTextNode(text))
-        return
-      }
-      const span = document.createElement('span')
-      span.className = 'stream-text-reveal'
-      span.textContent = text
-      parent.appendChild(span)
-    },
     set_attr(data, type, value) {
       if ((type === smd.HREF || type === smd.SRC) && !safeUrl(value)) return
       smd.default_set_attr(data, type, value)
@@ -48,37 +33,31 @@ function createRenderer(element) {
   }
 }
 
-function appendChunks() {
+function appendText(text) {
   if (!parser) return
-  while (processedChunks < props.chunks.length) {
-    const chunk = String(props.chunks[processedChunks] || '')
-    processedChunks += 1
-    if (chunk) smd.parser_write(parser, chunk)
+  const nextText = String(text || '')
+  if (!nextText.startsWith(processedText)) {
+    rebuild(nextText)
+    return
   }
+  const delta = nextText.slice(processedText.length)
+  processedText = nextText
+  if (delta) smd.parser_write(parser, delta)
 }
 
-function rebuild() {
+function rebuild(text = props.text) {
   const element = root.value
   if (!element) return
+  if (parser) smd.parser_end(parser)
   element.replaceChildren()
   parser = smd.parser(createRenderer(element))
-  processedChunks = 0
-  seededText = props.initialText
-  if (seededText) {
-    animateText = false
-    smd.parser_write(parser, seededText)
-    animateText = true
-  }
-  appendChunks()
+  processedText = String(text || '')
+  if (processedText) smd.parser_write(parser, processedText)
 }
 
 onMounted(rebuild)
 
-watch(() => [props.initialText, props.chunks.length], async ([initialText, chunkCount]) => {
-  await nextTick()
-  if (initialText !== seededText || chunkCount < processedChunks) rebuild()
-  else appendChunks()
-})
+watch(() => props.text, appendText, { flush: 'post' })
 
 onBeforeUnmount(() => {
   if (parser) smd.parser_end(parser)

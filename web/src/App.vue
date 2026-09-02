@@ -724,12 +724,7 @@ function paintLineText(timestamp) {
     const visible = characters.slice(0, count).join('')
     const remaining = characters.slice(count).join('')
     const line = state.lines[index]
-    const nextLine = { ...line, text: `${line.text || ''}${visible}` }
-    if (line.kind === 'assistant' && line.live) {
-      nextLine.streamInitialText = line.streamInitialText ?? line.text ?? ''
-      nextLine.streamChunks = [...(line.streamChunks || []), visible]
-    }
-    state.lines[index] = nextLine
+    state.lines[index] = { ...line, text: `${line.text || ''}${visible}` }
     if (remaining) pendingLineText.set(id, remaining)
     else pendingLineText.delete(id)
   }
@@ -745,12 +740,7 @@ function flushLineText(id) {
   const index = state.lines.findIndex((line) => String(line.id) === key)
   if (index < 0) return
   const line = state.lines[index]
-  const nextLine = { ...line, text: `${line.text || ''}${buffered}` }
-  if (line.kind === 'assistant' && line.live) {
-    nextLine.streamInitialText = line.streamInitialText ?? line.text ?? ''
-    nextLine.streamChunks = [...(line.streamChunks || []), buffered]
-  }
-  state.lines[index] = nextLine
+  state.lines[index] = { ...line, text: `${line.text || ''}${buffered}` }
 }
 
 function resetLineTextScheduler() {
@@ -770,10 +760,7 @@ function applyDelta(payload) {
   for (const operation of payload.operations || []) {
     if (operation.type === 'line.append') {
       if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
-        const line = operation.line
-        state.lines.push(line?.kind === 'assistant' && line?.live
-          ? { ...line, streamInitialText: line.text || '', streamChunks: [] }
-          : line)
+        state.lines.push(operation.line)
       }
       continue
     }
@@ -3216,7 +3203,7 @@ function createMobileSession() {
                     <div v-else class="message-text markdown" v-html="renderLine(line)"></div>
                   </template>
                   <div v-else-if="line.kind === 'assistant' && line.live" class="message-text markdown streaming-markdown">
-                    <StreamingMarkdown :initial-text="line.streamInitialText ?? line.text ?? ''" :chunks="line.streamChunks || []" />
+                    <StreamingMarkdown :text="line.text || ''" />
                   </div>
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
