@@ -1,4 +1,4 @@
-import { WebRuntimeRouter } from 'neoctl/web/index.js';
+import { WebRuntimeRouter } from './core-runtime.mjs';
 
 const INSTALL_KEY = Symbol.for('neoctl-web.runtime-router-session-hubs');
 const routerTimers = new WeakMap();

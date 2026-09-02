@@ -63,7 +63,7 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
 export const EXPLORE_AGENT: AgentDefinition = {
   agentType: "explore",
   whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  tools: ["list", "read", "grep", "search", "exec", "agent_report"],
+  tools: ["list", "read", "grep", "search", "exec_command", "write_stdin", "agent_report"],
   disallowedTools: ["edit", "write", "agent", "plan"],
   permissionMode: "readonly",
   requiresReport: true,

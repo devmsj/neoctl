@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import { createWebRuntime, runWebServer } from 'neoctl/web/index.js';
+import { coreRuntimeInfo, createWebRuntime, runWebServer } from '../core-runtime.mjs';
 import { createDefaultWebPlugins } from '../default-plugins.mjs';
 import { createWebPluginHost } from '../plugins.mjs';
 import { createWebPluginSettings } from '../plugin-settings.mjs';
@@ -13,6 +13,7 @@ import { createCpaQuotaMonitor } from '../cpa-quota.mjs';
 import { createMemoryMonitor } from '../memory-monitor.mjs';
 
 installRuntimeRouterIdleCleanup();
+console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);

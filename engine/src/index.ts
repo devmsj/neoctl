@@ -50,6 +50,7 @@ export * from "./tools/streaming-tool-executor.js";
 export * from "./tools/schema.js";
 export * from "./tools/builtins/edit-tool.js";
 export * from "./tools/builtins/exec-tool.js";
+export * from "./tools/builtins/exec-process-manager.js";
 export * from "./tools/builtins/filesystem-tools.js";
 export * from "./tools/builtins/grep-tool.js";
 export * from "./tools/builtins/search-tool.js";

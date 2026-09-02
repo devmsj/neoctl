@@ -6,6 +6,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { runToolUse } from "../tools/run-tool-use.js";
 import type { ToolUseContext } from "../tools/tool.js";
 import { createExecTool } from "../tools/builtins/exec-tool.js";
+import { ExecProcessManager } from "../tools/builtins/exec-process-manager.js";
 import { createSecretTools } from "../tools/builtins/secret-tools.js";
 import { InMemorySecretRedactionRegistry } from "./secret-redaction.js";
 import { SecretStore } from "./secret-store.js";
@@ -25,7 +26,7 @@ async function main(): Promise<void> {
 
   const registry = new ToolRegistry();
   for (const tool of createSecretTools()) registry.register(tool);
-  registry.register(createExecTool());
+  registry.register(createExecTool({ processManager: new ExecProcessManager() }));
   const redactions = new InMemorySecretRedactionRegistry();
   const context: ToolUseContext = {
     agentId: "smoke",
@@ -45,12 +46,12 @@ async function main(): Promise<void> {
 
   const execResult = await runToolUse({
     id: "exec_secret",
-    name: "exec",
+    name: "exec_command",
     input: {
-      command: "node -e \"console.log(process.env.API_TOKEN)\"",
+      cmd: "node -e \"console.log(process.env.API_TOKEN)\"",
       description: "verify secret env redaction",
       envSecrets: { API_TOKEN: "api_token" },
-      maxOutputChars: 1000,
+      max_output_chars: 1000,
     },
   }, context);
   const execJson = JSON.stringify(execResult);

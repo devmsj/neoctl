@@ -71,7 +71,8 @@ const LINE_TITLE_LABELS = {
   'Runtime tool': '运行时工具',
   agent: '子任务',
   edit: '编辑文件',
-  exec: '执行命令',
+  exec_command: '执行命令',
+  write_stdin: '终端交互',
   expose_downloads: '文件下载',
   grep: '搜索文本',
   image2: '图片生成',
@@ -258,6 +259,7 @@ const state = reactive({
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
+  backgroundTaskDetail: undefined,
   imagePreview: undefined,
   confirmDialog: {
     open: false,
@@ -801,6 +803,10 @@ function applySync(payload) {
   state.queuedInput = payload.queuedInput
   state.backgroundTaskCount = payload.backgroundTaskCount || 0
   state.backgroundTasks = payload.backgroundTasks || []
+  if (state.backgroundTaskDetail) {
+    const currentTask = state.backgroundTasks.find((task) => backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail))
+    if (currentTask) state.backgroundTaskDetail = { ...currentTask }
+  }
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
@@ -1620,9 +1626,9 @@ function toolResultSummary(line) {
   const output = parsed?.output && typeof parsed.output === 'object' ? parsed.output : parsed
   const error = output?.error || parsed?.error
   if (error) return truncateSummary(String(error), 150)
-  if (name === 'exec' || name.includes('shell') || name.includes('command')) {
+  if (name === 'exec_command' || name === 'write_stdin') {
     const description = output?.description || output?.command || toolTextField(raw, ['目的', 'description', 'command'])
-    const suffix = output?.exitCode !== undefined ? ` · exit ${output.exitCode}` : ''
+    const suffix = output?.exit_code !== undefined && output?.exit_code !== null ? ` · exit ${output.exit_code}` : ''
     return description ? truncateSummary(`${description}${suffix}`, 150) : ''
   }
   if (name === 'read' || name.includes('read')) {
@@ -1755,6 +1761,38 @@ function metricBumpClass(key) {
 
 function backgroundTaskStatusMap(tasks = []) {
   return new Map(tasks.map((task) => [String(task.taskId || task.agentId || task.description || task.type), task.status]))
+}
+
+function backgroundTaskKey(task) {
+  return String(task?.taskId || task?.agentId || task?.sessionId || '')
+}
+
+function backgroundTaskTitle(task) {
+  const value = String(task?.description || task?.command || task?.type || '后台任务').replace(/\s+/g, ' ').trim()
+  return value || '后台任务'
+}
+
+function backgroundTaskDisplayTitle(task) {
+  const value = backgroundTaskTitle(task)
+  return value.length > 72 ? `${value.slice(0, 72)}…` : value
+}
+
+function backgroundTaskElapsed(task) {
+  const raw = task?.createdAt
+  const numeric = Number(raw)
+  const createdAt = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(raw || ''))
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return ''
+  return formatDuration(state.clockTick - createdAt)
+}
+
+function openBackgroundTaskDetail(task) {
+  state.backgroundTaskDetail = { ...task }
+  document.body.classList.add('tool-detail-open')
+}
+
+function closeBackgroundTaskDetail() {
+  state.backgroundTaskDetail = undefined
+  document.body.classList.remove('tool-detail-open')
 }
 
 function phaseText(phase = 'ready') {
@@ -2401,6 +2439,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.backgroundTaskDetail) {
+    event.preventDefault()
+    closeBackgroundTaskDetail()
+    return
+  }
   if (event.key === 'Escape' && state.runtimeContextDetail) {
     event.preventDefault()
     closeRuntimeContextDetail()
@@ -3338,13 +3381,21 @@ function createMobileSession() {
               <div class="cwd-row"><dt>CWD</dt><dd :title="currentCwd">{{ currentCwd }}</dd></div>
             </dl>
           </section>
-          <section>
+          <section class="background-task-section">
             <div class="panel-title">后台任务</div>
             <div v-if="!state.backgroundTasks.length" class="empty-mini">暂无后台任务</div>
-            <div v-for="task in state.backgroundTasks" :key="task.taskId || task.agentId" class="task-row">
-              <strong>{{ task.type }}</strong>
-              <span>{{ taskStatusText(task.status) }}</span>
-              <small>{{ task.description || task.agentId || task.taskId }}</small>
+            <div v-else class="background-task-list">
+              <button
+                v-for="task in state.backgroundTasks"
+                :key="backgroundTaskKey(task)"
+                type="button"
+                class="task-row"
+                :title="backgroundTaskTitle(task)"
+                @click="openBackgroundTaskDetail(task)"
+              >
+                <strong>{{ backgroundTaskDisplayTitle(task) }}</strong>
+                <span>{{ taskStatusText(task.status) }}</span>
+              </button>
             </div>
           </section>
           <section v-if="currentCpaQuota" class="quota-card">
@@ -3719,6 +3770,31 @@ function createMobileSession() {
   </Teleport>
 
   <Teleport to="body">
+    <div v-if="state.backgroundTaskDetail" class="tool-result-modal-backdrop" @click.self="closeBackgroundTaskDetail">
+      <section class="tool-result-modal background-task-modal" role="dialog" aria-modal="true" aria-label="后台任务详情">
+        <header class="tool-result-modal-head">
+          <div class="tool-result-modal-title">
+            <strong>{{ backgroundTaskDisplayTitle(state.backgroundTaskDetail) }}</strong>
+            <span :class="['tool-result-modal-status', `status-${state.backgroundTaskDetail.status}`]">{{ taskStatusText(state.backgroundTaskDetail.status) }}</span>
+          </div>
+          <button type="button" class="tool-result-modal-close" aria-label="关闭" @click="closeBackgroundTaskDetail">×</button>
+        </header>
+        <div class="tool-result-modal-content background-task-detail">
+          <dl>
+            <div><dt>类型</dt><dd>{{ state.backgroundTaskDetail.kind === 'terminal' ? '终端' : state.backgroundTaskDetail.type }}</dd></div>
+            <div><dt>运行时间</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) || '—' }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.processId"><dt>进程</dt><dd>{{ state.backgroundTaskDetail.processId }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.sessionId"><dt>终端会话</dt><dd>{{ state.backgroundTaskDetail.sessionId }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.agentId"><dt>代理</dt><dd>{{ state.backgroundTaskDetail.agentId }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.taskId && state.backgroundTaskDetail.kind !== 'terminal'"><dt>任务</dt><dd>{{ state.backgroundTaskDetail.taskId }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.shell"><dt>Shell</dt><dd>{{ state.backgroundTaskDetail.shell }}{{ state.backgroundTaskDetail.tty ? ' · TTY' : '' }}</dd></div>
+            <div v-if="state.backgroundTaskDetail.cwd" class="wide"><dt>目录</dt><dd>{{ state.backgroundTaskDetail.cwd }}</dd></div>
+          </dl>
+          <pre v-if="state.backgroundTaskDetail.command">{{ state.backgroundTaskDetail.command }}</pre>
+        </div>
+      </section>
+    </div>
+
     <div v-if="toolDetailLine" class="tool-result-modal-backdrop" @click.self="closeToolDetail">
       <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)}详情`">
         <header class="tool-result-modal-head">

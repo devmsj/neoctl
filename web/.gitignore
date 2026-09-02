@@ -11,6 +11,7 @@ node_modules
 dist
 .neoctl-web
 .run
+/workspace/
 dist-ssr
 *.local
 

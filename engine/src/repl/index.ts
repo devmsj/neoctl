@@ -17,7 +17,8 @@ import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
-import { createExecTool, type ForegroundExecDetachHandle, type ForegroundExecDetachRegistry } from "../tools/builtins/exec-tool.js";
+import { createExecTool, createWriteStdinTool } from "../tools/builtins/exec-tool.js";
+import { ExecProcessManager } from "../tools/builtins/exec-process-manager.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
@@ -59,7 +60,6 @@ interface ReplRuntime {
   usage: SessionUsageTracker;
   taskStore: TaskStore;
   agentActivityStore: AgentActivityStore;
-  foregroundExecDetach: ReplForegroundExecDetachRegistry;
   tools: ToolRegistry;
   skills: SkillCatalog;
   secretStore: SecretStore;
@@ -68,43 +68,6 @@ interface ReplRuntime {
   defaultReasoning?: ReasoningConfig | null;
   envPath: string;
   envNotice?: string;
-}
-
-class ReplForegroundExecDetachRegistry implements ForegroundExecDetachRegistry {
-  private handle?: ForegroundExecDetachHandle;
-  private readonly subscribers = new Set<() => void>();
-
-  set(handle: ForegroundExecDetachHandle): () => void {
-    this.handle = handle;
-    this.notify();
-    return () => {
-      if (this.handle === handle) {
-        this.handle = undefined;
-        this.notify();
-      }
-    };
-  }
-
-  current(): ForegroundExecDetachHandle | undefined {
-    return this.handle;
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.subscribers.add(listener);
-    return () => {
-      this.subscribers.delete(listener);
-    };
-  }
-
-  detachCurrent(): ReturnType<ForegroundExecDetachHandle["detach"]> {
-    const handle = this.handle;
-    if (!handle) return { ok: false, message: "No foreground exec command is currently running" };
-    return handle.detach();
-  }
-
-  private notify(): void {
-    for (const listener of this.subscribers) listener();
-  }
 }
 
 interface UsageTotals {
@@ -425,10 +388,10 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
   const taskStore = new TaskStore();
   const agentActivityStore = new AgentActivityStore();
-  const foregroundExecDetach = new ReplForegroundExecDetachRegistry();
   const secretStore = await SecretStore.open();
   const secretRedactions = new InMemorySecretRedactionRegistry();
   const tools = new ToolRegistry();
+  const execProcessManager = new ExecProcessManager();
   const skillWorkspaceRoot = path.resolve(process.cwd(), ".neo", "skills");
   const skills = new FileSystemSkillCatalog({
     roots: [
@@ -439,13 +402,14 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   });
   tools.register(editTool);
   tools.register(writeTool);
-  tools.register(createExecTool({ taskStore, foregroundDetachRegistry: foregroundExecDetach }));
+  tools.register(createExecTool({ processManager: execProcessManager }));
+  tools.register(createWriteStdinTool(execProcessManager));
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(grepTool);
   tools.register(searchTool);
   tools.register(createLoadImageTool());
-  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool({ taskStore, foregroundDetachRegistry: foregroundExecDetach }));
+  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
   for (const tool of createSecretTools()) tools.register(tool);
   tools.register(createSkillTool(skills));
@@ -503,7 +467,6 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
     usage: new SessionUsageTracker(),
     taskStore,
     agentActivityStore,
-    foregroundExecDetach,
     tools,
     skills,
     secretStore,
@@ -517,7 +480,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
 
 function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderName | undefined): void {
   runtime.tools.unregister("image2");
-  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool({ taskStore: runtime.taskStore, foregroundDetachRegistry: runtime.foregroundExecDetach }));
+  if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
 
@@ -731,8 +694,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   const sessionTitleRef = useRef(sessionTerminalTitle(runtime.engine.snapshot().session));
   const [backgroundTasks, setBackgroundTasks] = useState(() => activeBackgroundTasks(runtime));
   const [agentActivities, setAgentActivities] = useState(() => runtime.agentActivityStore.list());
-  const [foregroundExecDetachHandle, setForegroundExecDetachHandle] = useState<ForegroundExecDetachHandle | undefined>(() => runtime.foregroundExecDetach.current());
-  const [showForegroundExecDetachHint, setShowForegroundExecDetachHint] = useState(false);
   const [backgroundSessionRuns, setBackgroundSessionRuns] = useState<BackgroundSessionRun[]>([]);
   const backgroundSessionRunsRef = useRef(new Map<string, BackgroundSessionRun>());
   const suppressReattachedStreamingRef = useRef(new Set<QueryEngine>());
@@ -799,27 +760,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       debouncedUpdateAgentActivities.cancel();
     };
   }, [runtime]);
-
-  useEffect(() => {
-    const updateForegroundExecDetachHandle = () => setForegroundExecDetachHandle(runtime.foregroundExecDetach.current());
-    updateForegroundExecDetachHandle();
-    return runtime.foregroundExecDetach.subscribe(updateForegroundExecDetachHandle);
-  }, [runtime]);
-
-  useEffect(() => {
-    if (!foregroundExecDetachHandle) {
-      setShowForegroundExecDetachHint(false);
-      return undefined;
-    }
-    const elapsedMs = Date.now() - foregroundExecDetachHandle.startedAt;
-    if (elapsedMs >= FOREGROUND_EXEC_DETACH_HINT_DELAY_MS) {
-      setShowForegroundExecDetachHint(true);
-      return undefined;
-    }
-    setShowForegroundExecDetachHint(false);
-    const timer = setTimeout(() => setShowForegroundExecDetachHint(true), FOREGROUND_EXEC_DETACH_HINT_DELAY_MS - elapsedMs);
-    return () => clearTimeout(timer);
-  }, [foregroundExecDetachHandle]);
 
   useEffect(() => {
     if (!terminalTitleWorking) {
@@ -1539,13 +1479,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       void handleClipboardPaste();
       return;
     }
-    if (key.ctrl && value.toLowerCase() === "b") {
-      const result = runtime.foregroundExecDetach.detachCurrent();
-      append(result.ok
-        ? systemLine(`Detached foreground task to background task ${result.taskId ?? "unknown"}.`)
-        : systemLine(result.message));
-      return;
-    }
     if (key.ctrl && value === "c") {
       if (inputRef.current.length > 0) {
         setPromptState("", 0);
@@ -1844,7 +1777,6 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     secretsBrowser ? e(SecretsBrowser, { state: secretsBrowser, width }) : null,
     loginForm ? e(LoginFormView, { state: loginForm, width }) : null,
     e(StatusBar, { status, animationTick, width }),
-    showForegroundExecDetachHint && foregroundExecDetachHandle ? e(ForegroundExecDetachHintLine, { handle: foregroundExecDetachHandle, width }) : null,
     agentActivities.length > 0 ? e(SubagentLivePanel, { activities: agentActivities, width, animationTick }) : null,
     agentActivities.length === 0 && backgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: backgroundTasks, width }) : null,
     agentActivities.length > 0 && nonAgentBackgroundTasks.length > 0 ? e(BackgroundTaskStatusLine, { tasks: nonAgentBackgroundTasks, width }) : null,
@@ -2284,17 +2216,6 @@ function StatusBar(
 function backgroundTaskStatusRenderRows(taskCount: number): number {
   if (taskCount <= 0) return 0;
   return 1 + Math.min(taskCount, 2);
-}
-
-function ForegroundExecDetachHintLine(
-  { handle, width: terminalWidth }:
-  { handle: ForegroundExecDetachHandle; width: number },
-) {
-  const width = statusBarWidth(terminalWidth);
-  const toolName = handle.toolName?.trim() || "exec";
-  const label = handle.description?.trim() || handle.command;
-  const text = `↳ ${toolName} still running · Ctrl+B to detach · ${truncateMiddle(label, Math.max(12, width - toolName.length - 33))}`;
-  return e(Text, { color: "yellow" }, fitToWidth(text, width));
 }
 
 function SubagentLivePanel(
@@ -4218,7 +4139,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
     };
   }
 
-  const description = toolUse.name === "exec" ? execDescriptionFromInput(toolUse.input) : undefined;
+  const description = toolUse.name === "exec_command" ? execDescriptionFromInput(toolUse.input) : undefined;
   return {
     kind: "tool",
     title: toolTitle(toolUse.name),
@@ -4252,7 +4173,8 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean): O
 function toolTitle(toolName: string): string {
   if (toolName === "plan") return "\u25c6 plan";
   const labels: Record<string, string> = {
-    exec: "command",
+    exec_command: "command",
+    write_stdin: "terminal input",
     read: "file read",
     list: "directory listing",
     grep: "search",
@@ -4641,12 +4563,14 @@ function dimAnsi(line: string): string {
 }
 
 interface ExecResultLike {
+  status?: string;
+  session_id?: string;
   command: string;
   description?: string;
-  exitCode: number | null;
+  exit_code: number | null;
   signal: string | null;
-  timedOut: boolean;
-  durationMs: number;
+  timed_out: boolean;
+  duration_ms: number;
   stdout: string;
   stderr: string;
 }
@@ -4656,23 +4580,25 @@ function isExecOutput(value: unknown): value is ExecResultLike {
   const record = value as Record<string, unknown>;
   return (
     typeof record.command === "string" &&
-    (typeof record.exitCode === "number" || record.exitCode === null) &&
-    typeof record.timedOut === "boolean" &&
-    typeof record.durationMs === "number" &&
+    (typeof record.exit_code === "number" || record.exit_code === null) &&
+    typeof record.timed_out === "boolean" &&
+    typeof record.duration_ms === "number" &&
     typeof record.stdout === "string" &&
     typeof record.stderr === "string"
   );
 }
 
 function formatExecToolResult(output: ExecResultLike, ok: boolean): string {
-  const status = output.timedOut
+  const status = output.status === "running"
+    ? `running as terminal ${output.session_id ?? "unknown"}`
+    : output.timed_out
     ? "timed out"
-    : output.exitCode === 0
+    : output.exit_code === 0
       ? "exit 0"
-      : `exit ${output.exitCode ?? output.signal ?? "unknown"}`;
+      : `exit ${output.exit_code ?? output.signal ?? "unknown"}`;
   const description = typeof output.description === "string" ? output.description.trim() : "";
   const lines = [
-    `${ok && output.exitCode === 0 && !output.timedOut ? "command completed" : "command failed"}: ${status} in ${formatDuration(output.durationMs)}`,
+      `${output.status === "running" ? "command yielded" : ok && output.exit_code === 0 && !output.timed_out ? "command completed" : "command failed"}: ${status} in ${formatDuration(output.duration_ms)}`,
     ...formatCommandPreview(output.command),
   ];
   if (description) lines.push("", dimAnsi("purpose"), description);
@@ -5266,8 +5192,6 @@ const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
 const STATUS_SEPARATOR = " · ";
 const STATUS_BAR_RENDER_ROWS = 1;
-const FOREGROUND_EXEC_DETACH_HINT_RENDER_ROWS = 1;
-const FOREGROUND_EXEC_DETACH_HINT_DELAY_MS = 2000;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const QUEUED_INPUT_RENDER_ROWS = 1;
 const EMPTY_CTRL_C_EXIT_PLACEHOLDER = "Press Ctrl+C again to exit";

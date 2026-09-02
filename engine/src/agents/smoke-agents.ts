@@ -197,7 +197,7 @@ async function main(): Promise<void> {
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
   for (const name of ["list", "read", "grep", "search", "plan"]) tools.register(makeSmokeTool(name, true));
-  for (const name of ["edit", "write", "exec"]) tools.register(makeSmokeTool(name, false));
+  for (const name of ["edit", "write", "exec_command", "write_stdin"]) tools.register(makeSmokeTool(name, false));
   tools.register(smokePassthroughTool);
   for (const tool of createTaskTools(taskStore)) tools.register(tool);
   tools.register(createAgentTool({
@@ -208,7 +208,7 @@ async function main(): Promise<void> {
   }));
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
-    ["list", "read", "grep", "search", "exec", "agent_report"].every((name) => exploreToolNames.has(name)) &&
+    ["list", "read", "grep", "search", "exec_command", "write_stdin", "agent_report"].every((name) => exploreToolNames.has(name)) &&
     ["edit", "write", "agent", "plan", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";

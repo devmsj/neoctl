@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { QueryEngine } from 'neoctl';
-import { WebRepl } from 'neoctl/web/index.js';
+import { QueryEngine, WebRepl } from './core-runtime.mjs';
 
 export function createWorkspaceRuntimeManager(options) {
   const projectRoot = path.resolve(options.projectRoot || process.cwd());

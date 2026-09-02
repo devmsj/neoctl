@@ -1,275 +1,215 @@
-import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import fs from "node:fs/promises";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
-import type { SecretRedactionRegistry } from "../../secrets/secret-types.js";
-import { createLocalAgentTask } from "../../agents/local-agent-task.js";
-import { globalTaskStore, type TaskStore } from "../../tasks/task-store.js";
-import { createTextMessage } from "../../types/messages.js";
+import {
+  ExecProcessManager,
+  type ExecProcessOutputDelta,
+  type ExecProcessResult,
+} from "./exec-process-manager.js";
 
 export type ExecShell = "auto" | "powershell" | "cmd" | "bash" | "sh";
 
 export interface ExecToolInput {
-  command: string;
-  cwd?: string;
-  timeoutMs: number;
-  maxOutputChars: number;
+  cmd: string;
+  workdir?: string;
+  timeout_ms: number;
+  yield_time_ms: number;
+  max_output_chars: number;
   shell: ExecShell;
+  tty: boolean;
   env: Record<string, string>;
   envSecrets: Record<string, string>;
   description: string;
-  background?: boolean;
 }
 
-interface ExecOutput {
-  command: string;
-  description?: string;
-  cwd: string;
-  shell: ExecShell;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  timedOut: boolean;
-  durationMs: number;
-  stdout: string;
-  stderr: string;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-  outputBytes: {
-    stdout: number;
-    stderr: number;
-  };
-}
-
-export interface ForegroundExecDetachResult {
-  ok: boolean;
-  message: string;
-  taskId?: string;
-  agentId?: string;
-}
-
-export interface ForegroundExecDetachHandle {
-  toolUseId?: string;
-  toolName?: string;
-  command: string;
-  description?: string;
-  cwd: string;
-  startedAt: number;
-  detach(): ForegroundExecDetachResult;
-}
-
-export interface ForegroundExecDetachRegistry {
-  set(handle: ForegroundExecDetachHandle): () => void;
+export interface WriteStdinToolInput {
+  session_id: string;
+  chars: string;
+  signal?: "interrupt" | "terminate" | "kill";
+  yield_time_ms: number;
 }
 
 export interface ExecToolRuntime {
-  taskStore?: TaskStore;
-  foregroundDetachRegistry?: ForegroundExecDetachRegistry;
+  processManager: ExecProcessManager;
 }
 
-export function createExecTool(runtime?: ExecToolRuntime): Tool<ExecToolInput> {
+export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
+  const manager = runtime.processManager;
   return {
-    name: "exec",
-    aliases: ["shell", "bash", "powershell"],
+    name: "exec_command",
     description:
-      "Execute a shell command in the local workspace with full permissions. The required description field is shown to the user and should explain what the command is doing. Use cwd to choose the working directory and timeoutMs/maxOutputChars to bound long commands. Set background=true to run long-lived commands asynchronously and receive a task_id for later polling.",
+      "Run a command in a managed terminal session. Output is collected asynchronously. Commands still running after yield_time_ms return a session_id that can be polled or controlled with write_stdin. Set tty=true for interactive terminal programs.",
     inputSchema: {
       type: "object",
       properties: {
-        command: { type: "string", description: "Shell command to execute." },
-        cwd: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
-        timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1-600000. Defaults to 120000." },
-        maxOutputChars: { type: "integer", description: "Maximum stdout/stderr chars to keep each, 1000-200000. Defaults to 40000." },
+        cmd: { type: "string", description: "Shell command to execute." },
+        workdir: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
+        timeout_ms: { type: "integer", description: "Maximum process lifetime in milliseconds. Defaults to 600000." },
+        yield_time_ms: { type: "integer", description: "Wait before yielding a running session. Defaults to 10000; range 0-30000." },
+        max_output_chars: { type: "integer", description: "Maximum unread characters retained per output stream. Defaults to 40000." },
         shell: {
           type: "string",
           enum: ["auto", "powershell", "cmd", "bash", "sh"],
-          description: "Shell to use. Defaults to auto: PowerShell on Windows, bash/sh elsewhere.",
+          description: "Shell to use. Defaults to the platform shell.",
         },
-        env: {
-          type: "object",
-          description: "Additional environment variables for the child process.",
-          additionalProperties: true,
-        },
+        tty: { type: "boolean", description: "Attach a pseudoterminal for interactive programs. Defaults to false." },
+        env: { type: "object", description: "Additional environment variables.", additionalProperties: true },
         envSecrets: {
           type: "object",
-          description: "Environment variables whose values are resolved from secret keys at tool runtime. The agent sees keys only; values are never returned.",
+          description: "Environment variables resolved from secret keys at runtime.",
           additionalProperties: true,
         },
-        description: { type: "string", description: "Required user-facing description of what this command is doing and why it is being run." },
-        background: { type: "boolean", description: "If true, run the command in the background and return immediately with a task_id." },
+        description: { type: "string", description: "Short user-facing description of the command." },
       },
-      required: ["command", "description"],
+      required: ["cmd"],
       additionalProperties: false,
     },
     metadata: {
       readOnly: false,
-      concurrent: false,
+      concurrent: true,
       visible: true,
       requiresApproval: false,
       destructive: true,
       maxResultSizeChars: 50000,
-      searchHint: "run shell commands and inspect stdout/stderr",
+      searchHint: "run commands and open interactive terminal sessions",
     },
     validate(input) {
       const record = input as Partial<ExecToolInput>;
       return {
-        command: record.command ?? "",
-        cwd: record.cwd,
-        timeoutMs: record.timeoutMs ?? 120000,
-        maxOutputChars: record.maxOutputChars ?? 40000,
+        cmd: record.cmd ?? "",
+        workdir: record.workdir,
+        timeout_ms: record.timeout_ms ?? 600_000,
+        yield_time_ms: record.yield_time_ms ?? 10_000,
+        max_output_chars: record.max_output_chars ?? 40_000,
         shell: record.shell ?? "auto",
+        tty: record.tty ?? false,
         env: normalizeEnv(record.env),
-        envSecrets: normalizeEnv((record as Partial<ExecToolInput>).envSecrets),
+        envSecrets: normalizeEnv(record.envSecrets),
         description: record.description ?? "",
-        background: record.background ?? false,
       };
     },
     validateInput(input) {
-      if (!input.command.trim()) return { ok: false, message: "exec.command cannot be empty" };
-      if (!input.description.trim()) return { ok: false, message: "exec.description is required and cannot be empty" };
-      if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 600000) {
-        return { ok: false, message: "exec.timeoutMs must be between 1 and 600000" };
+      if (!input.cmd.trim()) return { ok: false, message: "exec_command.cmd cannot be empty" };
+      if (!Number.isInteger(input.timeout_ms) || input.timeout_ms < 1 || input.timeout_ms > 3_600_000) {
+        return { ok: false, message: "exec_command.timeout_ms must be between 1 and 3600000" };
       }
-      if (!Number.isInteger(input.maxOutputChars) || input.maxOutputChars < 1000 || input.maxOutputChars > 200000) {
-        return { ok: false, message: "exec.maxOutputChars must be between 1000 and 200000" };
+      if (!Number.isInteger(input.yield_time_ms) || input.yield_time_ms < 0 || input.yield_time_ms > 30_000) {
+        return { ok: false, message: "exec_command.yield_time_ms must be between 0 and 30000" };
       }
-      if (!["auto", "powershell", "cmd", "bash", "sh"].includes(input.shell)) {
-        return { ok: false, message: "exec.shell must be one of auto, powershell, cmd, bash, sh" };
+      if (!Number.isInteger(input.max_output_chars) || input.max_output_chars < 1_000 || input.max_output_chars > 200_000) {
+        return { ok: false, message: "exec_command.max_output_chars must be between 1000 and 200000" };
       }
+      if (!isExecShell(input.shell)) return { ok: false, message: "exec_command.shell is invalid" };
       return { ok: true, value: input };
     },
-    isConcurrencySafe(input) {
-      return Boolean(input.background);
+    isConcurrencySafe() {
+      return true;
     },
     async call(input, context, options): Promise<ToolResult> {
-      const cwd = resolveCwd(input.cwd, context);
+      const cwd = resolveCwd(input.workdir, context);
       const cwdStat = await fs.stat(cwd).catch(() => undefined);
-      if (!cwdStat) return { ok: false, output: { error: `exec.cwd does not exist: ${cwd}` } };
-      if (!cwdStat.isDirectory()) return { ok: false, output: { error: `exec.cwd is not a directory: ${cwd}` } };
+      if (!cwdStat) return { ok: false, output: { error: `exec_command.workdir does not exist: ${cwd}` } };
+      if (!cwdStat.isDirectory()) return { ok: false, output: { error: `exec_command.workdir is not a directory: ${cwd}` } };
 
       const env = await resolveEnvSecrets(input.env, input.envSecrets, context);
-      const resolvedInput = { ...input, env };
-
-      if (input.background) {
-        return launchBackgroundExec(resolvedInput, cwd, runtime?.taskStore ?? globalTaskStore, context.secretRedactions);
-      }
-
-      const resolvedShell = resolveShell(input.shell);
+      const shell = resolveShell(input.shell);
       options.onProgress?.({
-        toolName: "exec",
-        message: `Running command${input.description ? `: ${input.description}` : ""}`,
-        data: { cwd, shell: resolvedShell.displayName, command: input.command, description: input.description },
+        toolName: "exec_command",
+        message: input.description,
+        data: { cwd, shell: shell.displayName, command: input.cmd, tty: input.tty },
       });
-
-      const output = await runCommand({
-        command: input.command,
-        description: input.description,
-        cwd,
-        timeoutMs: input.timeoutMs,
-        maxOutputChars: input.maxOutputChars,
-        shell: resolvedShell,
-        env,
-        abortSignal: context.abortSignal,
-        detach: runtime?.foregroundDetachRegistry && runtime?.taskStore
-          ? {
-              toolUseId: context.toolUseId,
-              input,
-              taskStore: runtime.taskStore,
-              registry: runtime.foregroundDetachRegistry,
-            }
-          : undefined,
-      });
-
-      if (isDetachedExecOutput(output)) {
-        return {
-          ok: true,
-          output,
-          summary: `detached to background task ${output.task_id}`,
-        };
-      }
-
-      const ok = output.exitCode === 0 && !output.timedOut;
-      return {
-        ok,
-        output,
-        summary: summarizeExecOutput(output),
-      };
+      const result = await manager.execute(
+        {
+          ownerId: context.session?.sessionId ?? context.agentId,
+          command: input.cmd,
+          description: input.description,
+          cwd,
+          shell,
+          env,
+          timeoutMs: input.timeout_ms,
+          maxOutputChars: input.max_output_chars,
+          tty: input.tty,
+        },
+        input.yield_time_ms,
+        (delta) => emitOutputDelta(context, delta),
+        context.abortSignal,
+      );
+      const output = toToolOutput(result);
+      const ok = result.status === "running" || (result.status === "exited" && result.exit_code === 0);
+      return { ok, output, summary: summarizeExecOutput(result) };
     },
   };
 }
 
-export const execTool: Tool<ExecToolInput> = createExecTool();
-
-function launchBackgroundExec(
-  input: ExecToolInput,
-  cwd: string,
-  taskStore: TaskStore,
-  secretRedactions?: SecretRedactionRegistry,
-): ToolResult {
-  const taskId = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const agentId = `bg_exec_${Date.now().toString(36)}`;
-  const description = input.description ?? `exec: ${input.command.slice(0, 80)}`;
-  const abortController = new AbortController();
-
-  const task = createLocalAgentTask({
-    taskId,
-    agentId,
-    description,
-    prompt: input.command,
-    type: "exec",
-    abortController,
-  });
-  taskStore.upsert(task);
-  taskStore.markRunning(taskId);
-
-  const resolvedShell = resolveShell(input.shell);
-
-  void runCommand({
-    command: input.command,
-    description: input.description,
-    cwd,
-    timeoutMs: input.timeoutMs,
-    maxOutputChars: input.maxOutputChars,
-    shell: resolvedShell,
-    env: input.env,
-    abortSignal: abortController.signal,
-  }).then((output) => {
-    if (isDetachedExecOutput(output)) return;
-    const safeOutput = secretRedactions?.redact(output) ?? output;
-    const ok = safeOutput.exitCode === 0 && !safeOutput.timedOut;
-    taskStore.complete(taskId, {
-      agent_id: agentId,
-      agent_type: "exec",
-      content: summarizeExecOutput(safeOutput),
-      total_duration_ms: safeOutput.durationMs,
-      total_tool_use_count: 0,
-    });
-    const finished = taskStore.get(taskId);
-    if (finished) {
-      finished.messages.push(
-        createTextMessage("user",
-          `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(safeOutput)}\nstdout: ${safeOutput.stdout.slice(0, 2000)}\nstderr: ${safeOutput.stderr.slice(0, 2000)}\n</task-notification>`,
-        ),
-      );
-      finished.notified = false;
-      taskStore.upsert(finished);
-    }
-  }).catch((error) => {
-    taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
-  });
-
+export function createWriteStdinTool(processManager: ExecProcessManager): Tool<WriteStdinToolInput> {
   return {
-    ok: true,
-    output: {
-      status: "async_launched",
-      task_id: taskId,
-      agent_id: agentId,
-      description,
-      command: input.command,
-      output_file: task.outputFile,
-      message: "Command launched in background. Use TaskOutput or TaskGet to check status.",
+    name: "write_stdin",
+    description:
+      "Interact with a managed terminal returned by exec_command. Send exact characters, poll with empty chars, interrupt the foreground program, or terminate the terminal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Terminal session identifier returned by exec_command." },
+        chars: { type: "string", description: "Exact characters to write. Use an empty string to poll output." },
+        signal: { type: "string", enum: ["interrupt", "terminate", "kill"], description: "Optional process control signal." },
+        yield_time_ms: { type: "integer", description: "Wait before returning output. Defaults to 250 after input and 5000 when polling." },
+      },
+      required: ["session_id"],
+      additionalProperties: false,
+    },
+    metadata: {
+      readOnly: false,
+      concurrent: true,
+      visible: true,
+      requiresApproval: false,
+      destructive: true,
+      maxResultSizeChars: 50000,
+      searchHint: "poll, type into, interrupt, or stop a background terminal",
+    },
+    validate(input) {
+      const record = input as Partial<WriteStdinToolInput>;
+      const chars = typeof record.chars === "string" ? record.chars : "";
+      return {
+        session_id: record.session_id ?? "",
+        chars,
+        signal: record.signal,
+        yield_time_ms: record.yield_time_ms ?? (chars || record.signal ? 250 : 5_000),
+      };
+    },
+    validateInput(input) {
+      if (!input.session_id.trim()) return { ok: false, message: "write_stdin.session_id is required" };
+      if (!Number.isInteger(input.yield_time_ms) || input.yield_time_ms < 0 || input.yield_time_ms > 300_000) {
+        return { ok: false, message: "write_stdin.yield_time_ms must be between 0 and 300000" };
+      }
+      if (input.signal && !["interrupt", "terminate", "kill"].includes(input.signal)) {
+        return { ok: false, message: "write_stdin.signal is invalid" };
+      }
+      return { ok: true, value: input };
+    },
+    isConcurrencySafe() {
+      return true;
+    },
+    async call(input, context): Promise<ToolResult> {
+      try {
+        const result = await processManager.interact(input.session_id, {
+          ownerId: context.session?.sessionId ?? context.agentId,
+          chars: input.chars,
+          signal: input.signal,
+          yieldTimeMs: input.yield_time_ms,
+          onOutput: (delta) => emitOutputDelta(context, delta),
+          abortSignal: context.abortSignal,
+        });
+        return { ok: true, output: toToolOutput(result), summary: summarizeExecOutput(result) };
+      } catch (error) {
+        return { ok: false, output: { error: error instanceof Error ? error.message : String(error) } };
+      }
     },
   };
+}
+
+export function createExecTools(processManager = new ExecProcessManager()): [Tool<ExecToolInput>, Tool<WriteStdinToolInput>] {
+  return [createExecTool({ processManager }), createWriteStdinTool(processManager)];
 }
 
 interface ResolvedShell {
@@ -279,244 +219,10 @@ interface ResolvedShell {
   args: string[];
 }
 
-interface ExecDetachedOutput {
-  status: "async_launched";
-  detachedFromForeground: true;
-  task_id: string;
-  agent_id: string;
-  description: string;
-  command: string;
-  output_file: string;
-  message: string;
-}
-
-interface RunCommandDetachOptions {
-  toolUseId?: string;
-  input: ExecToolInput;
-  taskStore: TaskStore;
-  registry: ForegroundExecDetachRegistry;
-  taskId?: string;
-}
-
-interface RunCommandOptions {
-  command: string;
-  description?: string;
-  cwd: string;
-  timeoutMs: number;
-  maxOutputChars: number;
-  shell: ResolvedShell;
-  env: Record<string, string>;
-  abortSignal?: AbortSignal;
-  detach?: RunCommandDetachOptions;
-}
-
-function runCommand(options: RunCommandOptions): Promise<ExecOutput | ExecDetachedOutput> {
-  const started = Date.now();
-  const stdout = new OutputAccumulator(options.maxOutputChars);
-  const stderr = new OutputAccumulator(options.maxOutputChars);
-  let timedOut = false;
-  let settled = false;
-  let detached = false;
-  let detachCleanup: (() => void) | undefined;
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(options.shell.file, [...options.shell.args, options.command], {
-      cwd: options.cwd,
-      env: { ...process.env, ...options.env },
-      windowsHide: true,
-    });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 1000).unref();
-    }, options.timeoutMs);
-
-    const abort = () => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    };
-    options.abortSignal?.addEventListener("abort", abort, { once: true });
-
-    const buildOutput = (exitCode: number | null, signal: NodeJS.Signals | null): ExecOutput => ({
-      command: options.command,
-      description: options.description,
-      cwd: options.cwd,
-      shell: options.shell.requested,
-      exitCode,
-      signal,
-      timedOut,
-      durationMs: Date.now() - started,
-      stdout: stdout.value(),
-      stderr: stderr.value(),
-      stdoutTruncated: stdout.truncated,
-      stderrTruncated: stderr.truncated,
-      outputBytes: {
-        stdout: stdout.bytes,
-        stderr: stderr.bytes,
-      },
-    });
-
-    const backgroundAbortController = new AbortController();
-    const backgroundAbort = () => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    };
-
-    if (options.detach) {
-      detachCleanup = options.detach.registry.set({
-        toolUseId: options.detach.toolUseId,
-        command: options.command,
-        description: options.description,
-        cwd: options.cwd,
-        startedAt: started,
-        detach: () => {
-          if (settled) return { ok: false, message: "exec command already finished" };
-          if (detached) return { ok: false, message: "exec command already detached" };
-          detached = true;
-          options.abortSignal?.removeEventListener("abort", abort);
-          backgroundAbortController.signal.addEventListener("abort", backgroundAbort, { once: true });
-          const launched = createDetachedExecTask(options.detach!, backgroundAbortController);
-          detachCleanup?.();
-          detachCleanup = undefined;
-          resolve(launched.output);
-          return { ok: true, message: launched.output.message, taskId: launched.taskId, agentId: launched.agentId };
-        },
-      });
-    }
-
-    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString("utf8")));
-    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
-
-    child.on("error", (error) => {
-      settled = true;
-      clearTimeout(timeout);
-      detachCleanup?.();
-      options.abortSignal?.removeEventListener("abort", abort);
-      backgroundAbortController.signal.removeEventListener("abort", backgroundAbort);
-      if (detached && options.detach) {
-        options.detach.taskStore.fail(resolveDetachedTaskId(options.detach), error instanceof Error ? error.message : String(error));
-        return;
-      }
-      reject(error);
-    });
-
-    child.on("close", (exitCode, signal) => {
-      settled = true;
-      clearTimeout(timeout);
-      detachCleanup?.();
-      options.abortSignal?.removeEventListener("abort", abort);
-      backgroundAbortController.signal.removeEventListener("abort", backgroundAbort);
-      const output = buildOutput(exitCode, signal);
-      if (detached && options.detach) {
-        completeDetachedExecTask(options.detach.taskStore, resolveDetachedTaskId(options.detach), output);
-        return;
-      }
-      resolve(output);
-    });
-  });
-}
-
-function createDetachedExecTask(
-  detach: RunCommandDetachOptions,
-  abortController: AbortController,
-): { taskId: string; agentId: string; output: ExecDetachedOutput } {
-  const taskId = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const agentId = `bg_exec_${Date.now().toString(36)}`;
-  const description = detach.input.description ?? `exec: ${detach.input.command.slice(0, 80)}`;
-  detach.taskId = taskId;
-  const task = createLocalAgentTask({
-    taskId,
-    agentId,
-    description,
-    prompt: detach.input.command,
-    type: "exec",
-    abortController,
-  });
-  detach.taskStore.upsert(task);
-  detach.taskStore.markRunning(taskId);
-  const output: ExecDetachedOutput = {
-    status: "async_launched",
-    detachedFromForeground: true,
-    task_id: taskId,
-    agent_id: agentId,
-    description,
-    command: detach.input.command,
-    output_file: task.outputFile,
-    message: "Foreground command detached to background. Use TaskOutput or TaskGet to check status.",
-  };
-  return { taskId, agentId, output };
-}
-
-function resolveDetachedTaskId(detach: RunCommandDetachOptions): string {
-  if (!detach.taskId) throw new Error("Detached exec task was not initialized");
-  return detach.taskId;
-}
-
-function completeDetachedExecTask(taskStore: TaskStore, taskId: string, output: ExecOutput): void {
-  const ok = output.exitCode === 0 && !output.timedOut;
-  taskStore.complete(taskId, {
-    agent_id: taskStore.get(taskId)?.agentId ?? "bg_exec",
-    agent_type: "exec",
-    content: summarizeExecOutput(output),
-    total_duration_ms: output.durationMs,
-    total_tool_use_count: 0,
-  });
-  const finished = taskStore.get(taskId);
-  if (finished) {
-    finished.messages.push(
-      createTextMessage("user",
-        `<task-notification agent_id="${finished.agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="exec">\n${summarizeExecOutput(output)}\nstdout: ${output.stdout.slice(0, 2000)}\nstderr: ${output.stderr.slice(0, 2000)}\n</task-notification>`,
-      ),
-    );
-    finished.notified = false;
-    taskStore.upsert(finished);
-  }
-}
-
-function isDetachedExecOutput(output: ExecOutput | ExecDetachedOutput): output is ExecDetachedOutput {
-  return "status" in output && output.status === "async_launched" && output.detachedFromForeground === true;
-}
-
-class OutputAccumulator {
-  bytes = 0;
-  truncated = false;
-  private valueText = "";
-
-  constructor(private readonly maxChars: number) {}
-
-  push(text: string): void {
-    this.bytes += Buffer.byteLength(text);
-    if (this.valueText.length >= this.maxChars) {
-      this.truncated = true;
-      return;
-    }
-    const remaining = this.maxChars - this.valueText.length;
-    if (text.length > remaining) {
-      this.valueText += text.slice(0, remaining);
-      this.truncated = true;
-      return;
-    }
-    this.valueText += text;
-  }
-
-  value(): string {
-    if (!this.truncated) return normalizeOutput(this.valueText);
-    return `${normalizeOutput(this.valueText)}\n[output truncated at ${this.maxChars} chars]`;
-  }
-}
-
 function resolveShell(shell: ExecShell): ResolvedShell {
   const requested = shell === "auto" ? defaultShell() : shell;
   if (requested === "powershell") {
-    return {
-      requested,
-      displayName: "PowerShell",
-      file: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
-    };
+    return { requested, displayName: "PowerShell", file: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
   if (requested === "cmd") return { requested, displayName: "cmd.exe", file: "cmd.exe", args: ["/d", "/s", "/c"] };
   if (requested === "bash") return { requested, displayName: "bash", file: "bash", args: ["-lc"] };
@@ -553,13 +259,48 @@ function normalizeEnv(input: unknown): Record<string, string> {
   );
 }
 
-function normalizeOutput(text: string): string {
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+function isExecShell(value: string): value is ExecShell {
+  return ["auto", "powershell", "cmd", "bash", "sh"].includes(value);
 }
 
-function summarizeExecOutput(output: ExecOutput): string {
-  const status = output.timedOut ? "timed out" : output.exitCode === 0 ? "exit 0" : `exit ${output.exitCode ?? "unknown"}`;
+function emitOutputDelta(context: ToolUseContext, delta: ExecProcessOutputDelta): void {
+  const text = context.secretRedactions?.redact(delta.text) ?? delta.text;
+  context.emit({
+    toolName: "exec_command",
+    message: "Terminal output",
+    data: { type: "terminal.output.delta", session_id: delta.sessionId, stream: delta.stream, text },
+  });
+}
+
+function toToolOutput(result: ExecProcessResult): Record<string, unknown> {
+  return {
+    status: result.status,
+    session_id: result.session_id,
+    process_id: result.process_id,
+    command: result.command,
+    description: result.description,
+    cwd: result.cwd,
+    shell: result.shell,
+    tty: result.tty,
+    exit_code: result.exit_code,
+    signal: result.signal,
+    termination_reason: result.termination_reason,
+    duration_ms: result.duration_ms,
+    timed_out: result.timed_out,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    output_chars: result.output_chars,
+    omitted_chars: result.omitted_chars,
+  };
+}
+
+function summarizeExecOutput(output: ExecProcessResult): string {
+  const status = output.status === "running"
+    ? `running as terminal ${output.session_id}`
+    : output.status === "exited"
+      ? `exit ${output.exit_code ?? "unknown"}`
+      : output.status.replace("_", " ");
   const stdout = output.stdout.trim() ? `${output.stdout.trim().split(/\n/).length} stdout line(s)` : "no stdout";
   const stderr = output.stderr.trim() ? `${output.stderr.trim().split(/\n/).length} stderr line(s)` : "no stderr";
-  return `${status}, ${stdout}, ${stderr}, ${output.durationMs}ms`;
+  return `${status}, ${stdout}, ${stderr}, ${output.duration_ms}ms`;
 }

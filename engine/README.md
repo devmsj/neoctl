@@ -9,7 +9,7 @@ neoctl 是一个用 TypeScript 编写的本地 AI 工程代理运行时。项目
 - **内置工程工具集**：文件读写、文本替换、命令执行、目录列表、ripgrep 搜索、Web 搜索、计划展示、子代理和后台任务控制。
 - **上下文预算与手动压缩**：在每次模型调用前注入用户/系统上下文、估算上下文占用并预算大型工具结果；默认不自动压缩会话，用户可通过 `/compact` 主动压缩。
 - **会话持久化与恢复**：默认记录 JSONL transcript，大型工具结果落盘保存，支持最近/指定会话恢复和交互式会话浏览；Web 恢复快照只返回图片引用，图片通过独立接口按需加载，避免多图会话被 base64 阻塞。
-- **子代理与后台任务**：同一套 query loop 可运行同步子代理、后台子代理、fork 子代理，以及后台 shell 任务。
+- **子代理与后台终端**：同一套 query loop 可运行同步子代理、后台子代理、fork 子代理，并可持续轮询和操作异步终端。
 - **TTY REPL 体验**：Ink UI、slash command 补全、Markdown 渲染、流式状态栏、token 使用统计、剪贴板文本/图片粘贴、会话标题和终端标题更新。
 
 ## 快速开始
@@ -239,7 +239,8 @@ REPL 当前注册的内置工具：
 | `grep` | 通过 bundled ripgrep 搜索工作区文本 |
 | `write` | 创建或覆盖文本文件 |
 | `edit` / `replace` | 基于唯一字符串替换修改文件，容忍 LF/CRLF 和直/弯引号差异 |
-| `exec` / `shell` / `bash` / `powershell` | 执行命令，支持 cwd、超时、输出截断和后台模式 |
+| `exec_command` | 创建可持续交互的异步终端 |
+| `write_stdin` | 轮询终端增量输出、写入字符、中断或终止后台终端 |
 | `search` | 通过可插拔 provider 搜索 Web；OpenAI 模型提供者默认走 GPT web search，否则默认 Exa MCP；可显式切换 provider |
 | `image2` | 仅在 `MODEL_PROVIDER=openai` 时注册；通过 OpenAI Images API 生成图片并返回可展示的 data URL；非 OpenAI provider 不暴露绘图工具，系统提示会要求模型说明当前不具备绘图能力 |
 | `plan` | 输出和更新当前任务计划 |
@@ -261,12 +262,17 @@ REPL 当前注册的内置工具：
 
 ### 命令执行
 
-`exec` 根据平台和 `shell` 参数选择 PowerShell、cmd、bash 或 sh。支持：
+`exec_command` 根据平台和 `shell` 参数选择 PowerShell、cmd、bash 或 sh。命令启动后持续收集输出；首次等待期内结束则直接返回，仍在运行则返回 `session_id`，进程不会依赖当前模型轮次存活。
 
-- `cwd`：命令工作目录。
-- `timeoutMs`：超时控制。
-- `maxOutputChars`：分别限制 stdout/stderr 返回长度。
-- `background=true`：将长命令注册为后台任务，立即返回 task id，后续用 `TaskGet`/`TaskOutput`/`TaskStop` 管理。
+- `workdir`：命令工作目录。
+- `timeout_ms`：进程总生命周期上限。
+- `yield_time_ms`：首次等待时间；到期后将仍在运行的命令交还为后台终端。
+- `max_output_chars`：分别限制每次待读取的 stdout/stderr，超限时保留开头和结尾。
+- `tty=true`：通过 PTY/ConPTY 运行需要真实终端语义的交互程序。
+
+`stdout`、`stderr`、`output_chars` 和 `omitted_chars` 都是本次调用新消费的增量；调用方应追加保存，重复查询终态不会返回已经读取的输出。`duration_ms` 是进程实际运行时间，进入终态后保持不变。每个终态都通过 `termination_reason` 区分正常完成、非零退出、用户中断、用户终止、强制停止、超时、外部信号和启动错误。Windows TTY 优先返回终端进程 PID；底层无法提供时返回 PTY 宿主 PID，不返回 `0`。TTY 输出可能包含 ANSI/VT 控制序列，后端会原样保留供终端界面解释。
+
+`write_stdin` 使用 `session_id` 续接后台终端：空字符用于等待并读取新增输出，非空字符原样写入终端，也可发送 interrupt、terminate 或 kill。不同终端可并行执行，同一终端的交互按调用顺序串行处理。并行工具批次采用聚合返回语义：单个调用的 `yield_time_ms` 只约束该调用自身，不约束整批结果的交付时间；需要观察精确状态时序时应串行调用 `exec_command` 与 `write_stdin`。
 
 ## 上下文与压缩
 
@@ -412,7 +418,7 @@ import {
   readFileTool,
   listDirectoryTool,
   grepTool,
-  execTool,
+  createExecTools,
   planTool,
 } from "neoctl";
 
@@ -420,7 +426,7 @@ const tools = new ToolRegistry();
 tools.register(readFileTool);
 tools.register(listDirectoryTool);
 tools.register(grepTool);
-tools.register(execTool);
+for (const tool of createExecTools()) tools.register(tool);
 tools.register(planTool);
 
 const engine = new QueryEngine({
@@ -549,7 +555,7 @@ import { createAgentTool } from "neoctl/agents/agent-tool";
 | 路径 | 内容 |
 | --- | --- |
 | `.agent/sessions/` | 默认会话 transcript 和大型工具结果 |
-| `.agent-tasks/` | 后台 agent / exec 任务最终输出 |
+| `.agent-tasks/` | 后台 agent 任务最终输出 |
 | `vendor/ripgrep/` | 当前平台 ripgrep 二进制和 manifest |
 | `dist/` | `npm run build` 生成的编译产物 |
 

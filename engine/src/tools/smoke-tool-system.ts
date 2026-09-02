@@ -4,7 +4,8 @@ import path from "node:path";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Message } from "../types/messages.js";
 import { editTool, writeTool } from "./builtins/edit-tool.js";
-import { createExecTool, execTool, type ForegroundExecDetachHandle, type ForegroundExecDetachRegistry } from "./builtins/exec-tool.js";
+import { createExecTool, createWriteStdinTool } from "./builtins/exec-tool.js";
+import { ExecProcessManager } from "./builtins/exec-process-manager.js";
 import { listDirectoryTool, readFileTool } from "./builtins/filesystem-tools.js";
 import { grepTool } from "./builtins/grep-tool.js";
 import { createOpenAIImageGenerationTool, DEFAULT_IMAGE_TIMEOUT_MS } from "./builtins/image-generation-tool.js";
@@ -16,18 +17,6 @@ import { ToolRegistry } from "./registry.js";
 import { runToolUseToMessages } from "./run-tool-use.js";
 import { runTools } from "./tool-orchestration.js";
 import type { Tool, ToolUseContext } from "./tool.js";
-import { TaskStore } from "../tasks/task-store.js";
-
-class SmokeDetachRegistry implements ForegroundExecDetachRegistry {
-  handle?: ForegroundExecDetachHandle;
-
-  set(handle: ForegroundExecDetachHandle): () => void {
-    this.handle = handle;
-    return () => {
-      if (this.handle === handle) this.handle = undefined;
-    };
-  }
-}
 
 const smokePassthroughTool: Tool<{ text: string }> = {
   name: "smoke_passthrough",
@@ -112,10 +101,12 @@ const largeTool: Tool<{ size: number }> = {
 
 async function main(): Promise<void> {
   const registry = new ToolRegistry();
+  const execProcessManager = new ExecProcessManager();
   registry.register(smokePassthroughTool);
   registry.register(editTool);
   registry.register(writeTool);
-  registry.register(execTool);
+  registry.register(createExecTool({ processManager: execProcessManager }));
+  registry.register(createWriteStdinTool(execProcessManager));
   registry.register(listDirectoryTool);
   registry.register(readFileTool);
   registry.register(grepTool);
@@ -199,27 +190,23 @@ async function main(): Promise<void> {
     context,
   );
   const exec = await runToolUseToMessages(
-    { id: "exec", name: "exec", input: { command: "node -e \"console.log(process.cwd()); console.error('warn')\"", description: "Verify exec captures stdout, stderr, and cwd", timeoutMs: 10000, maxOutputChars: 4000 } },
+    { id: "exec", name: "exec_command", input: { cmd: "node -e \"console.log(process.cwd()); console.error('warn')\"", description: "Verify exec captures stdout, stderr, and cwd", timeout_ms: 10000, max_output_chars: 4000 } },
     context,
   );
   const execFailure = await runToolUseToMessages(
-    { id: "exec-fail", name: "exec", input: { command: "node -e \"process.exit(7)\"", description: "Verify exec reports non-zero exit status", timeoutMs: 10000 } },
+    { id: "exec-fail", name: "exec_command", input: { cmd: "node -e \"process.exit(7)\"", description: "Verify exec reports non-zero exit status", timeout_ms: 10000 } },
     context,
   );
-  const detachTaskStore = new TaskStore();
-  const detachRegistry = new SmokeDetachRegistry();
-  const detachTools = new ToolRegistry();
-  detachTools.register(createExecTool({ taskStore: detachTaskStore, foregroundDetachRegistry: detachRegistry }));
-  const detachContext: ToolUseContext = { ...context, tools: detachTools };
-  const execDetachPromise = runToolUseToMessages(
-    { id: "exec-detach", name: "exec", input: { command: "node -e \"setTimeout(() => console.log('done'), 150)\"", description: "Verify foreground exec can detach to background", timeoutMs: 10000 } },
-    detachContext,
+  const interactiveStart = await runToolUseToMessages(
+    { id: "exec-interactive", name: "exec_command", input: { cmd: "node -e \"process.stdin.once('data', value => { console.log('received:' + value.toString().trim()); process.exit(0); })\"", description: "Verify a running terminal accepts later input", timeout_ms: 10000, yield_time_ms: 20 } },
+    context,
   );
-  for (let i = 0; i < 20 && !detachRegistry.handle; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
-  const detachShortcutResult = detachRegistry.handle?.detach();
-  const execDetach = await execDetachPromise;
-  const execDetachOutput = toolOutput(execDetach[execDetach.length - 1]) as { task_id?: string; status?: string; detachedFromForeground?: boolean };
-  const execDetachTask = execDetachOutput.task_id ? await detachTaskStore.waitForTerminal(execDetachOutput.task_id, { timeoutMs: 2000 }) : undefined;
+  const interactiveStartOutput = toolOutput(interactiveStart[interactiveStart.length - 1]) as { session_id?: string; status?: string };
+  const interactiveWrite = await runToolUseToMessages(
+    { id: "exec-interactive-write", name: "write_stdin", input: { session_id: interactiveStartOutput.session_id, chars: "hello\n", yield_time_ms: 2000 } },
+    context,
+  );
+  const interactiveWriteOutput = toolOutput(interactiveWrite[interactiveWrite.length - 1]) as { stdout?: string; status?: string; exit_code?: number | null };
   const editCreate = await runToolUseToMessages(
     { id: "edit-create", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "", newString: "alpha\nbeta\nalpha\n" } },
     context,
@@ -262,13 +249,13 @@ async function main(): Promise<void> {
     entries?: Array<{ name: string; path: string }>;
   };
   const execOutput = toolOutput(exec[exec.length - 1]) as {
-    exitCode?: number | null;
+    exit_code?: number | null;
     stdout?: string;
     stderr?: string;
     cwd?: string;
   };
   const execFailureOutput = toolOutput(execFailure[execFailure.length - 1]) as {
-    exitCode?: number | null;
+    exit_code?: number | null;
   };
   const editCreateOutput = toolOutput(editCreate[editCreate.length - 1]) as {
     operation?: string;
@@ -470,21 +457,24 @@ async function main(): Promise<void> {
       recursiveListOutput.excludedCounts?.[".agent-tasks"] !== undefined,
     recursiveListEntriesClean:
       recursiveListOutput.entries?.every((entry) => ![".git", ".idea", ".agent-tasks", "node_modules", "dist"].includes(entry.name)) === true,
+    legacyExecAliasesRemoved:
+      ["exec", "shell", "bash", "powershell"].every((name) => registry.get(name) === undefined),
     execOk:
       toolOk(exec[exec.length - 1]) &&
-      execOutput.exitCode === 0 &&
+      execOutput.exit_code === 0 &&
       execOutput.stdout?.includes(process.cwd()) === true &&
       execOutput.stderr?.includes("warn") === true,
     execFailureRejected:
       !toolOk(execFailure[execFailure.length - 1]) &&
-      typeof execFailureOutput.exitCode === "number" &&
-      execFailureOutput.exitCode !== 0,
-    execDetachOk:
-      detachShortcutResult?.ok === true &&
-      toolOk(execDetach[execDetach.length - 1]) &&
-      execDetachOutput.status === "async_launched" &&
-      execDetachOutput.detachedFromForeground === true &&
-      execDetachTask?.status === "completed",
+      typeof execFailureOutput.exit_code === "number" &&
+      execFailureOutput.exit_code !== 0,
+    execInteractiveOk:
+      interactiveStartOutput.status === "running" &&
+      typeof interactiveStartOutput.session_id === "string" &&
+      toolOk(interactiveWrite[interactiveWrite.length - 1]) &&
+      interactiveWriteOutput.status === "exited" &&
+      interactiveWriteOutput.exit_code === 0 &&
+      interactiveWriteOutput.stdout?.includes("received:hello") === true,
     editCreateOk:
       toolOk(editCreate[editCreate.length - 1]) &&
       editCreateOutput.operation === "create" &&
@@ -511,7 +501,13 @@ async function main(): Promise<void> {
   };
   const ok = Object.values(checks).every(Boolean);
 
-  console.log(JSON.stringify({ ok, elapsedMs, checks, counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, webSearch: webSearch.length, plan: plan.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, execDetach: execDetach.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length } }, null, 2));
+  console.log(JSON.stringify({
+    ok,
+    elapsedMs,
+    checks,
+    counts: { valid: valid.length, invalid: invalid.length, unknown: unknown.length, large: large.length, grep: grep.length, truncatedGrep: truncatedGrep.length, webSearch: webSearch.length, plan: plan.length, contextGrep: contextGrep.length, read: read.length, list: list.length, recursiveList: recursiveList.length, exec: exec.length, execFailure: execFailure.length, interactiveStart: interactiveStart.length, interactiveWrite: interactiveWrite.length, editCreate: editCreate.length, editAmbiguous: editAmbiguous.length, editReplaceAll: editReplaceAll.length, editCrlfWithLfOldString: editCrlfWithLfOldString.length, write: write.length, batch: batch.messages.length },
+    ...(!ok ? { terminalDiagnostics: { exec: execOutput, execFailure: execFailureOutput, interactiveStart: interactiveStartOutput, interactiveWrite: interactiveWriteOutput } } : {}),
+  }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

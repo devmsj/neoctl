@@ -4,10 +4,6 @@ import path from "node:path";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
-import { createTextMessage } from "../../types/messages.js";
-import { createLocalAgentTask } from "../../agents/local-agent-task.js";
-import { globalTaskStore, type TaskStore } from "../../tasks/task-store.js";
-import type { ForegroundExecDetachRegistry } from "./exec-tool.js";
 
 export type ImageGenerationSize = "auto" | "1024x1024" | "1536x1024" | "1024x1536";
 export type ImageGenerationQuality = "auto" | "low" | "medium" | "high";
@@ -114,19 +110,6 @@ export interface CreateOpenAIImageGenerationToolOptions {
   baseUrl?: string;
   model?: string;
   timeoutMs?: number;
-  taskStore?: TaskStore;
-  foregroundDetachRegistry?: ForegroundExecDetachRegistry;
-}
-
-interface ImageDetachedOutput {
-  status: "async_launched";
-  detachedFromForeground: true;
-  task_id: string;
-  agent_id: string;
-  description: string;
-  prompt: string;
-  output_file: string;
-  message: string;
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
@@ -241,19 +224,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       const mode = input.mode ?? "generate";
       callOptions.onProgress?.({ toolName: "image2", message: `${mode === "edit" ? "Editing" : "Generating"} image with OpenAI ${model}` });
       const startedAt = Date.now();
-      const taskStore = options.taskStore ?? globalTaskStore;
-      const detachState = createImageForegroundDetachState({
-        input,
-        mode,
-        model,
-        startedAt,
-        context,
-        taskStore,
-        registry: options.foregroundDetachRegistry,
-      });
-
-      const runImageRequest = async (): Promise<ToolResult> => {
-        try {
+      try {
         const editSources = mode === "edit" ? resolveImageEditSources(input, context.messages) : [];
         if (mode === "edit" && editSources.length === 0) {
           throw new Error("image2 mode=edit requires a source image. Provide image/images/imageRefs, attach an image, or keep useLatestImage enabled with a prior image in the conversation.");
@@ -279,7 +250,6 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           input,
           context,
         );
-        detachState.cleanup();
         const timing = imageGenerationTiming(startedAt);
         const output: ImageGenerationToolOutput = {
           ...timing,
@@ -298,21 +268,12 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           images,
           raw: compactRawResponse(response),
         };
-        if (detachState.detached) {
-          completeDetachedImageTask(taskStore, detachState.taskId, output, images.length > 0);
-          return {
-            ok: true,
-            output: detachState.output,
-            summary: `detached to background task ${detachState.taskId}`,
-          };
-        }
         return {
           ok: images.length > 0,
           output,
           summary: images.length ? `${images.length} image(s) ${mode === "edit" ? "edited" : "generated"} in ${timing.duration}ms` : `OpenAI returned no image data after ${timing.duration}ms`,
         };
       } catch (error) {
-        detachState.cleanup();
         const output = {
           ...imageGenerationTiming(startedAt),
           provider: "openai",
@@ -321,22 +282,11 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           prompt: input.prompt,
           error: error instanceof Error ? error.message : String(error),
         };
-        if (detachState.detached) {
-          taskStore.fail(detachState.taskId, output.error);
-          return {
-            ok: true,
-            output: detachState.output,
-            summary: `detached to background task ${detachState.taskId}`,
-          };
-        }
         return {
           ok: false,
           output,
         };
-        }
-      };
-
-      return Promise.race([runImageRequest(), detachState.detachedResult]);
+      }
     },
     mapResult(result) {
       return compactImageGenerationOutput(result.output);
@@ -345,126 +295,6 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       return createImageGenerationToolResultMessage(result, request?.id ?? "");
     },
   };
-}
-
-interface ImageForegroundDetachState {
-  detached: boolean;
-  taskId: string;
-  output: ImageDetachedOutput;
-  detachedResult: Promise<ToolResult>;
-  cleanup(): void;
-}
-
-function createImageForegroundDetachState(options: {
-  input: ImageGenerationToolInput;
-  mode: ImageToolMode;
-  model: string;
-  startedAt: number;
-  context: ToolUseContext;
-  taskStore: TaskStore;
-  registry?: ForegroundExecDetachRegistry;
-}): ImageForegroundDetachState {
-  let detached = false;
-  let taskId = "";
-  let output: ImageDetachedOutput | undefined;
-  let resolveDetached: (result: ToolResult) => void = () => undefined;
-  const detachedResult = new Promise<ToolResult>((resolve) => {
-    resolveDetached = resolve;
-  });
-
-  const description = `${options.mode === "edit" ? "Edit" : "Generate"} image: ${options.input.semanticName}`;
-  const cleanup = options.registry?.set({
-    toolUseId: options.context.toolUseId,
-    toolName: "image2",
-    command: options.input.prompt,
-    description,
-    cwd: options.context.session?.rootDir ?? process.cwd(),
-    startedAt: options.startedAt,
-    detach: () => {
-      if (detached) return { ok: false, message: "image generation already detached" };
-      detached = true;
-      const launched = createDetachedImageTask(options.input, description, options.taskStore);
-      taskId = launched.taskId;
-      output = launched.output;
-      cleanup?.();
-      resolveDetached({ ok: true, output, summary: `detached to background task ${taskId}` });
-      return { ok: true, message: output.message, taskId: launched.taskId, agentId: launched.agentId };
-    },
-  });
-
-  return {
-    get detached() {
-      return detached;
-    },
-    get taskId() {
-      return taskId;
-    },
-    get output() {
-      if (!output) throw new Error("Detached image task was not initialized");
-      return output;
-    },
-    detachedResult,
-    cleanup() {
-      cleanup?.();
-    },
-  };
-}
-
-function createDetachedImageTask(
-  input: ImageGenerationToolInput,
-  description: string,
-  taskStore: TaskStore,
-): { taskId: string; agentId: string; output: ImageDetachedOutput } {
-  const taskId = `image_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const agentId = `bg_image_${Date.now().toString(36)}`;
-  const task = createLocalAgentTask({
-    taskId,
-    agentId,
-    description,
-    prompt: input.prompt,
-    type: "image",
-  });
-  taskStore.upsert(task);
-  taskStore.markRunning(taskId);
-  const output: ImageDetachedOutput = {
-    status: "async_launched",
-    detachedFromForeground: true,
-    task_id: taskId,
-    agent_id: agentId,
-    description,
-    prompt: input.prompt,
-    output_file: task.outputFile,
-    message: "Foreground image generation detached to background. Use TaskOutput or TaskGet to check status.",
-  };
-  return { taskId, agentId, output };
-}
-
-function completeDetachedImageTask(taskStore: TaskStore, taskId: string, output: ImageGenerationToolOutput, ok: boolean): void {
-  taskStore.complete(taskId, {
-    agent_id: taskStore.get(taskId)?.agentId ?? "bg_image",
-    agent_type: "image",
-    content: summarizeDetachedImageOutput(output),
-    total_duration_ms: output.durationMs,
-    total_tool_use_count: 0,
-  });
-  const finished = taskStore.get(taskId);
-  if (finished) {
-    finished.messages.push(
-      createTextMessage("user",
-        `<task-notification agent_id="${finished.agentId}" task_id="${taskId}" status="${ok ? "completed" : "failed"}" type="image">\n${summarizeDetachedImageOutput(output)}\n</task-notification>`,
-      ),
-    );
-    finished.notified = false;
-    taskStore.upsert(finished);
-  }
-}
-
-function summarizeDetachedImageOutput(output: ImageGenerationToolOutput): string {
-  const paths = output.images.map((image) => image.path).filter((value): value is string => Boolean(value));
-  return [
-    `${output.returnedImages} image(s) ${output.mode === "edit" ? "edited" : "generated"} in ${output.durationMs}ms`,
-    paths.length ? `files:\n${paths.map((imagePath) => `- ${imagePath}`).join("\n")}` : undefined,
-  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 export const openAIImageGenerationTool = createOpenAIImageGenerationTool();

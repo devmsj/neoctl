@@ -17,7 +17,8 @@ import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/mode
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool } from "../tools/tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
-import { createExecTool } from "../tools/builtins/exec-tool.js";
+import { createExecTool, createWriteStdinTool } from "../tools/builtins/exec-tool.js";
+import { ExecProcessManager } from "../tools/builtins/exec-process-manager.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
@@ -56,6 +57,7 @@ export interface WebRuntime {
   agentRuntime: AgentToolRuntime;
   usage: SessionUsageTracker;
   taskStore: TaskStore;
+  execProcessManager: ExecProcessManager;
   tools: ToolRegistry;
   initialMetrics: ContextMetrics;
   defaultReasoning?: ReasoningConfig | null;
@@ -350,9 +352,11 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
   const activePlugins = activeWebRuntimePlugins(pluginCatalog, pluginOverrides);
   const tools = new ToolRegistry();
+  const execProcessManager = new ExecProcessManager();
   tools.register(editTool);
   tools.register(writeTool);
-  tools.register(createExecTool({ taskStore }));
+  tools.register(createExecTool({ processManager: execProcessManager }));
+  tools.register(createWriteStdinTool(execProcessManager));
   tools.register(listDirectoryTool);
   tools.register(readFileTool);
   tools.register(grepTool);
@@ -413,6 +417,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     agentRuntime,
     usage: new SessionUsageTracker(),
     taskStore,
+    execProcessManager,
     tools,
     initialMetrics,
     defaultReasoning: modelConfig?.defaultReasoning,
@@ -560,9 +565,13 @@ export class WebRepl {
   constructor(private runtime: WebRuntime) {
     this.lines = initialLines(runtime, { current: 0 });
     this.status = initialStatus(runtime);
-    this.backgroundTaskCount = runtime.taskStore.activeCount();
+    this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
     runtime.taskStore.subscribe(() => {
-      this.backgroundTaskCount = runtime.taskStore.activeCount();
+      this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
+      this.broadcastSync();
+    });
+    runtime.execProcessManager.subscribe(() => {
+      this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
       this.broadcastSync();
     });
     runtime.engine.onSessionTitleChange(() => this.broadcastSync());
@@ -975,9 +984,10 @@ export class WebRepl {
   }
 
   private backgroundTasks() {
-    return this.runtime.taskStore.list()
+    const agentTasks = this.runtime.taskStore.list()
       .filter((task) => !this.runtime.taskStore.isTerminal(task))
       .map((task) => ({
+        kind: "agent" as const,
         taskId: task.taskId,
         agentId: task.agentId,
         type: task.type,
@@ -985,6 +995,24 @@ export class WebRepl {
         description: task.description,
         createdAt: task.createdAt,
       }));
+    const terminalTasks = this.runtime.execProcessManager.list()
+      .filter((terminal) => terminal.status === "running" && terminal.backgrounded)
+      .map((terminal) => ({
+        kind: "terminal" as const,
+        taskId: `terminal:${terminal.session_id}`,
+        type: "终端",
+        status: terminal.status,
+        description: terminal.description || terminal.command,
+        createdAt: Date.now() - terminal.duration_ms,
+        sessionId: terminal.session_id,
+        processId: terminal.process_id,
+        command: terminal.command,
+        cwd: terminal.cwd,
+        shell: terminal.shell,
+        tty: terminal.tty,
+        durationMs: terminal.duration_ms,
+      }));
+    return [...agentTasks, ...terminalTasks];
   }
 
   private async detachRunningForeground(reason: string): Promise<boolean> {
@@ -2143,7 +2171,8 @@ function toolTitle(toolName: string, _phase: "running" | "finished"): string {
   const labels: Record<string, string> = {
     agent: "子任务",
     edit: "编辑文件",
-    exec: "执行命令",
+    exec_command: "执行命令",
+    write_stdin: "终端交互",
     expose_downloads: "文件下载",
     grep: "搜索文本",
     image2: "图片生成",
@@ -2290,22 +2319,23 @@ function diffLineMarker(line: string): "+" | "-" | " " | undefined {
 interface ExecOutputLike extends Record<string, unknown> {
   command: string;
   description?: string;
-  exitCode?: number;
+  exit_code?: number;
   signal?: string;
-  durationMs: number;
+  duration_ms: number;
   stdout?: string;
   stderr?: string;
-  timedOut?: boolean;
+  timed_out?: boolean;
 }
 
 function isExecOutput(value: unknown): value is ExecOutputLike {
-  return isRecord(value) && typeof value.command === "string" && typeof value.durationMs === "number";
+  return isRecord(value) && typeof value.command === "string" && typeof value.duration_ms === "number";
 }
 
 function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
-  const status = output.timedOut ? "已超时" : ok ? "已完成" : "执行失败";
+  const status = output.status === "running" ? "运行中" : output.timed_out ? "已超时" : ok ? "已完成" : "执行失败";
   const description = typeof output.description === "string" ? output.description.trim() : "";
-  const lines = [description ? `目的：${description}` : "执行命令", `状态：${status}`, `耗时：${output.durationMs}ms`];
+  const lines = [description ? `目的：${description}` : "执行命令", `状态：${status}`, `耗时：${output.duration_ms}ms`];
+  if (output.status === "running" && typeof output.session_id === "string") lines.push(`会话：${output.session_id}`);
   const stdout = typeof output.stdout === "string" ? output.stdout.replace(/\s+$/u, "") : "";
   const stderr = typeof output.stderr === "string" ? output.stderr.replace(/\s+$/u, "") : "";
   if (stdout) lines.push("输出：", stdout);
