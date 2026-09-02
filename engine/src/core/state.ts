@@ -21,7 +21,8 @@ export type TerminalReason =
   | "prompt_too_long"
   | "aborted_streaming"
   | "aborted_tools"
-  | "max_turns";
+  | "max_turns"
+  | "turn_yielded";
 
 export interface QueryTracking {
   chainId: string;

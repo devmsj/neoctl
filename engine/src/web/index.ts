@@ -1312,7 +1312,12 @@ export class WebRepl {
     this.setStatus({ ...this.status, phase: "running", detail: "working", usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
     const engine = this.runtime.engine;
     try {
-      for await (const event of engine.sendUserText(promptPayload.text, { abortSignal: abortController.signal, blocks: promptPayload.blocks, displayText: promptPayload.displayText })) {
+      for await (const event of engine.sendUserText(promptPayload.text, {
+        abortSignal: abortController.signal,
+        blocks: promptPayload.blocks,
+        displayText: promptPayload.displayText,
+        stopAfterTurn: () => this.queuedInput !== undefined,
+      })) {
         if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {

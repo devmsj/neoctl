@@ -48,6 +48,13 @@ export interface QueryOptions {
   toolChoice?: ModelRequest["toolChoice"];
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
+  /**
+   * Native cooperative yield point checked after a complete model turn and its
+   * tool results have been appended. Returning true stops before the next model
+   * turn, so callers can enqueue another user input without aborting a tool or
+   * cutting through provider streaming.
+   */
+  stopAfterTurn?: (state: QueryState) => boolean;
 }
 
 export interface QueryDependencies {
@@ -209,6 +216,7 @@ async function* queryLoop(
       previousResponseId,
     });
     if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults, options.agentReportToolName)) return "completed";
+    if (options.stopAfterTurn?.(state)) return "turn_yielded";
   }
 }
 
@@ -410,7 +418,8 @@ async function* callModelForTurn(
   }
 
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
-  appendSyntheticToolUseMessage(assistantMessages, toolUses);
+  const syntheticToolUseMessage = appendSyntheticToolUseMessage(assistantMessages, toolUses);
+  if (syntheticToolUseMessage) yield { type: "message", message: syntheticToolUseMessage };
   return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
 }
 
@@ -633,15 +642,15 @@ function buildNextTurnState(
   };
 }
 
-function appendSyntheticToolUseMessage(assistantMessages: Message[], toolUses: ToolUseRequest[]): void {
+function appendSyntheticToolUseMessage(assistantMessages: Message[], toolUses: ToolUseRequest[]): Message | undefined {
   const missing = toolUses.filter((toolUse) =>
     !assistantMessages.some((message) =>
       message.blocks.some((block) => block.type === "tool_use" && block.id === toolUse.id),
     ),
   );
-  if (!missing.length) return;
+  if (!missing.length) return undefined;
 
-  assistantMessages.push({
+  const message: Message = {
     id: `tool-use-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     role: "assistant",
     createdAt: new Date().toISOString(),
@@ -653,7 +662,9 @@ function appendSyntheticToolUseMessage(assistantMessages: Message[], toolUses: T
     })),
     isMeta: true,
     metadata: { syntheticToolUse: true },
-  });
+  };
+  assistantMessages.push(message);
+  return message;
 }
 
 function extractToolUses(message: Message): ToolUseRequest[] {

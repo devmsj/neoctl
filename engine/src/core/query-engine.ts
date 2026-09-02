@@ -151,7 +151,7 @@ export class QueryEngine {
     });
   }
 
-  async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string } = {}): AsyncGenerator<AgentEvent> {
+  async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const userMessage = options.blocks
       ? await this.persistMessageImages({
@@ -192,6 +192,7 @@ export class QueryEngine {
       maxTurns: this.options.maxTurns,
       workspaceCwd: this.options.cwd,
       abortSignal: options.abortSignal,
+      stopAfterTurn: options.stopAfterTurn,
     };
 
     const stream = query(

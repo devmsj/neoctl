@@ -3108,8 +3108,7 @@ function createMobileSession() {
 
       <button class="sidebar-card session-entry" type="button" @click="state.activePanel = 'chat'">
         <div class="eyebrow">当前会话</div>
-        <div class="session-title-line"><span class="dot ok"></span><strong>{{ currentTitle }}</strong></div>
-        <div class="muted">{{ currentSessionId }}</div>
+        <div class="session-title-line"><strong>{{ currentTitle }}</strong></div>
       </button>
 
       <section class="sidebar-card prompt-stack">

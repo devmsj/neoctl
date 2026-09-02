@@ -202,24 +202,31 @@ a { color: var(--purple); }
   text-align: left;
   color: var(--text);
   cursor: pointer;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--purple-soft) 50%, var(--surface)) 0%, var(--surface) 58%);
+  border-color: color-mix(in srgb, var(--purple) 16%, var(--line));
+  box-shadow: 0 8px 24px rgba(14, 11, 22, .045);
+  transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 .session-entry:hover,
 .session-entry:focus-visible {
-  border-color: var(--purple);
-  background: var(--purple-soft);
+  border-color: color-mix(in srgb, var(--purple) 48%, var(--line));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--purple-soft) 80%, var(--surface)) 0%, var(--surface) 62%);
+  box-shadow: 0 10px 28px rgba(124, 25, 255, .10);
+  transform: translateY(-1px);
   outline: none;
 }
 .session-title-line {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 7px;
+  margin-top: 8px;
   min-width: 0;
 }
 .session-title-line strong {
   display: block;
   min-width: 0;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -164,6 +164,21 @@ async function main(): Promise<void> {
     abortEvents.includes("terminal:aborted_tools") &&
     abortElapsedMs < 1000;
 
+  const yieldingTools = new ToolRegistry();
+  yieldingTools.register(smokePassthroughTool);
+  const yieldingGateway = new FakeToolCallingGateway();
+  const yieldingEngine = new QueryEngine({ modelGateway: yieldingGateway, tools: yieldingTools, maxTurns: 4 });
+  const yieldedEvents: string[] = [];
+  for await (const event of yieldingEngine.sendUserText("yield after first tool turn", { stopAfterTurn: () => true })) {
+    yieldedEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+  }
+  const yieldedHistoryBlocks = yieldingEngine.getHistoryMessages().flatMap((message) => message.blocks);
+  const stoppedAfterOneToolTurn =
+    yieldedEvents.includes("terminal:turn_yielded") &&
+    yieldingGateway.requests.length === 1 &&
+    yieldedHistoryBlocks.some((block) => block.type === "tool_use" && block.id === "call_smoke_passthrough") &&
+    yieldedHistoryBlocks.some((block) => block.type === "tool_result" && block.toolUseId === "call_smoke_passthrough");
+
   const thinkingGateway = new ThinkingCapturingGateway();
   const thinkingEngine = new QueryEngine({ modelGateway: thinkingGateway, tools: new ToolRegistry(), maxTurns: 1 });
   for await (const _event of thinkingEngine.sendUserText("first")) {
@@ -193,9 +208,10 @@ async function main(): Promise<void> {
     userImagePinned &&
     storedImageCompacted &&
     historyImageDowngraded &&
+    stoppedAfterOneToolTurn &&
     thinkingPersisted &&
     thinkingExcludedFromContext;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
