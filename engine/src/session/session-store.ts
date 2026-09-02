@@ -2,6 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import type { CompactionReason } from "../context/compaction.js";
 import type { AppPromptValue } from "../app/app-prompt.js";
 import type { Message } from "../types/messages.js";
 import { getNeoctlHome } from "../paths.js";
@@ -15,7 +17,18 @@ export type SessionTranscriptEntry =
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
   | { type: "fast-mode"; sessionId: string; agentId: string; createdAt: string; enabled: boolean }
-  | { type: "compact"; sessionId: string; agentId: string; createdAt: string }
+  | {
+      type: "compact";
+      sessionId: string;
+      agentId: string;
+      createdAt: string;
+      replacementMessages?: Message[];
+      reason?: CompactionReason;
+      windowNumber?: number;
+      firstWindowId?: string;
+      previousWindowId?: string;
+      windowId?: string;
+    }
   | { type: "reset"; sessionId: string; agentId: string; createdAt: string };
 
 export interface SessionStoreOptions {
@@ -63,6 +76,10 @@ export interface SessionStoreSnapshot {
   contentReplacements: number;
   appPrompt?: AppPromptValue;
   fastMode: boolean;
+  windowNumber: number;
+  firstWindowId: string;
+  previousWindowId?: string;
+  windowId: string;
 }
 
 export interface SessionTitleState {
@@ -86,6 +103,10 @@ export class SessionStore {
   private hasTitleRefinement = false;
   private appPrompt?: AppPromptValue;
   private fastMode = false;
+  private windowNumber: number;
+  private firstWindowId: string;
+  private previousWindowId?: string;
+  private windowId: string;
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
@@ -100,6 +121,10 @@ export class SessionStore {
     this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.appPrompt = loaded.appPrompt;
     this.fastMode = loaded.fastMode;
+    this.windowNumber = loaded.windowNumber;
+    this.firstWindowId = loaded.firstWindowId ?? randomUUID();
+    this.previousWindowId = loaded.previousWindowId;
+    this.windowId = loaded.windowId ?? this.firstWindowId;
     this.toolResultMemory = new FileToolResultMemory(
       {
         sessionDir: this.sessionDir,
@@ -178,13 +203,39 @@ export class SessionStore {
 
   recordMessage(message: Message): void {
     if (!shouldPersistMessage(message)) return;
+    this.resumedMessages.push(cloneMessage(message));
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
+  /** @deprecated Prefer recordCompactCheckpoint so replacement history is one durable entry. */
   recordCompactBoundary(): void {
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
     this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
+  }
+
+  recordCompactCheckpoint(messages: readonly Message[], reason?: CompactionReason): void {
+    const replacementMessages = messages.filter(shouldPersistMessage).map(cloneMessage);
+    const previousWindowId = this.windowId;
+    const windowId = randomUUID();
+    this.windowNumber += 1;
+    this.previousWindowId = previousWindowId;
+    this.windowId = windowId;
+    this.resumedMessages.length = 0;
+    this.resumedMessages.push(...replacementMessages.map(cloneMessage));
+    this.contentReplacements.length = 0;
+    this.appendEntry({
+      type: "compact",
+      sessionId: this.sessionId,
+      agentId: this.agentId,
+      createdAt: new Date().toISOString(),
+      replacementMessages,
+      reason,
+      windowNumber: this.windowNumber,
+      firstWindowId: this.firstWindowId,
+      previousWindowId,
+      windowId,
+    });
   }
 
   recordTitle(title: string, kind: SessionTitleKind = "initial"): void {
@@ -263,6 +314,10 @@ export class SessionStore {
     this.titleKind = undefined;
     this.hasInitialTitle = false;
     this.hasTitleRefinement = false;
+    this.windowNumber = 1;
+    this.firstWindowId = randomUUID();
+    this.previousWindowId = undefined;
+    this.windowId = this.firstWindowId;
     this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
   }
 
@@ -278,6 +333,10 @@ export class SessionStore {
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
       fastMode: this.fastMode,
+      windowNumber: this.windowNumber,
+      firstWindowId: this.firstWindowId,
+      previousWindowId: this.previousWindowId,
+      windowId: this.windowId,
       ...(this.appPrompt ? { appPrompt: cloneAppPrompt(this.appPrompt) } : {}),
     };
   }
@@ -298,6 +357,10 @@ interface LoadedTranscript {
   hasTitleRefinement: boolean;
   appPrompt?: AppPromptValue;
   fastMode: boolean;
+  windowNumber: number;
+  firstWindowId?: string;
+  previousWindowId?: string;
+  windowId?: string;
 }
 
 interface SessionSummaryWithUpdatedAtMs extends SessionSummary {
@@ -332,10 +395,19 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
         loaded.titleKind = undefined;
         loaded.hasInitialTitle = false;
         loaded.hasTitleRefinement = false;
+        loaded.windowNumber = 1;
+        loaded.firstWindowId = undefined;
+        loaded.previousWindowId = undefined;
+        loaded.windowId = undefined;
       }
       if (entry.type === "compact") {
         loaded.messages.length = 0;
         loaded.replacements.length = 0;
+        if (entry.replacementMessages) loaded.messages.push(...entry.replacementMessages.map(cloneMessage));
+        if (entry.windowNumber !== undefined) loaded.windowNumber = entry.windowNumber;
+        if (entry.firstWindowId) loaded.firstWindowId = entry.firstWindowId;
+        loaded.previousWindowId = entry.previousWindowId;
+        if (entry.windowId) loaded.windowId = entry.windowId;
       }
       if (entry.type === "message") loaded.messages.push(entry.message);
       if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
@@ -362,7 +434,15 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
 }
 
 function createEmptyLoadedTranscript(): LoadedTranscript {
-  return { messages: [], replacements: [], entries: 0, hasInitialTitle: false, hasTitleRefinement: false, fastMode: false };
+  return {
+    messages: [],
+    replacements: [],
+    entries: 0,
+    hasInitialTitle: false,
+    hasTitleRefinement: false,
+    fastMode: false,
+    windowNumber: 1,
+  };
 }
 
 function resolveSessionRoot(options: Pick<SessionStoreOptions, "cwd" | "rootDir">): string {

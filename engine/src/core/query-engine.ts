@@ -206,6 +206,7 @@ export class QueryEngine {
         session: this.sessionStore ? { sessionId: this.sessionStore.sessionId, sessionDir: this.sessionStore.sessionDir, rootDir: this.options.session?.rootDir } : undefined,
         recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
         exportToolCalls: (calls) => this.recordSyntheticToolCalls(calls),
+        applyCompaction: (result) => this.applyCompactionResult(result),
       },
       queryOptions,
     );
@@ -321,10 +322,7 @@ export class QueryEngine {
     if (!result.changed) return;
     this.history.length = 0;
     this.history.push(...result.messages.map(cloneMessage));
-    this.sessionStore?.recordCompactBoundary();
-    for (const message of result.messages) {
-      this.sessionStore?.recordMessage(message);
-    }
+    this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason);
   }
 
   async contextMetrics(): Promise<ContextMetrics> {

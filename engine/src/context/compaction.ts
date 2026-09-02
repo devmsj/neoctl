@@ -17,6 +17,7 @@ export interface ContextBudgetOptions {
   keepRecentTokenBudget?: number;
   keepRecentToolResults?: number;
   summaryMaxChars?: number;
+  compactInputMaxChars?: number;
   compactModel?: string;
   compactMaxOutputTokens?: number;
 }
@@ -70,69 +71,42 @@ export class DeterministicCompactor implements Compactor {
 }
 
 export class ModelDrivenCompactor implements Compactor {
-  private readonly fallback = new DeterministicCompactor();
-
   constructor(private readonly modelGateway: ModelGateway) {}
 
   async compact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
-    const micro = microCompactIfNeeded(messages, options);
-    const auto = await this.modelAutoCompactIfNeeded(micro.messages, options);
-    const snipped = snipCompactIfNeeded(auto.messages, options);
-
-    if (snipped.changed) return mergeResults([micro, auto, snipped], snipped.reason);
-    if (auto.changed) return mergeResults([micro, auto], auto.reason);
-    if (micro.changed) return micro;
-    return { messages: [...messages], changed: false, reason: "none" };
+    if (!shouldCompactForBudget(messages, options, options.autoCompactMaxChars)) {
+      return { messages: [...messages], changed: false, reason: "none" };
+    }
+    return this.createCheckpoint(messages, "autocompact", options);
   }
 
   async manualCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
-    const splitIndex = computeKeepRecentSplit(messages, options);
-    const recent = messages.slice(splitIndex);
-    const older = messages.slice(0, splitIndex);
-    if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
-
-    try {
-      const summary = await this.summarizeWithModel(older, MANUAL_COMPACT_INSTRUCTIONS, options);
-      return buildCompactionResult(messages, recent, summary, "manualcompact", true);
-    } catch {
-      return this.fallback.manualCompact?.(messages, options) ?? manualCompactWithSummary(messages, options);
-    }
+    return this.createCheckpoint(messages, "manualcompact", options);
   }
 
   async pureCompact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     return pureCompactWithSanitizedSummary(messages, options);
   }
 
-  async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
-    const micro = microCompactIfNeeded(messages, options);
-    const splitIndex = computeKeepRecentSplit(micro.messages, options);
-    const recent = micro.messages.slice(splitIndex);
-    const older = micro.messages.slice(0, splitIndex);
-    try {
-      const summary = await this.summarizeWithModel(older, buildReactiveCompactInstruction(error), options);
-      const reactive = buildCompactionResult(micro.messages, recent, summary, "reactive_compact", true);
-      return micro.changed ? mergeResults([micro, reactive], reactive.reason) : reactive;
-    } catch {
-      const fallback = await this.fallback.reactiveCompact(micro.messages, error, options);
-      return micro.changed ? mergeResults([micro, fallback], fallback.reason) : fallback;
-    }
+  async reactiveCompact(messages: readonly Message[], _error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
+    return this.createCheckpoint(messages, "reactive_compact", options);
   }
 
-  private async modelAutoCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions): Promise<CompactionResult> {
-    if (!shouldCompactForBudget(messages, options, options.autoCompactMaxChars ?? 50000)) {
-      return { messages: [...messages], changed: false, reason: "none" };
-    }
-
+  private async createCheckpoint(
+    messages: readonly Message[],
+    reason: "autocompact" | "manualcompact" | "reactive_compact",
+    options: ContextBudgetOptions,
+  ): Promise<CompactionResult> {
     const splitIndex = computeKeepRecentSplit(messages, options);
     const recent = messages.slice(splitIndex);
     const older = messages.slice(0, splitIndex);
     if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
 
     try {
-      const summary = await this.summarizeWithModel(older, AUTO_COMPACT_INSTRUCTIONS, options);
-      return buildCompactionResult(messages, recent, summary, "autocompact", true);
+      const summary = await this.summarizeWithModel(older, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
+      return buildCompactionResult(messages, recent, summary, reason, true);
     } catch {
-      return autoCompactIfNeeded(messages, options);
+      return checkpointCompactWithSummary(messages, options, reason);
     }
   }
 
@@ -141,7 +115,7 @@ export class ModelDrivenCompactor implements Compactor {
     instructions: string,
     options: ContextBudgetOptions,
   ): Promise<string> {
-    const transcript = serializeTranscriptForSummary(messages, options.summaryMaxChars ?? 12000);
+    const transcript = serializeTranscriptForSummary(messages, resolveCompactInputMaxChars(options));
     if (!transcript.trim()) return "No earlier conversation content required preservation.";
 
     let text = "";
@@ -299,7 +273,7 @@ export function autoCompactIfNeeded(messages: readonly Message[], options: Conte
 }
 
 function computeKeepRecentSplit(messages: readonly Message[], options: ContextBudgetOptions, fallbackCount?: number): number {
-  const tokenBudget = options.keepRecentTokenBudget;
+  const tokenBudget = options.keepRecentTokenBudget ?? defaultRecentTokenBudget(options.contextWindowTokens);
   const keepCount = fallbackCount ?? options.keepRecentMessages ?? 8;
 
   if (!tokenBudget) return Math.max(0, messages.length - keepCount);
@@ -313,15 +287,23 @@ function computeKeepRecentSplit(messages: readonly Message[], options: ContextBu
   return 0;
 }
 
-function shouldCompactForBudget(messages: readonly Message[], options: ContextBudgetOptions, fallbackMaxChars: number, triggerRatioOverride?: number): boolean {
+function shouldCompactForBudget(messages: readonly Message[], options: ContextBudgetOptions, fallbackMaxChars?: number, triggerRatioOverride?: number): boolean {
   if (options.contextWindowTokens && options.estimatedInputTokens !== undefined) {
     const triggerRatio = triggerRatioOverride ?? options.autoCompactTriggerRatio ?? 0.92;
     return options.estimatedInputTokens / options.contextWindowTokens >= triggerRatio;
   }
-  return estimateMessagesChars(messages) > fallbackMaxChars;
+  return fallbackMaxChars !== undefined && estimateMessagesChars(messages) > fallbackMaxChars;
 }
 
 function manualCompactWithSummary(messages: readonly Message[], options: ContextBudgetOptions): CompactionResult {
+  return checkpointCompactWithSummary(messages, options, "manualcompact");
+}
+
+function checkpointCompactWithSummary(
+  messages: readonly Message[],
+  options: ContextBudgetOptions,
+  reason: "autocompact" | "reactive_compact" | "manualcompact",
+): CompactionResult {
   const splitIndex = computeKeepRecentSplit(messages, options);
   const recent = messages.slice(splitIndex);
   const older = messages.slice(0, splitIndex);
@@ -332,7 +314,7 @@ function manualCompactWithSummary(messages: readonly Message[], options: Context
     messages,
     recent,
     summary || "No older messages were available to summarize.",
-    "manualcompact",
+    reason,
     false,
   );
 }
@@ -775,21 +757,21 @@ function extractText(message: Message): string {
     .join("\n");
 }
 
-function buildReactiveCompactInstruction(error: Error): string {
-  return `${AUTO_COMPACT_INSTRUCTIONS}\n\nThe previous model request failed because the prompt was too long. Preserve enough task state to continue after this error. Error: ${error.message}`;
+function defaultRecentTokenBudget(contextWindowTokens: number | undefined): number | undefined {
+  if (!contextWindowTokens) return undefined;
+  return Math.max(4_000, Math.min(20_000, Math.floor(contextWindowTokens * 0.15)));
 }
 
-const MANUAL_COMPACT_INSTRUCTIONS = [
-  "Summarize the earlier agent conversation for continuation after a user-requested context compaction.",
-  "Preserve: user goals and constraints, decisions made, files or commands mentioned, completed work, pending work, task ids, important tool results, and any errors or blockers.",
-  "Drop: repetitive logs, transient progress chatter, and irrelevant wording.",
-  "Return concise plain text labels, not Markdown headings. Use labels like Goal:, Constraints:, Work completed:, Important facts:, Pending work:, Open risks:.",
-  "Do not include final-answer prose; this summary is an internal continuation state only.",
-].join("\n");
+function resolveCompactInputMaxChars(options: ContextBudgetOptions): number {
+  if (options.compactInputMaxChars !== undefined) return Math.max(1, options.compactInputMaxChars);
+  if (options.contextWindowTokens) return Math.max(12_000, Math.min(400_000, Math.floor(options.contextWindowTokens * 3)));
+  return 120_000;
+}
 
-const AUTO_COMPACT_INSTRUCTIONS = [
-  "Summarize the earlier agent conversation for continuation after context compaction.",
+const CHECKPOINT_COMPACT_INSTRUCTIONS = [
+  "Create a context-window checkpoint that lets another model continue the agent task without access to the earlier transcript.",
   "Preserve: user goals and constraints, decisions made, files or commands mentioned, completed work, pending work, task ids, important tool results, and any errors or blockers.",
+  "Carry forward facts from any prior compact_state and merge them with newer developments. Do not silently weaken or rewrite stable constraints.",
   "Drop: repetitive logs, transient progress chatter, and irrelevant wording.",
   "Return concise plain text labels, not Markdown headings. Use labels like Goal:, Constraints:, Work completed:, Important facts:, Pending work:, Open risks:.",
   "Do not include final-answer prose; this summary is an internal continuation state only.",

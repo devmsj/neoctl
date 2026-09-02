@@ -1,6 +1,6 @@
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
-import { ManualOnlyCompactor, ModelDrivenCompactor } from "../context/compaction.js";
+import { ModelDrivenCompactor } from "../context/compaction.js";
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
@@ -72,6 +72,7 @@ export interface QueryDependencies {
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
   taskNotificationSource?: TaskNotificationSource;
   exportToolCalls?: (calls: ToolUseRequest[]) => void;
+  applyCompaction?: (result: CompactionResult) => void | Promise<void>;
 }
 
 export interface TaskNotificationSource {
@@ -114,7 +115,7 @@ async function* queryLoop(
   options: QueryOptions,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
-  const compactor = dependencies.compactor ?? new ManualOnlyCompactor(new ModelDrivenCompactor(dependencies.modelGateway));
+  const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
   const appState = new InMemoryAppState(options.agentId, options.workspaceCwd);
   const maxTurns = options.maxTurns;
   let state = initialState;
@@ -171,9 +172,12 @@ async function* queryLoop(
     });
     if (prepared.compaction?.changed) {
       state = { ...state, messages: prepared.compactedMessages };
+      await dependencies.applyCompaction?.(prepared.compaction);
       yield { type: "state", phase: "compacting", detail: formatCompactionDetail(prepared.compaction) };
-      for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
-        yield { type: "message", message };
+      if (!dependencies.applyCompaction) {
+        for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
+          yield { type: "message", message };
+        }
       }
     }
 
@@ -360,7 +364,7 @@ async function* callModelForTurn(
   } catch (error) {
     const attempts = state.reactiveCompactAttempts ?? 0;
     if (isContextLengthError(error) && attempts < MAX_REACTIVE_COMPACT_ATTEMPTS) {
-      const compactor = dependencies.compactor ?? new ManualOnlyCompactor(new ModelDrivenCompactor(dependencies.modelGateway));
+      const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
       const normalized = error instanceof Error ? error : new Error(String(error));
       const reactiveMetrics = buildContextMetrics({
         model: activeModel,
@@ -387,9 +391,12 @@ async function* callModelForTurn(
         yield { type: "error", error: normalized };
         return { terminal: terminalForModelError(normalized) };
       }
+      await dependencies.applyCompaction?.(compacted);
       yield { type: "state", phase: "compacting", detail: `reactive compact retry ${attempts + 1}/${MAX_REACTIVE_COMPACT_ATTEMPTS} after prompt-too-long (keepRecent=${escalatedKeep})` };
-      for (const message of compacted.messages.filter((message) => message.metadata?.compactBoundary === true)) {
-        yield { type: "message", message };
+      if (!dependencies.applyCompaction) {
+        for (const message of compacted.messages.filter((message) => message.metadata?.compactBoundary === true)) {
+          yield { type: "message", message };
+        }
       }
       return {
         reactiveCompact: {
