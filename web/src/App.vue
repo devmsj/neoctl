@@ -353,11 +353,23 @@ const transcriptLoadingLabel = computed(() => {
   }
   return `正在${exactPhaseLabel.value}`
 })
+const cleanSessionTitle = (value) => String(value || '').replace(/设计/g, '').trim()
+const displaySessionTitle = (session) => cleanSessionTitle(session?.title) || '未命名会话'
 const realSessionTitle = computed(() => {
-  const title = state.session?.title?.trim() || ''
+  const title = cleanSessionTitle(state.session?.title)
   return title && title !== 'neo' ? title : ''
 })
-const currentTitle = computed(() => realSessionTitle.value || '未命名设计会话')
+const currentTitle = computed(() => realSessionTitle.value || '未命名会话')
+const sessionTitleViewport = ref(null)
+const sessionTitleText = ref(null)
+const titleShouldMarquee = ref(false)
+let sessionTitleResizeObserver
+const updateSessionTitleMarquee = async () => {
+  await nextTick()
+  const viewport = sessionTitleViewport.value
+  const text = sessionTitleText.value
+  titleShouldMarquee.value = Boolean(viewport && text && text.scrollWidth > viewport.clientWidth + 2)
+}
 const currentSessionId = computed(() => state.session?.sessionId || '暂无会话')
 const currentCwd = computed(() => state.cwd || '—')
 const modelName = computed(() => state.status?.metrics?.model || '模型未配置')
@@ -389,6 +401,7 @@ const filteredSessions = computed(() => {
   const sessions = state.sessions || []
   if (!query) return sessions
   return sessions.filter((session) => [
+    displaySessionTitle(session),
     session.title,
     session.sessionId,
     session.updatedAt,
@@ -451,6 +464,8 @@ watch(realSessionTitle, (title) => {
   document.title = title || '对话工作台'
 }, { immediate: true })
 
+watch(currentTitle, updateSessionTitleMarquee, { immediate: true })
+
 watch(sessionSearch, () => {
   sessionPage.value = 1
 })
@@ -467,6 +482,11 @@ onMounted(async () => {
   memoryStateTimer = setInterval(fetchMemoryState, 60_000)
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
+  if (typeof ResizeObserver !== 'undefined' && sessionTitleViewport.value) {
+    sessionTitleResizeObserver = new ResizeObserver(updateSessionTitleMarquee)
+    sessionTitleResizeObserver.observe(sessionTitleViewport.value)
+  }
+  updateSessionTitleMarquee()
 })
 
 onBeforeUnmount(() => {
@@ -479,6 +499,7 @@ onBeforeUnmount(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (cpaStateTimer) clearInterval(cpaStateTimer)
   if (memoryStateTimer) clearInterval(memoryStateTimer)
+  if (sessionTitleResizeObserver) sessionTitleResizeObserver.disconnect()
   document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
@@ -3157,9 +3178,18 @@ function createMobileSession() {
         </button>
       </nav>
 
-      <button class="sidebar-card session-entry" type="button" @click="state.activePanel = 'chat'">
-        <div class="eyebrow">当前会话</div>
-        <div class="session-title-line"><strong>{{ currentTitle }}</strong></div>
+      <button class="sidebar-card session-entry" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
+        <span class="session-entry-icon" aria-hidden="true">
+          <svg class="ui-icon" viewBox="0 0 20 20">
+            <path d="M4.5 5.5h11M4.5 10h7M4.5 14.5h5" />
+          </svg>
+        </span>
+        <span class="session-entry-main">
+          <span ref="sessionTitleViewport" :class="['session-title-line', { marquee: titleShouldMarquee }]">
+            <strong ref="sessionTitleText">{{ currentTitle }}</strong>
+            <strong v-if="titleShouldMarquee" aria-hidden="true">{{ currentTitle }}</strong>
+          </span>
+        </span>
       </button>
 
       <section class="sidebar-card prompt-stack">
@@ -3532,7 +3562,7 @@ function createMobileSession() {
             <article v-for="session in paginatedSessions" :key="session.sessionId" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
               <div class="session-card-main">
                 <div class="session-card-title">
-                  <strong>{{ session.title || '未命名会话' }}</strong>
+                  <strong>{{ displaySessionTitle(session) }}</strong>
                   <span v-if="isCurrentSession(session.sessionId)" class="current-pill">当前</span>
                   <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
                 </div>
