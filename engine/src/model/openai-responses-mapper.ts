@@ -86,6 +86,7 @@ export async function* normalizeResponsesStream(
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   let responseId: string | undefined;
+  let reasoningPartKey: string | undefined;
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
@@ -109,8 +110,13 @@ export async function* normalizeResponsesStream(
     if (isReasoningDeltaEvent(type)) {
       const delta = extractThinkingDelta(event);
       if (delta) {
-        thinkingParts.push(delta);
-        yield { type: "thinking_delta", text: delta };
+        const nextPartKey = reasoningPartKeyForEvent(type, event);
+        const text = reasoningPartKey !== undefined && nextPartKey !== undefined && reasoningPartKey !== nextPartKey
+          ? `\n\n${delta}`
+          : delta;
+        reasoningPartKey = nextPartKey ?? reasoningPartKey;
+        thinkingParts.push(text);
+        yield { type: "thinking_delta", text };
       }
     }
 
@@ -156,10 +162,10 @@ export async function* normalizeResponsesStream(
     if (type === "response.completed") {
       const response = event.response as Record<string, unknown> | undefined;
       responseId = asString(response?.id) ?? responseId;
-      const text = textParts.join("");
-      if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
       const thinking = collectThinkingFromResponse(response, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
+      const text = textParts.join("");
+      if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
       const usage = normalizeUsage(response?.usage);
       if (usage) yield { type: "usage", usage };
       yield { type: "response_completed", responseId, stopReason: asString(response?.status) ?? "completed", usage };
@@ -167,6 +173,8 @@ export async function* normalizeResponsesStream(
 
     if (type === "response.incomplete") {
       const response = event.response as Record<string, unknown> | undefined;
+      const thinking = collectThinkingFromResponse(response, thinkingParts);
+      if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
       const usage = normalizeUsage(response?.usage);
       yield {
         type: "response_incomplete",
@@ -205,10 +213,10 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
     }
   }
 
-  const text = textParts.join("");
-  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
   const thinking = collectThinkingFromResponse(body, thinkingParts);
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
+  const text = textParts.join("");
+  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
   if (body.status === "incomplete") {
@@ -225,8 +233,8 @@ function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean 
 function isReasoningDeltaEvent(type: string | undefined): boolean {
   return type === "response.reasoning_summary.delta" ||
     type === "response.reasoning_summary_text.delta" ||
-    type === "response.reasoning.delta" ||
-    type === "response.output_item.delta";
+    type === "response.reasoning_text.delta" ||
+    type === "response.reasoning.delta";
 }
 
 function extractThinkingDelta(event: Record<string, unknown>): string {
@@ -244,36 +252,41 @@ function collectThinkingFromResponse(response: Record<string, unknown> | undefin
       const record = item as Record<string, unknown>;
       return record.type === "reasoning" ? extractReasoningText(record) : "";
     })
-    .join("");
-  return dedupeThinkingText(streamed, fromOutput).trim();
+    .filter(Boolean)
+    .join("\n\n");
+  return (fromOutput || streamed).trim();
+}
+
+function reasoningPartKeyForEvent(type: string | undefined, event: Record<string, unknown>): string | undefined {
+  const itemId = asString(event.item_id) ?? "reasoning";
+  if (type === "response.reasoning_summary.delta" || type === "response.reasoning_summary_text.delta") {
+    return `${itemId}:summary:${asNumber(event.summary_index) ?? 0}`;
+  }
+  if (type === "response.reasoning_text.delta" || type === "response.reasoning.delta") {
+    return `${itemId}:content:${asNumber(event.content_index) ?? 0}`;
+  }
+  return undefined;
 }
 
 function extractReasoningText(item: Record<string, unknown>): string {
-  const direct = asString(item.text) ?? asString(item.summary_text) ?? asString(item.content);
-  if (direct) return direct;
+  const structuredParts: string[] = [];
+  const direct = asString(item.text) ?? asString(item.summary_text);
 
   const summary = Array.isArray(item.summary) ? item.summary : [];
-  const summaryText = summary.map((part) => {
+  structuredParts.push(...summary.map((part) => {
     if (typeof part === "string") return part;
     if (!part || typeof part !== "object") return "";
     const record = part as Record<string, unknown>;
     return asString(record.text) ?? asString(record.summary_text) ?? "";
-  }).join("");
-  if (summaryText) return summaryText;
+  }).filter(Boolean));
 
   const content = Array.isArray(item.content) ? item.content : [];
-  return content.map((part) => {
+  structuredParts.push(...content.map((part) => {
     if (typeof part === "string") return part;
     if (!part || typeof part !== "object") return "";
     const record = part as Record<string, unknown>;
     return asString(record.text) ?? asString(record.summary_text) ?? "";
-  }).join("");
-}
+  }).filter(Boolean));
 
-function dedupeThinkingText(streamed: string, completed: string): string {
-  if (!streamed) return completed;
-  if (!completed || completed === streamed) return streamed;
-  if (completed.startsWith(streamed)) return completed;
-  if (streamed.startsWith(completed)) return streamed;
-  return `${streamed}\n${completed}`;
+  return structuredParts.length > 0 ? structuredParts.join("\n\n") : (direct ?? "");
 }

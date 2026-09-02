@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 .neoctl-web
+.run
 dist-ssr
 *.local
 

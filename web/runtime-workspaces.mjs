@@ -44,17 +44,16 @@ export function createWorkspaceRuntimeManager(options) {
         if (!snapshot) throw new Error('session transcripts are disabled');
         await this.loadSessionPlugins(snapshot.sessionId);
         await registry.set(snapshot.sessionId, cwd);
-        await this.refreshSessionView({ kind: 'system', text: `new session ${snapshot.sessionId}` });
+        await this.refreshSessionView();
         return { ok: true, cwd };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.append({ kind: 'error', text: message });
-        return { ok: false, error: message };
+        return { ok: false, errorCode: 'SESSION_CREATE_FAILED', error: message };
       }
     }
 
     async resumeSession(sessionId) {
-      if (!sessionId) return { ok: false, error: 'sessionId is required' };
+      if (!sessionId) return { ok: false, errorCode: 'INVALID_REQUEST', error: 'sessionId is required' };
       if (this.backgroundSessionRuns.has(sessionId)) return super.resumeSession(sessionId);
       try {
         await this.detachRunningForeground('session switch');
@@ -65,12 +64,11 @@ export function createWorkspaceRuntimeManager(options) {
         const snapshot = this.runtime.engine.snapshot().session;
         if (!snapshot) throw new Error('session transcripts are disabled');
         await this.loadSessionPlugins(snapshot.sessionId);
-        await this.refreshSessionView({ kind: 'system', text: `resumed ${snapshot.sessionId}` });
+        await this.refreshSessionView();
         return { ok: true, cwd };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.append({ kind: 'error', text: message });
-        return { ok: false, error: message };
+        return { ok: false, errorCode: 'SESSION_RESUME_FAILED', error: message };
       }
     }
 

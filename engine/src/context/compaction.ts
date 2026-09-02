@@ -602,7 +602,7 @@ function buildSmartMessageSummary(message: Message): string {
       const input = typeof block.input === "string" ? block.input : JSON.stringify(block.input);
       parts.push(`${block.name}(${input.slice(0, 120)})`);
     } else if (block.type === "thinking") {
-      parts.push("[thinking omitted]");
+      continue;
     }
   }
   return `- ${message.role}: ${parts.join(" | ")}`;
@@ -661,7 +661,7 @@ function serializeMessageForPure(message: Message): string {
     .map((block) => {
       if (block.type === "text") return block.text;
       if (block.type === "image") return block.label ?? `[image ${block.mimeType}]`;
-      if (block.type === "thinking") return "[assistant thinking omitted]";
+      if (block.type === "thinking") return "";
       if (block.type === "tool_use") return `tool_use ${block.name}: ${sanitizeToolPayload(block.input)}`;
       if (block.type === "tool_result") return `tool_result ${block.name}: ${block.ok ? "ok" : "error"}`;
       return "";
@@ -705,13 +705,15 @@ function summarizePathForPureState(value: string): string {
 }
 
 function serializeTranscriptForSummary(messages: readonly Message[], maxChars: number): string {
-  const lines = messages.map((message) => {
+  const lines = messages.flatMap((message) => {
+    const content = serializeMessageForSummary(message).trim();
+    if (!content) return [];
     const metadata = [
       message.providerMessageId ? `provider=${message.providerMessageId}` : undefined,
       message.requestId ? `request=${message.requestId}` : undefined,
       message.isMeta ? "meta" : undefined,
     ].filter(Boolean).join(" ");
-    return `<message role="${message.role}"${metadata ? ` ${metadata}` : ""}>\n${serializeMessageForSummary(message)}\n</message>`;
+    return [`<message role="${message.role}"${metadata ? ` ${metadata}` : ""}>\n${content}\n</message>`];
   });
   const joined = lines.join("\n\n");
   return joined.length > maxChars ? joined.slice(Math.max(0, joined.length - maxChars)) : joined;
@@ -741,7 +743,7 @@ function serializeBlock(block: MessageBlock): string {
     const estimatedTokenEquivalentChars = tiles * 85 * 4;
     return `[image ${block.label ?? "unlabeled"} ${block.mimeType}; estimated visual token chars=${estimatedTokenEquivalentChars}; pixels are not text-summarized]`;
   }
-  if (block.type === "thinking") return `thinking: ${block.text}`;
+  if (block.type === "thinking") return "";
   if (block.type === "tool_use") return `tool_use ${block.name}: ${JSON.stringify(block.input)}`;
   if (block.type === "tool_result") return `tool_result ${block.name}: ${serializeToolOutput(block.output)}`;
   return "";

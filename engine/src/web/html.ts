@@ -179,6 +179,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     #input { flex: 1; min-height: 32px; max-height: 35vh; resize: none; border: 0; outline: 0; padding: 7px 0; background: transparent; color: var(--text); font: inherit; line-height: 1.45; caret-color: var(--cyan); }
     #input.command { color: var(--cyan); }
     #input.locked { color: var(--muted); }
+    #toast { position: fixed; right: 18px; bottom: 18px; z-index: 30; max-width: min(420px, calc(100vw - 36px)); padding: 10px 13px; border: 1px solid #31556b; background: #10141d; color: var(--text); box-shadow: 0 14px 38px rgba(0,0,0,.42); }
   </style>
 </head>
 <body>
@@ -188,6 +189,7 @@ export const WEB_HTML = String.raw`<!doctype html>
   <div id="status"></div>
   <div id="queued"></div>
   <div id="panel"></div>
+  <div id="toast" hidden></div>
   <div id="composerWrap">
     <div id="completions"></div>
     <div id="composer"><div id="prompt">●</div><textarea id="input" spellcheck="false" autofocus></textarea></div>
@@ -219,6 +221,29 @@ const input = document.getElementById('input');
 const completionsEl = document.getElementById('completions');
 const brand = document.getElementById('brand');
 const connection = document.getElementById('connection');
+const toastEl = document.getElementById('toast');
+const ACTION_ERROR_MESSAGES = {
+  INVALID_REQUEST: '请求参数无效',
+  SESSION_ACTIVE: '当前会话不能删除，请先切换到其他会话',
+  SESSION_RUNNING: '运行中的会话不能删除，请等待运行结束',
+  SESSION_NOT_FOUND: '会话不存在或已被删除',
+  SESSION_RESUME_FAILED: '打开会话失败',
+  SESSION_CREATE_FAILED: '新建会话失败',
+  SESSION_DELETE_FAILED: '删除会话失败',
+  LOGIN_INVALID: '模型配置无效',
+  LOGIN_SAVE_FAILED: '模型配置保存失败',
+  WEB_REQUEST_FAILED: '请求处理失败'
+};
+let toastTimer;
+function notify(message) {
+  toastEl.textContent = message || '操作失败';
+  toastEl.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3600);
+}
+function actionErrorMessage(value, fallback) {
+  return ACTION_ERROR_MESSAGES[value && value.errorCode] || fallback || '操作失败';
+}
 
 const sessionsPage = () => state.view === 'sessions';
 const openSessionsOnLoad = state.view === 'sessions';
@@ -544,11 +569,14 @@ async function openSessionsPanel() {
   renderPanel();
   panelEl.className = 'open';
   panelEl.innerHTML = '<div class="panel-title">Sessions</div><div class="panel-muted">loading…</div>';
-  const res = await fetch('/api/sessions');
-  const body = await res.json();
-  state.sessions = body.sessions || [];
-  state.runningSessionIds = body.runningSessionIds || [];
-  renderPanel();
+  try {
+    const res = await fetch('/api/sessions');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) { notify(actionErrorMessage(body, '加载会话失败')); return; }
+    state.sessions = body.sessions || [];
+    state.runningSessionIds = body.runningSessionIds || [];
+    renderPanel();
+  } catch { notify('无法连接运行时'); }
 }
 function renderSessionsPanel() {
   const sessions = state.sessions || [];
@@ -586,6 +614,8 @@ async function createAndEnterSession() {
   if (result.ok) showChatView();
 }
 async function openSessionsPanelAfterDelete(sessionId) {
+  if (state.session && state.session.sessionId === sessionId) { notify(ACTION_ERROR_MESSAGES.SESSION_ACTIVE); return; }
+  if ((state.runningSessionIds || []).includes(sessionId)) { notify(ACTION_ERROR_MESSAGES.SESSION_RUNNING); return; }
   const session = (state.sessions || []).find(s => s.sessionId === sessionId);
   const label = session ? (session.title || session.sessionId) : sessionId;
   if (!confirm('Delete session "' + label + '"? This cannot be undone.')) return;
@@ -596,9 +626,13 @@ async function openLoginPanel() {
   state.panel = 'login';
   panelEl.className = 'open';
   panelEl.innerHTML = '<div class="panel-title">Provider login</div><div class="panel-muted">loading…</div>';
-  const res = await fetch('/api/login');
-  state.login = await res.json();
-  renderPanel();
+  try {
+    const res = await fetch('/api/login');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) { notify(actionErrorMessage(body, '加载模型配置失败')); return; }
+    state.login = body;
+    renderPanel();
+  } catch { notify('无法连接运行时'); }
 }
 function renderLoginPanel() {
   const login = state.login || state.interactive.login;
@@ -652,7 +686,17 @@ function renderCompletions() {
 function selectedCompletion() { const list = completions(); return list.length ? list[Math.max(0, Math.min(state.completionIndex, list.length - 1))] : undefined; }
 function completeSelection() { const c = selectedCompletion(); if (!c) return false; const cursor = input.selectionStart || 0; input.value = c.insertText + input.value.slice(cursor); input.selectionStart = input.selectionEnd = c.insertText.length; autosize(); renderCompletions(); return true; }
 function updateInputPlaceholder() { input.placeholder = 'Type a message, or /help for commands'; }
-async function postJson(url, body) { const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const value = await res.json(); if (!value.ok && value.error) alert(value.error); return value; }
+async function postJson(url, body) {
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const value = await res.json().catch(() => ({}));
+    if (!res.ok || value.ok === false || value.error) notify(actionErrorMessage(value, '操作失败'));
+    return value;
+  } catch {
+    notify('无法连接运行时');
+    return { ok: false, errorCode: 'NETWORK_ERROR', error: 'network request failed' };
+  }
+}
 async function saveLoginPanel() {
   const login = state.login;
   if (!login) return;
@@ -691,7 +735,6 @@ async function submit() {
     autosize();
     renderCompletions();
     const result = await postJson('/api/sessions/new', {});
-    if (!result.ok && result.error) alert(result.error);
     return;
   }
   const attachments = attachmentsForText(text);
@@ -707,7 +750,7 @@ async function submit() {
   renderCompletions();
   const res = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, attachments }) });
   const body = await res.json();
-  if (!body.ok && body.error) alert(body.error);
+  if (!body.ok && body.error) notify(actionErrorMessage(body, '发送失败'));
 }
 transcript.addEventListener('scroll', updateScrollBottomAffordance, { passive: true });
 scrollBottom.addEventListener('click', () => { transcript.scrollTo({ top: transcript.scrollHeight, behavior: 'smooth' }); updateScrollBottomAffordance(); });
@@ -725,9 +768,13 @@ panelEl.addEventListener('click', async (e) => {
 panelEl.addEventListener('change', async (e) => {
   const provider = e.target.closest('[data-login-provider]');
   if (!provider) return;
-  const res = await fetch('/api/login?provider=' + encodeURIComponent(provider.value));
-  state.login = await res.json();
-  renderPanel();
+  try {
+    const res = await fetch('/api/login?provider=' + encodeURIComponent(provider.value));
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) { notify(actionErrorMessage(body, '加载模型配置失败')); return; }
+    state.login = body;
+    renderPanel();
+  } catch { notify('无法连接运行时'); }
 });
 transcript.addEventListener('click', (e) => {
   const button = e.target.closest('.tool-toggle');

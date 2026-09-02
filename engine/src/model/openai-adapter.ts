@@ -67,6 +67,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     attempt: number,
   ): AsyncGenerator<ModelStreamEvent> {
     if (endpoint === "chat") {
+      this.assertChatCompatibility(request);
       yield* this.streamChat(request);
       return;
     }
@@ -77,6 +78,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     } catch (error) {
       const normalized = normalizeUnknownError(error, this.name);
       if (endpoint === "auto" && shouldFallbackToChat(normalized)) {
+        this.assertChatCompatibility(request);
         yield { type: "provider_event", event: { type: "endpoint_fallback", from: "responses", to: "chat", reason: normalized.message, attempt } };
         yield* this.streamChat(request);
         return;
@@ -157,6 +159,23 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
         retryable: false,
       });
     }
+  }
+
+  private assertChatCompatibility(request: ModelRequest): void {
+    const summary = this.reasoningFor(request)?.summary;
+    if (!summary) return;
+    throw new ModelAPIError({
+      category: "invalid_request",
+      provider: this.name,
+      code: "reasoning_summary_requires_responses",
+      message: `Reasoning summary '${summary}' requires the Responses API endpoint`,
+      retryable: false,
+    });
+  }
+
+  private reasoningFor(request: ModelRequest): ReasoningConfig | undefined {
+    if (request.reasoning === null) return undefined;
+    return request.reasoning ?? this.options.defaultReasoning ?? undefined;
   }
 
   private async authHeaders(): Promise<Record<string, string>> {

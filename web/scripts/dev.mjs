@@ -141,7 +141,7 @@ async function routeRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/prompt-library') {
       const body = await readJsonBody(req);
       const item = normalizePromptItem(body?.item);
-      if (!item) return sendJson(res, { error: 'invalid prompt item' }, 400);
+      if (!item) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'invalid prompt item' }, 400);
       const items = await readPromptLibrary();
       const index = items.findIndex((entry) => entry.id === item.id);
       if (index >= 0) items.splice(index, 1, item);
@@ -152,7 +152,7 @@ async function routeRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/prompt-library/delete') {
       const body = await readJsonBody(req);
       const id = String(body?.id || '').trim();
-      if (!id) return sendJson(res, { error: 'missing prompt id' }, 400);
+      if (!id) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'missing prompt id' }, 400);
       const items = await readPromptLibrary();
       const nextItems = items.filter((entry) => entry.id !== id);
       await writePromptLibrary(nextItems);
@@ -173,7 +173,7 @@ async function routeRequest(req, res) {
     }
     return proxyToRuntime(req, res, url);
   } catch (error) {
-    sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
+    sendJson(res, { errorCode: 'WEB_REQUEST_FAILED', error: error instanceof Error ? error.message : String(error) }, 500);
   }
 }
 

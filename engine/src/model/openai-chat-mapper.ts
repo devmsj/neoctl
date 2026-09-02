@@ -21,7 +21,6 @@ export interface OpenAIChatMapperOptions {
   streamIdleTimeoutMs?: number;
   defaultReasoning?: ReasoningConfig | null;
   includeMetadata?: boolean;
-  includeReasoningContent?: boolean;
   providerName?: string;
 }
 
@@ -33,7 +32,7 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
   const reasoning = reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined);
   return dropUndefined({
     model,
-    messages: buildChatMessages(request, { includeReasoningContent: options.includeReasoningContent }),
+    messages: buildChatMessages(request),
     tools: tools.length ? tools : undefined,
     tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     max_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
@@ -85,7 +84,7 @@ export async function* normalizeChatStream(
         yield { type: "assistant_delta", text: content };
       }
 
-      const reasoningContent = options.includeReasoningContent ? asString(delta?.reasoning_content) : undefined;
+      const reasoningContent = asString(delta?.reasoning_content);
       if (reasoningContent) {
         thinkingParts.push(reasoningContent);
         yield { type: "thinking_delta", text: reasoningContent };
@@ -115,10 +114,10 @@ export async function* normalizeChatStream(
     }
   }
 
-  const text = textParts.join("");
-  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
   const thinking = thinkingParts.join("").trim();
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
+  const text = textParts.join("");
+  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
   yield { type: "response_completed", responseId, stopReason: "completed", usage };
 }
 
@@ -129,10 +128,10 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   const choices = Array.isArray(body.choices) ? body.choices : [];
   for (const choice of choices as Record<string, unknown>[]) {
     const message = choice.message as Record<string, unknown> | undefined;
-    const content = asString(message?.content);
-    if (content) yield { type: "assistant_message", message: createTextMessage("assistant", content) };
     const reasoningContent = asString(message?.reasoning_content);
     if (reasoningContent) yield { type: "assistant_message", message: createThinkingMessage(reasoningContent) };
+    const content = asString(message?.content);
+    if (content) yield { type: "assistant_message", message: createTextMessage("assistant", content) };
     const toolCalls = Array.isArray(message?.tool_calls) ? message?.tool_calls : [];
     for (const toolCall of toolCalls as Record<string, unknown>[]) {
       const fn = toolCall.function as Record<string, unknown> | undefined;

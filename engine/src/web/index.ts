@@ -166,6 +166,15 @@ interface UiLine {
   image?: UiLineImage;
 }
 
+type WebActionFailure = { ok: false; error: string; errorCode: string };
+type WebActionResult<T extends object = object> = ({ ok: true } & T) | WebActionFailure;
+
+// UI actions report structured results to the client. They must not append UiLine
+// entries: the transcript is reserved for conversation, tool, and user-command events.
+function actionFailure(errorCode: string, error: string): WebActionFailure {
+  return { ok: false, errorCode, error };
+}
+
 interface UiStatus {
   phase: string;
   detail?: string;
@@ -619,24 +628,24 @@ export class WebRepl {
     };
   }
 
-  async setSessionPlugins(value: unknown): Promise<{ ok: true; state: ReturnType<WebRepl["sessionPlugins"]> } | { ok: false; error: string }> {
-    if (this.busy) return { ok: false, error: "cannot change session plugins while a response is running" };
-    if (!isRecord(value)) return { ok: false, error: "plugin overrides must be an object" };
+  async setSessionPlugins(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionPlugins"]> }>> {
+    if (this.busy) return actionFailure("PLUGIN_UPDATE_BLOCKED", "cannot change session plugins while a response is running");
+    if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "plugin overrides must be an object");
     const support = this.runtime.pluginSupport;
-    if (!support) return { ok: false, error: "web plugins are not configured" };
+    if (!support) return actionFailure("PLUGIN_NOT_CONFIGURED", "web plugins are not configured");
     const available = new Set(support.catalog.map((plugin) => plugin.id));
     const overrides: Record<string, boolean> = {};
     for (const [id, mode] of Object.entries(value)) {
-      if (!available.has(id)) return { ok: false, error: `unknown web plugin: ${id}` };
+      if (!available.has(id)) return actionFailure("PLUGIN_INVALID", `unknown web plugin: ${id}`);
       if (mode === "enabled" || mode === true) overrides[id] = true;
       else if (mode === "disabled" || mode === false) overrides[id] = false;
-      else if (mode !== "inherit" && mode !== null && mode !== undefined) return { ok: false, error: `invalid plugin mode: ${id}` };
+      else if (mode !== "inherit" && mode !== null && mode !== undefined) return actionFailure("PLUGIN_INVALID", `invalid plugin mode: ${id}`);
     }
     try {
       await this.applySessionPluginOverrides(overrides, true);
       return { ok: true, state: this.sessionPlugins() };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return actionFailure("PLUGIN_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -727,8 +736,8 @@ export class WebRepl {
     return { sessions, runningSessionIds };
   }
 
-  async resumeSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (!sessionId) return { ok: false, error: "sessionId is required" };
+  async resumeSession(sessionId: string): Promise<WebActionResult> {
+    if (!sessionId) return actionFailure("INVALID_REQUEST", "sessionId is required");
     try {
       const running = this.backgroundSessionRuns.get(sessionId);
       if (running) {
@@ -741,16 +750,15 @@ export class WebRepl {
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
       await this.loadSessionPlugins(snapshot.sessionId);
-      await this.refreshSessionView(systemLine(formatResume(snapshot)));
+      await this.refreshSessionView();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.append({ kind: "error", text: message });
-      return { ok: false, error: message };
+      return actionFailure("SESSION_RESUME_FAILED", message);
     }
   }
 
-  async newSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+  async newSession(): Promise<WebActionResult> {
     try {
       await this.detachRunningForeground("new session");
       this.runtime.engine = this.runtime.engine.forkForSession(undefined, false);
@@ -758,16 +766,15 @@ export class WebRepl {
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
       await this.loadSessionPlugins(snapshot.sessionId);
-      await this.refreshSessionView(systemLine(`new session ${snapshot.sessionId}`));
+      await this.refreshSessionView();
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.append({ kind: "error", text: message });
-      return { ok: false, error: message };
+      return actionFailure("SESSION_CREATE_FAILED", message);
     }
   }
 
-  private async refreshSessionView(line?: Omit<UiLine, "id">): Promise<void> {
+  private async refreshSessionView(): Promise<void> {
     const metrics = await this.runtime.engine.contextMetrics();
     this.runtime.usage.reset();
     this.status = initialStatus(this.runtime, metrics);
@@ -778,22 +785,25 @@ export class WebRepl {
     this.thinkingLineId = undefined;
     this.finalizedThinkingLineId = undefined;
     this.liveToolLineIds.clear();
-    if (line) this.append(line);
     this.broadcastSync();
     this.publishRuntimeContext();
   }
 
-  async deleteSession(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (!sessionId) return { ok: false, error: "sessionId is required" };
+  async deleteSession(sessionId: string): Promise<WebActionResult> {
+    if (!sessionId) return actionFailure("INVALID_REQUEST", "sessionId is required");
+    if (this.runtime.engine.snapshot().session?.sessionId === sessionId) {
+      return actionFailure("SESSION_ACTIVE", "cannot delete the active session");
+    }
+    if (this.backgroundSessionRuns.has(sessionId)) {
+      return actionFailure("SESSION_RUNNING", "cannot delete a running session");
+    }
     try {
       const deleted = await this.runtime.engine.deleteSession(sessionId);
-      if (!deleted) return { ok: false, error: `session not found: ${sessionId}` };
-      this.append(systemLine(`deleted session ${sessionId}`));
+      if (!deleted) return actionFailure("SESSION_NOT_FOUND", `session not found: ${sessionId}`);
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.append({ kind: "error", text: message });
-      return { ok: false, error: message };
+      return actionFailure("SESSION_DELETE_FAILED", message);
     }
   }
 
@@ -801,7 +811,7 @@ export class WebRepl {
     return this.runtime.engine.getAppPrompt();
   }
 
-  setAppPrompt(payload: WebSetAppPromptPayload): { ok: true; appPrompt: ReturnType<QueryEngine["getAppPrompt"]> } | { ok: false; error: string } {
+  setAppPrompt(payload: WebSetAppPromptPayload): WebActionResult<{ appPrompt: ReturnType<QueryEngine["getAppPrompt"]> }> {
     try {
       const shouldClear = payload.clear === true || !payload.content?.trim();
       const appPrompt = shouldClear
@@ -827,7 +837,7 @@ export class WebRepl {
       return { ok: true, appPrompt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: message };
+      return actionFailure("PROMPT_UPDATE_FAILED", message);
     }
   }
 
@@ -847,13 +857,13 @@ export class WebRepl {
     return body.length ? { body, mimeType } : undefined;
   }
 
-  async setFastMode(enabled: boolean): Promise<{ ok: true; fastMode: boolean } | { ok: false; error: string }> {
+  async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean }>> {
     try {
       const fastMode = await this.runtime.engine.setFastMode(enabled);
       this.broadcastSync();
       return { ok: true, fastMode };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return actionFailure("FAST_MODE_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -862,12 +872,12 @@ export class WebRepl {
     return createLoginFormPayload(this.runtime.envPath, provider);
   }
 
-  async saveLogin(providerValue: string, values: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+  async saveLogin(providerValue: string, values: Record<string, string>): Promise<WebActionResult> {
     const provider = parseLoginProvider(providerValue);
-    if (!provider) return { ok: false, error: "provider must be openai" };
+    if (!provider) return actionFailure("LOGIN_INVALID", "provider must be openai");
     const payload: LoginFormPayload = { ...createLoginFormPayload(this.runtime.envPath, provider), provider, values };
     const validationError = validateLoginFormPayload(payload);
-    if (validationError) return { ok: false, error: validationError };
+    if (validationError) return actionFailure("LOGIN_INVALID", validationError);
     try {
       await saveLoginPayloadToEnv(payload);
       applyLoginPayloadToProcessEnv(payload);
@@ -881,13 +891,11 @@ export class WebRepl {
       this.runtime.defaultReasoning = config.defaultReasoning;
       const metrics = await this.runtime.engine.contextMetrics();
       this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
-      this.append(systemLine(`Saved ${provider} login to ${this.runtime.envPath}\n${formatModelSettings(this.runtime.engine.getModelSettings(), this.runtime.defaultReasoning)}`, EXPANDED_SUMMARY_MAX_LINES));
       this.publishRuntimeContext();
       return { ok: true };
     } catch (error) {
       const message = `Login save failed: ${error instanceof Error ? error.message : String(error)}`;
-      this.append({ kind: "error", text: message });
-      return { ok: false, error: message };
+      return actionFailure("LOGIN_SAVE_FAILED", message);
     }
   }
 
@@ -1009,7 +1017,6 @@ export class WebRepl {
     this.pendingUserImageEchoMessageId = undefined;
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined };
-    this.append(systemLine(`Detached running ${sessionId} to background for ${reason}.`));
     return true;
   }
 
@@ -1021,7 +1028,7 @@ export class WebRepl {
     this.interruptArmed = false;
     this.foregroundRun = run.promise;
     this.suppressReattachedStreaming.add(run.engine);
-    await this.refreshSessionView(systemLine(`reattached running session ${run.sessionId}`));
+    await this.refreshSessionView();
     this.setBusy(true);
     this.setStatus({ ...this.status, phase: "running", detail: "working" });
   }
@@ -1524,7 +1531,7 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     }
     sendJson(res, { error: "not found" }, 404);
   } catch (error) {
-    sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
+    sendJson(res, { errorCode: "WEB_REQUEST_FAILED", error: error instanceof Error ? error.message : String(error) }, 500);
   }
 }
 
@@ -1623,7 +1630,7 @@ function restoredHistoryLines(runtime: WebRuntime): Omit<UiLine, "id">[] {
     lines.push(line);
     return lines.length;
   };
-  for (const message of runtime.engine.getHistoryMessages()) renderMessage(message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: false });
+  for (const message of runtime.engine.getHistoryMessages()) renderMessage(message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: true });
   return lines;
 }
 
@@ -1817,7 +1824,7 @@ const LOGIN_PROVIDERS: LoginProviderName[] = ["openai"];
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
   { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
-  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "800" },
+  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared" },
   { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
@@ -1880,6 +1887,9 @@ function validateLoginFormPayload(payload: LoginFormPayload): string | undefined
   for (const fieldKey of ["maxOutputTokens", "timeoutMs", "streamIdleTimeoutMs", "maxRetries"]) {
     const value = payload.values[fieldKey]?.trim();
     if (value && !Number.isFinite(Number(value))) return `${fieldKey} must be a number.`;
+  }
+  if (payload.provider === "openai" && payload.values.endpoint === "chat" && payload.values.reasoningSummary?.trim()) {
+    return "Reasoning summary requires the Responses API endpoint.";
   }
   return undefined;
 }
@@ -1963,10 +1973,6 @@ function parseEnvLine(line: string): { key: string; value: string } | undefined 
 function formatEnvValue(value: string): string {
   if (/^[A-Za-z0-9_./:@-]*$/.test(value)) return value;
   return JSON.stringify(value);
-}
-
-function formatResume(snapshot: { sessionId: string; resumedMessages: number; transcriptPath: string }): string {
-  return `resumed session ${snapshot.sessionId}: ${snapshot.resumedMessages} messages from ${snapshot.transcriptPath}`;
 }
 
 function applyEnvUpdatesToProcess(updates: Record<string, string | undefined>): void {

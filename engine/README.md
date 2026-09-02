@@ -63,7 +63,7 @@ OPENAI_ENDPOINT=auto
 # Shared model runtime settings
 MODEL_REASONING_EFFORT=high
 MODEL_REASONING_SUMMARY=auto
-MODEL_MAX_OUTPUT_TOKENS=800
+# MODEL_MAX_OUTPUT_TOKENS=32768
 MODEL_TIMEOUT_MS=120000
 MODEL_STREAM_IDLE_TIMEOUT_MS=120000
 MODEL_MAX_RETRIES=2
@@ -209,7 +209,7 @@ src/
 | `OPENAI_ENDPOINT` | `responses`、`chat` 或 `auto` |
 | `MODEL_REASONING_EFFORT` | 共享运行设置：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `MODEL_REASONING_SUMMARY` | `auto`、`concise`、`detailed` |
-| `MODEL_MAX_OUTPUT_TOKENS` | 默认最大输出 token，未设置时为 800 |
+| `MODEL_MAX_OUTPUT_TOKENS` | 可选的最大输出 token；未设置时采用 API/模型默认值 |
 | `MODEL_CONTEXT_WINDOW_TOKENS` | 覆盖模型上下文窗口估算 |
 | `MODEL_TIMEOUT_MS` | 请求超时 |
 | `MODEL_STREAM_IDLE_TIMEOUT_MS` | 流式响应空闲超时 |

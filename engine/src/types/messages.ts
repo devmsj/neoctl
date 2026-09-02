@@ -61,6 +61,19 @@ export function createThinkingMessage(text: string, signature?: string): Message
   };
 }
 
+/**
+ * Thinking blocks are local observability data. They may be displayed and
+ * persisted, but must never become model input on a later request.
+ */
+export function withoutThinkingBlocks(messages: readonly Message[]): Message[] {
+  return messages.flatMap((message) => {
+    const blocks = message.blocks.filter((block) => block.type !== "thinking");
+    if (blocks.length === message.blocks.length) return [message];
+    if (blocks.length === 0) return [];
+    return [{ ...message, blocks }];
+  });
+}
+
 export function createToolResultMessage(request: ToolUseRequest, ok: boolean, output: unknown): Message {
   return {
     id: cryptoId(),

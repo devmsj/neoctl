@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PromptSection } from "../context/prompts.js";
 import type { ToolDefinition } from "../tools/tool.js";
-import type { Message, MessageBlock } from "../types/messages.js";
+import { withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import type { PromptCacheDiagnostics, PromptCacheSectionMetric } from "../types/events.js";
 import { estimateTextTokens } from "./context-metrics.js";
 import { buildPromptCacheIdentity } from "./prompt-cache-key.js";
@@ -15,11 +15,12 @@ export interface BuildPromptCacheDiagnosticsInput {
 }
 
 export function buildPromptCacheDiagnostics(input: BuildPromptCacheDiagnosticsInput): PromptCacheDiagnostics {
+  const messages = withoutThinkingBlocks(input.messages);
   const promptSections = input.promptSections.map(sectionMetric);
   const toolsSerialized = serializeToolDefinitions(input.tools);
-  const messagesSerialized = input.messages.map(serializeMessageForHash).join("\n");
-  const identity = buildPromptCacheIdentity(input.systemPrompt, input.tools, input.model, input.messages);
-  const implicitBreakpoints = input.messages
+  const messagesSerialized = messages.map(serializeMessageForHash).join("\n");
+  const identity = buildPromptCacheIdentity(input.systemPrompt, input.tools, input.model, messages);
+  const implicitBreakpoints = messages
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => (message.role === "user" && !message.isMeta) || message.role === "tool_result");
   const currentBreakpoint = implicitBreakpoints.at(-1)?.index;
@@ -34,8 +35,8 @@ export function buildPromptCacheDiagnostics(input: BuildPromptCacheDiagnosticsIn
     promptCacheKey: identity.key,
     messagePrefixHash: stableHash(messagesSerialized),
     implicitBreakpointIndex: currentBreakpoint,
-    implicitBreakpointHash: hashMessagesThrough(input.messages, currentBreakpoint),
-    priorImplicitBreakpointHash: hashMessagesThrough(input.messages, priorBreakpoint),
+    implicitBreakpointHash: hashMessagesThrough(messages, currentBreakpoint),
+    priorImplicitBreakpointHash: hashMessagesThrough(messages, priorBreakpoint),
     promptSections,
     stablePromptTokens: sumTokens(promptSections.filter((section) => section.cacheStable)),
     dynamicPromptTokens: sumTokens(promptSections.filter((section) => !section.cacheStable)),

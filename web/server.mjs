@@ -139,7 +139,7 @@ async function routeRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/prompt-library') {
       const body = await readJsonBody(req);
       const item = normalizePromptItem(body?.item);
-      if (!item) return sendJson(res, { error: 'invalid prompt item' }, 400);
+      if (!item) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'invalid prompt item' }, 400);
       const items = await readPromptLibrary();
       const index = items.findIndex((entry) => entry.id === item.id);
       if (index >= 0) items.splice(index, 1, item);
@@ -150,7 +150,7 @@ async function routeRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/prompt-library/delete') {
       const body = await readJsonBody(req);
       const id = String(body?.id || '').trim();
-      if (!id) return sendJson(res, { error: 'missing prompt id' }, 400);
+      if (!id) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'missing prompt id' }, 400);
       const items = await readPromptLibrary();
       const nextItems = items.filter((entry) => entry.id !== id);
       await writePromptLibrary(nextItems);
@@ -159,10 +159,10 @@ async function routeRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/prompt-library/reorder') {
       const body = await readJsonBody(req);
       const ids = Array.isArray(body?.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
-      if (!ids.length || new Set(ids).size !== ids.length) return sendJson(res, { error: 'invalid prompt order' }, 400);
+      if (!ids.length || new Set(ids).size !== ids.length) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'invalid prompt order' }, 400);
       const items = await readPromptLibrary();
       const byId = new Map(items.map((item) => [item.id, item]));
-      if (ids.some((id) => !byId.has(id))) return sendJson(res, { error: 'prompt order contains unknown id' }, 400);
+      if (ids.some((id) => !byId.has(id))) return sendJson(res, { errorCode: 'PROMPT_INVALID', error: 'prompt order contains unknown id' }, 400);
       const ordered = ids.map((id) => byId.get(id));
       const included = new Set(ids);
       ordered.push(...items.filter((item) => !included.has(item.id)));
@@ -187,7 +187,7 @@ async function routeRequest(req, res) {
     }
     return serveStatic(res, url);
   } catch (error) {
-    sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
+    sendJson(res, { errorCode: 'WEB_REQUEST_FAILED', error: error instanceof Error ? error.message : String(error) }, 500);
   }
 }
 

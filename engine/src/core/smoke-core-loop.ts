@@ -2,7 +2,7 @@ import { QueryEngine } from "./query-engine.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolResult } from "../tools/tool.js";
-import { createTextMessage, type MessageBlock } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
 import { stripLeakedReasoningText } from "./assistant-output-filter.js";
 import { imageBlockToDataUrl } from "../ui/display-message.js";
 
@@ -81,6 +81,19 @@ class CapturingGateway implements ModelGateway {
   }
 }
 
+class ThinkingCapturingGateway implements ModelGateway {
+  requests: ModelRequest[] = [];
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.requests.push(request);
+    yield { type: "thinking_delta", text: "persist locally" };
+    yield { type: "thinking_delta", text: " only" };
+    yield { type: "assistant_message", message: createThinkingMessage("persist locally\n\nonly") };
+    yield { type: "assistant_message", message: createTextMessage("assistant", "ok") };
+    yield { type: "response_completed", responseId: `thinking_${this.requests.length}`, stopReason: "completed" };
+  }
+}
+
 async function main(): Promise<void> {
   const tools = new ToolRegistry();
   tools.register(smokePassthroughTool);
@@ -151,6 +164,22 @@ async function main(): Promise<void> {
     abortEvents.includes("terminal:aborted_tools") &&
     abortElapsedMs < 1000;
 
+  const thinkingGateway = new ThinkingCapturingGateway();
+  const thinkingEngine = new QueryEngine({ modelGateway: thinkingGateway, tools: new ToolRegistry(), maxTurns: 1 });
+  for await (const _event of thinkingEngine.sendUserText("first")) {
+    // Persist the provider-visible reasoning from the first response.
+  }
+  const persistedThinkingBlocks = thinkingEngine.getHistoryMessages().flatMap((message) =>
+    message.blocks.filter((block) => block.type === "thinking"),
+  );
+  const thinkingPersisted = persistedThinkingBlocks.length === 1 && persistedThinkingBlocks[0]?.text === "persist locally\n\nonly";
+  for await (const _event of thinkingEngine.sendUserText("second")) {
+    // Capture the second request and verify local thinking is not model input.
+  }
+  const thinkingExcludedFromContext = thinkingGateway.requests.every((request) =>
+    request.messages.every((message) => message.blocks.every((block) => block.type !== "thinking")),
+  );
+
   const ok =
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
@@ -163,8 +192,10 @@ async function main(): Promise<void> {
     abortDuringToolsOk &&
     userImagePinned &&
     storedImageCompacted &&
-    historyImageDowngraded;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded }, null, 2));
+    historyImageDowngraded &&
+    thinkingPersisted &&
+    thinkingExcludedFromContext;
+  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

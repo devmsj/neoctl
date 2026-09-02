@@ -4,7 +4,7 @@ import path from "node:path";
 import { FileToolResultMemory, PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
 import { SessionStore } from "./session-store.js";
 import { writeSessionMarkdownExport } from "./session-export.js";
-import type { Message } from "../types/messages.js";
+import { createThinkingMessage, type Message } from "../types/messages.js";
 
 async function main(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-session-smoke-"));
@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   const second = await memory.applyBudget(messages);
   const store = await SessionStore.open({ agentId: "main", rootDir: root, sessionId });
   for (const message of messages) store.recordMessage(message);
+  store.recordMessage(createThinkingMessage("persisted visible reasoning"));
   store.recordContentReplacements(first.records);
   store.recordTitle("Smoke Session Title", "initial");
   store.recordTitle("Refined Smoke Session Title", "refinement");
@@ -56,14 +57,15 @@ async function main(): Promise<void> {
     persistedBlocks.length === 1 &&
     second.records.length === 0 &&
     JSON.stringify(first.messages) === JSON.stringify(second.messages) &&
-    resumed.snapshot().resumedMessages === messages.length &&
+    resumed.snapshot().resumedMessages === messages.length + 1 &&
+    resumed.getInitialMessages().some((message) => message.blocks.some((block) => block.type === "thinking" && block.text === "persisted visible reasoning")) &&
     resumed.snapshot().title === "Refined Smoke Session Title" &&
     resumed.snapshot().titleKind === "refinement" &&
     resumed.snapshot().hasInitialTitle &&
     resumed.snapshot().hasTitleRefinement &&
     resumed.snapshot().fastMode === true &&
     latest.snapshot().sessionId === sessionId &&
-    latest.snapshot().resumedMessages === messages.length &&
+    latest.snapshot().resumedMessages === messages.length + 1 &&
     latest.snapshot().title === "Refined Smoke Session Title" &&
     latest.snapshot().titleKind === "refinement" &&
     listed.length === 1 &&
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
     exportedMarkdown.includes("system prompt smoke") &&
     exportedMarkdown.includes("## Transcript") &&
     exportedMarkdown.includes("Tool use ID: call_a") &&
+    exportedMarkdown.includes("persisted visible reasoning") &&
     resetResume.snapshot().resumedMessages === 0 &&
     resetResume.snapshot().fastMode === true &&
     deleted &&

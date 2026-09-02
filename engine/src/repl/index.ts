@@ -3523,7 +3523,7 @@ const LOGIN_PROVIDERS: LoginProviderName[] = ["openai"];
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
   { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
-  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "800" },
+  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared" },
   { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
@@ -3879,6 +3879,9 @@ function validateLoginForm(state: LoginFormState): string | undefined {
   for (const fieldKey of ["maxOutputTokens", "timeoutMs", "streamIdleTimeoutMs", "maxRetries"]) {
     const value = state.values[fieldKey]?.trim();
     if (value && !Number.isFinite(Number(value))) return `${fieldKey} must be a number.`;
+  }
+  if (state.provider === "openai" && state.values.endpoint === "chat" && state.values.reasoningSummary?.trim()) {
+    return "Reasoning summary requires the Responses API endpoint.";
   }
   return undefined;
 }

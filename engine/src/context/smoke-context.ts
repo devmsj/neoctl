@@ -3,7 +3,7 @@ import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/mode
 import { QueryEngine } from "../core/query-engine.js";
 import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { createTextMessage, createToolResultMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
 import { AdditionalPromptContextManager, DefaultContextManager } from "./context-manager.js";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
@@ -36,10 +36,12 @@ class ContextOverflowThenSuccessGateway implements ModelGateway {
 
 class SummaryGateway implements ModelGateway {
   compactCalls = 0;
+  requestText = "";
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     if (request.queryOrigin !== "compact") throw new Error(`Unexpected query origin: ${request.queryOrigin}`);
     this.compactCalls += 1;
+    this.requestText += JSON.stringify(request.messages);
     yield { type: "assistant_delta", text: "Goal: keep working.\nPending Work: finish validation." };
     yield { type: "response_completed", responseId: "compact_1", stopReason: "completed" };
   }
@@ -154,7 +156,7 @@ async function main(): Promise<void> {
 
   const summaryGateway = new SummaryGateway();
   const modelCompactor = new ModelDrivenCompactor(summaryGateway);
-  const modelCompacted = await modelCompactor.compact(longHistory, {
+  const modelCompacted = await modelCompactor.compact([createThinkingMessage("private persisted reasoning"), ...longHistory], {
     snipMaxChars: 20000,
     microCompactMaxChars: 19000,
     autoCompactMaxChars: 1500,
@@ -162,6 +164,7 @@ async function main(): Promise<void> {
   });
   const modelCompactOk =
     summaryGateway.compactCalls === 1 &&
+    !summaryGateway.requestText.includes("private persisted reasoning") &&
     modelCompacted.changed &&
     modelCompacted.summary?.includes("Pending Work") === true &&
     modelCompacted.messages.some((message) => message.metadata?.modelDriven === true);

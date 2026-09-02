@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../tools/tool.js";
 import type { ContextMetrics, PromptCacheDiagnostics } from "../types/events.js";
-import type { Message, MessageBlock } from "../types/messages.js";
+import { withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
 import { resolveImageBlockDataLengthSync } from "./image-storage.js";
 
@@ -52,17 +52,18 @@ export interface BuildContextMetricsInput {
 }
 
 export function buildContextMetrics(input: BuildContextMetricsInput): ContextMetrics {
+  const modelMessages = withoutThinkingBlocks(input.messages);
   let estimatedInputTokens: number;
   let estimatedChars: number;
 
   if (input.cachedToolsAndPromptTokens !== undefined) {
-    const messageSerialized = input.messages.map(serializeMessageForMetrics).join("\n");
+    const messageSerialized = modelMessages.map(serializeMessageForMetrics).join("\n");
     estimatedChars = input.systemPrompt.length + messageSerialized.length;
     estimatedInputTokens = input.cachedToolsAndPromptTokens + estimateTextTokens(messageSerialized);
   } else {
     const serialized = [
       input.systemPrompt,
-      ...input.messages.map(serializeMessageForMetrics),
+      ...modelMessages.map(serializeMessageForMetrics),
       JSON.stringify(input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema }))),
     ].join("\n");
     estimatedChars = serialized.length;
@@ -162,7 +163,7 @@ function serializeBlockForMetrics(block: MessageBlock): string {
     const imageTokens = estimateImageTokens(resolveImageBlockDataLengthSync(block));
     return `${"x".repeat(imageTokens * 4)}`;
   }
-  if (block.type === "thinking") return block.text;
+  if (block.type === "thinking") return "";
   if (block.type === "tool_use") return `tool_use ${block.name} ${JSON.stringify(block.input)}`;
   return `tool_result ${block.name} ${JSON.stringify(block.output)}`;
 }

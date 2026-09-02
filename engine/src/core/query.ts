@@ -11,7 +11,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { runTools } from "../tools/tool-orchestration.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
-import { createTextMessage, createThinkingMessage, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, withoutThinkingBlocks, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import {
   applyToolResultBudget,
   ensureToolResultPairing,
@@ -318,7 +318,7 @@ async function* callModelForTurn(
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
-  const modelMessages = adaptMessagesForModelCapabilities(messagesForQuery, activeModel);
+  const modelMessages = withoutThinkingBlocks(adaptMessagesForModelCapabilities(messagesForQuery, activeModel));
 
   yield { type: "state", phase: "preparing", detail: "messages prepared for model" };
   yield { type: "context.metrics", metrics: telemetry.metrics };
@@ -339,7 +339,11 @@ async function* callModelForTurn(
       serviceTier: options.serviceTier,
       cancellation: options.abortSignal,
     })) {
-      if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
+      if (options.abortSignal?.aborted) {
+        const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+        if (thinkingMessage) yield { type: "message", message: thinkingMessage };
+        return { terminal: "aborted_streaming" };
+      }
       const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
@@ -392,12 +396,18 @@ async function* callModelForTurn(
       };
     }
 
+    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     const terminal = terminalForModelError(error);
     yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
     return { terminal };
   }
 
-  if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
+  if (options.abortSignal?.aborted) {
+    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
+    return { terminal: "aborted_streaming" };
+  }
 
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   appendSyntheticToolUseMessage(assistantMessages, toolUses);
@@ -506,6 +516,8 @@ async function* handleModelEvent(
   }
 
   if (event.type === "error") {
+    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
+    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     yield { type: "error", error: event.error };
     return {};
   }
@@ -516,11 +528,11 @@ async function* handleModelEvent(
 function finalizeThinkingMessage(assistantMessages: Message[], thinkingParts: string[]): Message | undefined {
   const text = thinkingParts.join("").trim();
   if (!text) return undefined;
-  const alreadyIncluded = assistantMessages.some((message) =>
-    message.blocks.some((block) => block.type === "thinking" && (block.text === text || block.text.startsWith(text) || text.startsWith(block.text))),
+  const providerFinalizedThinking = assistantMessages.some((message) =>
+    message.blocks.some((block) => block.type === "thinking"),
   );
   thinkingParts.length = 0;
-  if (alreadyIncluded) return undefined;
+  if (providerFinalizedThinking) return undefined;
   const message = createThinkingMessage(text);
   assistantMessages.push(message);
   return message;

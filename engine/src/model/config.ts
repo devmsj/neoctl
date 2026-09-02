@@ -27,7 +27,6 @@ export interface OpenAIProviderConfig extends BaseModelProviderConfig {
 export type ModelProviderConfig = OpenAIProviderConfig;
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.6";
-const DEFAULT_MAX_OUTPUT_TOKENS = 800;
 
 export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): ModelProviderConfig | undefined {
   const provider = parseProvider(env.MODEL_PROVIDER ?? "openai");
@@ -63,7 +62,7 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
     timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
     streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
     maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
-    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)) ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)),
     defaultReasoning: parseReasoning(
       firstNonEmpty(env.MODEL_REASONING_EFFORT),
       firstNonEmpty(env.MODEL_REASONING_SUMMARY),

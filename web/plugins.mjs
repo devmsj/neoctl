@@ -64,14 +64,14 @@ export function createWebPluginHost(options = {}) {
       }
       if (req.method === 'POST' && url.pathname === '/api/plugins/global') {
         if (options.locked) {
-          helpers.sendJson?.(res, { error: 'plugins are locked by NEO_WEB_PLUGINS' }, 409);
+          helpers.sendJson?.(res, { errorCode: 'PLUGINS_LOCKED', error: 'plugins are locked by NEO_WEB_PLUGINS' }, 409);
           return true;
         }
         const body = await helpers.readJsonBody?.(req);
         const requested = Array.isArray(body?.enabledIds) ? body.enabledIds.map(String) : [];
         const unknown = requested.filter((id) => !ids.includes(id));
         if (unknown.length) {
-          helpers.sendJson?.(res, { error: `unknown web plugin: ${unknown.join(', ')}` }, 400);
+          helpers.sendJson?.(res, { errorCode: 'PLUGIN_INVALID', error: `unknown web plugin: ${unknown.join(', ')}` }, 400);
           return true;
         }
         await options.settings?.setGlobalEnabled(requested);

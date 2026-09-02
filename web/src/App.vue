@@ -13,6 +13,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
+import NeoSelect from './components/NeoSelect.vue'
 import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../xhs-artifact-contract.mjs'
 
 hljs.registerLanguage('javascript', javascript)
@@ -42,6 +43,11 @@ const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
 const IMAGE_MIN_QUALITY = 0.62
 const SESSION_PAGE_SIZE = 10
+const SESSION_PLUGIN_MODE_OPTIONS = [
+  { value: 'inherit', label: '跟随全局' },
+  { value: 'enabled', label: '启用' },
+  { value: 'disabled', label: '关闭' },
+]
 // Kept only to hide hints already persisted by older web clients. New requests never append them.
 const LEGACY_IMAGE_GENERATION_HINT = 'System hint: if the user is asking you to draw, render, create, generate, or illustrate a new image, you must call the image2 tool with mode=generate instead of replying with text-only description. After the tool returns images, continue the response normally so the UI can display them in the conversation.'
 const LEGACY_IMAGE_OPERATION_HINT = 'System hint: the user attached an image. If this request involves image editing, modification, redraw, background replacement, style transfer, repair, object removal, or localized changes, you must call the image2 tool with mode=edit and use the attached or most recent image as the source image. Image operations may take a while, so wait up to 10 minutes by default unless the tool returns an error or the user interrupts.'
@@ -60,7 +66,7 @@ const LINE_TITLE_LABELS = {
   User: '你',
   System: '系统',
   Config: '配置',
-  Reasoning: '推理过程',
+  Reasoning: '思考',
   'Runtime tool': '运行时工具',
   agent: '子任务',
   edit: '编辑文件',
@@ -86,17 +92,41 @@ const TASK_STATUS_LABELS = {
   stopped: '已停止',
 }
 const LOGIN_FIELD_LABELS = {
-  'API key': 'API 密钥',
-  'Base URL': '接口地址',
+  'API key': 'API Key',
+  'Base URL': 'Base URL',
   Model: '模型',
   'Fallback model': '备用模型',
-  Endpoint: '端点类型',
+  Endpoint: 'Endpoint',
   'Reasoning effort': '推理强度',
   'Reasoning summary': '推理摘要',
-  'Max output tokens': '最大输出 token',
-  'Timeout ms': '超时时间（毫秒）',
-  'Stream idle timeout ms': '流式空闲超时（毫秒）',
+  'Max output tokens': '最大输出 Token',
+  'Timeout ms': '请求超时（ms）',
+  'Stream idle timeout ms': '流式空闲超时（ms）',
   'Max retries': '最大重试次数',
+}
+const LOGIN_PROVIDER_LABELS = {
+  openai: 'OpenAI',
+}
+const ACTION_ERROR_MESSAGES = {
+  INVALID_REQUEST: '请求参数无效',
+  SESSION_ACTIVE: '当前会话不能删除，请先切换到其他会话',
+  SESSION_RUNNING: '运行中的会话不能删除，请等待运行结束',
+  SESSION_NOT_FOUND: '会话不存在或已被删除',
+  SESSION_RESUME_FAILED: '打开会话失败',
+  SESSION_CREATE_FAILED: '新建会话失败',
+  SESSION_DELETE_FAILED: '删除会话失败',
+  PLUGIN_UPDATE_BLOCKED: '模型回答期间不能修改会话插件',
+  PLUGIN_NOT_CONFIGURED: '插件功能未配置',
+  PLUGIN_INVALID: '插件配置无效',
+  PLUGIN_UPDATE_FAILED: '插件配置更新失败',
+  PLUGINS_LOCKED: '插件配置已由环境变量锁定',
+  PROMPT_UPDATE_FAILED: '提示词更新失败',
+  PROMPT_INVALID: '提示词内容无效',
+  FAST_MODE_UPDATE_FAILED: '快速模式切换失败',
+  LOGIN_INVALID: '模型配置无效',
+  LOGIN_SAVE_FAILED: '模型配置保存失败',
+  API_NOT_FOUND: '当前运行时不支持此功能，请重启服务',
+  WEB_REQUEST_FAILED: '请求处理失败',
 }
 const CPA_PASSWORD_MASK = '••••••••••••••••••'
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
@@ -445,14 +475,14 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocumentImageClick)
 })
 
-async function fetchState() {
+async function fetchState(options = {}) {
   try {
     const res = await fetch(runtimeUrl('/api/state'))
     if (!res.ok) throw new Error(`state ${res.status}`)
     applySync(await res.json())
     return true
   } catch (error) {
-    notify(`运行时不可用：${error.message || error}`)
+    if (!options.silent) notify(`运行时不可用：${error.message || error}`)
     return false
   }
 }
@@ -493,10 +523,17 @@ async function fetchGlobalPlugins() {
 
 async function saveGlobalPlugins() {
   const enabledIds = state.globalPlugins.items.filter((item) => item.configuredEnabled !== false).map((item) => item.id)
-  const result = await postJson('/api/plugins/global', { enabledIds })
-  const enabled = new Set(result.enabledIds || enabledIds)
-  state.globalPlugins.items = state.globalPlugins.items.map((item) => ({ ...item, configuredEnabled: enabled.has(item.id) }))
-  notify('插件配置已保存，重启后生效')
+  state.globalPlugins.loading = true
+  try {
+    const result = await postJson('/api/plugins/global', { enabledIds })
+    const enabled = new Set(result.enabledIds || enabledIds)
+    state.globalPlugins.items = state.globalPlugins.items.map((item) => ({ ...item, configuredEnabled: enabled.has(item.id) }))
+    notify('插件配置已保存，重启后生效')
+  } catch (error) {
+    notifyActionError(error, '插件配置保存失败')
+  } finally {
+    state.globalPlugins.loading = false
+  }
 }
 
 async function fetchSessionPlugins() {
@@ -514,8 +551,14 @@ async function fetchSessionPlugins() {
 
 async function updateSessionPlugin(item, mode) {
   const overrides = Object.fromEntries(state.sessionPlugins.items.map((entry) => [entry.id, entry.id === item.id ? mode : entry.mode]))
-  const result = await postJson('/api/session-plugins', { overrides })
-  state.sessionPlugins = { ...result.state, loading: false }
+  state.sessionPlugins.busy = true
+  try {
+    const result = await postJson('/api/session-plugins', { overrides })
+    state.sessionPlugins = { ...result.state, loading: false, busy: false }
+  } catch (error) {
+    state.sessionPlugins.busy = false
+    notifyActionError(error, '会话插件更新失败')
+  }
 }
 
 async function fetchPromptLibrary() {
@@ -838,12 +881,7 @@ async function applyPromptItem(item) {
       notify(`已应用：${normalized.title}`)
     }
   } catch (error) {
-    const message = String(error?.message || error || '')
-    if (message.toLowerCase() === 'not found') {
-      notify('当前运行中的 runtime 还不支持提示词接口，请重启开发服务。')
-      return
-    }
-    notify(message || '应用提示词失败')
+    notifyActionError(error, '应用提示词失败')
   }
 }
 
@@ -865,12 +903,7 @@ async function clearAppPrompt(options = {}) {
       notify('已清空应用提示词')
     }
   } catch (error) {
-    const message = String(error?.message || error || '')
-    if (message.toLowerCase() === 'not found') {
-      notify('当前运行中的 runtime 还不支持提示词接口，请重启开发服务。')
-      return
-    }
-    notify(message || '清空提示词失败')
+    notifyActionError(error, '清空提示词失败')
   }
 }
 
@@ -1078,22 +1111,38 @@ async function interruptAndSubmit() {
 }
 
 async function interrupt() {
-  await fetch(runtimeUrl('/api/interrupt'), { method: 'POST' })
+  try {
+    await postJson('/api/interrupt', {})
+  } catch (error) {
+    notifyActionError(error, '停止回答失败')
+  }
 }
 
 async function retractQueuedInput() {
-  const result = await postJson('/api/queue/cancel', {})
-  if (result?.ok !== false) notify('已撤回排队消息')
+  try {
+    const result = await postJson('/api/queue/cancel', {})
+    notify(result.cancelled ? '已撤回排队消息' : '没有待撤回的消息')
+  } catch (error) {
+    notifyActionError(error, '撤回排队消息失败')
+  }
 }
 
 async function sendQueuedNow() {
-  const result = await postJson('/api/queue/send-now', {})
-  if (result?.ok !== false) notify('已打断并发送排队消息')
+  try {
+    const result = await postJson('/api/queue/send-now', {})
+    notify(result.interrupted ? '已打断并发送排队消息' : '已发送排队消息')
+  } catch (error) {
+    notifyActionError(error, '发送排队消息失败')
+  }
 }
 
 async function compressSession() {
-  const result = await postJson('/api/submit', { text: '/compact', attachments: [] })
-  if (result?.ok !== false) notify('已请求压缩上下文')
+  try {
+    await postJson('/api/submit', { text: '/compact', attachments: [] })
+    notify('已请求压缩上下文')
+  } catch (error) {
+    notifyActionError(error, '压缩上下文失败')
+  }
 }
 
 function toggleFastMode() {
@@ -1115,7 +1164,7 @@ function toggleFastMode() {
       if (version !== fastModeMutationVersion) return
       state.fastModeMutating = false
       await fetchState()
-      notify(`快速模式切换失败：${error.message || error}`)
+      notifyActionError(error, '快速模式切换失败')
     })
 }
 
@@ -1124,25 +1173,32 @@ async function openSessions() {
   state.sessionsLoading = true
   try {
     const res = await fetch(runtimeUrl('/api/sessions'))
-    const body = await res.json()
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
     state.sessions = body.sessions || []
     state.runningSessionIds = body.runningSessionIds || []
   } catch (error) {
-    notify(error.message || String(error))
+    notifyActionError(error, '加载会话失败')
   } finally {
     state.sessionsLoading = false
   }
 }
 
 async function resumeSession(sessionId) {
+  const previousTabId = runtimeTabId
+  const previousSessionId = runtimeSessionId
   state.pendingResumeSessionId = sessionId
   state.sessionResumeLoading = true
-  state.activePanel = 'chat'
   const connected = await bindRuntimeSession(sessionId)
-  if (!connected) {
-    state.sessionResumeLoading = false
-    state.pendingResumeSessionId = ''
+  if (connected) {
+    state.activePanel = 'chat'
+    notify('已打开会话')
+  } else {
+    const restored = await restoreRuntimeBinding(previousTabId, previousSessionId)
+    notify(restored ? '打开会话失败，已恢复原会话' : '打开会话失败，运行时连接已断开')
   }
+  state.sessionResumeLoading = false
+  state.pendingResumeSessionId = ''
 }
 
 async function fetchCpaState() {
@@ -1183,6 +1239,8 @@ async function fetchMemoryState() {
 }
 
 async function newSession() {
+  const previousTabId = runtimeTabId
+  const previousSessionId = runtimeSessionId
   disconnectRuntimeEvents()
   runtimeTabId = randomRuntimeId()
   runtimeSessionId = ''
@@ -1191,17 +1249,36 @@ async function newSession() {
   sessionStorage.removeItem(RUNTIME_SESSION_ID_KEY)
   state.sessionResumeLoading = true
   state.pendingResumeSessionId = ''
-  const connected = await fetchState()
+  const connected = await fetchState({ silent: true })
   if (connected) {
     state.activePanel = 'chat'
     notify('已创建新会话')
     connectEvents()
+  } else {
+    const restored = await restoreRuntimeBinding(previousTabId, previousSessionId)
+    notify(restored ? '新建会话失败，已恢复原会话' : '新建会话失败，运行时连接已断开')
   }
   state.sessionResumeLoading = false
 }
 
+function isCurrentSession(sessionId) {
+  return Boolean(sessionId) && String(state.session?.sessionId || '') === String(sessionId)
+}
+
+function isRunningSession(sessionId) {
+  return state.runningSessionIds.includes(sessionId)
+}
+
 async function deleteSession(sessionId) {
   const session = state.sessions.find((item) => item.sessionId === sessionId)
+  if (isCurrentSession(sessionId)) {
+    notify(ACTION_ERROR_MESSAGES.SESSION_ACTIVE)
+    return
+  }
+  if (isRunningSession(sessionId)) {
+    notify(ACTION_ERROR_MESSAGES.SESSION_RUNNING)
+    return
+  }
   const confirmed = await requestConfirmation({
     title: '删除会话？',
     message: `“${session?.title || sessionId || '这个会话'}”删除后无法恢复。`,
@@ -1209,8 +1286,13 @@ async function deleteSession(sessionId) {
     tone: 'danger',
   })
   if (!confirmed) return
-  await postJson('/api/sessions/delete', { sessionId })
-  await openSessions()
+  try {
+    await postJson('/api/sessions/delete', { sessionId })
+    await openSessions()
+    notify('会话已删除')
+  } catch (error) {
+    notifyActionError(error, '删除会话失败')
+  }
 }
 
 async function openLogin(provider) {
@@ -1218,14 +1300,15 @@ async function openLogin(provider) {
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
     const res = await fetch(runtimeUrl(`/api/login${query}`))
-    const body = await res.json()
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
     state.login = body
     loginProvider.value = body.provider
     Object.keys(loginValues).forEach((key) => delete loginValues[key])
     Object.assign(loginValues, body.values || {})
     await Promise.all([fetchCpaState(), fetchGlobalPlugins()])
   } catch (error) {
-    notify(error.message || String(error))
+    notifyActionError(error, '加载模型配置失败')
   }
 }
 
@@ -1234,7 +1317,7 @@ async function switchLoginProvider() {
 }
 
 async function saveLogin() {
-  const [result, cpaResult] = await Promise.all([
+  const [modelSave, cpaSave] = await Promise.allSettled([
     postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } }),
     postJson('/api/cpa-config', {
       url: state.cpaConfig.url,
@@ -1242,12 +1325,22 @@ async function saveLogin() {
       preservePassword: state.cpaConfig.hasPassword && (!state.cpaConfig.password || state.cpaConfig.password === CPA_PASSWORD_MASK),
     }),
   ])
-  state.cpaQuotas = Array.isArray(cpaResult?.quotas) ? cpaResult.quotas : []
-  state.cpaQuotaIndex = 0
-  state.cpaConfig.loaded = true
-  state.cpaConfig.hasPassword = Boolean(cpaResult?.config?.hasPassword)
-  state.cpaConfig.password = state.cpaConfig.hasPassword ? CPA_PASSWORD_MASK : ''
-  if (result?.ok !== false && cpaResult?.ok !== false) notify('模型配置已保存')
+  if (cpaSave.status === 'fulfilled') {
+    const cpaResult = cpaSave.value
+    state.cpaQuotas = Array.isArray(cpaResult?.quotas) ? cpaResult.quotas : []
+    state.cpaQuotaIndex = 0
+    state.cpaConfig.loaded = true
+    state.cpaConfig.hasPassword = Boolean(cpaResult?.config?.hasPassword)
+    state.cpaConfig.password = state.cpaConfig.hasPassword ? CPA_PASSWORD_MASK : ''
+  }
+  if (modelSave.status === 'fulfilled' && cpaSave.status === 'fulfilled') {
+    notify('模型配置已保存')
+    return
+  }
+  const failed = []
+  if (modelSave.status === 'rejected') failed.push(actionErrorMessage(modelSave.reason, '模型配置保存失败'))
+  if (cpaSave.status === 'rejected') failed.push(actionErrorMessage(cpaSave.reason, 'CPA 配置保存失败'))
+  notify(failed.join('；'))
 }
 
 function quotaPercent(value) {
@@ -1261,6 +1354,14 @@ function formatQuotaReset(value) {
   if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date)
+}
+
+function formatSessionTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(date)
 }
 
@@ -1320,8 +1421,32 @@ async function postJson(url, body) {
     body: JSON.stringify(body),
   })
   const value = await res.json().catch(() => ({}))
-  if (!res.ok || value?.error || value?.ok === false) throw new Error(value.error || `request ${res.status}`)
+  if (!res.ok || value?.error || value?.ok === false) throw requestError(value, res.status)
   return value
+}
+
+class ActionRequestError extends Error {
+  constructor(message, code = '') {
+    super(message)
+    this.name = 'ActionRequestError'
+    this.code = code
+  }
+}
+
+function requestError(value, status) {
+  const code = String(value?.errorCode || (status === 404 ? 'API_NOT_FOUND' : ''))
+  return new ActionRequestError(value?.error || `请求失败（${status}）`, code)
+}
+
+function actionErrorMessage(error, fallback = '操作失败') {
+  const code = String(error?.code || '')
+  if (code && ACTION_ERROR_MESSAGES[code]) return ACTION_ERROR_MESSAGES[code]
+  const detail = String(error?.message || error || '').trim()
+  return detail ? `${fallback}：${detail}` : fallback
+}
+
+function notifyActionError(error, fallback) {
+  notify(actionErrorMessage(error, fallback))
 }
 
 function lineText(line) {
@@ -1352,7 +1477,7 @@ function lineTitle(line) {
   if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
   if (line.kind === 'user') return '你'
-  if (line.kind === 'thinking') return '推理过程'
+  if (line.kind === 'thinking') return '思考'
   return '系统'
 }
 
@@ -1581,6 +1706,14 @@ function taskStatusText(status) {
 
 function loginFieldLabel(label) {
   return LOGIN_FIELD_LABELS[label] || label
+}
+
+function loginProviderOptions(providers) {
+  return (providers || []).map((provider) => ({ value: provider, label: LOGIN_PROVIDER_LABELS[provider] || provider }))
+}
+
+function loginFieldOptions(field) {
+  return (field?.options || []).map((option) => ({ value: option, label: option || '默认' }))
 }
 
 function shouldMarkdown(line) {
@@ -1881,10 +2014,23 @@ async function bindRuntimeSession(sessionId) {
   runtimeSessionId = targetSessionId
   allowRuntimeSessionChange = false
   sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, targetSessionId)
-  const connected = await fetchState()
+  const connected = await fetchState({ silent: true })
   if (!connected || String(state.session?.sessionId || '') !== targetSessionId) return false
   connectEvents()
   return true
+}
+
+async function restoreRuntimeBinding(tabId, sessionId) {
+  disconnectRuntimeEvents()
+  runtimeTabId = tabId
+  runtimeSessionId = sessionId
+  allowRuntimeSessionChange = !sessionId
+  sessionStorage.setItem(RUNTIME_TAB_ID_KEY, tabId)
+  if (sessionId) sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
+  else sessionStorage.removeItem(RUNTIME_SESSION_ID_KEY)
+  const restored = await fetchState({ silent: true })
+  if (restored) connectEvents()
+  return restored
 }
 
 function disconnectRuntimeEvents() {
@@ -2939,7 +3085,21 @@ function createMobileSession() {
                   <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" transform="rotate(45 10 10)" />
                 </svg>
               </div>
-              <div class="message-body">
+              <div v-if="line.kind === 'thinking'" class="message-body reasoning-body">
+                <details class="reasoning-sheet" :open="line.live || undefined">
+                  <summary>
+                    <span class="reasoning-heading">思考</span>
+                    <span v-if="lineElapsedText(line)" class="reasoning-elapsed">{{ lineElapsedText(line) }}</span>
+                    <span class="reasoning-chevron" aria-hidden="true"></span>
+                  </summary>
+                  <div class="reasoning-reveal">
+                    <div class="reasoning-paper">
+                      <div class="message-text markdown reasoning-text" v-html="renderLine(line)"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <div v-else class="message-body">
                 <div class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
                   <span v-if="shouldCollapseToolLine(line) && toolResultStatus(line).key === 'failed'" class="tool-status-pill status-failed">失败</span>
@@ -3176,36 +3336,38 @@ function createMobileSession() {
       </section>
 
       <section v-else-if="state.activePanel === 'sessions'" class="content-grid single">
-        <div class="panel-page">
-          <div class="page-head">
-            <div><h2>会话管理</h2><p>恢复、删除或新建会话。正在运行的会话可以重新接入。</p></div>
-            <button class="primary" @click="newSession">+ 新建会话</button>
+        <div class="panel-page sessions-page">
+          <div class="page-head sessions-page-head">
+            <h2>会话管理</h2>
+            <button class="primary" @click="newSession">新建会话</button>
           </div>
           <div class="session-toolbar">
-            <label class="session-search">
-              <span>搜索会话</span>
-              <input v-model="sessionSearch" type="search" placeholder="输入会话标题或 ID" autocomplete="off" />
+            <label class="session-search" aria-label="搜索会话">
+              <input v-model="sessionSearch" type="search" placeholder="搜索标题或 ID" autocomplete="off" />
             </label>
-            <span class="session-count">{{ filteredSessions.length }} / {{ state.sessions.length }} 个会话</span>
+            <span class="session-count">{{ sessionSearch.trim() ? `${filteredSessions.length} / ${state.sessions.length}` : `${state.sessions.length} 个会话` }}</span>
           </div>
           <div v-if="state.sessionsLoading" class="empty-state">正在加载会话…</div>
-          <div v-else-if="!state.sessions.length" class="empty-state">暂无已保存会话。</div>
-          <div v-else-if="!filteredSessions.length" class="empty-state">没有找到匹配的会话。</div>
+          <div v-else-if="!state.sessions.length" class="empty-state">暂无会话</div>
+          <div v-else-if="!filteredSessions.length" class="empty-state">没有匹配的会话</div>
           <div v-else class="session-list">
-            <article v-for="session in paginatedSessions" :key="session.sessionId" class="session-card">
-              <div>
-                <strong>{{ session.title || '未命名会话' }}</strong>
-                <p>{{ session.sessionId }}</p>
-                <small>{{ session.updatedAt || session.createdAt }}</small>
+            <article v-for="session in paginatedSessions" :key="session.sessionId" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
+              <div class="session-card-main">
+                <div class="session-card-title">
+                  <strong>{{ session.title || '未命名会话' }}</strong>
+                  <span v-if="isCurrentSession(session.sessionId)" class="current-pill">当前</span>
+                  <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
+                </div>
+                <code :title="session.sessionId">{{ session.sessionId }}</code>
+                <time :datetime="session.updatedAt || session.createdAt">{{ formatSessionTime(session.updatedAt || session.createdAt) }}</time>
               </div>
               <div class="session-actions">
-                <span v-if="state.runningSessionIds.includes(session.sessionId)" class="live-pill">运行中</span>
                 <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session.sessionId)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>
                 <button class="danger" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)">删除</button>
               </div>
             </article>
           </div>
-          <nav v-if="!state.sessionsLoading && filteredSessions.length" class="session-pagination" aria-label="会话分页">
+          <nav v-if="!state.sessionsLoading && filteredSessions.length && sessionTotalPages > 1" class="session-pagination" aria-label="会话分页">
             <button type="button" :disabled="sessionPage === 1" @click="sessionPage -= 1">上一页</button>
             <button
               v-for="page in sessionPageNumbers"
@@ -3216,7 +3378,6 @@ function createMobileSession() {
               @click="sessionPage = page"
             >{{ page }}</button>
             <button type="button" :disabled="sessionPage === sessionTotalPages" @click="sessionPage += 1">下一页</button>
-            <span>第 {{ sessionPage }} / {{ sessionTotalPages }} 页</span>
           </nav>
         </div>
       </section>
@@ -3298,48 +3459,67 @@ function createMobileSession() {
       </section>
 
       <section v-else-if="state.activePanel === 'settings'" class="content-grid single">
-        <div class="panel-page">
-          <div class="page-head">
-            <div><h2>模型配置</h2><p>配置当前工作台使用的模型供应商参数，并保存到本地环境配置中。</p></div>
+        <div class="panel-page settings-page">
+          <div class="page-head settings-page-head">
+            <h2>模型配置</h2>
             <button class="primary" @click="saveLogin" :disabled="!state.login">保存</button>
           </div>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
           <form v-else class="settings-form" @submit.prevent="saveLogin">
-            <label>
-              <span>供应商</span>
-              <select v-model="loginProvider" @change="switchLoginProvider">
-                <option v-for="provider in state.login.providers" :key="provider" :value="provider">{{ provider }}</option>
-              </select>
-            </label>
-            <label v-for="field in state.login.fields" :key="field.key">
-              <span>{{ loginFieldLabel(field.label) }} <em v-if="field.required">必填</em></span>
-              <select v-if="field.options" v-model="loginValues[field.key]">
-                <option v-for="option in field.options" :key="option" :value="option">{{ option || '（空）' }}</option>
-              </select>
-              <input v-else v-model="loginValues[field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="field.placeholder || field.envKey" />
-              <small>{{ field.envKey }}</small>
-            </label>
-            <div class="settings-section-title">
-              <strong>CPA 额度信息</strong>
-            </div>
-            <label>
-              <span>CPA URL</span>
-              <input v-model="state.cpaConfig.url" type="text" placeholder="例如：http://127.0.0.1:8317" autocomplete="off" />
-            </label>
-            <label>
-              <span>管理密码</span>
-              <input v-model="state.cpaConfig.password" type="password" placeholder="管理端密码" autocomplete="new-password" />
-            </label>
-            <div class="settings-section-title plugin-settings-title">
-              <strong>全局插件</strong>
-              <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存插件</button>
-            </div>
-            <div class="plugin-settings-list">
-              <label v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
-                <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
-                <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked" />
-              </label>
-            </div>
+            <section class="settings-card">
+              <header class="settings-card-head"><strong>模型</strong></header>
+              <div class="settings-field-grid">
+                <label class="settings-field">
+                  <span>供应商</span>
+                  <NeoSelect v-model="loginProvider" :options="loginProviderOptions(state.login.providers)" aria-label="供应商" @change="switchLoginProvider" />
+                </label>
+                <label v-for="field in state.login.fields" :key="field.key" class="settings-field">
+                  <span>{{ loginFieldLabel(field.label) }}<i v-if="field.required" class="settings-required" aria-label="必填"></i></span>
+                  <NeoSelect
+                    v-if="field.options"
+                    v-model="loginValues[field.key]"
+                    :options="loginFieldOptions(field)"
+                    :aria-label="loginFieldLabel(field.label)"
+                  />
+                  <input
+                    v-else
+                    v-model="loginValues[field.key]"
+                    :type="field.secret ? 'password' : 'text'"
+                    :placeholder="field.placeholder || `请输入${loginFieldLabel(field.label)}`"
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-card">
+              <header class="settings-card-head"><strong>CPA</strong></header>
+              <div class="settings-field-grid">
+                <label class="settings-field">
+                  <span>URL</span>
+                  <input v-model="state.cpaConfig.url" type="text" placeholder="http://127.0.0.1:8317" autocomplete="off" />
+                </label>
+                <label class="settings-field">
+                  <span>管理密码</span>
+                  <input v-model="state.cpaConfig.password" type="password" placeholder="请输入管理密码" autocomplete="new-password" />
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-card settings-plugin-card">
+              <header class="settings-card-head">
+                <strong>插件</strong>
+                <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存</button>
+              </header>
+              <div class="plugin-settings-list">
+                <label v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
+                  <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
+                  <span class="plugin-toggle">
+                    <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked" :aria-label="plugin.name" />
+                    <span aria-hidden="true"></span>
+                  </span>
+                </label>
+              </div>
+            </section>
           </form>
         </div>
       </section>
@@ -3418,14 +3598,18 @@ function createMobileSession() {
           <div v-else class="runtime-plugin-list">
             <div v-if="state.sessionPlugins.loading" class="runtime-context-empty">同步中</div>
             <template v-else>
-              <label v-for="plugin in state.sessionPlugins.items" :key="plugin.id" class="runtime-plugin-row">
+              <div v-for="plugin in state.sessionPlugins.items" :key="plugin.id" class="runtime-plugin-row">
                 <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
-                <select :value="plugin.mode" :disabled="state.busy || !plugin.globallyEnabled" @change="updateSessionPlugin(plugin, $event.target.value)">
-                  <option value="inherit">跟随全局</option>
-                  <option value="enabled">启用</option>
-                  <option value="disabled">关闭</option>
-                </select>
-              </label>
+                <NeoSelect
+                  class="runtime-plugin-control"
+                  :model-value="plugin.mode"
+                  :options="SESSION_PLUGIN_MODE_OPTIONS"
+                  :disabled="state.busy || state.sessionPlugins.busy || !plugin.globallyEnabled"
+                  :aria-label="`${plugin.name}状态`"
+                  :data-mode="plugin.mode"
+                  @update:model-value="updateSessionPlugin(plugin, $event)"
+                />
+              </div>
             </template>
           </div>
 

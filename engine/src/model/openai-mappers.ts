@@ -51,16 +51,11 @@ export function buildResponsesInput(messages: readonly Message[], options: Build
   return input;
 }
 
-export interface BuildChatMessagesOptions {
-  includeReasoningContent?: boolean;
-}
-
-export function buildChatMessages(request: ModelRequest, options: BuildChatMessagesOptions = {}): unknown[] {
+export function buildChatMessages(request: ModelRequest): unknown[] {
   const messages: unknown[] = [];
   const pairs = collectToolPairs(request.messages);
   const instructions = request.instructions ?? request.systemPrompt;
   const promptCache = buildPromptCacheIdentity(instructions, request.tools, request.model, request.messages);
-  let pendingReasoningContent: string | undefined;
   if (promptCache.stableSystemPrompt) messages.push({ role: "system", content: promptCache.stableSystemPrompt });
   if (promptCache.dynamicSystemPrompt) messages.push({ role: "system", content: promptCache.dynamicSystemPrompt });
 
@@ -77,26 +72,19 @@ export function buildChatMessages(request: ModelRequest, options: BuildChatMessa
       if (Array.isArray(content) ? content.length > 0 : content) messages.push({ role: "user", content });
     }
     if (message.role === "assistant") {
-      const reasoningContent = options.includeReasoningContent ? thinkingFromBlocks(message.blocks) ?? pendingReasoningContent : undefined;
       if (toolUses.length) {
         messages.push({
           role: "assistant",
           content: text || null,
-          reasoning_content: reasoningContent,
           tool_calls: toolUses.map(toChatToolCall),
         });
-        pendingReasoningContent = undefined;
       } else if (text) {
-        messages.push({ role: "assistant", content: text, reasoning_content: reasoningContent });
-        pendingReasoningContent = undefined;
-      } else if (reasoningContent) {
-        pendingReasoningContent = reasoningContent;
+        messages.push({ role: "assistant", content: text });
       }
     }
 
     for (const block of message.blocks) {
       if (block.type === "tool_result" && pairs.pairedIds.has(block.toolUseId)) {
-        pendingReasoningContent = undefined;
         messages.push({ role: "tool", tool_call_id: block.toolUseId, content: serializeToolOutput(block.output) });
       }
     }
@@ -228,11 +216,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function textFromBlocks(blocks: readonly MessageBlock[]): string {
   return blocks.filter((block): block is { type: "text"; text: string } => block.type === "text").map((block) => block.text).join("\n");
-}
-
-function thinkingFromBlocks(blocks: readonly MessageBlock[]): string | undefined {
-  const text = blocks.filter((block): block is { type: "thinking"; text: string } => block.type === "thinking").map((block) => block.text).join("\n").trim();
-  return text || undefined;
 }
 
 function markLastTextContentBreakpoint(content: unknown[]): void {
