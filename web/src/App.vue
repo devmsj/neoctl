@@ -14,6 +14,7 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
 import NeoSelect from './components/NeoSelect.vue'
+import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../xhs-artifact-contract.mjs'
 
 hljs.registerLanguage('javascript', javascript)
@@ -307,6 +308,8 @@ let es
 let toastTimer
 let scrollRaf = 0
 let syncRaf = 0
+let lineTextRaf = 0
+let lastLineTextPaint = 0
 let pendingSyncPayload
 let hasReceivedEventSync = false
 let clockTimer
@@ -318,6 +321,9 @@ let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 const renderedLineCache = new Map()
+const pendingLineText = new Map()
+const LINE_TEXT_FRAME_MS = 34
+const LINE_TEXT_MAX_BACKLOG = 72
 
 const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
 const phaseLabel = computed(() => phaseText(state.status?.phase))
@@ -464,6 +470,7 @@ onBeforeUnmount(() => {
   if (es) es.close()
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (syncRaf) cancelAnimationFrame(syncRaf)
+  resetLineTextScheduler()
   pendingSyncPayload = undefined
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
   if (clockTimer) clearInterval(clockTimer)
@@ -580,6 +587,7 @@ function connectEvents() {
   if (es) es.close()
   if (syncRaf) cancelAnimationFrame(syncRaf)
   syncRaf = 0
+  resetLineTextScheduler()
   pendingSyncPayload = undefined
   hasReceivedEventSync = false
   state.connecting = true
@@ -680,6 +688,78 @@ function applyRawDelta(rawPayload) {
   }
 }
 
+function queueLineText(id, text) {
+  const delta = String(text || '')
+  if (!delta) return
+  const key = String(id)
+  pendingLineText.set(key, `${pendingLineText.get(key) || ''}${delta}`)
+  scheduleLineTextPaint()
+}
+
+function scheduleLineTextPaint() {
+  if (lineTextRaf) return
+  lineTextRaf = requestAnimationFrame(paintLineText)
+}
+
+function paintLineText(timestamp) {
+  lineTextRaf = 0
+  if (timestamp - lastLineTextPaint < LINE_TEXT_FRAME_MS) {
+    scheduleLineTextPaint()
+    return
+  }
+  lastLineTextPaint = timestamp
+  const shouldFollow = isTranscriptNearBottom()
+  for (const [id, buffered] of pendingLineText) {
+    const index = state.lines.findIndex((line) => String(line.id) === id)
+    if (index < 0) {
+      pendingLineText.delete(id)
+      continue
+    }
+    const characters = Array.from(buffered)
+    const count = Math.min(characters.length, Math.max(
+      1,
+      Math.ceil(characters.length * .38),
+      characters.length - LINE_TEXT_MAX_BACKLOG,
+    ))
+    const visible = characters.slice(0, count).join('')
+    const remaining = characters.slice(count).join('')
+    const line = state.lines[index]
+    const nextLine = { ...line, text: `${line.text || ''}${visible}` }
+    if (line.kind === 'assistant' && line.live) {
+      nextLine.streamInitialText = line.streamInitialText ?? line.text ?? ''
+      nextLine.streamChunks = [...(line.streamChunks || []), visible]
+    }
+    state.lines[index] = nextLine
+    if (remaining) pendingLineText.set(id, remaining)
+    else pendingLineText.delete(id)
+  }
+  if (shouldFollow) scheduleTranscriptScrollBottom()
+  if (pendingLineText.size) scheduleLineTextPaint()
+}
+
+function flushLineText(id) {
+  const key = String(id)
+  const buffered = pendingLineText.get(key)
+  if (!buffered) return
+  pendingLineText.delete(key)
+  const index = state.lines.findIndex((line) => String(line.id) === key)
+  if (index < 0) return
+  const line = state.lines[index]
+  const nextLine = { ...line, text: `${line.text || ''}${buffered}` }
+  if (line.kind === 'assistant' && line.live) {
+    nextLine.streamInitialText = line.streamInitialText ?? line.text ?? ''
+    nextLine.streamChunks = [...(line.streamChunks || []), buffered]
+  }
+  state.lines[index] = nextLine
+}
+
+function resetLineTextScheduler() {
+  if (lineTextRaf) cancelAnimationFrame(lineTextRaf)
+  lineTextRaf = 0
+  lastLineTextPaint = 0
+  pendingLineText.clear()
+}
+
 function applyDelta(payload) {
   const incomingSessionId = String(payload.sessionId || '')
   if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
@@ -690,7 +770,10 @@ function applyDelta(payload) {
   for (const operation of payload.operations || []) {
     if (operation.type === 'line.append') {
       if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
-        state.lines.push(operation.line)
+        const line = operation.line
+        state.lines.push(line?.kind === 'assistant' && line?.live
+          ? { ...line, streamInitialText: line.text || '', streamChunks: [] }
+          : line)
       }
       continue
     }
@@ -698,9 +781,11 @@ function applyDelta(payload) {
     if (index < 0) throw new Error(`找不到增量消息行 ${operation.id}`)
     const line = state.lines[index]
     if (operation.type === 'line.text.append') {
-      state.lines[index] = { ...line, text: `${line.text || ''}${operation.text || ''}` }
+      queueLineText(operation.id, operation.text)
     } else if (operation.type === 'line.patch') {
-      state.lines[index] = { ...line, ...(operation.patch || {}) }
+      flushLineText(operation.id)
+      const patchedLine = state.lines[index]
+      state.lines[index] = { ...patchedLine, ...(operation.patch || {}) }
     }
   }
   if (payload.status) state.status = payload.status
@@ -711,6 +796,7 @@ function applyDelta(payload) {
 }
 
 function applySync(payload) {
+  resetLineTextScheduler()
   const incomingSessionId = String(payload.session?.sessionId || '')
   const previousSessionId = String(state.session?.sessionId || '')
   if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
@@ -2038,6 +2124,7 @@ function disconnectRuntimeEvents() {
   es = undefined
   if (syncRaf) cancelAnimationFrame(syncRaf)
   syncRaf = 0
+  resetLineTextScheduler()
   pendingSyncPayload = undefined
   hasReceivedEventSync = false
   state.connected = false
@@ -3128,6 +3215,9 @@ function createMobileSession() {
                     />
                     <div v-else class="message-text markdown" v-html="renderLine(line)"></div>
                   </template>
+                  <div v-else-if="line.kind === 'assistant' && line.live" class="message-text markdown streaming-markdown">
+                    <StreamingMarkdown :initial-text="line.streamInitialText ?? line.text ?? ''" :chunks="line.streamChunks || []" />
+                  </div>
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">

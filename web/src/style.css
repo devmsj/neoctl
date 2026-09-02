@@ -1118,6 +1118,11 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .message-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .message-head strong { font-size: 14px; }
 .message-head span { color: var(--muted); font-size: 12px; }
+.streaming-markdown-content { display: contents; }
+.stream-text-reveal {
+  animation: stream-text-reveal 1s cubic-bezier(.16, .72, .18, 1) both;
+  will-change: opacity, filter;
+}
 .tool-status-pill {
   display: inline-flex;
   align-items: center;
@@ -3168,6 +3173,11 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   0%, 58% { transform: translateX(-110%); opacity: 0; }
   68% { opacity: .72; }
   88%, 100% { transform: translateX(110%); opacity: 0; }
+}
+@keyframes stream-text-reveal {
+  0% { opacity: .18; filter: blur(2.5px); }
+  38% { opacity: .64; filter: blur(1px); }
+  100% { opacity: 1; filter: blur(0); }
 }
 
 .right-panel {
