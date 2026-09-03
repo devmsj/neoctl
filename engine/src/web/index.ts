@@ -171,6 +171,26 @@ interface UiCompactionReport extends CompactionReport {
   current?: boolean;
 }
 
+interface UiToolFact {
+  label: string;
+  value: string;
+  code?: boolean;
+  tone?: "neutral" | "success" | "warning" | "danger";
+}
+
+interface UiToolPreview {
+  label?: string;
+  kind: "text" | "code" | "diff" | "list";
+  content: string;
+}
+
+interface UiToolDisplay {
+  subject?: string;
+  purpose?: string;
+  facts: UiToolFact[];
+  previews: UiToolPreview[];
+}
+
 interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
@@ -183,6 +203,7 @@ interface UiLine {
   title?: string;
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
+  toolDisplay?: UiToolDisplay;
   format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
   summaryMaxLines?: number;
@@ -1413,7 +1434,8 @@ export class WebRepl {
         renderToolResultMessage(event.message, (line, toolUseId) => {
           const liveLineId = this.liveToolLineIds.get(toolUseId);
           if (liveLineId === undefined) return this.append(line);
-          this.replaceLine(liveLineId, line);
+          const liveLine = this.lines.find((item) => item.id === liveLineId);
+          this.replaceLine(liveLineId, { ...line, toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
           this.liveToolLineIds.delete(toolUseId);
           return liveLineId;
         });
@@ -1996,8 +2018,16 @@ export function restoreWebHistoryLines(runtime: Pick<WebRuntime, "engine">): Arr
 
 function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine, "id">[] {
   const lines: Omit<UiLine, "id">[] = [];
+  const historyToolLineIndexes = new Map<string, number>();
   const append = (line: Omit<UiLine, "id">) => {
+    if (line.toolUseId && line.titleStatus && historyToolLineIndexes.has(line.toolUseId)) {
+      const index = historyToolLineIndexes.get(line.toolUseId)!;
+      const started = lines[index];
+      lines[index] = { ...line, toolDisplay: mergeToolDisplays(line.toolDisplay, started.toolDisplay) };
+      return index + 1;
+    }
     lines.push(line);
+    if (line.toolUseId && !line.titleStatus) historyToolLineIndexes.set(line.toolUseId, lines.length - 1);
     return lines.length;
   };
   const entries = runtime.engine.getDisplayEntries();
@@ -2429,10 +2459,10 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       append({ ...thinkingLine(block.text), messageId: message.id });
       rendered = true;
     } else if (block.type === "tool_use" && options.includeToolUseBlocks) {
-      append({ ...formatToolUse(block), messageId: message.id, live: false });
+      append({ ...formatToolUse(block), messageId: message.id, toolUseId: block.id, live: false });
       rendered = true;
     } else if (block.type === "tool_result") {
-      append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id });
+      append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id, toolUseId: block.toolUseId });
       rendered = true;
     }
   }
@@ -2585,12 +2615,12 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   if (toolUse.name === "plan" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), collapsible: true };
   if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
-  return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, previewStyle: "summary", collapsible: true };
+  return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
+  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
 }
 
 
@@ -2603,13 +2633,32 @@ function toolTitle(toolName: string, _phase: "running" | "finished"): string {
     expose_downloads: "文件下载",
     grep: "搜索文本",
     image2: "图片生成",
-    image_note: "记录图片说明",
+    image_note: "记录图片",
     list: "列出文件",
     load_image: "读取图片",
     plan: "任务计划",
     read: "读取文件",
     search: "网络搜索",
     write: "写入文件",
+    read_xhs_artifact: "读取小红书笔记",
+    open_xhs_artifact_editor: "编辑小红书笔记",
+    SendMessage: "发送协作消息",
+    sendmessage: "发送协作消息",
+    TaskGet: "读取后台任务",
+    taskget: "读取后台任务",
+    TaskList: "后台任务列表",
+    tasklist: "后台任务列表",
+    TaskOutput: "读取任务输出",
+    taskoutput: "读取任务输出",
+    TaskResume: "继续后台任务",
+    taskresume: "继续后台任务",
+    TaskStop: "停止后台任务",
+    taskstop: "停止后台任务",
+    multi_tool_use: "并行执行工具",
+    secret_list: "密钥列表",
+    secret_info: "查看密钥",
+    secret_request: "申请密钥",
+    agent_report: "子任务报告",
   };
   return labels[toolName] ?? toolName;
 }
@@ -2633,6 +2682,225 @@ function toolUsePurpose(toolName: string, input: unknown): string | undefined {
   if (toolName === "write" && typeof input.path === "string") return `写入 ${path.basename(input.path)}`;
   if (toolName === "edit" && typeof input.path === "string") return `修改 ${path.basename(input.path)}`;
   return undefined;
+}
+
+function mergeToolDisplays(result: UiToolDisplay | undefined, started: UiToolDisplay | undefined): UiToolDisplay | undefined {
+  if (!result) return started;
+  if (!started) return result;
+  const facts = [...started.facts];
+  for (const fact of result.facts) {
+    const existing = facts.findIndex((item) => item.label === fact.label);
+    if (existing >= 0) facts[existing] = fact;
+    else facts.push(fact);
+  }
+  const subject = result.subject || started.subject;
+  const purpose = result.purpose || started.purpose;
+  return normalizeToolDisplay({
+    subject,
+    purpose,
+    facts,
+    previews: result.previews.length > 0 ? result.previews : started.previews,
+  });
+}
+
+function normalizeToolDisplay(display: UiToolDisplay): UiToolDisplay {
+  let subject = display.subject?.trim() || undefined;
+  const purpose = display.purpose?.trim() || undefined;
+  if (subject && purpose && normalizeDisplayText(subject) === normalizeDisplayText(purpose)) subject = undefined;
+  const visibleText = new Set([subject, purpose].filter((value): value is string => Boolean(value)).map(normalizeDisplayText));
+  const facts = display.facts.filter((fact) => {
+    const normalized = normalizeDisplayText(fact.value);
+    if (!normalized || visibleText.has(normalized)) return false;
+    visibleText.add(normalized);
+    return true;
+  });
+  const previews = display.previews.filter((preview) => {
+    const normalized = normalizeDisplayText(preview.content);
+    if (!normalized || visibleText.has(normalized)) return false;
+    visibleText.add(normalized);
+    return true;
+  });
+  return { subject, purpose, facts, previews };
+}
+
+function normalizeDisplayText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
+  const data = isRecord(input) ? input : {};
+  const purpose = stringValue(data.description);
+  const subject = toolName === "exec_command" ? undefined : toolDisplaySubject(toolName, data);
+  const facts: UiToolFact[] = [];
+  const previews: UiToolPreview[] = [];
+  if (toolName === "exec_command") pushToolPreview(previews, "命令", "code", data.cmd);
+  else if (toolName === "write_stdin") {
+    pushToolFact(facts, "会话", data.session_id, true);
+    pushToolFact(facts, "输入", data.chars, true);
+  } else if (toolName === "grep") pushToolFact(facts, "范围", data.path, true);
+  else if (toolName === "load_image") pushToolFact(facts, "图片", arrayLabel(data.imageRefs), true);
+  else if (toolName === "image2") {
+    pushToolFact(facts, "模式", data.mode === "edit" ? "编辑" : "生成");
+    pushToolFact(facts, "名称", data.semanticName);
+  } else if (toolName === "expose_downloads") pushToolFact(facts, "文件", arrayLabel(data.paths), true);
+  else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") pushToolFact(facts, "接收方", data.target);
+  else if (toolName.toLowerCase().startsWith("task")) pushToolFact(facts, "任务", data.task_id, true);
+  else if (toolName === "read_xhs_artifact") pushToolFact(facts, "笔记", data.id, true);
+  else if (toolName === "open_xhs_artifact_editor") pushToolFact(facts, "标题", isRecord(data.payload) ? data.payload.title : undefined);
+  else if (toolName.startsWith("secret_")) {
+    pushToolFact(facts, "密钥", data.key, true);
+    pushToolFact(facts, "用途", data.reason);
+  } else if (toolName === "agent") {
+    pushToolFact(facts, "任务", data.description ?? data.prompt);
+    pushToolFact(facts, "类型", data.subagent_type ?? data.mode);
+  }
+  return normalizeToolDisplay({ subject, purpose, facts, previews });
+}
+
+function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean): UiToolDisplay {
+  const data = isRecord(output) ? output : {};
+  const facts: UiToolFact[] = [];
+  const previews: UiToolPreview[] = [];
+  let subject = toolDisplaySubject(toolName, data);
+  let purpose = stringValue(data.description);
+
+  if ((toolName === "edit" || toolName === "write") && isEditToolOutput(data)) {
+    subject = data.path;
+    pushToolPreview(previews, undefined, "diff", compactEditDiff(data));
+  } else if (isExecOutput(data)) {
+    subject = undefined;
+    purpose = stringValue(data.description);
+    pushToolPreview(previews, "命令", "code", data.command);
+    const outputText = [stringValue(data.stdout), stringValue(data.stderr)].filter(Boolean).join("\n");
+    if (outputText) pushToolPreview(previews, data.stderr ? "输出 / 错误" : "输出", "code", outputText);
+    if (data.timed_out && !outputText) pushToolPreview(previews, undefined, "text", "命令执行超时");
+    else if ((!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) && !outputText) pushToolPreview(previews, undefined, "text", `命令退出码：${data.exit_code ?? "未知"}`);
+  } else if (toolName === "grep") {
+    subject = stringValue(data.query) || stringValue(data.grepPath) || stringValue(data.path);
+    pushToolPreview(previews, undefined, "list", grepPreview(data));
+  } else if (toolName === "search") {
+    subject = stringValue(data.query);
+    pushToolPreview(previews, undefined, "list", searchPreview(data));
+  } else if (toolName === "read") {
+    subject = stringValue(data.path);
+    if (numberValue(data.startLine) !== undefined && numberValue(data.endLine) !== undefined) pushToolFact(facts, "范围", `${data.startLine}–${data.endLine} 行`);
+    pushToolPreview(previews, undefined, "code", data.content);
+  } else if (toolName === "list") {
+    subject = stringValue(data.path);
+    pushToolPreview(previews, undefined, "list", listPreview(data));
+  } else if (toolName === "image2") {
+    subject = stringValue(data.semanticName);
+    pushToolFact(facts, "图片", `${numberValue(data.returnedImages) ?? arrayLength(data.images)} 张`);
+    pushToolFact(facts, "尺寸", data.size);
+  } else if (toolName === "load_image") {
+    subject = arrayLabel(data.imageRefs);
+  } else if (toolName === "expose_downloads") {
+    const downloads = extractDownloadEntries(output);
+    subject = downloads.map((item) => item.filename || item.name).filter(Boolean).join("、");
+  } else if (toolName.toLowerCase().startsWith("task") || toolName === "agent") {
+    subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
+  } else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") {
+    subject = stringValue(data.target);
+  } else if (toolName === "open_xhs_artifact_editor" || toolName === "read_xhs_artifact") {
+    subject = stringValue(data.artifact_id) || stringValue(data.id) || (isRecord(data.payload) ? stringValue(data.payload.title) : undefined);
+  } else if (toolName.startsWith("secret_")) {
+    subject = stringValue(data.key);
+    pushToolFact(facts, "密钥", data.key, true);
+    if (toolName === "secret_list") pushToolFact(facts, "数量", `${arrayLength(data.secrets)} 项`);
+  } else if (toolName === "agent_report") {
+  } else {
+    subject = subject || stringValue(data.path) || stringValue(data.id) || stringValue(data.name);
+  }
+  return normalizeToolDisplay({ subject, purpose, facts, previews });
+}
+
+function toolDisplaySubject(toolName: string, data: Record<string, unknown>): string | undefined {
+  if (["read", "write", "edit", "list"].includes(toolName)) return stringValue(data.path);
+  if (toolName === "exec_command") return stringValue(data.cmd) || stringValue(data.command);
+  if (toolName === "grep" || toolName === "search") return stringValue(data.query);
+  if (toolName === "image2") return stringValue(data.semanticName);
+  if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") return stringValue(data.target);
+  if (toolName.toLowerCase().startsWith("task")) return stringValue(data.task_id);
+  return undefined;
+}
+
+function pushToolPreview(previews: UiToolPreview[], label: string | undefined, kind: UiToolPreview["kind"], value: unknown): void {
+  if (typeof value !== "string" || !value.trim()) return;
+  const content = value.replace(/\r\n/g, "\n").trim();
+  previews.push({ label, kind, content: truncate(content, 1400) });
+}
+
+function compactEditDiff(output: EditToolOutputLike): string {
+  const lines: string[] = [];
+  for (const hunk of output.patch.slice(0, 3)) {
+    lines.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+    lines.push(...hunk.lines.slice(0, 14));
+  }
+  return lines.join("\n");
+}
+
+function grepPreview(data: Record<string, unknown>): string {
+  if (!Array.isArray(data.matches)) return "";
+  return data.matches.slice(0, 5).filter(isRecord).map((match) => {
+    const file = stringValue(match.file) || "";
+    const line = numberValue(match.line);
+    const text = stringValue(match.text) || "";
+    return `${file}${line !== undefined ? `:${line}` : ""}  ${text}`.trim();
+  }).filter(Boolean).join("\n");
+}
+
+function searchPreview(data: Record<string, unknown>): string {
+  if (!Array.isArray(data.results)) return "";
+  return data.results.slice(0, 4).filter(isRecord).map((result) => {
+    const title = stringValue(result.title) || stringValue(result.url) || "";
+    return title;
+  }).filter(Boolean).join("\n");
+}
+
+function listPreview(data: Record<string, unknown>): string {
+  if (!Array.isArray(data.entries)) return "";
+  return data.entries.slice(0, 8).filter(isRecord).map((entry) => stringValue(entry.path) || stringValue(entry.name) || "").filter(Boolean).join("\n");
+}
+
+function pushToolFact(facts: UiToolFact[], label: string, value: unknown, code = false, tone: UiToolFact["tone"] = "neutral"): void {
+  const normalized = stringValue(value);
+  if (!normalized || facts.some((fact) => fact.label === label && fact.value === normalized)) return;
+  facts.push({ label, value: truncate(normalized, 220), code, tone });
+}
+
+function stringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.replace(/\s+/gu, " ").trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function arrayLabel(value: unknown): string | undefined {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("、") : undefined;
+}
+
+function editOperationLabel(operation: string): string {
+  if (operation === "create") return "新建";
+  if (operation === "edit") return "修改";
+  if (operation === "write") return "写入";
+  return operation;
+}
+
+function formatDuration(durationMs: number): string {
+  return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)} 秒` : `${durationMs} 毫秒`;
+}
+
+function taskStatusDisplay(value: unknown, ok: boolean): string {
+  const labels: Record<string, string> = { pending: "排队中", queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", killed: "已停止", stopped: "已停止" };
+  const status = stringValue(value);
+  return status ? labels[status] ?? status : ok ? "已完成" : "失败";
 }
 
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {

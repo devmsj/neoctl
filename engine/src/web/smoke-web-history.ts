@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createTextMessage, createThinkingMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
 import type { SessionDisplayEntry } from "../session/session-store.js";
 import { restoreWebHistoryLines, WebRepl } from "./index.js";
 
@@ -62,6 +62,40 @@ assert.equal(compactions[0]?.compaction?.current, false);
 assert.equal(compactions[1]?.compaction?.current, true);
 assert.equal(compactions[0]?.compaction?.createdAt, "2026-09-03T06:12:17.756Z");
 assert.equal(compactions[1]?.compaction?.createdAt, "2026-09-03T06:44:41.985Z");
+
+const commandRequest = {
+  id: "call_structured_command",
+  name: "exec_command",
+  input: { cmd: "npm test", description: "运行测试" },
+};
+const commandUseMessage = {
+  id: "message_tool_use",
+  role: "assistant" as const,
+  createdAt: new Date().toISOString(),
+  blocks: [{ type: "tool_use" as const, ...commandRequest }],
+};
+const commandResultMessage = createToolResultMessage(commandRequest, true, {
+  command: "npm test",
+  description: "运行测试",
+  exit_code: 0,
+  duration_ms: 1280,
+  stdout: "ok",
+});
+const commandLines = restoreWebHistoryLines({
+  engine: {
+    getDisplayEntries: () => [
+      { type: "message", message: commandUseMessage },
+      { type: "message", message: commandResultMessage },
+    ],
+  },
+} as never) as Array<Record<string, any>>;
+assert.equal(commandLines.length, 1);
+assert.equal(commandLines[0]?.toolDisplay?.purpose, "运行测试");
+assert.deepEqual(commandLines[0]?.toolDisplay?.facts, []);
+assert.deepEqual(commandLines[0]?.toolDisplay?.previews?.map((preview: Record<string, unknown>) => [preview.label, preview.kind, preview.content]), [
+  ["命令", "code", "npm test"],
+  ["输出", "code", "ok"],
+]);
 
 const runtime = {
   engine: {

@@ -76,13 +76,28 @@ const LINE_TITLE_LABELS = {
   expose_downloads: '文件下载',
   grep: '搜索文本',
   image2: '图片生成',
-  image_note: '记录图片说明',
+  image_note: '记录图片',
   list: '列出文件',
   load_image: '读取图片',
   plan: '任务计划',
   read: '读取文件',
   search: '网络搜索',
   write: '写入文件',
+  read_xhs_artifact: '读取小红书笔记',
+  open_xhs_artifact_editor: '编辑小红书笔记',
+  SendMessage: '发送协作消息',
+  sendmessage: '发送协作消息',
+  TaskGet: '读取后台任务',
+  taskget: '读取后台任务',
+  TaskList: '后台任务列表',
+  tasklist: '后台任务列表',
+  TaskOutput: '读取任务输出',
+  taskoutput: '读取任务输出',
+  TaskResume: '继续后台任务',
+  taskresume: '继续后台任务',
+  TaskStop: '停止后台任务',
+  taskstop: '停止后台任务',
+  multi_tool_use: '并行执行工具',
   '文件下载': '文件下载',
 }
 const TASK_STATUS_LABELS = {
@@ -338,7 +353,6 @@ let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 const renderedLineCache = new Map()
-const toolPresentationCache = new WeakMap()
 const pendingLineText = new Map()
 const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
@@ -1814,70 +1828,25 @@ function toolResultSummary(line) {
   return toolResultPresentation(line).summary
 }
 
+function visibleToolFacts(line) {
+  const facts = Array.isArray(line?.toolDisplay?.facts) ? line.toolDisplay.facts : []
+  return facts.filter((fact) => String(fact?.label || '').trim() !== '状态')
+}
+
 function toolResultPresentation(line) {
-  const name = exactToolName(line).toLowerCase()
-  const raw = String(line?.text || '')
   const live = line?.live === true
-  const titleStatus = String(line?.titleStatus || '')
-  if (line && typeof line === 'object') {
-    const cached = toolPresentationCache.get(line)
-    if (cached && cached.name === name && cached.raw === raw && cached.live === live && cached.titleStatus === titleStatus) return cached
-  }
-  const parsed = parseFirstJsonObject(raw)
-  const failed = parsed?.ok === false || parsed?.error || parsed?.output?.error || /fail|error/i.test(titleStatus) || /(^|\s)(error|failed|failure):/i.test(raw)
+  const failed = line?.titleStatus === 'failure' || line?.kind === 'error'
   const status = live
     ? { key: 'running', label: '运行中' }
     : failed ? { key: 'failed', label: '失败' } : { key: 'completed', label: '成功' }
-  const summary = summarizeToolResult(name, raw, parsed)
-  const presentation = { name, raw, live, titleStatus, status, summary }
-  if (line && typeof line === 'object') toolPresentationCache.set(line, presentation)
-  return presentation
-}
-
-function summarizeToolResult(name, raw, parsed) {
-  const output = parsed?.output && typeof parsed.output === 'object' ? parsed.output : parsed
-  const error = output?.error || parsed?.error
-  if (error) return truncateSummary(String(error), 150)
-  if (name === 'exec_command' || name === 'write_stdin') {
-    const description = output?.description || output?.command || toolTextField(raw, ['目的', 'description', 'command'])
-    const suffix = output?.exit_code !== undefined && output?.exit_code !== null ? ` · exit ${output.exit_code}` : ''
-    return description ? truncateSummary(`${description}${suffix}`, 150) : ''
-  }
-  if (name === 'read' || name.includes('read')) {
-    const range = output?.startLine && output?.endLine ? ` · ${output.startLine}-${output.endLine} 行` : ''
-    const path = output?.path || toolTextField(raw, ['file', 'path'])
-    return path ? truncateSummary(`${path}${range}`, 150) : ''
-  }
-  if (name === 'write' || name === 'edit' || name.includes('apply_patch')) {
-    const operation = output?.operation ? ` · ${output.operation}` : ''
-    const path = output?.path || /^(?:create|edit|write)\s+(.+?)(?:,|$)/im.exec(raw)?.[1]
-    return path ? truncateSummary(`${path}${operation}`, 150) : ''
-  }
-  if (name === 'list') {
-    const count = output?.returnedEntries ?? output?.totalFiles
-    const path = output?.path || toolTextField(raw, ['path'])
-    return path ? truncateSummary(`${path}${count !== undefined ? ` · ${count} 项` : ''}`, 150) : ''
-  }
-  if (name === 'grep' || name.includes('search') || name.includes('query')) {
-    const count = output?.matchCount ?? output?.matches?.length ?? output?.results?.length
-    const subject = output?.query || output?.pattern || output?.path
-    return subject ? truncateSummary(`${subject}${count !== undefined ? ` · ${count} 条` : ''}`, 150) : ''
-  }
-  const firstLine = raw.split(/\r?\n/).map((item) => item.trim()).find((item) => item && !/^(?:ok|success|successful|completed|done|failure|failed|error)$/i.test(item))
-  return truncateSummary(firstLine || '', 150)
+  const display = line?.toolDisplay && typeof line.toolDisplay === 'object' ? line.toolDisplay : undefined
+  const summary = String(display?.purpose || display?.subject || line?.bodyTitle || '').trim()
+  return { status, summary }
 }
 
 function truncateSummary(value, maxLength) {
   const compact = String(value || '').replace(/\s+/g, ' ').trim()
   return compact.length > maxLength ? `${compact.slice(0, maxLength)}…` : compact
-}
-
-function toolTextField(text, labels) {
-  for (const label of labels) {
-    const match = new RegExp(`(?:^|\\n)${escapeRegExp(label)}[:：]\\s*([^\\n]+)`, 'i').exec(String(text || ''))
-    if (match?.[1]) return match[1].trim()
-  }
-  return ''
 }
 
 function isImage2Line(line) {
@@ -3438,11 +3407,7 @@ function createMobileSession() {
 
       <section class="sidebar-card prompt-stack">
         <div class="prompt-stack-head">
-          <div>
-            <div class="eyebrow">应用提示词</div>
-            <strong>卡片拖到对话框生效</strong>
-          </div>
-          <button type="button" class="mini-button" @click="openPromptManager()">管理</button>
+          <button type="button" class="mini-button" @click="openPromptManager()">提示词管理</button>
         </div>
 
         <div class="prompt-list">
@@ -3472,9 +3437,6 @@ function createMobileSession() {
 
     <main class="workspace">
       <header class="topbar">
-        <div class="crumb">
-          <span><span class="workspace-prefix">工作空间 / </span>{{ activePanelLabel }}</span>
-        </div>
         <div class="top-actions">
           <details ref="mobileMenu" class="mobile-nav-menu">
             <summary aria-label="打开导航菜单" title="导航菜单">
@@ -3520,10 +3482,10 @@ function createMobileSession() {
               <span v-else class="runtime-context-syncing">同步中</span>
             </section>
 
-            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line) }]">
+            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
               <div :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
-                  <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" transform="rotate(45 10 10)" />
+                  <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
                 </svg>
               </div>
               <div v-if="isCompactionLine(line)" class="message-body compaction-message-body">
@@ -3541,6 +3503,7 @@ function createMobileSession() {
               <div v-else-if="line.kind === 'thinking'" class="message-body reasoning-body">
                 <details class="reasoning-sheet" :open="line.live || undefined">
                   <summary>
+                    <span class="reasoning-title-mark" aria-hidden="true"></span>
                     <span class="reasoning-heading">思考</span>
                     <span v-if="lineElapsedText(line)" class="reasoning-elapsed">{{ lineElapsedText(line) }}</span>
                     <span class="reasoning-chevron" aria-hidden="true"></span>
@@ -3553,22 +3516,41 @@ function createMobileSession() {
                 </details>
               </div>
               <div v-else class="message-body">
-                <div class="message-head">
+                <div v-if="line.kind !== 'tool' && !shouldCollapseToolLine(line)" class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
-                  <span v-if="shouldCollapseToolLine(line) && toolResultStatus(line).key === 'failed'" class="tool-status-pill status-failed">失败</span>
-                  <span v-else-if="line.kind !== 'tool' && !line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
-                  <span v-if="line.live && line.kind !== 'tool' && !line.toolName" class="live-pill">实时</span>
+                  <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
+                  <span v-if="line.live && !line.toolName" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="isImage2Line(line)" class="image2-result-shell">
                   <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
                   <button v-if="isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                 </div>
-                <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`, { 'compact-only': !toolResultSummary(line) }]">
-                  <div v-if="toolResultSummary(line)" class="tool-result-summary-main">
-                    <p>{{ toolResultSummary(line) }}</p>
+                <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">
+                  <div class="tool-result-title-row">
+                    <svg :class="['tool-result-diamond', { spinning: line.live }]" viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
+                    </svg>
+                    <strong class="tool-result-name">{{ lineTitle(line) }}</strong>
+                    <span v-if="toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
                   </div>
-                  <button type="button" class="tool-result-view" :disabled="!line.text" @click="openToolDetail(line)">详情</button>
+                  <div class="tool-result-detail-row">
+                    <p v-if="line.toolDisplay?.purpose || line.toolDisplay?.subject" class="tool-result-primary">
+                      {{ line.toolDisplay?.purpose || line.toolDisplay?.subject }}
+                    </p>
+                    <div v-if="line.toolDisplay?.previews?.length" class="tool-result-previews">
+                      <section v-for="(preview, previewIndex) in line.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
+                        <span v-if="preview.label">{{ preview.label }}</span>
+                        <pre>{{ preview.content }}</pre>
+                      </section>
+                    </div>
+                    <dl v-if="visibleToolFacts(line).length" class="tool-result-facts">
+                      <div v-for="fact in visibleToolFacts(line)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
+                        <dt>{{ fact.label }}</dt>
+                        <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
+                      </div>
+                    </dl>
+                  </div>
                 </div>
                 <template v-else>
                   <template v-if="isXhsArtifactLine(line)">
@@ -3601,10 +3583,11 @@ function createMobileSession() {
               </div>
             </article>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
-              <div class="message-loading-marker" aria-hidden="true"><span></span><span></span><span></span></div>
+              <span class="message-loading-emblem" aria-hidden="true">
+                <i></i><i></i><i></i>
+              </span>
               <div class="message-loading-body">
-                <div class="message-loading-label">{{ transcriptLoadingLabel }}</div>
-                <div class="message-loading-track" aria-hidden="true"><span></span></div>
+                <span class="message-loading-label">{{ transcriptLoadingLabel }}</span>
               </div>
             </div>
           </div>
@@ -3850,7 +3833,7 @@ function createMobileSession() {
       <section v-else-if="state.activePanel === 'prompts'" class="content-grid single">
         <div class="panel-page prompt-page">
           <div class="page-head">
-            <div><h2>提示词管理</h2><p>在这里编辑、整理和应用应用层提示词。</p></div>
+            <h2>提示词</h2>
             <div class="page-head-actions">
               <button class="ghost" @click="state.activePanel = 'chat'">回到对话</button>
               <button class="primary" @click="newPromptItem">+ 新建提示词</button>
@@ -3859,8 +3842,7 @@ function createMobileSession() {
           <div class="prompt-workbench">
             <aside class="prompt-library-panel">
               <div class="prompt-library-head">
-                <strong>提示词列表</strong>
-                <span>{{ state.promptLibrary.length }} 个 · 拖拽排序</span>
+                <strong>{{ state.promptLibrary.length }} 个提示词</strong>
               </div>
               <div class="prompt-library-list">
                 <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
@@ -3893,10 +3875,7 @@ function createMobileSession() {
 
             <section class="prompt-editor-panel">
               <div class="prompt-editor-toolbar">
-                <div class="prompt-editor-current">
-                  <span class="prompt-editor-kicker">编辑中</span>
-                  <strong>{{ promptDraft.title || '新提示词' }}</strong>
-                </div>
+                <strong class="prompt-editor-current">{{ promptDraft.title || '新提示词' }}</strong>
                 <div class="prompt-editor-toolbar-actions">
                   <button class="mini-button" type="button" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)">应用</button>
                   <button class="mini-button" type="button" @click="savePromptItem">保存</button>
@@ -3911,11 +3890,11 @@ function createMobileSession() {
                 </label>
                 <label class="prompt-editor-field prompt-editor-field-full">
                   <span>提示词内容</span>
-                  <textarea v-model="promptDraft.content" rows="14" placeholder="这里填写应用层 system prompt 内容"></textarea>
+                  <textarea v-model="promptDraft.content" rows="14" placeholder="输入提示词内容"></textarea>
                 </label>
                 <label class="prompt-editor-field prompt-editor-field-full">
                   <span>用法（选填）</span>
-                  <textarea v-model="promptDraft.usage" rows="4" placeholder="例如：适合用于评审方案；请先提供目标、约束和相关文件。应用后会在对话中显示这段提示。"></textarea>
+                  <textarea v-model="promptDraft.usage" rows="4" placeholder="输入适用场景"></textarea>
                 </label>
               </div>
             </section>
@@ -4007,8 +3986,7 @@ function createMobileSession() {
 
       <section v-else class="content-grid single">
         <div class="panel-page">
-          <h2>运行时能力概览</h2>
-          <p>这些能力由当前 SPA 后面的 neoctl 运行时提供。</p>
+          <h2>运行时能力</h2>
           <div class="capability-grid">
             <div v-for="item in ['流式模型循环', '工具执行', '上下文指标', '会话恢复', '后台代理', '登录配置', '图片附件', 'Markdown 输出']" :key="item" class="capability-card">{{ item }}</div>
           </div>
@@ -4125,7 +4103,7 @@ function createMobileSession() {
           <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-plugin-list">
             <div v-if="state.sessionTools.loading" class="runtime-context-empty">同步中</div>
             <template v-else>
-              <div class="runtime-tool-status"><span>当前可用 {{ effectiveSessionToolCount }} / {{ state.sessionTools.items.length }}</span><small>每个工具可跟随全局或在本会话单独覆盖</small></div>
+              <div class="runtime-tool-status"><span>可用 {{ effectiveSessionToolCount }} / {{ state.sessionTools.items.length }}</span></div>
               <div v-for="tool in state.sessionTools.items" :key="tool.name" class="runtime-plugin-row">
                 <button type="button" class="runtime-tool-detail-button" :disabled="!runtimeTools.some((item) => item.name === tool.name)" @click="openRuntimeToolDetail(runtimeTools.find((item) => item.name === tool.name))">
                   <code>{{ tool.name }}</code><small>{{ tool.available === false ? `插件未启用 · ${tool.pluginName || tool.pluginId}` : tool.source === 'plugin' ? `插件 · ${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small>
@@ -4178,9 +4156,7 @@ function createMobileSession() {
         </header>
         <div class="runtime-context-detail-content">
           <template v-if="state.runtimeContextDetail.kind === 'tool'">
-            <h3>说明</h3>
-            <p>{{ state.runtimeContextDetail.description || '—' }}</p>
-            <h3>输入参数结构</h3>
+            <p v-if="state.runtimeContextDetail.description">{{ state.runtimeContextDetail.description }}</p>
             <pre>{{ state.runtimeContextDetail.schema }}</pre>
           </template>
           <pre v-else>{{ state.runtimeContextDetail.content }}</pre>
@@ -4254,7 +4230,7 @@ function createMobileSession() {
               <strong>{{ lineTitle(toolDetailLine) }}</strong>
               <span :class="['tool-result-modal-status', `status-${toolResultStatus(toolDetailLine).key}`]">{{ toolResultStatus(toolDetailLine).label }}</span>
             </div>
-            <p>{{ toolResultSummary(toolDetailLine) }}</p>
+            <p v-if="toolResultSummary(toolDetailLine)">{{ toolResultSummary(toolDetailLine) }}</p>
           </div>
           <button type="button" class="tool-result-modal-close" aria-label="关闭工具结果" @click="closeToolDetail">×</button>
         </header>
@@ -4262,7 +4238,6 @@ function createMobileSession() {
           <div class="message-text markdown tool-detail-markdown" v-html="renderToolDetail(toolDetailLine)"></div>
         </div>
         <footer class="tool-result-modal-footer">
-          <span>按 Esc 关闭</span>
           <button type="button" class="primary" @click="closeToolDetail">关闭</button>
         </footer>
       </section>
