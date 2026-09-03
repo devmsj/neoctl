@@ -1860,14 +1860,15 @@ function toggleToolGroup(group) {
 }
 
 function toolGroupLabel(group) {
-  const lines = group?.lines || []
-  const names = []
-  for (const line of lines) {
+  const counts = new Map()
+  for (const line of group?.lines || []) {
     const name = lineTitle(line)
-    if (name && !names.includes(name)) names.push(name)
+    if (!name) continue
+    counts.set(name, (counts.get(name) || 0) + 1)
   }
-  const lead = names.slice(0, 2).join('、') || '过程'
-  return names.length > 2 ? `${lead}…` : lead
+  return [...counts.entries()]
+    .map(([name, count]) => count > 1 ? `${name} ×${count}` : name)
+    .join('、') || '过程'
 }
 
 function openToolDetail(line) {
@@ -3599,11 +3600,7 @@ function createMobileSession() {
               <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
                   <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line)">
-                    <svg :class="['tool-group-diamond', { spinning: line.live }]" viewBox="0 0 20 28" aria-hidden="true">
-                      <path d="M10 1.5 18.5 14 10 26.5 1.5 14Z" />
-                    </svg>
                     <span class="tool-group-label">{{ toolGroupLabel(line) }}</span>
-                    <span class="tool-group-count">{{ line.lines.length }}</span>
                     <span class="tool-group-chevron" aria-hidden="true"></span>
                   </button>
                   <div v-if="toolGroupExpanded(line)" class="tool-group-lines">

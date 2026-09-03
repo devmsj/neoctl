@@ -852,7 +852,7 @@ button:disabled,
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: 14px minmax(0, auto) auto 12px;
+  grid-template-columns: minmax(0, auto) 12px;
   align-items: center;
   justify-content: start;
   gap: 7px;
@@ -868,29 +868,14 @@ button:disabled,
   color: var(--sky) !important;
   transform: none !important;
 }
-.tool-group-diamond {
-  width: 10px;
-  height: 14px;
-  fill: var(--sky);
-  stroke: none;
-  transition: fill .2s ease, opacity .2s ease;
-}
-.tool-group-message.live .tool-group-diamond {
-  fill: var(--lime);
-}
 .tool-group-label {
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   font-size: 13px;
   font-weight: 700;
   line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-group-count {
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  text-overflow: clip;
+  white-space: normal;
 }
 .tool-group-chevron {
   width: 7px;
