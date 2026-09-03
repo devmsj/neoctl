@@ -1138,9 +1138,8 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 12px;
   padding: 16px 0;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 0;
 }
-.message:last-child { border-bottom: 0; }
 .message-marker {
   display: inline-flex;
   align-items: flex-start;
