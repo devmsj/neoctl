@@ -1799,7 +1799,7 @@ input[type='radio'] {
   }
 }
 
-/* Current-session activity glyph: one large diamond, always held at 45deg. */
+/* Current-session activity glyph: a true clipped diamond, not a rotated square. */
 .session-entry-icon {
   position: relative;
   width: 34px;
@@ -1813,21 +1813,23 @@ input[type='radio'] {
 
 .session-diamond {
   position: absolute;
-  top: 7px;
-  left: 7px;
+  top: 9px;
+  left: 9px;
   display: block;
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--line);
+  width: 16px;
+  height: 16px;
+  border: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   background: var(--sky) !important;
-  transform: rotate(45deg) scale(1);
+  filter: drop-shadow(1px 1px 0 color-mix(in srgb, var(--line) 72%, transparent));
+  transform: scale(1);
   transform-origin: center;
   transition: background-color .22s ease, opacity .22s ease, transform .32s cubic-bezier(.2, .8, .2, 1) !important;
 }
 
 .session-entry:not(.working) .session-diamond {
   animation: none;
-  transform: rotate(45deg) scale(1);
+  transform: scale(1);
 }
 
 .session-entry.working .session-diamond {
@@ -1836,19 +1838,19 @@ input[type='radio'] {
 }
 
 @keyframes session-diamond-work {
-  0%, 100% { transform: translateY(0) rotate(45deg) scale(.9); opacity: .78; }
-  35% { transform: translateY(-2px) rotate(45deg) scale(1.04); opacity: 1; }
-  68% { transform: translateY(1px) rotate(45deg) scale(.96); opacity: .9; }
+  0%, 100% { transform: translateY(0) scale(.9); opacity: .78; }
+  35% { transform: translateY(-2px) scale(1.06); opacity: 1; }
+  68% { transform: translateY(1px) scale(.96); opacity: .9; }
 }
 
 :root[data-theme='dark'] .session-entry:not(.working) .session-diamond {
   background: #38bdf8 !important;
-  border-color: #cbd5e1;
+  filter: drop-shadow(1px 1px 0 rgba(226, 232, 240, .72));
 }
 
 :root[data-theme='dark'] .session-entry.working .session-diamond {
   background: #bef264 !important;
-  border-color: #f3f4f6;
+  filter: drop-shadow(1px 1px 0 rgba(248, 250, 252, .78));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1867,6 +1869,6 @@ input[type='radio'] {
   }
 
   .session-entry.working .session-diamond {
-    transform: rotate(45deg) scale(1);
+    transform: scale(1);
   }
 }
