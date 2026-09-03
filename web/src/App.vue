@@ -2906,6 +2906,7 @@ function cacheMessageImagePreviews(attachments) {
       previewUrl: attachment.previewUrl,
       originalUrl: attachment.previewUrl,
       name: attachment.name,
+      available: true,
       pending: true,
     }))
   mergeMessageImagePreviews(previews)
