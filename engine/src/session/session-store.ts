@@ -156,7 +156,9 @@ export class SessionStore {
         : requestedSessionId ?? createSessionId();
     const sessionDir = path.join(resolveSessionRoot(options), sessionId);
     const transcriptPath = path.join(sessionDir, "transcript.jsonl");
-    const loaded = options.resume ? await loadTranscript(transcriptPath, options.agentId) : createEmptyLoadedTranscript();
+    const loaded = options.resume
+      ? await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true })
+      : createEmptyLoadedTranscript();
     await fsp.mkdir(sessionDir, { recursive: true });
     return new SessionStore(options, sessionId, loaded);
   }
@@ -173,7 +175,7 @@ export class SessionStore {
           const transcriptPath = path.join(sessionDir, "transcript.jsonl");
           const stat = await fsp.stat(transcriptPath).catch(() => undefined);
           if (!stat) return undefined;
-          const loaded = await loadTranscript(transcriptPath, options.agentId);
+          const loaded = await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true });
           const summary: SessionSummaryWithUpdatedAtMs = {
             sessionId,
             sessionDir,
@@ -222,19 +224,19 @@ export class SessionStore {
   recordMessage(message: Message): void {
     if (!shouldPersistMessage(message)) return;
     const stored = cloneMessage(message);
+    this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message: stored });
     this.resumedMessages.push(stored);
     this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
-    this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
   /** @deprecated Prefer recordCompactCheckpoint so replacement history is one durable entry. */
   recordCompactBoundary(): void {
     const createdAt = new Date().toISOString();
+    this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt });
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
     this.lastCompaction = undefined;
     this.displayEntries.push({ type: "compact", createdAt });
-    this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt });
   }
 
   recordCompactCheckpoint(messages: readonly Message[], reason?: CompactionReason, report?: CompactionReport): void {
@@ -242,19 +244,8 @@ export class SessionStore {
     const previousWindowId = this.windowId;
     const windowId = randomUUID();
     const createdAt = new Date().toISOString();
-    this.windowNumber += 1;
-    this.previousWindowId = previousWindowId;
-    this.windowId = windowId;
-    this.resumedMessages.length = 0;
-    this.resumedMessages.push(...replacementMessages.map(cloneMessage));
-    this.contentReplacements.length = 0;
-    this.lastCompaction = report ? cloneCompactionReport(report) : undefined;
-    this.displayEntries.push({
-      type: "compact",
-      createdAt,
-      reason,
-      ...(this.lastCompaction ? { report: cloneCompactionReport(this.lastCompaction) } : {}),
-    });
+    const nextWindowNumber = this.windowNumber + 1;
+    const nextReport = report ? cloneCompactionReport(report) : undefined;
     this.appendEntry({
       type: "compact",
       sessionId: this.sessionId,
@@ -262,17 +253,31 @@ export class SessionStore {
       createdAt,
       replacementMessages,
       reason,
-      ...(this.lastCompaction ? { report: cloneCompactionReport(this.lastCompaction) } : {}),
-      windowNumber: this.windowNumber,
+      ...(nextReport ? { report: cloneCompactionReport(nextReport) } : {}),
+      windowNumber: nextWindowNumber,
       firstWindowId: this.firstWindowId,
       previousWindowId,
       windowId,
+    });
+    this.windowNumber = nextWindowNumber;
+    this.previousWindowId = previousWindowId;
+    this.windowId = windowId;
+    this.resumedMessages.length = 0;
+    this.resumedMessages.push(...replacementMessages.map(cloneMessage));
+    this.contentReplacements.length = 0;
+    this.lastCompaction = nextReport;
+    this.displayEntries.push({
+      type: "compact",
+      createdAt,
+      reason,
+      ...(nextReport ? { report: cloneCompactionReport(nextReport) } : {}),
     });
   }
 
   recordTitle(title: string, kind: SessionTitleKind = "initial"): void {
     const normalized = normalizeTitle(title);
     if (!normalized || (normalized === this.title && kind === this.titleKind)) return;
+    this.appendEntry({ type: "title", sessionId: this.sessionId, agentId: this.agentId, title: normalized, kind, createdAt: new Date().toISOString() });
     this.title = normalized;
     this.titleKind = kind;
     if (kind === "initial") this.hasInitialTitle = true;
@@ -280,7 +285,6 @@ export class SessionStore {
       this.hasInitialTitle = true;
       this.hasTitleRefinement = true;
     }
-    this.appendEntry({ type: "title", sessionId: this.sessionId, agentId: this.agentId, title: normalized, kind, createdAt: new Date().toISOString() });
   }
 
   getTitle(): string | undefined {
@@ -301,14 +305,15 @@ export class SessionStore {
   }
 
   recordAppPrompt(appPrompt: AppPromptValue | null | undefined): void {
-    this.appPrompt = appPrompt ? cloneAppPrompt(appPrompt) : undefined;
+    const nextAppPrompt = appPrompt ? cloneAppPrompt(appPrompt) : undefined;
     this.appendEntry({
       type: "app-prompt",
       sessionId: this.sessionId,
       agentId: this.agentId,
       createdAt: new Date().toISOString(),
-      ...(this.appPrompt ? { appPrompt: this.appPrompt } : {}),
+      ...(nextAppPrompt ? { appPrompt: nextAppPrompt } : {}),
     });
+    this.appPrompt = nextAppPrompt;
   }
 
   getFastMode(): boolean {
@@ -318,7 +323,6 @@ export class SessionStore {
   recordFastMode(enabled: boolean): void {
     const next = enabled === true;
     if (next === this.fastMode) return;
-    this.fastMode = next;
     this.appendEntry({
       type: "fast-mode",
       sessionId: this.sessionId,
@@ -326,6 +330,7 @@ export class SessionStore {
       createdAt: new Date().toISOString(),
       enabled: next,
     });
+    this.fastMode = next;
   }
 
   getContextWindowTokens(): number | undefined {
@@ -335,7 +340,6 @@ export class SessionStore {
   recordContextWindowTokens(tokens: number): void {
     if (!Number.isInteger(tokens) || tokens <= 0) throw new Error("context window tokens must be a positive integer");
     if (tokens === this.contextWindowTokens) return;
-    this.contextWindowTokens = tokens;
     this.appendEntry({
       type: "context-window",
       sessionId: this.sessionId,
@@ -343,20 +347,24 @@ export class SessionStore {
       createdAt: new Date().toISOString(),
       tokens,
     });
+    this.contextWindowTokens = tokens;
   }
 
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
     if (replacements.length === 0) return;
-    this.contentReplacements.push(...replacements);
+    const storedReplacements = replacements.map((replacement) => ({ ...replacement }));
     this.appendEntry({
       type: "content-replacement",
       sessionId: this.sessionId,
       agentId: this.agentId,
-      replacements: [...replacements],
+      replacements: storedReplacements,
     });
+    this.contentReplacements.push(...storedReplacements);
   }
 
   reset(): void {
+    const firstWindowId = randomUUID();
+    this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
     this.resumedMessages.length = 0;
     this.displayEntries.length = 0;
     this.contentReplacements.length = 0;
@@ -366,10 +374,9 @@ export class SessionStore {
     this.hasTitleRefinement = false;
     this.lastCompaction = undefined;
     this.windowNumber = 1;
-    this.firstWindowId = randomUUID();
+    this.firstWindowId = firstWindowId;
     this.previousWindowId = undefined;
-    this.windowId = this.firstWindowId;
-    this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
+    this.windowId = firstWindowId;
   }
 
   snapshot(): SessionStoreSnapshot {
@@ -396,7 +403,13 @@ export class SessionStore {
 
   private appendEntry(entry: SessionTranscriptEntry): void {
     fs.mkdirSync(this.sessionDir, { recursive: true });
-    fs.appendFileSync(this.transcriptPath, `${JSON.stringify(entry)}\n`, "utf8");
+    const descriptor = fs.openSync(this.transcriptPath, "a");
+    try {
+      fs.writeFileSync(descriptor, `${JSON.stringify(entry)}\n`, "utf8");
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
   }
 }
 
@@ -433,81 +446,162 @@ async function findLatestSessionId(options: SessionStoreOptions): Promise<string
   return latest?.sessionId;
 }
 
-async function loadTranscript(transcriptPath: string, agentId?: string): Promise<LoadedTranscript> {
-  const text = await fsp.readFile(transcriptPath, "utf8").catch(() => "");
-  const loaded = createEmptyLoadedTranscript();
-  if (!text.trim()) return loaded;
+interface LoadTranscriptOptions {
+  repairUnterminatedTail?: boolean;
+}
 
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line) as SessionTranscriptEntry;
-      if (agentId && "agentId" in entry && entry.agentId !== agentId) continue;
-      loaded.entries += 1;
-      if (entry.type === "reset") {
-        loaded.messages.length = 0;
-        loaded.displayEntries.length = 0;
-        loaded.replacements.length = 0;
-        loaded.title = undefined;
-        loaded.titleKind = undefined;
-        loaded.hasInitialTitle = false;
-        loaded.hasTitleRefinement = false;
-        loaded.lastCompaction = undefined;
-        loaded.windowNumber = 1;
-        loaded.firstWindowId = undefined;
-        loaded.previousWindowId = undefined;
-        loaded.windowId = undefined;
-      }
-      if (entry.type === "compact") {
-        loaded.messages.length = 0;
-        loaded.replacements.length = 0;
-        if (entry.replacementMessages) loaded.messages.push(...entry.replacementMessages.map(cloneMessage));
-        const boundaryReport = entry.replacementMessages
-          ?.slice()
-          .reverse()
-          .find((message) => message.metadata?.compactBoundary === true)
-          ?.metadata?.compactionReport as CompactionReport | undefined;
-        loaded.lastCompaction = entry.report
-          ? cloneCompactionReport(entry.report)
-          : boundaryReport ? cloneCompactionReport(boundaryReport) : undefined;
-        loaded.displayEntries.push({
-          type: "compact",
-          createdAt: entry.createdAt,
-          reason: entry.reason,
-          ...(loaded.lastCompaction ? { report: cloneCompactionReport(loaded.lastCompaction) } : {}),
-        });
-        if (entry.windowNumber !== undefined) loaded.windowNumber = entry.windowNumber;
-        if (entry.firstWindowId) loaded.firstWindowId = entry.firstWindowId;
-        loaded.previousWindowId = entry.previousWindowId;
-        if (entry.windowId) loaded.windowId = entry.windowId;
-      }
-      if (entry.type === "message") {
-        const message = cloneMessage(entry.message);
-        loaded.messages.push(message);
-        loaded.displayEntries.push({ type: "message", message: cloneMessage(message) });
-      }
-      if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
-      if (entry.type === "title") {
-        const normalizedTitle = normalizeTitle(entry.title);
-        if (normalizedTitle) {
-          const kind = entry.kind ?? "initial";
-          loaded.title = normalizedTitle;
-          loaded.titleKind = kind;
-          if (kind === "initial") loaded.hasInitialTitle = true;
-          if (kind === "refinement") {
-            loaded.hasInitialTitle = true;
-            loaded.hasTitleRefinement = true;
-          }
+async function loadTranscript(transcriptPath: string, agentId?: string, options: LoadTranscriptOptions = {}): Promise<LoadedTranscript> {
+  const entries = await readDurableTranscriptEntries(transcriptPath, options);
+  const loaded = createEmptyLoadedTranscript();
+
+  for (const entry of entries) {
+    if (agentId && entry.agentId !== agentId) continue;
+    loaded.entries += 1;
+    if (entry.type === "reset") {
+      loaded.messages.length = 0;
+      loaded.displayEntries.length = 0;
+      loaded.replacements.length = 0;
+      loaded.title = undefined;
+      loaded.titleKind = undefined;
+      loaded.hasInitialTitle = false;
+      loaded.hasTitleRefinement = false;
+      loaded.lastCompaction = undefined;
+      loaded.windowNumber = 1;
+      loaded.firstWindowId = undefined;
+      loaded.previousWindowId = undefined;
+      loaded.windowId = undefined;
+    }
+    if (entry.type === "compact") {
+      loaded.messages.length = 0;
+      loaded.replacements.length = 0;
+      if (entry.replacementMessages) loaded.messages.push(...entry.replacementMessages.map(cloneMessage));
+      const boundaryReport = entry.replacementMessages
+        ?.slice()
+        .reverse()
+        .find((message) => message.metadata?.compactBoundary === true)
+        ?.metadata?.compactionReport as CompactionReport | undefined;
+      loaded.lastCompaction = entry.report
+        ? cloneCompactionReport(entry.report)
+        : boundaryReport ? cloneCompactionReport(boundaryReport) : undefined;
+      loaded.displayEntries.push({
+        type: "compact",
+        createdAt: entry.createdAt,
+        reason: entry.reason,
+        ...(loaded.lastCompaction ? { report: cloneCompactionReport(loaded.lastCompaction) } : {}),
+      });
+      if (entry.windowNumber !== undefined) loaded.windowNumber = entry.windowNumber;
+      if (entry.firstWindowId) loaded.firstWindowId = entry.firstWindowId;
+      loaded.previousWindowId = entry.previousWindowId;
+      if (entry.windowId) loaded.windowId = entry.windowId;
+    }
+    if (entry.type === "message") {
+      const message = cloneMessage(entry.message);
+      loaded.messages.push(message);
+      loaded.displayEntries.push({ type: "message", message: cloneMessage(message) });
+    }
+    if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
+    if (entry.type === "title") {
+      const normalizedTitle = normalizeTitle(entry.title);
+      if (normalizedTitle) {
+        const kind = entry.kind ?? "initial";
+        loaded.title = normalizedTitle;
+        loaded.titleKind = kind;
+        if (kind === "initial") loaded.hasInitialTitle = true;
+        if (kind === "refinement") {
+          loaded.hasInitialTitle = true;
+          loaded.hasTitleRefinement = true;
         }
       }
-      if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
-      if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
-      if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
-    } catch {
-      // Skip malformed lines so a partial write does not make the session unusable.
     }
+    if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
+    if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
+    if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
   }
   return loaded;
+}
+
+async function readDurableTranscriptEntries(transcriptPath: string, options: LoadTranscriptOptions): Promise<SessionTranscriptEntry[]> {
+  let payload: Buffer;
+  try {
+    payload = await fsp.readFile(transcriptPath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
+  }
+  if (payload.length === 0) return [];
+
+  const endsWithNewline = payload[payload.length - 1] === 0x0a;
+  const finalNewline = payload.lastIndexOf(0x0a);
+  const completePayload = endsWithNewline ? payload : payload.subarray(0, finalNewline + 1);
+  const entries = parseCompleteTranscriptLines(completePayload.toString("utf8"), transcriptPath);
+  if (endsWithNewline) return entries;
+
+  const tailOffset = finalNewline + 1;
+  const tail = payload.subarray(tailOffset).toString("utf8").replace(/\r$/u, "");
+  if (!tail.trim()) {
+    if (options.repairUnterminatedTail) await truncateAndSync(transcriptPath, tailOffset);
+    return entries;
+  }
+
+  let tailEntry: SessionTranscriptEntry;
+  try {
+    tailEntry = parseTranscriptEntry(tail, transcriptPath, entries.length + 1);
+  } catch (error) {
+    if (!options.repairUnterminatedTail) throw error;
+    await truncateAndSync(transcriptPath, tailOffset);
+    return entries;
+  }
+  if (options.repairUnterminatedTail) await appendAndSync(transcriptPath, "\n");
+  entries.push(tailEntry);
+  return entries;
+}
+
+function parseCompleteTranscriptLines(text: string, transcriptPath: string): SessionTranscriptEntry[] {
+  const entries: SessionTranscriptEntry[] = [];
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].replace(/\r$/u, "");
+    if (!line.trim()) continue;
+    entries.push(parseTranscriptEntry(line, transcriptPath, index + 1));
+  }
+  return entries;
+}
+
+function parseTranscriptEntry(line: string, transcriptPath: string, lineNumber: number): SessionTranscriptEntry {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch (error) {
+    throw new Error(`Malformed session transcript at ${transcriptPath}:${lineNumber}`, { cause: error });
+  }
+  if (!value || typeof value !== "object" || typeof (value as { type?: unknown }).type !== "string" || typeof (value as { agentId?: unknown }).agentId !== "string") {
+    throw new Error(`Invalid session transcript entry at ${transcriptPath}:${lineNumber}`);
+  }
+  return value as SessionTranscriptEntry;
+}
+
+async function appendAndSync(filePath: string, text: string): Promise<void> {
+  const handle = await fsp.open(filePath, "a");
+  try {
+    await handle.writeFile(text, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function truncateAndSync(filePath: string, length: number): Promise<void> {
+  const handle = await fsp.open(filePath, "r+");
+  try {
+    await handle.truncate(length);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function createEmptyLoadedTranscript(): LoadedTranscript {

@@ -87,6 +87,40 @@ async function main(): Promise<void> {
     maxToolResultLines: 3,
   });
   const exportedMarkdown = await fs.readFile(exportPath, "utf8");
+
+  const truncatedTailSessionId = "truncated-tail-session";
+  const truncatedTailStore = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: truncatedTailSessionId });
+  truncatedTailStore.recordMessage(createTextMessage("user", "durable before partial tail"));
+  await fs.appendFile(truncatedTailStore.transcriptPath, '{"type":"message","sessionId":"truncated-tail-session"', "utf8");
+  const recoveredTailStore = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: truncatedTailSessionId, resume: true });
+  const recoveredTailMessagesBeforeAppend = recoveredTailStore.getInitialMessages();
+  const repairedTailText = await fs.readFile(truncatedTailStore.transcriptPath, "utf8");
+  recoveredTailStore.recordMessage(createTextMessage("assistant", "durable after partial tail"));
+  const recoveredTailAgain = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: truncatedTailSessionId, resume: true });
+
+  const unterminatedValidSessionId = "unterminated-valid-session";
+  const unterminatedValidStore = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: unterminatedValidSessionId });
+  unterminatedValidStore.recordMessage(createTextMessage("user", "valid record without final newline"));
+  const validTranscript = await fs.readFile(unterminatedValidStore.transcriptPath, "utf8");
+  await fs.writeFile(unterminatedValidStore.transcriptPath, validTranscript.replace(/\n$/u, ""), "utf8");
+  const recoveredValidTail = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: unterminatedValidSessionId, resume: true });
+  const repairedValidText = await fs.readFile(unterminatedValidStore.transcriptPath, "utf8");
+
+  const corruptMiddleSessionId = "corrupt-middle-session";
+  const corruptMiddleStore = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: corruptMiddleSessionId });
+  corruptMiddleStore.recordMessage(createTextMessage("user", "before corrupt middle"));
+  corruptMiddleStore.recordMessage(createTextMessage("assistant", "after corrupt middle"));
+  const corruptLines = (await fs.readFile(corruptMiddleStore.transcriptPath, "utf8")).trimEnd().split("\n");
+  await fs.writeFile(corruptMiddleStore.transcriptPath, `${corruptLines[0]}\n{malformed}\n${corruptLines[1]}\n`, "utf8");
+  const corruptMiddleRejected = await SessionStore.open({ agentId: "main", rootDir: root, sessionId: corruptMiddleSessionId, resume: true })
+    .then(() => false)
+    .catch((error: unknown) => error instanceof Error && error.message.includes("Malformed session transcript"));
+  const durabilitySessionsDeleted = await Promise.all([
+    truncatedTailSessionId,
+    unterminatedValidSessionId,
+    corruptMiddleSessionId,
+  ].map((durabilitySessionId) => SessionStore.delete({ rootDir: root, sessionId: durabilitySessionId })));
+
   const afterReset = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
   afterReset.reset();
   const resetResume = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
@@ -137,6 +171,16 @@ async function main(): Promise<void> {
     exportedMarkdown.includes("## Transcript") &&
     exportedMarkdown.includes("Tool use ID: call_a") &&
     exportedMarkdown.includes("persisted compact state") &&
+    recoveredTailMessagesBeforeAppend.length === 1 &&
+    recoveredTailMessagesBeforeAppend[0]?.blocks.some((block) => block.type === "text" && block.text === "durable before partial tail") === true &&
+    repairedTailText.endsWith("\n") &&
+    repairedTailText.trimEnd().split("\n").length === 1 &&
+    recoveredTailAgain.getInitialMessages().length === 2 &&
+    recoveredTailAgain.getInitialMessages()[1]?.blocks.some((block) => block.type === "text" && block.text === "durable after partial tail") === true &&
+    recoveredValidTail.getInitialMessages().length === 1 &&
+    repairedValidText.endsWith("\n") &&
+    corruptMiddleRejected &&
+    durabilitySessionsDeleted.every(Boolean) &&
     resetResume.snapshot().resumedMessages === 0 &&
     resetResume.snapshot().lastCompaction === undefined &&
     resetResume.snapshot().fastMode === true &&
@@ -144,7 +188,27 @@ async function main(): Promise<void> {
     deleted &&
     listedAfterDelete.length === 0;
 
-  console.log(JSON.stringify({ ok, firstRecords: first.records.length, persistedBlocks: persistedBlocks.length, exportResult, resumed: resumed.snapshot(), latest: latest.snapshot(), listed, reset: resetResume.snapshot(), deleted, listedAfterDelete }, null, 2));
+  console.log(JSON.stringify({
+    ok,
+    firstRecords: first.records.length,
+    persistedBlocks: persistedBlocks.length,
+    exportResult,
+    resumed: resumed.snapshot(),
+    latest: latest.snapshot(),
+    listed,
+    durability: {
+      recoveredTailMessagesBeforeAppend: recoveredTailMessagesBeforeAppend.length,
+      repairedTailLines: repairedTailText.trimEnd().split("\n").length,
+      recoveredTailAgainMessages: recoveredTailAgain.getInitialMessages().length,
+      recoveredValidTailMessages: recoveredValidTail.getInitialMessages().length,
+      repairedValidEndsWithNewline: repairedValidText.endsWith("\n"),
+      corruptMiddleRejected,
+      durabilitySessionsDeleted,
+    },
+    reset: resetResume.snapshot(),
+    deleted,
+    listedAfterDelete,
+  }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

@@ -302,6 +302,7 @@ async function main(): Promise<void> {
       createdAt: new Date(0).toISOString(),
       blocks: [{
         type: "image",
+        imageId: "image_00000000-0000-4000-a000-000000000001",
         mimeType: "image/png",
         data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
         label: "[img#10]",
@@ -313,6 +314,7 @@ async function main(): Promise<void> {
       createdAt: new Date(1).toISOString(),
       blocks: [{
         type: "image",
+        imageId: "image_00000000-0000-4000-a000-000000000002",
         mimeType: "image/png",
         data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
         label: "[img#10]",
@@ -354,7 +356,7 @@ async function main(): Promise<void> {
       mode: "edit",
       semanticName: "smoke-edit-ref",
       prompt: "smoke edit",
-      imageRefs: ["img#10"],
+      imageRefs: ["image_00000000-0000-4000-a000-000000000002"],
       useLatestImage: false,
     }, imageEditContext, {});
     imageEditRefOutput = imageEditRefResult?.output as {
@@ -365,7 +367,7 @@ async function main(): Promise<void> {
       mode: "edit",
       semanticName: "smoke-edit-number",
       prompt: "smoke edit",
-      imageRefs: ["10"],
+      imageRefs: ["2"],
       useLatestImage: false,
     }, imageEditContext, {});
     imageEditNumberOutput = imageEditNumberResult?.output as {
@@ -428,13 +430,13 @@ async function main(): Promise<void> {
     image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
     image2DefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
     image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
-    image2EditAcceptsBareImgRef:
+    image2EditAcceptsStableImageId:
       imageEditRefOutput?.sourceImages === 1 &&
-      imageEditRefOutput.imageRefs?.[0] === "[img#10]" &&
+      imageEditRefOutput.imageRefs?.[0] === "image_00000000-0000-4000-a000-000000000002" &&
       seenImageFilenames[0] === "image-2.png",
-    image2EditNumericFallbackPrefersLatestMatchingLabel:
+    image2EditNumericFallbackUsesStablePosition:
       imageEditNumberOutput?.sourceImages === 1 &&
-      imageEditNumberOutput.imageRefs?.[0] === "[img#10]",
+      imageEditNumberOutput.imageRefs?.[0] === "image_00000000-0000-4000-a000-000000000002",
     planOk:
       toolOk(plan[plan.length - 1]) &&
       planOutput.summary === "2/5 completed" &&

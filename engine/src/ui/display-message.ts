@@ -1,6 +1,6 @@
 import type { AgentEvent } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
-import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
 
 export type DisplayImageMode = "data-url" | "metadata-only" | "omit";
 
@@ -35,8 +35,13 @@ export type DisplayMessageBlock =
 
 export interface DisplayImageBlock {
   type: "image";
+  imageId?: string;
   label?: string;
   mimeType: string;
+  available: boolean;
+  error?: string;
+  /** Index in the source message block array; stable even when display-only blocks are omitted. */
+  blockIndex?: number;
   /** Approximate original payload size decoded from base64, when available. */
   sizeBytes?: number;
   storagePath?: string;
@@ -72,8 +77,11 @@ export interface DisplayImageAttachment {
   role: DisplayMessage["role"];
   createdAt: string;
   index: number;
+  imageId?: string;
   label?: string;
   mimeType: string;
+  available: boolean;
+  error?: string;
   sizeBytes?: number;
   storagePath?: string;
   src?: string;
@@ -103,7 +111,7 @@ export function toDisplayMessages(messages: readonly Message[], options: Display
 
 export function toDisplayMessage(message: Message, options: DisplayMessageOptions = {}): DisplayMessage {
   const blocks = message.blocks
-    .map((block) => toDisplayMessageBlock(block, options))
+    .map((block, blockIndex) => toDisplayMessageBlock(block, options, blockIndex))
     .filter((block): block is DisplayMessageBlock => block !== undefined);
   return {
     id: message.id,
@@ -119,7 +127,7 @@ export function toDisplayMessage(message: Message, options: DisplayMessageOption
   };
 }
 
-export function toDisplayMessageBlock(block: MessageBlock, options: DisplayMessageOptions = {}): DisplayMessageBlock | undefined {
+export function toDisplayMessageBlock(block: MessageBlock, options: DisplayMessageOptions = {}, blockIndex?: number): DisplayMessageBlock | undefined {
   if (block.type === "text") return { type: "text", text: block.text };
   if (block.type === "thinking") {
     if (options.includeThinking === false) return undefined;
@@ -133,25 +141,31 @@ export function toDisplayMessageBlock(block: MessageBlock, options: DisplayMessa
     if (options.includeToolResult === false) return undefined;
     return { type: "tool_result", toolUseId: block.toolUseId, name: block.name, ok: block.ok, output: block.output };
   }
-  if (block.type === "image") return toDisplayImageBlock(block, options);
+  if (block.type === "image") return toDisplayImageBlock(block, options, blockIndex);
   return undefined;
 }
 
-export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image" }>, options: DisplayMessageOptions = {}): DisplayImageBlock | undefined {
+export function toDisplayImageBlock(block: Extract<MessageBlock, { type: "image" }>, options: DisplayMessageOptions = {}, blockIndex?: number): DisplayImageBlock | undefined {
   const imageMode = options.imageMode ?? "data-url";
   if (imageMode === "omit") return undefined;
 
+  const resolution = resolveImageBlockDataResultSync(block);
+  const data = resolution.available ? resolution.data : "";
   const base: DisplayImageBlock = {
     type: "image",
+    imageId: block.imageId,
     label: block.label,
     mimeType: block.mimeType,
-    sizeBytes: estimateBase64DecodedBytes(normalizeBase64ImageData(resolveImageBlockDataSync(block) ?? "")),
+    available: resolution.available,
+    error: resolution.available ? undefined : resolution.error,
+    blockIndex,
+    sizeBytes: resolution.available ? estimateBase64DecodedBytes(normalizeBase64ImageData(data)) : undefined,
     storagePath: block.storage?.path,
   };
 
-  if (imageMode === "metadata-only") return base;
+  if (imageMode === "metadata-only" || !resolution.available) return base;
 
-  const src = imageBlockToDataUrl(block);
+  const src = data.startsWith("data:") ? data : `data:${block.mimeType};base64,${data}`;
   return {
     ...base,
     thumbnail: { src, mimeType: block.mimeType },
@@ -168,9 +182,12 @@ export function extractDisplayImages(messages: readonly DisplayMessage[]): Displ
         messageId: message.id,
         role: message.role,
         createdAt: message.createdAt,
-        index,
+        index: block.blockIndex ?? index,
+        imageId: block.imageId,
         label: block.label,
         mimeType: block.mimeType,
+        available: block.available,
+        error: block.error,
         sizeBytes: block.sizeBytes,
         storagePath: block.storagePath,
         src: block.original?.src ?? block.thumbnail?.src,

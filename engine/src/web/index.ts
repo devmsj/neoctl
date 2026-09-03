@@ -36,10 +36,10 @@ import { DefaultContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { NeoPluginResource } from "../plugins/plugin-system.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
-import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
+import { createImageId, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
-import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
 import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./plan-payload.js";
 import { createWebRuntimeContextPayload, type WebRuntimeContextPayload } from "./runtime-context-protocol.js";
 
@@ -157,9 +157,13 @@ function sumUsageTokens(left: number | undefined, right: number | undefined): nu
 }
 
 interface UiLineImage {
-  src: string;
+  src?: string;
+  imageId?: string;
   label?: string;
   mimeType: string;
+  available: boolean;
+  error?: string;
+  blockIndex: number;
 }
 
 interface UiCompactionReport extends CompactionReport {
@@ -292,6 +296,7 @@ interface LoginFormPayload {
 
 interface WebImageAttachmentPayload {
   kind: "image";
+  imageId: string;
   label: string;
   mimeType: string;
   data: string;
@@ -623,7 +628,7 @@ export class WebRepl {
   private queuedAttachments: WebAttachmentPayload[] | undefined;
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
-  private pendingUserImageEchoLabels: string[] | undefined;
+  private pendingUserImageEchoIds: string[] | undefined;
   private pendingUserImageEchoMessageId: string | undefined;
   private runtimeContextRevision = 0;
   private runtimeContextPublishQueue: Promise<void> = Promise.resolve();
@@ -1055,24 +1060,24 @@ export class WebRepl {
 
   imagePayload(messageId: string, blockIndex: number): { body: Buffer; mimeType: string } | undefined {
     if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
-    let message: Message | undefined;
+    let block: Extract<MessageBlock, { type: "image" }> | undefined;
     for (const entry of this.runtime.engine.getDisplayEntries()) {
-      if (entry.type === "message" && entry.message.id === messageId) {
-        message = entry.message;
-        break;
-      }
+      if (entry.type !== "message" || entry.message.id !== messageId) continue;
+      const candidate = entry.message.blocks[blockIndex];
+      if (candidate?.type === "image") block = candidate;
+      break;
     }
-    const block = message?.blocks[blockIndex];
-    if (!block || block.type !== "image") return undefined;
-    const resolved = resolveImageBlockDataSync(block)?.trim();
-    if (!resolved) return undefined;
-    const dataUrl = /^data:([^;,]+);base64,([\s\S]*)$/iu.exec(resolved);
-    const mimeType = (dataUrl?.[1] ?? block.mimeType).toLowerCase();
-    if (!mimeType.startsWith("image/")) return undefined;
-    const base64 = (dataUrl?.[2] ?? resolved).replace(/\s+/gu, "");
-    if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return undefined;
-    const body = Buffer.from(base64, "base64");
-    return body.length ? { body, mimeType } : undefined;
+    return block ? imagePayloadForBlock(block) : undefined;
+  }
+
+  imagePayloadById(imageId: string): { body: Buffer; mimeType: string } | undefined {
+    if (!imageId) return undefined;
+    for (const entry of this.runtime.engine.getDisplayEntries()) {
+      if (entry.type !== "message") continue;
+      const block = entry.message.blocks.find((candidate): candidate is Extract<MessageBlock, { type: "image" }> => candidate.type === "image" && candidate.imageId === imageId);
+      if (block) return imagePayloadForBlock(block);
+    }
+    return undefined;
   }
 
   async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean }>> {
@@ -1207,7 +1212,7 @@ export class WebRepl {
     this.interruptArmed = false;
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
-    this.pendingUserImageEchoLabels = undefined;
+    this.pendingUserImageEchoIds = undefined;
     this.pendingUserImageEchoMessageId = undefined;
     this.finalizeForegroundView();
     this.finalizeLiveToolLines();
@@ -1297,7 +1302,7 @@ export class WebRepl {
     this.interruptArmed = false;
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
-    this.pendingUserImageEchoLabels = undefined;
+    this.pendingUserImageEchoIds = undefined;
     this.pendingUserImageEchoMessageId = undefined;
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined };
@@ -1345,7 +1350,7 @@ export class WebRepl {
     this.reduce(event);
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
       const messageId = this.pendingUserImageEchoMessageId;
-      this.pendingUserImageEchoLabels = undefined;
+      this.pendingUserImageEchoIds = undefined;
       this.pendingUserImageEchoMessageId = undefined;
       renderMessageImages(event.message, (line) => this.append(line), messageId);
       this.broadcastSync();
@@ -1456,12 +1461,12 @@ export class WebRepl {
   }
 
   private matchesPendingUserImageEcho(message: Message): boolean {
-    const pending = this.pendingUserImageEchoLabels;
+    const pending = this.pendingUserImageEchoIds;
     if (!pending?.length || message.role !== "user") return false;
-    const labels = message.blocks
-      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
-      .map((block) => block.label as string);
-    return labels.length === pending.length && labels.every((label, index) => label === pending[index]);
+    const imageIds = message.blocks
+      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.imageId === "string")
+      .map((block) => block.imageId as string);
+    return imageIds.length === pending.length && imageIds.every((imageId, index) => imageId === pending[index]);
   }
 
   private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = []): Promise<void> {
@@ -1559,11 +1564,11 @@ export class WebRepl {
     const promptPayload = buildWebPromptPayload(command.text, attachments);
     const optimisticMessageId = `web-user-${this.lineId + 1}`;
     this.append({ kind: "user", text: promptPayload.displayText, messageId: optimisticMessageId });
-    const optimisticImageLabels = (promptPayload.blocks ?? [])
-      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.label === "string")
-      .map((block) => block.label as string);
-    this.pendingUserImageEchoLabels = optimisticImageLabels.length ? optimisticImageLabels : undefined;
-    this.pendingUserImageEchoMessageId = optimisticImageLabels.length ? optimisticMessageId : undefined;
+    const optimisticImageIds = (promptPayload.blocks ?? [])
+      .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.imageId === "string")
+      .map((block) => block.imageId as string);
+    this.pendingUserImageEchoIds = optimisticImageIds.length ? optimisticImageIds : undefined;
+    this.pendingUserImageEchoMessageId = optimisticImageIds.length ? optimisticMessageId : undefined;
     const runToken = ++this.foregroundRunToken;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
@@ -1600,7 +1605,7 @@ export class WebRepl {
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
       this.interruptArmed = false;
       this.finalizeForegroundView();
-      this.pendingUserImageEchoLabels = undefined;
+      this.pendingUserImageEchoIds = undefined;
       this.pendingUserImageEchoMessageId = undefined;
       const queuedText = this.queuedInput;
       const queuedAttach = this.queuedAttachments;
@@ -1828,6 +1833,11 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
       const body = await readJsonBody<{ overrides?: unknown }>(req);
       return sendJson(res, await repl.setSessionPlugins(body.overrides));
     }
+    const imageIdMatch = /^\/api\/images\/by-id\/([^/]+)$/u.exec(url.pathname);
+    if (req.method === "GET" && imageIdMatch) {
+      const payload = repl.imagePayloadById(decodeURIComponent(imageIdMatch[1]));
+      return payload ? sendImage(res, payload) : sendJson(res, { error: "image not found" }, 404);
+    }
     const imageMatch = /^\/api\/images\/([^/]+)\/(\d+)$/u.exec(url.pathname);
     if (req.method === "GET" && imageMatch) {
       const payload = repl.imagePayload(decodeURIComponent(imageMatch[1]), Number(imageMatch[2]));
@@ -1906,6 +1916,18 @@ function sendJson(res: ServerResponse, value: unknown, status = 200): void {
   res.end(JSON.stringify(value));
 }
 
+function imagePayloadForBlock(block: Extract<MessageBlock, { type: "image" }>): { body: Buffer; mimeType: string } | undefined {
+  const resolved = resolveImageBlockDataSync(block)?.trim();
+  if (!resolved) return undefined;
+  const dataUrl = /^data:([^;,]+);base64,([\s\S]*)$/iu.exec(resolved);
+  const mimeType = (dataUrl?.[1] ?? block.mimeType).toLowerCase();
+  if (!mimeType.startsWith("image/")) return undefined;
+  const base64 = (dataUrl?.[2] ?? resolved).replace(/\s+/gu, "");
+  if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return undefined;
+  const body = Buffer.from(base64, "base64");
+  return body.length ? { body, mimeType } : undefined;
+}
+
 function sendImage(res: ServerResponse, payload: { body: Buffer; mimeType: string }): void {
   res.writeHead(200, {
     "Content-Type": payload.mimeType,
@@ -1927,7 +1949,8 @@ function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
   return value.slice(0, 20).flatMap((item): WebAttachmentPayload[] => {
     if (!isRecord(item)) return [];
     if (item.kind === "image" && typeof item.label === "string" && /^\[img#\d+\]$/.test(item.label) && typeof item.mimeType === "string" && item.mimeType.startsWith("image/") && typeof item.data === "string") {
-      return [{ kind: "image", label: item.label, mimeType: item.mimeType, data: item.data }];
+      const imageId = typeof item.imageId === "string" && /^image_[0-9a-f-]{36}$/iu.test(item.imageId) ? item.imageId : createImageId();
+      return [{ kind: "image", imageId, label: item.label, mimeType: item.mimeType, data: item.data }];
     }
     if (item.kind === "file" && typeof item.name === "string" && typeof item.mimeType === "string" && typeof item.size === "number" && Number.isFinite(item.size) && typeof item.absolutePath === "string" && path.isAbsolute(item.absolutePath)) {
       return [{
@@ -2005,7 +2028,16 @@ async function resetStatus(runtime: WebRuntime): Promise<UiStatus> {
 }
 
 function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[]): { text: string; displayText: string; blocks?: MessageBlock[] } {
-  const activeAttachments = attachments.filter((attachment): attachment is WebImageAttachmentPayload => attachment.kind === "image" && displayText.includes(attachment.label));
+  const candidateAttachments = attachments.filter((attachment): attachment is WebImageAttachmentPayload => attachment.kind === "image" && displayText.includes(attachment.label));
+  const labels = new Set<string>();
+  const imageIds = new Set<string>();
+  for (const attachment of candidateAttachments) {
+    if (labels.has(attachment.label)) throw new Error(`Duplicate image label in one submission: ${attachment.label}`);
+    if (imageIds.has(attachment.imageId)) throw new Error(`Duplicate image identity in one submission: ${attachment.imageId}`);
+    labels.add(attachment.label);
+    imageIds.add(attachment.imageId);
+  }
+  const activeAttachments = candidateAttachments;
   const fileManifest = buildWebFileAttachmentManifest(attachments.filter((attachment): attachment is WebFileAttachmentPayload => attachment.kind === "file"));
   if (activeAttachments.length === 0) {
     const text = [displayText.trim(), fileManifest].filter(Boolean).join("\n\n");
@@ -2020,7 +2052,7 @@ function buildWebPromptPayload(displayText: string, attachments: readonly WebAtt
       break;
     }
     pushTextBlock(blocks, displayText.slice(cursor, next.index));
-    blocks.push({ type: "image", mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
+    blocks.push({ type: "image", imageId: next.attachment.imageId, mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
     cursor = next.index + next.attachment.label.length;
   }
   pushTextBlock(blocks, fileManifest ? `\n\n${fileManifest}` : "");
@@ -2434,13 +2466,18 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
 function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>, messageId: string, blockIndex: number): Omit<UiLine, "id"> | undefined {
   const kind = kindForRole(role);
   if (kind === "meta") return undefined;
+  const resolution = resolveImageBlockDataResultSync(block);
   return {
     kind,
     text: block.label ?? `[image ${block.mimeType}]`,
     image: {
-      src: `/api/images/${encodeURIComponent(messageId)}/${blockIndex}`,
+      src: resolution.available ? (block.imageId ? `/api/images/by-id/${encodeURIComponent(block.imageId)}` : `/api/images/${encodeURIComponent(messageId)}/${blockIndex}`) : undefined,
+      imageId: block.imageId,
       label: block.label,
       mimeType: block.mimeType,
+      available: resolution.available,
+      error: resolution.available ? undefined : resolution.error,
+      blockIndex,
     },
   };
 }

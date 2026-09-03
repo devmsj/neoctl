@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ModelUsage } from "../model/model-gateway.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool_result" | "progress" | "attachment" | "tombstone";
@@ -5,11 +6,25 @@ export type MessageRole = "system" | "user" | "assistant" | "tool_result" | "pro
 export interface ImageStorageRef {
   path: string;
   format: "base64" | "data-url";
+  /** SHA-256 of the decoded image bytes, used to detect missing/corrupt storage. */
+  contentHash?: string;
+  /** UTF-8 byte length of the stored payload. */
+  storedBytes?: number;
+}
+
+export interface ImageMessageBlock {
+  type: "image";
+  /** Immutable identity of this image occurrence. Labels are display aliases only. */
+  imageId?: string;
+  mimeType: string;
+  data: string;
+  label?: string;
+  storage?: ImageStorageRef;
 }
 
 export type MessageBlock =
   | { type: "text"; text: string }
-  | { type: "image"; mimeType: string; data: string; label?: string; storage?: ImageStorageRef }
+  | ImageMessageBlock
   | { type: "thinking"; text: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; name: string; ok: boolean; output: unknown };
@@ -41,6 +56,10 @@ export interface SystemInitPayload {
   agents?: string[];
   skills?: string[];
   plugins?: string[];
+}
+
+export function createImageId(): string {
+  return `image_${randomUUID()}`;
 }
 
 export function createTextMessage(role: MessageRole, text: string): Message {

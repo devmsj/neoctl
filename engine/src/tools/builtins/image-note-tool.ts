@@ -1,5 +1,5 @@
 import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
-import { resolveImageRef } from "../../core/image-registry.js";
+import { resolveImageRefResult } from "../../core/image-registry.js";
 import { writeImageNoteForStoragePath, type ImageNote, type ImageRetention } from "../../core/image-notes.js";
 import type { Tool, ToolResult } from "../tool.js";
 
@@ -137,11 +137,16 @@ export function createImageNoteTool(): Tool<ImageNoteToolInput> {
       const failed: ImageNoteToolOutput["failed"] = [];
 
       for (const noteInput of normalizeNotes(input)) {
-        const entry = resolveImageRef(registry, noteInput.imageRef);
-        if (!entry) {
+        const resolution = resolveImageRefResult(registry, noteInput.imageRef);
+        if (resolution.status === "not-found") {
           failed.push({ imageRef: noteInput.imageRef, error: `Image not found: ${noteInput.imageRef}` });
           continue;
         }
+        if (resolution.status === "ambiguous") {
+          failed.push({ imageRef: noteInput.imageRef, error: `Image reference is ambiguous; use one of: ${resolution.candidates.map((entry) => entry.imageId ?? entry.id).join(", ")}` });
+          continue;
+        }
+        const entry = resolution.entry;
         if (!entry.storagePath) {
           failed.push({ imageRef: noteInput.imageRef, error: `Image ${entry.id} has no stored payload path; cannot persist a note` });
           continue;

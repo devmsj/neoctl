@@ -1,14 +1,19 @@
-import { readFileSync } from "node:fs";
 import type { Message, MessageBlock } from "../types/messages.js";
+import { resolveStoredImageDataSync } from "./image-storage.js";
 import { readImageNoteForStoragePathSync, type ImageNote } from "./image-notes.js";
 
 export interface ImageEntry {
+  /** Stable human-friendly alias persisted in compact boundaries (for example img_3). */
   id: string;
+  /** Immutable image occurrence identity stored on the source message block. */
+  imageId?: string;
   label?: string;
   mimeType: string;
   storagePath?: string;
   storageFormat?: "base64" | "data-url";
+  contentHash?: string;
   sourceMessageId: string;
+  sourceBlockIndex?: number;
   sourceRole: string;
   origin: "user" | "generated" | "tool" | "unknown";
   /** Approximate index within the conversation timeline. */
@@ -33,16 +38,19 @@ export function buildImageRegistry(messages: readonly Message[], startingTurnInd
 
   for (const message of messages) {
     const sourceTextSnippet = extractMessageTextSnippet(message);
-    for (const block of message.blocks) {
+    for (const [sourceBlockIndex, block] of message.blocks.entries()) {
       if (block.type !== "image") continue;
       const storagePath = block.storage?.path;
       images.push({
         id: `img_${images.length + 1}`,
+        imageId: block.imageId,
         label: block.label,
         mimeType: block.mimeType,
         storagePath,
         storageFormat: block.storage?.format,
+        contentHash: block.storage?.contentHash,
         sourceMessageId: message.id,
+        sourceBlockIndex,
         sourceRole: message.role,
         origin: inferImageOrigin(message, block),
         turnIndex,
@@ -62,20 +70,28 @@ export function buildImageRegistry(messages: readonly Message[], startingTurnInd
  */
 export function mergeImageRegistries(previous: ImageRegistry, current: ImageRegistry): ImageRegistry {
   const seen = new Set<string>();
+  const usedAliases = new Set<string>();
   const merged: ImageEntry[] = [];
+  let nextAlias = Math.max(0, ...previous.images.map((entry) => numericImageAlias(entry.id))) + 1;
 
   for (const entry of previous.images) {
-    const key = entry.storagePath ?? `${entry.sourceMessageId}:${entry.label}`;
+    const key = imageEntryKey(entry);
     if (seen.has(key)) continue;
+    if (usedAliases.has(entry.id.toLowerCase())) throw new Error(`Duplicate image registry id: ${entry.id}`);
     seen.add(key);
+    usedAliases.add(entry.id.toLowerCase());
     merged.push(entry);
   }
 
   for (const entry of current.images) {
-    const key = entry.storagePath ?? `${entry.sourceMessageId}:${entry.label}`;
+    const key = imageEntryKey(entry);
     if (seen.has(key)) continue;
+    while (usedAliases.has(`img_${nextAlias}`)) nextAlias += 1;
+    const id = `img_${nextAlias}`;
+    nextAlias += 1;
     seen.add(key);
-    merged.push({ ...entry, id: `img_${merged.length + 1}` });
+    usedAliases.add(id);
+    merged.push({ ...entry, id });
   }
 
   return { images: merged };
@@ -119,45 +135,74 @@ export function formatImageRegistryForContext(registry: ImageRegistry): string {
  */
 export function loadImageData(entry: ImageEntry): string | undefined {
   if (!entry.storagePath) return undefined;
-  try {
-    return readFileSync(entry.storagePath, "utf8");
-  } catch {
-    return undefined;
-  }
+  return resolveStoredImageDataSync({
+    path: entry.storagePath,
+    format: entry.storageFormat,
+    contentHash: entry.contentHash,
+  });
 }
 
-/**
- * Resolve an image reference (id like "img_3", label, or storage path) against a registry.
- */
-export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntry | undefined {
-  const normalized = ref.trim().toLowerCase();
+export type ImageRefResolution =
+  | { status: "resolved"; entry: ImageEntry }
+  | { status: "not-found" }
+  | { status: "ambiguous"; candidates: ImageEntry[] };
 
-  const byId = registry.images.find((e) => e.id.toLowerCase() === normalized);
-  if (byId) return byId;
+/** Resolve exact identities first. Display labels and path suffixes only resolve when unique. */
+export function resolveImageRefResult(registry: ImageRegistry, ref: string): ImageRefResolution {
+  const normalized = ref.trim().toLowerCase();
+  if (!normalized) return { status: "not-found" };
+
+  const exactIdentity = uniqueResolution(registry.images.filter((entry) =>
+    entry.id.toLowerCase() === normalized || entry.imageId?.toLowerCase() === normalized,
+  ));
+  if (exactIdentity.status !== "not-found") return exactIdentity;
 
   const genMatch = /^\[?gen#?(\d+)\]?$/i.exec(normalized);
   if (genMatch) {
     const canonical = `gen#${Number(genMatch[1])}`;
-    const generated = registry.images.find((e) => e.label?.toLowerCase() === canonical);
-    if (generated) return generated;
+    const generated = uniqueResolution(registry.images.filter((entry) => entry.label?.toLowerCase() === canonical));
+    if (generated.status !== "not-found") return generated;
   }
 
-  const numMatch = /^(?:\[?img[_#]?|image\s*)?(\d+)\]?$/i.exec(normalized);
+  const normalizedLabel = normalizeImageRefText(ref);
+  const byLabel = uniqueResolution(registry.images.filter((entry) => normalizeImageRefText(entry.label) === normalizedLabel));
+  if (byLabel.status !== "not-found") return byLabel;
+
+  const byPath = uniqueResolution(registry.images.filter((entry) =>
+    entry.storagePath?.toLowerCase() === normalized || entry.storagePath?.toLowerCase().endsWith(normalized),
+  ));
+  if (byPath.status !== "not-found") return byPath;
+
+  // Compatibility fallback for old bare numeric references. It is intentionally last.
+  const numMatch = /^(?:image\s*)?(\d+)$/i.exec(normalized);
   if (numMatch) {
     const idx = Number(numMatch[1]) - 1;
-    if (idx >= 0 && idx < registry.images.length) return registry.images[idx];
+    if (idx >= 0 && idx < registry.images.length) return { status: "resolved", entry: registry.images[idx] };
   }
 
-  const byLabel = registry.images.find((e) => normalizeImageRefText(e.label) === normalized || normalizeImageRefText(e.label) === normalizeImageRefText(ref));
-  if (byLabel) return byLabel;
+  return { status: "not-found" };
+}
 
-  const byPath = registry.images.find((e) =>
-    e.storagePath?.toLowerCase() === normalized ||
-    e.storagePath?.toLowerCase().endsWith(normalized),
-  );
-  if (byPath) return byPath;
+export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntry | undefined {
+  const result = resolveImageRefResult(registry, ref);
+  return result.status === "resolved" ? result.entry : undefined;
+}
 
-  return undefined;
+function uniqueResolution(candidates: ImageEntry[]): ImageRefResolution {
+  if (candidates.length === 0) return { status: "not-found" };
+  if (candidates.length === 1) return { status: "resolved", entry: candidates[0] };
+  return { status: "ambiguous", candidates };
+}
+
+function imageEntryKey(entry: ImageEntry): string {
+  if (entry.imageId) return `imageId:${entry.imageId.toLowerCase()}`;
+  if (entry.storagePath) return `path:${entry.storagePath.toLowerCase()}`;
+  return `block:${entry.sourceMessageId}:${entry.sourceBlockIndex ?? entry.label ?? "unknown"}`;
+}
+
+function numericImageAlias(id: string): number {
+  const match = /^img_(\d+)$/iu.exec(id);
+  return match ? Number(match[1]) : 0;
 }
 
 function normalizeImageRefText(value: string | undefined): string {

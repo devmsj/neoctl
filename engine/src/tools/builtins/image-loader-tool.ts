@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { supportsImageInput } from "../../model/context-window.js";
 import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
-import { resolveImageRef, formatImageRegistryForContext, loadImageData } from "../../core/image-registry.js";
+import { resolveImageRefResult, formatImageRegistryForContext, loadImageData } from "../../core/image-registry.js";
 import type { Message, MessageBlock } from "../../types/messages.js";
 import type { ImageRetention } from "../../core/image-notes.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
@@ -166,8 +166,13 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       let externalCount = 0;
 
       for (const ref of input.imageRefs) {
-        const entry = resolveImageRef(registry, ref);
-        if (entry) {
+        const resolution = resolveImageRefResult(registry, ref);
+        if (resolution.status === "ambiguous") {
+          failedRefs.push(`${ref} (ambiguous; use one of: ${resolution.candidates.map((entry) => entry.imageId ?? entry.id).join(", ")})`);
+          continue;
+        }
+        if (resolution.status === "resolved") {
+          const entry = resolution.entry;
           const base64 = loadImageData(entry);
           if (!base64) {
             failedRefs.push(`${ref} (storage unreadable: ${entry.storagePath ?? "no path"})`);
@@ -176,11 +181,12 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
           const rawBase64 = base64.replace(/^data:[^;,]+;base64,/su, "").replace(/\s+/gu, "");
           imageBlocks.push({
             type: "image",
+            imageId: entry.imageId,
             mimeType: entry.mimeType,
             data: rawBase64,
             label: entry.label ?? entry.id,
             storage: entry.storagePath && entry.storageFormat
-              ? { path: entry.storagePath, format: entry.storageFormat }
+              ? { path: entry.storagePath, format: entry.storageFormat, contentHash: entry.contentHash }
               : undefined,
           });
           loadedImages.push({

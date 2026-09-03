@@ -2773,6 +2773,17 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   object-fit: contain;
   background: var(--panel-soft);
 }
+.image-unavailable-placeholder {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 13px;
+  text-align: center;
+}
 .message-image-attachments.image2-output-images {
   grid-template-columns: repeat(auto-fit, minmax(240px, 420px));
 }

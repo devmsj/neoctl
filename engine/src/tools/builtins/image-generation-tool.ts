@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveImageBlockDataSync } from "../../core/image-storage.js";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
@@ -309,6 +310,7 @@ interface OpenAIImageGenerationRequestOptions {
 
 interface ResolvedEditImage {
   index: number;
+  imageId?: string;
   base64: string;
   mimeType: string;
   filename: string;
@@ -448,31 +450,24 @@ function resolveReferencedImages(messages: readonly Message[] | undefined, refs:
 }
 
 function findReferencedImage(images: readonly ResolvedEditImage[], ref: string): ResolvedEditImage | undefined {
+  const rawRef = ref.trim().toLowerCase();
+  const exactIdentity = images.filter((image) => image.imageId?.toLowerCase() === rawRef);
+  if (exactIdentity.length === 1) return exactIdentity[0];
+  if (exactIdentity.length > 1) throw new Error(`image2 image reference is ambiguous: ${ref}`);
+
   const normalizedRef = canonicalizeImageRef(ref);
   if (!normalizedRef) return undefined;
-
-  // Labels can repeat across user turns (for example every tab/paste cycle can reuse [img#1]).
-  // Prefer the most recent matching label/filename so edits target the image the user likely means.
-  for (let i = images.length - 1; i >= 0; i -= 1) {
-    const image = images[i];
-    if (canonicalizeImageRef(image.label ?? "") === normalizedRef) return image;
-    if (canonicalizeImageRef(image.filename) === normalizedRef) return image;
-  }
+  const labelMatches = images.filter((image) => canonicalizeImageRef(image.label ?? "") === normalizedRef || canonicalizeImageRef(image.filename) === normalizedRef);
+  if (labelMatches.length === 1) return labelMatches[0];
+  if (labelMatches.length > 1) throw new Error(`image2 image reference is ambiguous: ${ref}. Use an imageId instead.`);
 
   const numericRef = parseImageRefNumber(normalizedRef);
-  if (numericRef !== undefined) {
-    for (let i = images.length - 1; i >= 0; i -= 1) {
-      const image = images[i];
-      if (parseImageRefNumber(canonicalizeImageRef(image.label ?? "")) === numericRef) return image;
-      if (parseImageRefNumber(canonicalizeImageRef(stripFileExtension(image.filename))) === numericRef) return image;
-    }
-    return images[numericRef - 1];
-  }
+  if (numericRef !== undefined) return images[numericRef - 1];
   return undefined;
 }
 
 function formatSourceImageRef(image: ResolvedEditImage): string | undefined {
-  const ref = image.label?.trim() || image.filename || String(image.index + 1);
+  const ref = image.imageId || image.label?.trim() || image.filename || String(image.index + 1);
   return image.storagePath ? `${ref} (${image.storagePath})` : ref;
 }
 
@@ -496,12 +491,14 @@ function collectConversationImages(messages: readonly Message[] | undefined): Re
   for (const message of messages) {
     for (const block of message.blocks) {
       if (block.type !== "image") continue;
-      const parsed = parseImageData(block.data);
+      const resolvedData = resolveImageBlockDataSync(block);
+      const parsed = parseImageData(resolvedData);
       const mimeType = block.mimeType || parsed.mimeType;
-      const base64 = parsed.base64 || readStoredImageDataSync(block.storage?.path);
+      const base64 = parsed.base64;
       if (!base64 || !mimeType) continue;
       images.push({
         index: images.length,
+        imageId: block.imageId,
         base64: normalizeBase64ImageData(base64),
         mimeType,
         filename: imageFilename(mimeType, images.length),
@@ -520,14 +517,6 @@ function parseImageData(value: string | undefined): { base64?: string; mimeType?
   return { base64: value };
 }
 
-function readStoredImageDataSync(filepath: string | undefined): string | undefined {
-  if (!filepath) return undefined;
-  try {
-    return readFileSync(filepath, "utf8");
-  } catch {
-    return undefined;
-  }
-}
 
 function normalizeBase64ImageData(value: string): string {
   return value.replace(/^data:[^;,]+;base64,/su, "").replace(/\s+/gu, "");

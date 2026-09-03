@@ -42,6 +42,7 @@
     "web": "node dist/web/index.js",
     "dev:web": "tsx src/web/index.ts",
     "smoke:core": "tsx src/core/smoke-core-loop.ts",
+    "smoke:images": "tsx src/core/smoke-image-integrity.ts",
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:exec": "tsx src/tools/smoke-exec-process.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",

@@ -911,6 +911,10 @@ function applySync(payload) {
     return
   }
   const shouldFollow = isTranscriptNearBottom()
+  if (incomingSessionId !== previousSessionId) {
+    state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
+    state.attachmentCounter = 0
+  }
   state.lines = payload.lines || []
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
@@ -1271,7 +1275,7 @@ async function submit() {
   const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
   const submitText = textWithAttachmentLabels(text, imageAttachments)
-  cacheMessageImagePreviews(imageAttachments)
+  cacheMessageImagePreviews(imageAttachments, submitText)
   input.value = ''
   state.attachments = []
   autosize()
@@ -1299,7 +1303,7 @@ async function interruptAndSubmit() {
   const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
   const submitText = textWithAttachmentLabels(text, imageAttachments)
-  cacheMessageImagePreviews(imageAttachments)
+  cacheMessageImagePreviews(imageAttachments, submitText)
   input.value = ''
   state.attachments = []
   autosize()
@@ -2517,9 +2521,12 @@ function image2InvocationMetadata(line) {
 
 function renderImageGrid(images) {
   const items = images.map((item, index) => {
+    const caption = escapeHtml(imageCaption(item, index))
+    if (!item.available || !item.previewUrl) {
+      return `<figure class="message-image-attachment image-unavailable"><div class="image-unavailable-placeholder" role="status">图片不可用</div><figcaption>${caption}</figcaption></figure>`
+    }
     const href = escapeHtml(item.originalUrl || item.previewUrl)
     const src = escapeHtml(item.previewUrl)
-    const caption = escapeHtml(imageCaption(item, index))
     const download = escapeHtml(imageDownloadName(item, index))
     return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
   }).join('')
@@ -2785,7 +2792,7 @@ async function handlePaste(event) {
     if (payload.compressionRate > 0) {
       compressionRates.push(payload.compressionRate)
     }
-    state.attachments.push({ kind: 'image', label, mimeType: payload.mimeType, data: payload.data, previewUrl: payload.previewUrl, name: file.name || `图片 ${id}` })
+    state.attachments.push({ kind: 'image', imageId: createClientImageId(), label, mimeType: payload.mimeType, data: payload.data, previewUrl: payload.previewUrl, name: file.name || `图片 ${id}` })
   }
   notify(`已添加 ${files.length} 张图片附件`)
   if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
@@ -2814,6 +2821,7 @@ async function uploadFiles(files) {
         if (payload.compressionRate > 0) compressionRates.push(payload.compressionRate)
         uploaded.push({
           kind: 'image',
+          imageId: createClientImageId(),
           label,
           name: file.name || label,
           mimeType: payload.mimeType,
@@ -2849,6 +2857,11 @@ async function uploadFiles(files) {
   }
 }
 
+function createClientImageId() {
+  if (typeof crypto?.randomUUID === 'function') return `image_${crypto.randomUUID()}`
+  return `image_${Date.now().toString(16).slice(-8).padStart(8, '0')}-${Math.random().toString(16).slice(2, 6).padEnd(4, '0')}-4${Math.random().toString(16).slice(2, 5).padEnd(3, '0')}-a${Math.random().toString(16).slice(2, 5).padEnd(3, '0')}-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`
+}
+
 function textWithAttachmentLabels(text, attachments) {
   if (!attachments.length) return text
   const suffix = attachments.map((attachment) => attachment.label).join(' ')
@@ -2882,14 +2895,18 @@ function imageLabelsFromText(text) {
 }
 
 function cacheMessageImagePreviews(attachments) {
+  const sessionId = String(state.session?.sessionId || runtimeSessionId || '')
   const previews = attachments
-    .filter((attachment) => attachment?.kind === 'image' && attachment.label && attachment.previewUrl)
+    .filter((attachment) => attachment?.kind === 'image' && attachment.imageId && attachment.previewUrl)
     .map((attachment) => ({
+      sessionId,
+      imageId: attachment.imageId,
       label: attachment.label,
       mimeType: attachment.mimeType,
       previewUrl: attachment.previewUrl,
       originalUrl: attachment.previewUrl,
       name: attachment.name,
+      pending: true,
     }))
   mergeMessageImagePreviews(previews)
 }
@@ -2897,16 +2914,27 @@ function cacheMessageImagePreviews(attachments) {
 function syncMessageImagePreviewsFromLines(lines) {
   const previews = []
   for (const line of lines || []) collectLineImageItems(line, previews)
-  mergeMessageImagePreviews(previews.map(normalizeImagePreview).filter((item) => item?.label))
+  mergeMessageImagePreviews(previews.map(normalizeImagePreview).filter(Boolean))
+}
+
+function imagePreviewIdentity(item) {
+  const sessionId = String(item?.sessionId || state.session?.sessionId || runtimeSessionId || '')
+  if (item?.imageId) return `${sessionId}:image:${item.imageId}`
+  if (item?.messageId && Number.isInteger(Number(item?.blockIndex))) return `${sessionId}:block:${item.messageId}:${Number(item.blockIndex)}`
+  return ''
 }
 
 function mergeMessageImagePreviews(previews) {
   if (!previews.length) return
-  const labels = new Set(previews.map((item) => item.label).filter(Boolean))
+  const normalized = previews.map((item) => ({ ...item, sessionId: String(item.sessionId || state.session?.sessionId || runtimeSessionId || '') }))
+  const identities = new Set(normalized.map(imagePreviewIdentity).filter(Boolean))
   state.messageImagePreviews = [
-    ...state.messageImagePreviews.filter((item) => !labels.has(item.label)),
-    ...previews,
-  ].slice(-100)
+    ...state.messageImagePreviews.filter((item) => {
+      const identity = imagePreviewIdentity(item)
+      return !identity || !identities.has(identity)
+    }),
+    ...normalized,
+  ].slice(-200)
 }
 
 function lineImagePreviews(line) {
@@ -2916,7 +2944,11 @@ function lineImagePreviews(line) {
   for (const item of group) {
     images.push(...directLineImagePreviews(item))
     for (const label of imageLabelsFromText(item?.text)) {
-      const cached = state.messageImagePreviews.find((image) => image.label === label)
+      const sessionId = String(state.session?.sessionId || runtimeSessionId || '')
+      const candidates = state.messageImagePreviews.filter((image) => image.sessionId === sessionId && image.label === label)
+      const cached = String(item?.messageId || '').startsWith('web-user-')
+        ? [...candidates].reverse().find((image) => image.pending)
+        : candidates.length === 1 ? candidates[0] : undefined
       if (cached) images.push(cached)
     }
   }
@@ -2933,7 +2965,7 @@ function image2LineImages(line) {
 function directLineImagePreviews(line) {
   const images = []
   collectLineImageItems(line, images)
-  return dedupeImages(images.map(normalizeImagePreview).filter(Boolean))
+  return dedupeImages(images.map((item) => normalizeImagePreview(item, line)).filter(Boolean))
 }
 
 function userMessageGroup(line) {
@@ -2977,36 +3009,48 @@ function generatedImageLinesAfter(line) {
 
 function collectLineImageItems(line, images) {
   if (!line || typeof line !== 'object') return
+  const append = (item) => images.push({
+    ...item,
+    messageId: item.messageId || line.messageId,
+    sessionId: item.sessionId || state.session?.sessionId || runtimeSessionId || '',
+  })
   const collections = [line.images, line.imageAttachments, line.attachments, line.thumbnails]
   for (const collection of collections) {
     if (!Array.isArray(collection)) continue
     for (const item of collection) {
       if (!item || (item.kind && item.kind !== 'image') || (item.type && item.type !== 'image')) continue
-      images.push(item)
+      append(item)
     }
   }
   if (Array.isArray(line.blocks)) {
     for (const block of line.blocks) {
-      if (block?.type === 'image') images.push(block)
+      if (block?.type === 'image') append(block)
     }
   }
-  if (line.image) images.push(line.image)
+  if (line.image) append(line.image)
 }
 
 function normalizeImagePreview(item) {
   if (!item || typeof item !== 'object') return undefined
   const mimeType = item.mimeType || item.thumbnail?.mimeType || item.original?.mimeType || 'image/png'
   const rawPreviewUrl = item.thumbnailSrc || item.thumbnail?.src || item.previewUrl || item.src || item.originalSrc || item.original?.src || dataToImageSrc(item.data, mimeType)
-  if (!rawPreviewUrl) return undefined
-  const previewUrl = scopedImageUrl(rawPreviewUrl)
-  const originalUrl = scopedImageUrl(item.originalSrc || item.original?.src || item.src || item.previewUrl || rawPreviewUrl)
+  if (!rawPreviewUrl && item.available !== false) return undefined
+  const previewUrl = rawPreviewUrl ? scopedImageUrl(rawPreviewUrl) : ''
+  const originalRawUrl = item.originalSrc || item.original?.src || item.src || item.previewUrl || rawPreviewUrl
   return {
+    sessionId: String(item.sessionId || state.session?.sessionId || runtimeSessionId || ''),
+    messageId: item.messageId,
+    blockIndex: Number.isInteger(Number(item.blockIndex ?? item.index)) ? Number(item.blockIndex ?? item.index) : undefined,
+    imageId: item.imageId,
     label: item.label,
     mimeType,
+    available: item.available !== false && Boolean(previewUrl),
+    error: item.error,
     previewUrl,
-    originalUrl,
+    originalUrl: originalRawUrl ? scopedImageUrl(originalRawUrl) : '',
     name: item.name || item.filename || item.label,
     sizeBytes: item.sizeBytes,
+    pending: item.pending === true,
   }
 }
 
@@ -3019,8 +3063,9 @@ function dataToImageSrc(data, mimeType) {
 function dedupeImages(images) {
   const seen = new Set()
   const result = []
-  for (const image of images) {
-    const key = image.label || image.previewUrl
+  for (const [index, image] of images.entries()) {
+    const key = imagePreviewIdentity(image)
+      || (image.previewUrl ? `url:${image.previewUrl}` : `position:${image.messageId || 'unknown'}:${image.blockIndex ?? index}`)
     if (seen.has(key)) continue
     seen.add(key)
     result.push(image)
@@ -3541,12 +3586,13 @@ function createMobileSession() {
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">
-                      <figure v-for="(item, index) in images" :key="item.label || item.previewUrl" class="message-image-attachment">
-                        <button type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
+                      <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
+                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
                           <img :src="item.previewUrl" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
                         </button>
+                        <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
-                        <a class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
+                        <a v-if="item.available && item.previewUrl" class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
                       </figure>
                     </div>
                   </template>
