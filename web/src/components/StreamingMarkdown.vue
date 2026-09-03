@@ -4,6 +4,7 @@ import * as smd from 'streaming-markdown'
 
 const props = defineProps({
   text: { type: String, default: '' },
+  exposedResources: { type: Array, default: () => [] },
 })
 
 const root = ref(null)
@@ -35,6 +36,11 @@ function safeUrl(value) {
   return !/^[a-z][a-z\d+.-]*:/i.test(text)
 }
 
+function exposedResource(value) {
+  const href = String(value || '')
+  return props.exposedResources.find((item) => String(item?.url || '') === href)
+}
+
 function createRenderer(element) {
   const renderer = smd.default_renderer(element)
   return {
@@ -44,8 +50,19 @@ function createRenderer(element) {
       smd.default_set_attr(data, type, value)
       if (type === smd.HREF) {
         const link = data.nodes[data.index]
-        link.setAttribute('target', '_blank')
-        link.setAttribute('rel', 'noreferrer noopener')
+        const resource = exposedResource(value)
+        if (resource) {
+          link.classList.add('inline-resource-link', `inline-resource-${resource.kind || 'link'}`)
+          if (resource.kind === 'download' || resource.downloadName) {
+            link.setAttribute('download', resource.downloadName || resource.label || '')
+            link.setAttribute('title', `下载 ${resource.label || resource.downloadName || '资源'}`)
+            link.removeAttribute('target')
+            link.removeAttribute('rel')
+          }
+        } else {
+          link.setAttribute('target', '_blank')
+          link.setAttribute('rel', 'noreferrer noopener')
+        }
       }
     },
   }
@@ -84,6 +101,7 @@ onMounted(() => {
 })
 
 watch(() => props.text, appendText, { flush: 'post' })
+watch(() => props.exposedResources, () => rebuild(), { deep: true, flush: 'post' })
 
 onBeforeUnmount(() => {
   cancelPendingCommit()

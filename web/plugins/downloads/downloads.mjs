@@ -92,7 +92,19 @@ export function createExposeDownloadsTool(options) {
       await options.onExpose?.({ sessionId: context.session?.sessionId, downloads });
       return {
         ok: true,
-        output: { downloads },
+        output: {
+          downloads,
+          _ui: {
+            resources: downloads.map((item) => ({
+              kind: 'download',
+              url: item.url,
+              label: item.filename,
+              downloadName: item.filename,
+              sizeBytes: item.sizeBytes,
+              expiresAt: item.expiresAt,
+            })),
+          },
+        },
         summary: `Exposed ${downloads.length} file(s) for browser download.`,
       };
     },

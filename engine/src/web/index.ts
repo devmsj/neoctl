@@ -171,6 +171,16 @@ interface UiCompactionReport extends CompactionReport {
   current?: boolean;
 }
 
+interface UiResource {
+  kind: string;
+  url: string;
+  label?: string;
+  downloadName?: string;
+  sizeBytes?: number;
+  expiresAt?: number;
+  mimeType?: string;
+}
+
 interface UiToolFact {
   label: string;
   value: string;
@@ -208,6 +218,7 @@ interface UiLine {
   previewStyle?: "summary";
   summaryMaxLines?: number;
   presentationLevel?: "primary" | "process";
+  resources?: UiResource[];
   live?: boolean;
   collapsible?: boolean;
   image?: UiLineImage;
@@ -2623,7 +2634,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, presentationLevel: toolPresentationLevel(toolName, output), collapsible: true };
+  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, presentationLevel: toolPresentationLevel(toolName, output), resources: toolResources(output), collapsible: true };
 }
 
 function toolPresentationLevel(toolName: string, payload: unknown): UiLine["presentationLevel"] {
@@ -2635,6 +2646,40 @@ function toolPresentationLevel(toolName: string, payload: unknown): UiLine["pres
   return [direct, ui, underscoredUi].some((value) => value === "primary") ? "primary" : "process";
 }
 
+function toolUiMetadata(payload: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(payload)) return undefined;
+  const containers = [payload, payload.output, payload.result].filter(isRecord);
+  for (const container of containers) {
+    if (isRecord(container._ui)) return container._ui;
+    if (isRecord(container.ui)) return container.ui;
+  }
+  return undefined;
+}
+
+function toolResources(payload: unknown): UiResource[] | undefined {
+  const ui = toolUiMetadata(payload);
+  if (!ui || !Array.isArray(ui.resources)) return undefined;
+  const resources = ui.resources.flatMap((value): UiResource[] => {
+    if (!isRecord(value)) return [];
+    const kind = stringValue(value.kind);
+    const url = stringValue(value.url);
+    if (!kind || !url || !safeResourceUrl(url)) return [];
+    return [{
+      kind,
+      url,
+      label: stringValue(value.label),
+      downloadName: stringValue(value.downloadName),
+      sizeBytes: numberValue(value.sizeBytes),
+      expiresAt: numberValue(value.expiresAt),
+      mimeType: stringValue(value.mimeType),
+    }];
+  });
+  return resources.length > 0 ? resources : undefined;
+}
+
+function safeResourceUrl(value: string): boolean {
+  return /^(?:https?:\/\/|\/)/i.test(value) && !/^\/\//.test(value);
+}
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {
   const labels: Record<string, string> = {
@@ -2810,9 +2855,8 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
     pushToolFact(facts, "尺寸", data.size);
   } else if (toolName === "load_image") {
     subject = arrayLabel(data.imageRefs);
-  } else if (toolName === "expose_downloads") {
-    const downloads = extractDownloadEntries(output);
-    subject = downloads.map((item) => item.filename || item.name).filter(Boolean).join("、");
+  } else if (toolResources(output)?.length) {
+    subject = toolResources(output)?.map((item) => item.label || item.downloadName).filter(Boolean).join("、");
   } else if (toolName.toLowerCase().startsWith("task") || toolName === "agent") {
     subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
   } else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") {
@@ -2927,39 +2971,11 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
   if (toolName === "grep" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
   if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   if (toolName === "image2" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
-  if (toolName === "expose_downloads") return { text: formatExposeDownloadsToolResult(output, ok), full: true, bodyTitle: ok ? "请点击下载" : "下载准备失败" };
+  const resources = toolResources(output);
+  if (resources?.length) return { text: ok ? "资源已准备好。" : "资源准备失败。", full: true, bodyTitle: ok ? "资源已就绪" : "资源准备失败" };
   if (toolName === "plan" && isWebPlanPayload(output)) return { text: serializeWebPlanPayload(output), full: true, bodyTitle: webPlanBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
-}
-
-function formatExposeDownloadsToolResult(output: unknown, ok: boolean): string {
-  const downloads = extractDownloadEntries(output);
-  if (!ok) return downloads.length ? `下载准备失败\n${formatDownloadEntries(downloads)}` : "下载准备失败";
-  if (!downloads.length) return "文件已准备好，请点击下载。";
-  return `文件已准备好，请点击下载。\n${formatDownloadEntries(downloads)}`;
-}
-
-function formatDownloadEntries(downloads: DownloadEntryLike[]): string {
-  return downloads.map((entry) => {
-    const filename = entry.filename || entry.name || "下载文件";
-    const url = entry.url || (entry.id ? `/api/downloads/${encodeURIComponent(entry.id)}` : "");
-    return url ? `- ${filename}: ${url}` : `- ${filename}`;
-  }).join("\n");
-}
-
-interface DownloadEntryLike extends Record<string, unknown> {
-  id?: string;
-  filename?: string;
-  name?: string;
-  url?: string;
-}
-
-function extractDownloadEntries(output: unknown): DownloadEntryLike[] {
-  if (!isRecord(output)) return [];
-  const candidates = [output.downloads, isRecord(output.output) ? output.output.downloads : undefined, isRecord(output.result) ? output.result.downloads : undefined];
-  const downloads = candidates.find(Array.isArray);
-  return Array.isArray(downloads) ? downloads.filter(isRecord).map((entry) => ({ ...entry })) : [];
 }
 
 interface EditToolOutputLike extends Record<string, unknown> {

@@ -1771,7 +1771,7 @@ function isPlanToolLine(line) {
 }
 
 function isInlineRichToolLine(line) {
-  return isPlanToolLine(line) || isImage2Line(line) || isExposeDownloadsLine(line) || isXhsArtifactLine(line)
+  return isPlanToolLine(line) || isImage2Line(line) || isXhsArtifactLine(line)
 }
 
 function isPromptUsageLine(line) {
@@ -2182,18 +2182,20 @@ function openRuntimeToolDetail(tool) {
 function renderLine(line) {
   if (isPlanToolLine(line)) return renderPlanResult(line)
   if (isImage2ResultLine(line)) return renderImage2Result(line)
-  if (isExposeDownloadsLine(line)) return renderExposeDownloadsResult(line)
+  if (lineResources(line).length) return renderLineResources(line)
   if (isReadXhsArtifactLine(line)) return sanitizeMarkdown(marked.parse('已读取稿件'))
   if (isImageNoteLine(line)) return renderImageNoteResult(line)
   if (isSkillReadLine(line)) return renderSkillReadResult(line)
   const text = lineText(line)
-  const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', text].join('\u001f')
+  const exposedResources = exposedResourcesBeforeLine(line)
+  const resourceKey = exposedResources.map((item) => `${item.kind}:${item.url}:${item.label || item.downloadName || ''}`).join('|')
+  const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', resourceKey, text].join('\u001f')
   const cached = renderedLineCache.get(key)
   if (cached !== undefined) return cached
   let html
   if (line.format === 'diff') html = renderDiff(text)
   else if (line.format === 'ansi' || !shouldMarkdown(line)) html = linkify(escapeHtml(stripAnsi(text)))
-  else html = sanitizeMarkdown(marked.parse(text || ''))
+  else html = enhanceExposedResourceLinks(sanitizeMarkdown(marked.parse(text || '')), exposedResources)
   renderedLineCache.set(key, html)
   return html
 }
@@ -2313,11 +2315,6 @@ function renderDiff(text) {
 
 function isImage2ResultLine(line) {
   return isImage2Line(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
-}
-
-function isExposeDownloadsLine(line) {
-  const title = String(line?.title || '').toLowerCase()
-  return line?.kind === 'tool' && (title === 'expose_downloads' || title === '文件下载')
 }
 
 function isReadXhsArtifactLine(line) {
@@ -2453,45 +2450,66 @@ function handleXhsArtifactError(message) {
   notify(message || '小红书产物保存失败')
 }
 
-function renderExposeDownloadsResult(line) {
-  const downloads = parseExposeDownloads(line.text || '')
-  if (!downloads.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
-  const cards = downloads.map((item) => {
-    const filename = escapeHtml(item.filename || item.name || 'download')
-    const href = escapeHtml(downloadHref(item))
-    const size = item.sizeBytes || item.size ? formatBytes(item.sizeBytes || item.size) : ''
+function lineResources(line) {
+  return Array.isArray(line?.resources)
+    ? line.resources.filter((item) => item && typeof item === 'object' && typeof item.url === 'string' && item.url)
+    : []
+}
+
+function renderLineResources(line) {
+  const resources = lineResources(line)
+  if (!resources.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
+  const items = resources.map((item, index) => {
+    const label = escapeHtml(item.label || item.downloadName || `资源 ${index + 1}`)
+    const href = escapeHtml(item.url)
+    const size = item.sizeBytes ? formatBytes(item.sizeBytes) : ''
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
     const meta = [size, expires].filter(Boolean).join(' · ')
-    return `<a class="download-card" href="${href}" download><span class="download-icon" aria-hidden="true">↓</span><span class="download-main"><strong>${filename}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</span><span class="download-action">下载</span></a>`
+    const downloadable = item.kind === 'download' || item.downloadName
+    const action = downloadable ? '下载' : '打开'
+    const download = downloadable ? ` download="${escapeHtml(item.downloadName || item.label || '')}"` : ' target="_blank" rel="noreferrer noopener"'
+    return `<a class="resource-card resource-${escapeHtml(item.kind || 'link')}" href="${href}"${download}><span class="resource-icon" aria-hidden="true"></span><span class="resource-main"><strong>${label}</strong><span>${escapeHtml(meta || (downloadable ? '文件已就绪' : '资源已就绪'))}</span></span><span class="resource-action"><span>${action}</span><i aria-hidden="true">${downloadable ? '↓' : '↗'}</i></span></a>`
   }).join('')
-  return `<div class="download-result"><div class="download-grid">${cards}</div></div>`
+  return `<div class="resource-result"><div class="resource-grid">${items}</div></div>`
 }
 
-function parseExposeDownloads(text) {
-  const parsed = parseFirstJsonObject(text)
-  const downloads = parsed?.downloads || parsed?.output?.downloads || parsed?.result?.downloads
-  if (Array.isArray(downloads)) return downloads.filter((item) => item && typeof item === 'object')
-  return parseDownloadLinksFromText(text)
+function exposedResourcesBeforeLine(line) {
+  if (line?.kind !== 'assistant') return []
+  const lines = state.lines || []
+  const lineIndex = lines.findIndex((item) => String(item?.id) === String(line?.id))
+  const end = lineIndex >= 0 ? lineIndex : lines.length
+  const resources = []
+  const seen = new Set()
+  for (let index = 0; index < end; index += 1) {
+    const item = lines[index]
+    if (item?.live) continue
+    for (const resource of lineResources(item)) {
+      if (seen.has(resource.url)) continue
+      seen.add(resource.url)
+      resources.push(resource)
+    }
+  }
+  return resources
 }
 
-function parseDownloadLinksFromText(text) {
-  const value = String(text || '')
-  const urls = Array.from(new Set(value.match(/\/api\/downloads\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+/g) || []))
-  if (!urls.length) return []
-  const filenames = Array.from(value.matchAll(/filename:\s*([^\n]+)|-\s*([^:\n]+):\s*\/api\/downloads\//g))
-    .map((match) => (match[1] || match[2] || '').trim())
-    .filter(Boolean)
-  return urls.map((url, index) => ({
-    id: decodeURIComponent(url.slice('/api/downloads/'.length)),
-    url,
-    filename: filenames[index] || `下载文件 ${index + 1}`,
-  }))
-}
-
-function downloadHref(item) {
-  const url = String(item?.url || '')
-  if (url.startsWith('/api/downloads/')) return url
-  return `/api/downloads/${encodeURIComponent(item?.id || '')}`
+function enhanceExposedResourceLinks(html, resources) {
+  if (!resources.length) return html
+  const allowed = new Map(resources.map((item) => [item.url, item]))
+  const template = document.createElement('template')
+  template.innerHTML = String(html || '')
+  for (const anchor of template.content.querySelectorAll('a[href]')) {
+    const href = anchor.getAttribute('href') || ''
+    const item = allowed.get(href)
+    if (!item) continue
+    anchor.classList.add('inline-resource-link', `inline-resource-${item.kind || 'link'}`)
+    if (item.kind === 'download' || item.downloadName) {
+      anchor.setAttribute('download', item.downloadName || item.label || '')
+      anchor.removeAttribute('target')
+      anchor.removeAttribute('rel')
+      anchor.setAttribute('title', `下载 ${item.label || item.downloadName || '资源'}`)
+    }
+  }
+  return template.innerHTML
 }
 
 function parseFirstJsonObject(text) {
@@ -3756,7 +3774,7 @@ function createMobileSession() {
                     <div v-else class="message-text markdown" v-html="renderLine(line)"></div>
                   </template>
                   <div v-else-if="line.kind === 'assistant' && line.live" class="message-text markdown streaming-markdown">
-                    <StreamingMarkdown :text="line.text || ''" />
+                    <StreamingMarkdown :text="line.text || ''" :exposed-resources="exposedResourcesBeforeLine(line)" />
                   </div>
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
