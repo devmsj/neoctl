@@ -47,8 +47,8 @@ export class ToolRegistry {
   definitions(context?: ToolUseContext, options: ToolPoolOptions = {}): ToolDefinition[] {
     return this.visibleTools(context, options).map((tool) => ({
       name: tool.name,
-      description: appendToolResultBudgetDescription(resolveToolDescription(tool, context), tool),
-      inputSchema: withToolResultBudgetInput(tool.inputSchema),
+      description: resolveToolDescription(tool, context),
+      inputSchema: withToolResultBudgetInput(tool.inputSchema, tool),
       strict: false,
     }));
   }
@@ -124,20 +124,16 @@ function compareToolForPromptCache(left: Tool<any>, right: Tool<any>): number {
   return left.name.localeCompare(right.name);
 }
 
-function appendToolResultBudgetDescription(description: string, tool: Tool<any>): string {
-  const defaultBudget = Math.max(tool.metadata.maxResultSizeChars ?? 0, DEFAULT_TOOL_RESULT_BUDGET_CHARS);
-  return `${description}\n\nTool result budget: by default, this tool's result is kept in model context up to ${defaultBudget} serialized characters. Pass optional maxResultChars on a single call to raise or lower that call's result budget; allowed range 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`;
-}
-
-function withToolResultBudgetInput(schema: JsonSchema): JsonSchema {
+function withToolResultBudgetInput(schema: JsonSchema, tool: Tool<any>): JsonSchema {
   if (schema.type !== "object") return schema;
+  const defaultBudget = Math.max(tool.metadata.maxResultSizeChars ?? 0, DEFAULT_TOOL_RESULT_BUDGET_CHARS);
   return {
     ...schema,
     properties: {
       ...(schema.properties ?? {}),
       maxResultChars: {
         type: "number",
-        description: `Optional per-call tool result budget in serialized characters. Default is the tool's documented budget; allowed range 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Use this only when a specific call needs more or less output retained in context.`,
+        description: `Override result budget for this call. Default ${defaultBudget}; range 1-${MAX_TOOL_RESULT_BUDGET_CHARS} serialized characters.`,
       },
     },
   };

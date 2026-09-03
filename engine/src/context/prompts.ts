@@ -1,3 +1,4 @@
+import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
 import type { ToolUseContext } from "../tools/tool.js";
 
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
@@ -50,6 +51,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
           : "Available tools are provided separately by the runtime.",
         "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
+        `Tool results use a default context budget of ${DEFAULT_TOOL_RESULT_BUDGET_CHARS} serialized characters unless a tool specifies a larger default. Use maxResultChars on an individual call to override it within 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`,
         hasLoadImageTool
           ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the load_image tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
           : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",

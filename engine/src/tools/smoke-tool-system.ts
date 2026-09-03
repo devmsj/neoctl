@@ -288,6 +288,9 @@ async function main(): Promise<void> {
   const fallbackSearchProvider = createSearchProvider({}, {} as NodeJS.ProcessEnv);
   const searchToolDefinition = registry.get("search");
   const searchToolPrompt = JSON.stringify({ description: searchToolDefinition?.description, schema: searchToolDefinition?.inputSchema });
+  const generatedDefinitions = registry.definitions(context);
+  const generatedPassthroughDefinition = generatedDefinitions.find((tool) => tool.name === "smoke_passthrough");
+  const generatedLargeDefinition = generatedDefinitions.find((tool) => tool.name === "large");
   const imageTool = createOpenAIImageGenerationTool();
   const imageToolPrompt = JSON.stringify({ name: imageTool.name, description: imageTool.description, schema: imageTool.inputSchema });
   const imageDefaultValidation = await imageTool.validateInput?.(imageTool.validate?.({ semanticName: "smoke-test", prompt: "smoke" }, context) ?? { semanticName: "smoke-test", prompt: "smoke" }, context);
@@ -399,6 +402,12 @@ async function main(): Promise<void> {
     invalidRejected: !toolOk(invalid[invalid.length - 1]),
     unknownRejected: !toolOk(unknown[0]),
     transportTruncationLabel: JSON.stringify(large[large.length - 1]).includes("truncated"),
+    toolBudgetDescriptionNotRepeated:
+      generatedDefinitions.every((tool) => !tool.description.includes("Tool result budget")) &&
+      generatedDefinitions.every((tool) => !tool.description.includes("maxResultChars")),
+    toolBudgetSchemaUsesCompactDefaults:
+      generatedPassthroughDefinition?.inputSchema.properties?.maxResultChars?.description === "Override result budget for this call. Default 48000; range 1-200000 serialized characters." &&
+      generatedLargeDefinition?.inputSchema.properties?.maxResultChars?.description === "Override result budget for this call. Default 48000; range 1-200000 serialized characters.",
     grepOk: toolOk(grep[grep.length - 1]),
     grepFindsFile: JSON.stringify(grep[grep.length - 1]).includes("grep-tool.ts"),
     grepFields: grepOutput.cwd !== undefined && grepOutput.grepPath !== undefined,

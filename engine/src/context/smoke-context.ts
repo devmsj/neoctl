@@ -112,7 +112,11 @@ async function main(): Promise<void> {
   const runtimeContextMessages = applyRuntimeContextForPromptCache(firstHistory, runtime.userContext, runtime.systemContext);
   const nextRuntimeContextMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, runtime.systemContext);
   const lastRuntimeBlock = runtimeContextMessages.at(-1)?.blocks[0];
+  const toolBudgetPromptOccurrences = runtime.systemPrompt.split("Tool results use a default context budget").length - 1;
   const contextOk =
+    toolBudgetPromptOccurrences === 1 &&
+    runtime.systemPrompt.includes("48000 serialized characters") &&
+    runtime.systemPrompt.includes("within 1-200000") &&
     runtime.userContext.currentDate === "2026-05-05" &&
     Boolean(runtime.systemContext.cwd) &&
     !runtime.systemPrompt.includes("## System Context") &&
