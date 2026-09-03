@@ -1141,22 +1141,31 @@ input[type='radio'] {
 
 :root[data-theme='dark'] .runtime-context-bar,
 :root[data-theme='dark'] .compaction-context-bar { background: #29485a !important; }
-:root[data-theme='dark'] .reasoning-sheet {
-  border-color: #6b7280 !important;
-  background: #2f353d !important;
+:root[data-theme='dark'] .reasoning-sheet,
+:root[data-theme='dark'] .reasoning-sheet[open] {
+  border: 0 !important;
+  background: transparent !important;
 }
 :root[data-theme='dark'] .reasoning-sheet > summary {
-  background: #5b4b26 !important;
+  background: transparent !important;
   color: #f3f4f6 !important;
 }
 :root[data-theme='dark'] .reasoning-paper {
-  background: #3f3824 !important;
+  background: transparent !important;
 }
 :root[data-theme='dark'] .reasoning-text {
-  border-color: #6b5d35;
-  color: #f3f4f6;
+  border-color: #6b7280;
+  color: #e5e7eb;
 }
-:root[data-theme='dark'] .quota-card { background: #5b4b26 !important; }
+:root[data-theme='dark'] .quota-card { background: #303842 !important; }
+:root[data-theme='dark'] .quota-progress {
+  background: #1f2937;
+  box-shadow: inset 0 0 0 1px #6b7280;
+}
+:root[data-theme='dark'] .quota-progress-fill {
+  background: linear-gradient(90deg, #38bdf8, #a78bfa 70%, #f472b6);
+  box-shadow: 0 0 10px rgba(167, 139, 250, .28);
+}
 :root[data-theme='dark'] .metric-chip,
 :root[data-theme='dark'] [class*='pill'],
 :root[data-theme='dark'] [class*='chip'] { background: #3f4751 !important; }
@@ -1790,7 +1799,7 @@ input[type='radio'] {
   }
 }
 
-/* Current-session activity glyph: quiet when stopped, kinetic while working. */
+/* Current-session activity glyph: one large diamond, always held at 45deg. */
 .session-entry-icon {
   position: relative;
   width: 34px;
@@ -1804,97 +1813,42 @@ input[type='radio'] {
 
 .session-diamond {
   position: absolute;
+  top: 7px;
+  left: 7px;
   display: block;
+  width: 20px;
+  height: 20px;
   border: 1px solid var(--line);
   background: var(--sky) !important;
-  transform: rotate(45deg);
+  transform: rotate(45deg) scale(1);
   transform-origin: center;
   transition: background-color .22s ease, opacity .22s ease, transform .32s cubic-bezier(.2, .8, .2, 1) !important;
 }
 
-.session-diamond-core {
-  top: 10px;
-  left: 10px;
-  width: 14px;
-  height: 14px;
-}
-
-.session-diamond-orbit-one,
-.session-diamond-orbit-two {
-  width: 6px;
-  height: 6px;
-  opacity: .58;
-}
-
-.session-diamond-orbit-one {
-  top: 3px;
-  right: 3px;
-  background: var(--pink) !important;
-}
-
-.session-diamond-orbit-two {
-  bottom: 3px;
-  left: 3px;
-  background: var(--yellow) !important;
-}
-
-.session-entry:not(.working) .session-diamond-core {
+.session-entry:not(.working) .session-diamond {
   animation: none;
   transform: rotate(45deg) scale(1);
 }
 
-.session-entry:not(.working) .session-diamond-orbit-one {
-  transform: translate(-3px, 3px) rotate(45deg) scale(.72);
-}
-
-.session-entry:not(.working) .session-diamond-orbit-two {
-  transform: translate(3px, -3px) rotate(45deg) scale(.72);
-}
-
-.session-entry.working .session-diamond-core {
+.session-entry.working .session-diamond {
   background: var(--lime) !important;
-  animation: session-diamond-core-work 3.4s cubic-bezier(.65, 0, .35, 1) infinite;
+  animation: session-diamond-work 2.8s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 
-.session-entry.working .session-diamond-orbit-one {
-  opacity: .94;
-  animation: session-diamond-fold-one 3.4s cubic-bezier(.65, 0, .35, 1) -.16s infinite;
+@keyframes session-diamond-work {
+  0%, 100% { transform: translateY(0) rotate(45deg) scale(.9); opacity: .78; }
+  35% { transform: translateY(-2px) rotate(45deg) scale(1.04); opacity: 1; }
+  68% { transform: translateY(1px) rotate(45deg) scale(.96); opacity: .9; }
 }
 
-.session-entry.working .session-diamond-orbit-two {
-  opacity: .94;
-  animation: session-diamond-fold-two 3.4s cubic-bezier(.65, 0, .35, 1) -.32s infinite;
-}
-
-/* Related to the loading reactor, but this status glyph folds into a staggered
-   stack and opens sideways instead of crossing through to opposite corners. */
-@keyframes session-diamond-core-work {
-  0%, 100% { transform: rotate(45deg) scale(.88); opacity: .76; }
-  30% { transform: rotate(82deg) scale(1.02); opacity: 1; }
-  52% { transform: rotate(135deg) scale(.72); opacity: .88; }
-  74% { transform: rotate(104deg) scale(.96); opacity: 1; }
-}
-
-@keyframes session-diamond-fold-one {
-  0%, 100% { transform: translate(-3px, 3px) rotate(45deg) scale(.72); opacity: .58; }
-  30% { transform: translate(-7px, 7px) rotate(112deg) scale(.94); opacity: 1; }
-  52% { transform: translate(-10px, 10px) rotate(180deg) scale(.62); opacity: .82; }
-  74% { transform: translate(-14px, 7px) rotate(248deg) scale(.88); opacity: 1; }
-}
-
-@keyframes session-diamond-fold-two {
-  0%, 100% { transform: translate(3px, -3px) rotate(45deg) scale(.72); opacity: .58; }
-  30% { transform: translate(7px, -7px) rotate(112deg) scale(.94); opacity: 1; }
-  52% { transform: translate(10px, -10px) rotate(180deg) scale(.62); opacity: .82; }
-  74% { transform: translate(14px, -7px) rotate(248deg) scale(.88); opacity: 1; }
-}
-
-:root[data-theme='dark'] .session-entry:not(.working) .session-diamond-core {
+:root[data-theme='dark'] .session-entry:not(.working) .session-diamond {
   background: #38bdf8 !important;
+  border-color: #cbd5e1;
 }
 
-:root[data-theme='dark'] .session-entry.working .session-diamond-core {
+:root[data-theme='dark'] .session-entry.working .session-diamond {
   background: #bef264 !important;
+  border-color: #f3f4f6;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1912,7 +1866,7 @@ input[type='radio'] {
     animation: none !important;
   }
 
-  .session-entry.working .session-diamond-core {
+  .session-entry.working .session-diamond {
     transform: rotate(45deg) scale(1);
   }
 }

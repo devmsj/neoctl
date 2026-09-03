@@ -658,10 +658,11 @@ a { color: var(--purple); }
   background: color-mix(in srgb, var(--purple) 10%, var(--line-soft));
   box-shadow: inset 0 1px 2px rgba(30, 12, 54, .08);
 }
-.quota-progress span {
+.quota-progress-fill {
   display: block;
+  width: var(--quota-progress, 0%);
+  max-width: 100%;
   height: 100%;
-  min-width: 2px;
   border-radius: inherit;
   background: linear-gradient(90deg, #6c22e6, #a86cff 72%, #cf9cff);
   box-shadow: 0 0 14px color-mix(in srgb, var(--purple) 45%, transparent);

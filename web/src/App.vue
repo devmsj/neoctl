@@ -1607,9 +1607,15 @@ async function saveLogin() {
   notify(failed.join('；'))
 }
 
+function normalizedQuotaPercent(value) {
+  const number = Number.parseFloat(String(value ?? '').replace('%', ''))
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0
+}
+
 function quotaPercent(value) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return '—'
+  const raw = Number.parseFloat(String(value ?? '').replace('%', ''))
+  if (!Number.isFinite(raw)) return '—'
+  const number = normalizedQuotaPercent(raw)
   return `${number.toFixed(number % 1 ? 1 : 0)}%`
 }
 
@@ -3405,9 +3411,7 @@ function createMobileSession() {
 
       <button :class="['sidebar-card', 'session-entry', { working: composerRunning }]" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
         <span class="session-entry-icon" aria-hidden="true">
-          <i class="session-diamond session-diamond-core"></i>
-          <i class="session-diamond session-diamond-orbit-one"></i>
-          <i class="session-diamond session-diamond-orbit-two"></i>
+          <i class="session-diamond"></i>
         </span>
         <span class="session-entry-main">
           <span ref="sessionTitleViewport" :class="['session-title-line', { marquee: titleShouldMarquee }]">
@@ -3752,8 +3756,8 @@ function createMobileSession() {
                 <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="下一个凭据" @click="rotateCpaQuota(1)">›</button>
               </div>
             </div>
-            <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="currentCpaQuota.remainingPercent" aria-valuemin="0" aria-valuemax="100">
-              <span :style="{ width: `${currentCpaQuota.remainingPercent}%` }"></span>
+            <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="normalizedQuotaPercent(currentCpaQuota.remainingPercent)" aria-valuemin="0" aria-valuemax="100">
+              <span class="quota-progress-fill" :style="{ '--quota-progress': `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
             </div>
             <div class="quota-card-foot">
               <span>已使用 {{ quotaPercent(currentCpaQuota.usedPercent) }}</span>
