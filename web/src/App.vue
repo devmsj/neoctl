@@ -490,6 +490,13 @@ const memoryHoveredPoint = computed(() => memoryTrendPoints.value[memoryHoverInd
 
 watch(theme, applyTheme, { immediate: true })
 
+watch([composerRunning, isDarkTheme], ([running, dark]) => {
+  const fill = running ? (dark ? '#bef264' : '#a3e635') : (dark ? '#38bdf8' : '#7dd3fc')
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4 50 32 32 60 14 32Z" fill="${fill}"/></svg>`
+  const favicon = document.querySelector('link[rel="icon"]')
+  if (favicon) favicon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`
+}, { immediate: true })
+
 watch(realSessionTitle, (title) => {
   document.title = title || '对话工作台'
 }, { immediate: true })
