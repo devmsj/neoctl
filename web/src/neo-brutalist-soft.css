@@ -842,7 +842,7 @@ button:disabled,
 
 .tool-group-message {
   grid-template-columns: minmax(0, 1fr) !important;
-  padding-block: 7px !important;
+  padding: 7px 0 7px 30px !important;
 }
 .tool-group-shell {
   width: min(860px, 100%);
