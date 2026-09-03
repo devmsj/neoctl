@@ -4,7 +4,7 @@ import path from "node:path";
 import { FileToolResultMemory, PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
 import { SessionStore } from "./session-store.js";
 import { writeSessionMarkdownExport } from "./session-export.js";
-import { createThinkingMessage, type Message } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type Message } from "../types/messages.js";
 
 async function main(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-session-smoke-"));
@@ -21,16 +21,56 @@ async function main(): Promise<void> {
   const store = await SessionStore.open({ agentId: "main", rootDir: root, sessionId });
   for (const message of messages) store.recordMessage(message);
   store.recordMessage(createThinkingMessage("persisted visible reasoning"));
+  store.recordMessage(createTextMessage("assistant", "assistant before compact"));
   store.recordContentReplacements(first.records);
   store.recordTitle("Smoke Session Title", "initial");
   store.recordTitle("Refined Smoke Session Title", "refinement");
   store.recordFastMode(true);
   store.recordMessage({ ...messages[0], role: "progress" });
+  const compactionBoundary = {
+    ...createTextMessage("system", "<compact_state>persisted compact state</compact_state>"),
+    isMeta: true,
+    metadata: { compactBoundary: true, compactionReason: "manualcompact", modelDriven: true },
+  };
+  const preservedUser = { ...createTextMessage("user", "preserved user request"), metadata: { compactPreservedUser: true } };
+  store.recordCompactCheckpoint([preservedUser, compactionBoundary], "manualcompact", {
+    reason: "manualcompact",
+    summary: "persisted compact summary",
+    continuationState: "persisted compact state",
+    sourceMessages: messages.length + 2,
+    preservedUserMessages: 1,
+    newWindowMessages: 2,
+    charsFreed: 1234,
+    modelDriven: true,
+    imageCount: 0,
+  });
+  store.recordMessage(createTextMessage("assistant", "assistant between compacts"));
+  const secondCompactionBoundary = {
+    ...createTextMessage("system", "<compact_state>second compact state</compact_state>"),
+    isMeta: true,
+    metadata: { compactBoundary: true, compactionReason: "manualcompact", modelDriven: true },
+  };
+  store.recordCompactCheckpoint([preservedUser, secondCompactionBoundary], "manualcompact", {
+    reason: "manualcompact",
+    summary: "second compact summary",
+    continuationState: "second compact state",
+    sourceMessages: 3,
+    preservedUserMessages: 1,
+    newWindowMessages: 2,
+    charsFreed: 2345,
+    modelDriven: true,
+    imageCount: 0,
+  });
+  store.recordMessage(createTextMessage("assistant", "assistant after second compact"));
 
   const resumed = await SessionStore.open({ agentId: "main", rootDir: root, sessionId, resume: true });
   const latest = await SessionStore.open({ agentId: "main", rootDir: root, resume: true });
   const listed = await SessionStore.list({ agentId: "main", rootDir: root });
   const resumedBudget = await resumed.toolResultMemory.applyBudget(resumed.getInitialMessages(), { maxSerializedLength: 180 });
+  const displayEntries = resumed.getDisplayEntries();
+  const displayMessages = displayEntries.filter((entry) => entry.type === "message").map((entry) => entry.message);
+  const displayCompactions = displayEntries.filter((entry) => entry.type === "compact");
+  const displayCompactionIndexes = displayEntries.flatMap((entry, index) => entry.type === "compact" ? [index] : []);
   const exportPath = path.join(root, "exports", "session.md");
   const exportResult = await writeSessionMarkdownExport({
     outputPath: exportPath,
@@ -57,31 +97,45 @@ async function main(): Promise<void> {
     persistedBlocks.length === 1 &&
     second.records.length === 0 &&
     JSON.stringify(first.messages) === JSON.stringify(second.messages) &&
-    resumed.snapshot().resumedMessages === messages.length + 1 &&
-    resumed.getInitialMessages().some((message) => message.blocks.some((block) => block.type === "thinking" && block.text === "persisted visible reasoning")) &&
+    resumed.snapshot().resumedMessages === 3 &&
+    resumed.getInitialMessages()[0]?.metadata?.compactPreservedUser === true &&
+    resumed.getInitialMessages()[1]?.metadata?.compactBoundary === true &&
+    resumed.getInitialMessages().at(-1)?.blocks.some((block) => block.type === "text" && block.text === "assistant after second compact") === true &&
+    displayMessages.length === messages.length + 4 &&
+    displayMessages.some((message) => message.role === "assistant" && message.blocks.some((block) => block.type === "text" && block.text === "assistant before compact")) &&
+    displayMessages.some((message) => message.role === "assistant" && message.blocks.some((block) => block.type === "text" && block.text === "assistant between compacts")) &&
+    displayMessages.some((message) => message.role === "assistant" && message.blocks.some((block) => block.type === "text" && block.text === "assistant after second compact")) &&
+    displayCompactions.length === 2 &&
+    displayCompactions[0]?.report?.summary === "persisted compact summary" &&
+    displayCompactions[1]?.report?.summary === "second compact summary" &&
+    displayEntries.findIndex((entry) => entry.type === "compact") > displayEntries.findIndex((entry) => entry.type === "message" && entry.message.blocks.some((block) => block.type === "text" && block.text === "assistant before compact")) &&
+    displayEntries.findIndex((entry) => entry.type === "message" && entry.message.blocks.some((block) => block.type === "text" && block.text === "assistant between compacts")) > displayEntries.findIndex((entry) => entry.type === "compact") &&
+    displayCompactionIndexes.at(-1)! < displayEntries.findIndex((entry) => entry.type === "message" && entry.message.blocks.some((block) => block.type === "text" && block.text === "assistant after second compact")) &&
+    resumed.snapshot().lastCompaction?.summary === "second compact summary" &&
+    resumed.snapshot().lastCompaction?.continuationState === "second compact state" &&
     resumed.snapshot().title === "Refined Smoke Session Title" &&
     resumed.snapshot().titleKind === "refinement" &&
     resumed.snapshot().hasInitialTitle &&
     resumed.snapshot().hasTitleRefinement &&
     resumed.snapshot().fastMode === true &&
     latest.snapshot().sessionId === sessionId &&
-    latest.snapshot().resumedMessages === messages.length + 1 &&
+    latest.snapshot().resumedMessages === 3 &&
+    latest.snapshot().lastCompaction?.charsFreed === 2345 &&
     latest.snapshot().title === "Refined Smoke Session Title" &&
     latest.snapshot().titleKind === "refinement" &&
     listed.length === 1 &&
     listed[0]?.sessionId === sessionId &&
     listed[0]?.title === "Refined Smoke Session Title" &&
     resumedBudget.records.length === 0 &&
-    resumedBudget.messages.some((message) =>
-      message.blocks.some((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),
-    ) &&
+    resumedBudget.messages.every((message) => message.role !== "tool_result") &&
     exportResult.bytes > 0 &&
     exportedMarkdown.includes("# Neo Session Export") &&
     exportedMarkdown.includes("system prompt smoke") &&
     exportedMarkdown.includes("## Transcript") &&
     exportedMarkdown.includes("Tool use ID: call_a") &&
-    exportedMarkdown.includes("persisted visible reasoning") &&
+    exportedMarkdown.includes("persisted compact state") &&
     resetResume.snapshot().resumedMessages === 0 &&
+    resetResume.snapshot().lastCompaction === undefined &&
     resetResume.snapshot().fastMode === true &&
     deleted &&
     listedAfterDelete.length === 0;

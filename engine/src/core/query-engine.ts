@@ -4,7 +4,7 @@ import { AppPromptContextManager, DefaultContextManager, type ContextManager } f
 import { AdditionalPromptContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
-import { ModelDrivenCompactor } from "../context/compaction.js";
+import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
@@ -19,7 +19,7 @@ import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
 import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
 import type { TerminalReason } from "./state.js";
-import { SessionStore, type SessionStoreSnapshot, type SessionSummary, type SessionTitleKind } from "../session/session-store.js";
+import { SessionStore, type SessionDisplayEntry, type SessionStoreSnapshot, type SessionSummary, type SessionTitleKind } from "../session/session-store.js";
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { computeStaticTokens } from "./context-metrics.js";
@@ -287,7 +287,10 @@ export class QueryEngine {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-    const result = await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget));
+    const result = withCompactionReport(
+      await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget)),
+      this.history.length,
+    );
     this.applyCompactionResult(result);
     return result;
   }
@@ -297,7 +300,10 @@ export class QueryEngine {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-    const result = await (compactor.pureCompact?.(this.history, this.options.contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const });
+    const result = withCompactionReport(
+      await (compactor.pureCompact?.(this.history, this.options.contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const }),
+      this.history.length,
+    );
     this.applyCompactionResult(result);
     return result;
   }
@@ -318,11 +324,15 @@ export class QueryEngine {
     return this.history.map(cloneMessage);
   }
 
+  getDisplayEntries(): SessionDisplayEntry[] {
+    return this.sessionStore?.getDisplayEntries() ?? this.history.map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
+  }
+
   private applyCompactionResult(result: CompactionResult): void {
     if (!result.changed) return;
     this.history.length = 0;
     this.history.push(...result.messages.map(cloneMessage));
-    this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason);
+    this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason, result.report);
   }
 
   async contextMetrics(): Promise<ContextMetrics> {

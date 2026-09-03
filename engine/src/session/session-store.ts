@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CompactionReason } from "../context/compaction.js";
+import type { CompactionReason, CompactionReport } from "../context/compaction.js";
 import type { AppPromptValue } from "../app/app-prompt.js";
 import type { Message } from "../types/messages.js";
 import { getNeoctlHome } from "../paths.js";
@@ -24,6 +24,7 @@ export type SessionTranscriptEntry =
       createdAt: string;
       replacementMessages?: Message[];
       reason?: CompactionReason;
+      report?: CompactionReport;
       windowNumber?: number;
       firstWindowId?: string;
       previousWindowId?: string;
@@ -64,6 +65,10 @@ export interface SessionSummary {
   contentReplacements: number;
 }
 
+export type SessionDisplayEntry =
+  | { type: "message"; message: Message }
+  | { type: "compact"; createdAt: string; reason?: CompactionReason; report?: CompactionReport };
+
 export interface SessionStoreSnapshot {
   sessionId: string;
   sessionDir: string;
@@ -77,6 +82,7 @@ export interface SessionStoreSnapshot {
   appPrompt?: AppPromptValue;
   fastMode: boolean;
   windowNumber: number;
+  lastCompaction?: CompactionReport;
   firstWindowId: string;
   previousWindowId?: string;
   windowId: string;
@@ -96,6 +102,7 @@ export class SessionStore {
   readonly toolResultMemory: ToolResultMemory;
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
+  private readonly displayEntries: SessionDisplayEntry[];
   private readonly contentReplacements: ContentReplacementRecord[];
   private title?: string;
   private titleKind?: SessionTitleKind;
@@ -103,6 +110,7 @@ export class SessionStore {
   private hasTitleRefinement = false;
   private appPrompt?: AppPromptValue;
   private fastMode = false;
+  private lastCompaction?: CompactionReport;
   private windowNumber: number;
   private firstWindowId: string;
   private previousWindowId?: string;
@@ -114,6 +122,7 @@ export class SessionStore {
     this.sessionDir = path.join(resolveSessionRoot(options), sessionId);
     this.transcriptPath = path.join(this.sessionDir, "transcript.jsonl");
     this.resumedMessages = loaded.messages;
+    this.displayEntries = loaded.displayEntries;
     this.contentReplacements = loaded.replacements;
     this.title = loaded.title;
     this.titleKind = loaded.titleKind;
@@ -121,6 +130,7 @@ export class SessionStore {
     this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.appPrompt = loaded.appPrompt;
     this.fastMode = loaded.fastMode;
+    this.lastCompaction = loaded.lastCompaction ? cloneCompactionReport(loaded.lastCompaction) : undefined;
     this.windowNumber = loaded.windowNumber;
     this.firstWindowId = loaded.firstWindowId ?? randomUUID();
     this.previousWindowId = loaded.previousWindowId;
@@ -201,36 +211,54 @@ export class SessionStore {
     return this.resumedMessages.map(cloneMessage);
   }
 
+  getDisplayEntries(): SessionDisplayEntry[] {
+    return this.displayEntries.map(cloneDisplayEntry);
+  }
+
   recordMessage(message: Message): void {
     if (!shouldPersistMessage(message)) return;
-    this.resumedMessages.push(cloneMessage(message));
+    const stored = cloneMessage(message);
+    this.resumedMessages.push(stored);
+    this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message });
   }
 
   /** @deprecated Prefer recordCompactCheckpoint so replacement history is one durable entry. */
   recordCompactBoundary(): void {
+    const createdAt = new Date().toISOString();
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
-    this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
+    this.lastCompaction = undefined;
+    this.displayEntries.push({ type: "compact", createdAt });
+    this.appendEntry({ type: "compact", sessionId: this.sessionId, agentId: this.agentId, createdAt });
   }
 
-  recordCompactCheckpoint(messages: readonly Message[], reason?: CompactionReason): void {
+  recordCompactCheckpoint(messages: readonly Message[], reason?: CompactionReason, report?: CompactionReport): void {
     const replacementMessages = messages.filter(shouldPersistMessage).map(cloneMessage);
     const previousWindowId = this.windowId;
     const windowId = randomUUID();
+    const createdAt = new Date().toISOString();
     this.windowNumber += 1;
     this.previousWindowId = previousWindowId;
     this.windowId = windowId;
     this.resumedMessages.length = 0;
     this.resumedMessages.push(...replacementMessages.map(cloneMessage));
     this.contentReplacements.length = 0;
+    this.lastCompaction = report ? cloneCompactionReport(report) : undefined;
+    this.displayEntries.push({
+      type: "compact",
+      createdAt,
+      reason,
+      ...(this.lastCompaction ? { report: cloneCompactionReport(this.lastCompaction) } : {}),
+    });
     this.appendEntry({
       type: "compact",
       sessionId: this.sessionId,
       agentId: this.agentId,
-      createdAt: new Date().toISOString(),
+      createdAt,
       replacementMessages,
       reason,
+      ...(this.lastCompaction ? { report: cloneCompactionReport(this.lastCompaction) } : {}),
       windowNumber: this.windowNumber,
       firstWindowId: this.firstWindowId,
       previousWindowId,
@@ -309,11 +337,13 @@ export class SessionStore {
 
   reset(): void {
     this.resumedMessages.length = 0;
+    this.displayEntries.length = 0;
     this.contentReplacements.length = 0;
     this.title = undefined;
     this.titleKind = undefined;
     this.hasInitialTitle = false;
     this.hasTitleRefinement = false;
+    this.lastCompaction = undefined;
     this.windowNumber = 1;
     this.firstWindowId = randomUUID();
     this.previousWindowId = undefined;
@@ -334,6 +364,7 @@ export class SessionStore {
       contentReplacements: this.contentReplacements.length,
       fastMode: this.fastMode,
       windowNumber: this.windowNumber,
+      ...(this.lastCompaction ? { lastCompaction: cloneCompactionReport(this.lastCompaction) } : {}),
       firstWindowId: this.firstWindowId,
       previousWindowId: this.previousWindowId,
       windowId: this.windowId,
@@ -349,6 +380,7 @@ export class SessionStore {
 
 interface LoadedTranscript {
   messages: Message[];
+  displayEntries: SessionDisplayEntry[];
   replacements: ContentReplacementRecord[];
   entries: number;
   title?: string;
@@ -357,6 +389,7 @@ interface LoadedTranscript {
   hasTitleRefinement: boolean;
   appPrompt?: AppPromptValue;
   fastMode: boolean;
+  lastCompaction?: CompactionReport;
   windowNumber: number;
   firstWindowId?: string;
   previousWindowId?: string;
@@ -390,11 +423,13 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
       loaded.entries += 1;
       if (entry.type === "reset") {
         loaded.messages.length = 0;
+        loaded.displayEntries.length = 0;
         loaded.replacements.length = 0;
         loaded.title = undefined;
         loaded.titleKind = undefined;
         loaded.hasInitialTitle = false;
         loaded.hasTitleRefinement = false;
+        loaded.lastCompaction = undefined;
         loaded.windowNumber = 1;
         loaded.firstWindowId = undefined;
         loaded.previousWindowId = undefined;
@@ -404,12 +439,30 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
         loaded.messages.length = 0;
         loaded.replacements.length = 0;
         if (entry.replacementMessages) loaded.messages.push(...entry.replacementMessages.map(cloneMessage));
+        const boundaryReport = entry.replacementMessages
+          ?.slice()
+          .reverse()
+          .find((message) => message.metadata?.compactBoundary === true)
+          ?.metadata?.compactionReport as CompactionReport | undefined;
+        loaded.lastCompaction = entry.report
+          ? cloneCompactionReport(entry.report)
+          : boundaryReport ? cloneCompactionReport(boundaryReport) : undefined;
+        loaded.displayEntries.push({
+          type: "compact",
+          createdAt: entry.createdAt,
+          reason: entry.reason,
+          ...(loaded.lastCompaction ? { report: cloneCompactionReport(loaded.lastCompaction) } : {}),
+        });
         if (entry.windowNumber !== undefined) loaded.windowNumber = entry.windowNumber;
         if (entry.firstWindowId) loaded.firstWindowId = entry.firstWindowId;
         loaded.previousWindowId = entry.previousWindowId;
         if (entry.windowId) loaded.windowId = entry.windowId;
       }
-      if (entry.type === "message") loaded.messages.push(entry.message);
+      if (entry.type === "message") {
+        const message = cloneMessage(entry.message);
+        loaded.messages.push(message);
+        loaded.displayEntries.push({ type: "message", message: cloneMessage(message) });
+      }
       if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
       if (entry.type === "title") {
         const normalizedTitle = normalizeTitle(entry.title);
@@ -436,6 +489,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
 function createEmptyLoadedTranscript(): LoadedTranscript {
   return {
     messages: [],
+    displayEntries: [],
     replacements: [],
     entries: 0,
     hasInitialTitle: false,
@@ -456,6 +510,20 @@ function createSessionId(): string {
 
 function cloneMessage(message: Message): Message {
   return JSON.parse(JSON.stringify(message)) as Message;
+}
+
+function cloneCompactionReport(report: CompactionReport): CompactionReport {
+  return { ...report };
+}
+
+function cloneDisplayEntry(entry: SessionDisplayEntry): SessionDisplayEntry {
+  if (entry.type === "message") return { type: "message", message: cloneMessage(entry.message) };
+  return {
+    type: "compact",
+    createdAt: entry.createdAt,
+    reason: entry.reason,
+    ...(entry.report ? { report: cloneCompactionReport(entry.report) } : {}),
+  };
 }
 
 function shouldPersistMessage(message: Message): boolean {

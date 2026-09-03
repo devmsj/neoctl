@@ -31,7 +31,7 @@ import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument } from "../repl/commands.js";
 import { writeSessionMarkdownExport } from "../session/session-export.js";
-import type { CompactionResult } from "../context/compaction.js";
+import type { CompactionReason, CompactionReport, CompactionResult } from "../context/compaction.js";
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
@@ -148,6 +148,11 @@ interface UiLineImage {
   mimeType: string;
 }
 
+interface UiCompactionReport extends CompactionReport {
+  createdAt?: string;
+  current?: boolean;
+}
+
 interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
@@ -166,6 +171,7 @@ interface UiLine {
   live?: boolean;
   collapsible?: boolean;
   image?: UiLineImage;
+  compaction?: UiCompactionReport;
 }
 
 type WebActionFailure = { ok: false; error: string; errorCode: string };
@@ -564,7 +570,9 @@ export class WebRepl {
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
 
   constructor(private runtime: WebRuntime) {
-    this.lines = initialLines(runtime, { current: 0 });
+    const lineId = { current: 0 };
+    this.lines = initialLines(runtime, lineId);
+    this.lineId = lineId.current;
     this.status = initialStatus(runtime);
     runtime.taskStore.subscribe(() => {
       this.broadcastSync();
@@ -857,7 +865,13 @@ export class WebRepl {
 
   imagePayload(messageId: string, blockIndex: number): { body: Buffer; mimeType: string } | undefined {
     if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
-    const message = this.runtime.engine.getHistoryMessages().find((item) => item.id === messageId);
+    let message: Message | undefined;
+    for (const entry of this.runtime.engine.getDisplayEntries()) {
+      if (entry.type === "message" && entry.message.id === messageId) {
+        message = entry.message;
+        break;
+      }
+    }
     const block = message?.blocks[blockIndex];
     if (!block || block.type !== "image") return undefined;
     const resolved = resolveImageBlockDataSync(block)?.trim();
@@ -933,6 +947,13 @@ export class WebRepl {
     if (streaming) this.broadcastDelta({ type: "line.append", line: nextLine });
     else this.broadcastSync();
     return id;
+  }
+
+  private appendCompaction(report: CompactionReport, createdAt?: string): number {
+    this.lines = this.lines.map((line) => line.compaction
+      ? { ...line, compaction: { ...line.compaction, current: false } }
+      : line);
+    return this.append(compactionLine(report, createdAt, true));
   }
 
   private appendLineText(id: number, text: string): void {
@@ -1124,6 +1145,10 @@ export class WebRepl {
     }
     if (event.type === "tool_call.delta") {
       this.queueDeltaStatus();
+      return;
+    }
+    if (event.type === "context.compacted") {
+      this.appendCompaction(event.compaction);
       return;
     }
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "retrying") {
@@ -1398,7 +1423,8 @@ export class WebRepl {
       if (this.foregroundRunToken !== runToken) return;
       const metrics = await this.runtime.engine.contextMetrics();
       if (this.foregroundRunToken !== runToken) return;
-      this.append(systemLine(type === "compact" ? formatManualCompaction(result) : formatPureCompaction(result)));
+      if (result.report) this.appendCompaction(result.report);
+      else this.append(systemLine(type === "compact" ? formatManualCompaction(result) : formatPureCompaction(result)));
       this.handleEvent({ type: "context.metrics", metrics });
     } catch (error) {
       if (this.foregroundRunToken === runToken) this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -1719,13 +1745,32 @@ function initialLines(runtime: WebRuntime, lineId: { current: number }): UiLine[
   return lines;
 }
 
-function restoredHistoryLines(runtime: WebRuntime): Omit<UiLine, "id">[] {
+export function restoreWebHistoryLines(runtime: Pick<WebRuntime, "engine">): Array<Record<string, unknown>> {
+  return restoredHistoryLines(runtime).map((line) => ({ ...line }));
+}
+
+function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine, "id">[] {
   const lines: Omit<UiLine, "id">[] = [];
   const append = (line: Omit<UiLine, "id">) => {
     lines.push(line);
     return lines.length;
   };
-  for (const message of runtime.engine.getHistoryMessages()) renderMessage(message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: true });
+  const entries = runtime.engine.getDisplayEntries();
+  let lastCompactionIndex = -1;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index].type === "compact") {
+      lastCompactionIndex = index;
+      break;
+    }
+  }
+  for (const [entryIndex, entry] of entries.entries()) {
+    if (entry.type === "message") {
+      renderMessage(entry.message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: true });
+      continue;
+    }
+    const report = entry.report ?? legacyCompactionReport(entry.reason);
+    append(compactionLine(report, entry.createdAt, entryIndex === lastCompactionIndex));
+  }
   return lines;
 }
 
@@ -1799,6 +1844,7 @@ function pushTextBlock(blocks: MessageBlock[], text: string): void {
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
+  if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "usage") return { ...status, usage: event.usage, inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "assistant.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
@@ -2217,6 +2263,61 @@ function systemLine(text: string, summaryMaxLines?: number): Omit<UiLine, "id"> 
   return { kind: "system", title: "System", text, previewStyle: "summary", summaryMaxLines };
 }
 
+function legacyCompactionReport(reason: CompactionReason | undefined): CompactionReport {
+  return {
+    reason: reason && reason !== "none" ? reason : "manualcompact",
+    summary: "此检查点由旧版 neoctl 持久化，未保存详细压缩报告。",
+    continuationState: "该旧版检查点没有可用的详细续接上下文。",
+    sourceMessages: 0,
+    preservedUserMessages: 0,
+    newWindowMessages: 0,
+    charsFreed: 0,
+    modelDriven: false,
+    imageCount: 0,
+  };
+}
+
+function compactionLine(report: CompactionReport, createdAt = new Date().toISOString(), current = true): Omit<UiLine, "id"> {
+  return {
+    kind: "meta",
+    title: "Context compaction",
+    text: formatCompactionReportSummary(report),
+    format: "plain",
+    compaction: { ...report, createdAt, current },
+  };
+}
+
+function compactionReportFromBoundary(message: Message | undefined): CompactionReport | undefined {
+  if (!message?.metadata?.compactBoundary) return undefined;
+  const stored = message.metadata.compactionReport as CompactionReport | undefined;
+  if (stored?.continuationState) return { ...stored };
+  const text = message.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  const continuationState = /<compact_state>\s*([\s\S]*?)\s*<\/compact_state>/i.exec(text)?.[1]?.trim();
+  if (!continuationState) return undefined;
+  const reasonValue = typeof message.metadata.compactionReason === "string" ? message.metadata.compactionReason : "autocompact";
+  const reason = isCompactionReason(reasonValue) ? reasonValue : "autocompact";
+  const imageRegistry = message.metadata.imageRegistry as { images?: unknown[] } | undefined;
+  return {
+    reason,
+    summary: continuationState,
+    continuationState,
+    sourceMessages: 0,
+    preservedUserMessages: 0,
+    newWindowMessages: 1,
+    charsFreed: 0,
+    modelDriven: message.metadata.modelDriven === true,
+    imageCount: Array.isArray(imageRegistry?.images) ? imageRegistry.images.length : 0,
+  };
+}
+
+function isCompactionReason(value: string): value is CompactionReport["reason"] {
+  return ["snip", "microcompact", "autocompact", "reactive_compact", "manualcompact", "purecompact"].includes(value);
+}
+
+function formatCompactionReportSummary(report: CompactionReport): string {
+  return `${report.newWindowMessages} message(s) in new window, ${report.preservedUserMessages} user message(s) preserved`;
+}
+
 function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
   return { kind: "thinking", title: titleForKind("thinking"), text, previewStyle: "summary", summaryMaxLines: THINKING_SUMMARY_MAX_LINES, live };
 }
@@ -2631,8 +2732,9 @@ function formatUsageTotals(totals: UsageTotals): string {
 }
 
 function formatManualCompaction(result: CompactionResult): string {
-  if (!result.changed) return "No context compaction was needed.";
-  return `context compacted: ${result.messages.length} message(s) retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars removed`;
+  if (!result.changed) return "No conversation context available to compact.";
+  const preservedUsers = result.report?.preservedUserMessages ?? result.messages.filter((message) => message.metadata?.compactPreservedUser === true).length;
+  return `context compacted: ${result.messages.length} message(s) in new window, ${preservedUsers} user message(s) preserved`;
 }
 
 function formatPureCompaction(result: CompactionResult): string {

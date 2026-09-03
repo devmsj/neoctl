@@ -242,6 +242,15 @@ async function renderTranscriptEntry(lines: string[], entry: SessionTranscriptEn
 
   if (entry.type === "compact" || entry.type === "reset") {
     lines.push(`- Created at: ${entry.createdAt}`);
+    if (entry.type === "compact") {
+      if (entry.reason) lines.push(`- Reason: ${entry.reason}`);
+      if (entry.report) {
+        lines.push("");
+        lines.push("### Compaction Report");
+        lines.push("");
+        lines.push(fenced(stableStringify(entry.report), "json"));
+      }
+    }
     lines.push("");
   }
 }

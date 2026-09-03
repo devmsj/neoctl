@@ -66,6 +66,7 @@ const LINE_TITLE_LABELS = {
   You: '你',
   User: '你',
   System: '系统',
+  'Context compaction': '上下文压缩',
   Config: '配置',
   Reasoning: '思考',
   'Runtime tool': '运行时工具',
@@ -260,6 +261,7 @@ const state = reactive({
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
+  compactionDetailLineId: undefined,
   backgroundTaskDetail: undefined,
   imagePreview: undefined,
   confirmDialog: {
@@ -435,6 +437,7 @@ const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
 const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
+const compactionDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.compactionDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
 const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
@@ -863,6 +866,7 @@ function applySync(payload) {
   const shouldFollow = isTranscriptNearBottom()
   state.lines = payload.lines || []
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
+  if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
   syncMessageImagePreviewsFromLines(state.lines)
   syncLiveToolTimers(state.lines)
   state.status = payload.status || state.status
@@ -1644,6 +1648,25 @@ function isInlineRichToolLine(line) {
 
 function isPromptUsageLine(line) {
   return line?.kind === 'meta' && String(line?.title || '') === '提示词用法'
+}
+
+function isCompactionLine(line) {
+  return Boolean(line?.compaction && typeof line.compaction === 'object')
+}
+
+function compactionModeText(line) {
+  return line?.compaction?.modelDriven ? '模型生成摘要' : '确定性摘要'
+}
+
+function openCompactionDetail(line) {
+  if (!isCompactionLine(line)) return
+  state.compactionDetailLineId = line.id
+  document.body.classList.add('runtime-context-open')
+}
+
+function closeCompactionDetail() {
+  state.compactionDetailLineId = undefined
+  if (!state.runtimeContextModal && !state.runtimeContextDetail) document.body.classList.remove('runtime-context-open')
 }
 
 function shouldCollapseToolLine(line) {
@@ -2577,6 +2600,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.compactionDetailLineId !== undefined) {
+    event.preventDefault()
+    closeCompactionDetail()
+    return
+  }
   if (event.key === 'Escape' && state.backgroundTaskDetail) {
     event.preventDefault()
     closeBackgroundTaskDetail()
@@ -3342,13 +3370,25 @@ function createMobileSession() {
               <span v-else class="runtime-context-syncing">同步中</span>
             </section>
 
-            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line) }]">
+            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line) }]">
               <div :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
                   <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" transform="rotate(45 10 10)" />
                 </svg>
               </div>
-              <div v-if="line.kind === 'thinking'" class="message-body reasoning-body">
+              <div v-if="isCompactionLine(line)" class="message-body compaction-message-body">
+                <section :class="['compaction-context-bar', { current: line.compaction.current }]">
+                  <div class="compaction-context-title">
+                    <strong>压缩上下文</strong>
+                  </div>
+                  <div class="compaction-context-actions">
+                    <span><span>摘要</span><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
+                    <span v-if="line.compaction.imageCount"><span>图片</span><strong>{{ line.compaction.imageCount }}</strong></span>
+                    <button type="button" @click="openCompactionDetail(line)"><span>详情</span><strong>›</strong></button>
+                  </div>
+                </section>
+              </div>
+              <div v-else-if="line.kind === 'thinking'" class="message-body reasoning-body">
                 <details class="reasoning-sheet" :open="line.live || undefined">
                   <summary>
                     <span class="reasoning-heading">思考</span>
@@ -3838,6 +3878,31 @@ function createMobileSession() {
           <img :src="state.imagePreview.src" :alt="state.imagePreview.caption || '图片预览'" />
         </div>
         <footer v-if="state.imagePreview.caption" class="image-preview-caption">{{ state.imagePreview.caption }}</footer>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="compactionDetailLine" class="runtime-context-detail-backdrop" @click.self="closeCompactionDetail">
+      <section class="runtime-context-detail-modal compaction-detail-modal" role="dialog" aria-modal="true" aria-label="压缩上下文详情">
+        <header class="runtime-context-modal-head">
+          <div>
+            <strong>压缩上下文详情</strong>
+          </div>
+          <button type="button" aria-label="关闭" @click="closeCompactionDetail">×</button>
+        </header>
+        <div class="runtime-context-detail-content compaction-detail-content">
+          <dl class="compaction-detail-stats">
+            <div><dt>压缩方式</dt><dd>{{ compactionModeText(compactionDetailLine) }}</dd></div>
+            <div><dt>发生时间</dt><dd>{{ formatSessionTime(compactionDetailLine.compaction.createdAt) }}</dd></div>
+            <div><dt>新窗口消息</dt><dd>{{ compactionDetailLine.compaction.newWindowMessages }}</dd></div>
+            <div><dt>保留用户消息</dt><dd>{{ compactionDetailLine.compaction.preservedUserMessages }}</dd></div>
+            <div><dt>释放字符</dt><dd>{{ compactNumber(compactionDetailLine.compaction.charsFreed) }}</dd></div>
+            <div><dt>图片引用</dt><dd>{{ compactionDetailLine.compaction.imageCount || 0 }}</dd></div>
+          </dl>
+          <h3>实际续接上下文</h3>
+          <pre>{{ compactionDetailLine.compaction.continuationState || compactionDetailLine.compaction.summary || '未提供续接上下文' }}</pre>
+        </div>
       </section>
     </div>
   </Teleport>

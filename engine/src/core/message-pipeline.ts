@@ -8,7 +8,9 @@ export interface ToolResultBudgetOptions {
 export function getMessagesAfterCompactBoundary(messages: readonly Message[]): Message[] {
   const lastBoundary = findLastIndex(messages, (message) => message.metadata?.compactBoundary === true);
   if (lastBoundary < 0) return [...messages];
-  return messages.slice(lastBoundary);
+  let start = lastBoundary;
+  while (start > 0 && messages[start - 1].metadata?.compactPreservedUser === true) start -= 1;
+  return messages.slice(start);
 }
 
 export function applyToolResultBudget(

@@ -1060,6 +1060,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (event.type === "state") return;
     if (
       event.type === "context.metrics" ||
+      event.type === "context.compacted" ||
       event.type === "usage" ||
       event.type === "tool_call.delta" ||
       event.type === "assistant.delta" ||
@@ -1374,7 +1375,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
         if (foregroundRunTokenRef.current !== runToken) continue;
         if (runtime.engine !== engine) continue;
         if (suppressReattachedStreamingRef.current.has(engine)) {
-          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
+          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "context.compacted" || event.type === "usage") {
             if (event.type === "message" || event.type === "terminal" || event.type === "error") suppressReattachedStreamingRef.current.delete(engine);
             handleEvent(event);
           }
@@ -3219,6 +3220,7 @@ function thinkingText(message: Message): string | undefined {
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
+  if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: `${event.compaction.newWindowMessages} messages in new window`, activityTick: status.activityTick + 1 };
   if (event.type === "state") {
     return {
       ...status,
@@ -4044,8 +4046,9 @@ function formatUsageTotals(totals: UsageTotals): string {
 }
 
 function formatManualCompaction(result: CompactionResult): string {
-  if (!result.changed) return "No earlier context available to compact.";
-  return `manual context compacted: ${result.messages.length} messages retained, ${formatNumber(result.charsFreed ?? result.tokensFreed ?? 0)} chars freed`;
+  if (!result.changed) return "No conversation context available to compact.";
+  const preservedUsers = result.report?.preservedUserMessages ?? result.messages.filter((message) => message.metadata?.compactPreservedUser === true).length;
+  return `manual context compacted: ${result.messages.length} messages in new window, ${preservedUsers} user message(s) preserved`;
 }
 
 function formatPureCompaction(result: CompactionResult): string {

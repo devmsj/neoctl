@@ -53,6 +53,7 @@
     "smoke:cli": "tsx src/repl/smoke-run-command.ts",
     "smoke:web-plan": "tsx src/web/smoke-plan-payload.ts",
     "smoke:web-context": "tsx src/web/smoke-runtime-context-protocol.ts",
+    "smoke:web-history": "tsx src/web/smoke-web-history.ts",
     "smoke:web-terminal-tasks": "tsx src/web/smoke-web-terminal-tasks.ts",
     "smoke:web-queue": "tsx src/web/smoke-web-queue.ts",
     "smoke:openai": "tsx src/model/smoke-openai.ts"

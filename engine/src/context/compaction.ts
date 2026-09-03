@@ -1,5 +1,5 @@
 import type { ModelGateway } from "../model/model-gateway.js";
-import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
+import { createTextMessage, withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
 import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, formatImageRegistryForContext, type ImageRegistry } from "../core/image-registry.js";
 import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
@@ -13,10 +13,13 @@ export interface ContextBudgetOptions {
   autoCompactTriggerRatio?: number;
   microCompactTriggerRatio?: number;
   snipCompactTriggerRatio?: number;
+  /** @deprecated Summary checkpoints preserve recent user messages by token budget instead. */
   keepRecentMessages?: number;
   keepRecentTokenBudget?: number;
   keepRecentToolResults?: number;
+  /** Character budget for deterministic fallback, snip, and pure summaries. Model summaries use compactMaxOutputTokens. */
   summaryMaxChars?: number;
+  /** @deprecated Checkpoint summaries serialize the complete pre-compaction window. */
   compactInputMaxChars?: number;
   compactModel?: string;
   compactMaxOutputTokens?: number;
@@ -24,12 +27,25 @@ export interface ContextBudgetOptions {
 
 export type CompactionReason = "none" | "snip" | "microcompact" | "autocompact" | "reactive_compact" | "manualcompact" | "purecompact";
 
+export interface CompactionReport {
+  reason: Exclude<CompactionReason, "none">;
+  summary: string;
+  continuationState: string;
+  sourceMessages: number;
+  preservedUserMessages: number;
+  newWindowMessages: number;
+  charsFreed: number;
+  modelDriven: boolean;
+  imageCount: number;
+}
+
 export interface CompactionResult {
   messages: Message[];
   summary?: string;
   changed: boolean;
   reason?: CompactionReason;
   charsFreed?: number;
+  report?: CompactionReport;
   /** @deprecated Use charsFreed instead. Alias kept for backward compatibility. */
   tokensFreed?: number;
 }
@@ -42,15 +58,16 @@ export interface Compactor {
 }
 
 export const CLEARED_TOOL_RESULT_CONTENT = "[Old tool result content cleared]";
+const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
 
 export class DeterministicCompactor implements Compactor {
   async compact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     const micro = microCompactIfNeeded(messages, options);
-    const auto = autoCompactIfNeeded(micro.messages, options);
-    const snipped = snipCompactIfNeeded(auto.messages, options);
+    const auto = autoCompactIfNeeded(micro.messages, options, messages);
+    if (auto.changed) return auto;
 
-    if (snipped.changed) return mergeResults([micro, auto, snipped], snipped.reason);
-    if (auto.changed) return mergeResults([micro, auto], auto.reason);
+    const snipped = snipCompactIfNeeded(micro.messages, options);
+    if (snipped.changed) return mergeResults([micro, snipped], snipped.reason);
     if (micro.changed) return micro;
     return { messages: [...messages], changed: false, reason: "none" };
   }
@@ -65,8 +82,13 @@ export class DeterministicCompactor implements Compactor {
 
   async reactiveCompact(messages: readonly Message[], error: Error, options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     const micro = microCompactIfNeeded(messages, options);
-    const reactive = reactiveCompactWithSummary(micro.messages, `Reactive compact after model context error: ${error.message}`, options);
-    return micro.changed ? mergeResults([micro, reactive], reactive.reason) : reactive;
+    const reactive = reactiveCompactWithSummary(
+      messages,
+      micro.messages,
+      `Reactive compact after model context error: ${error.message}`,
+      options,
+    );
+    return reactive;
   }
 }
 
@@ -97,14 +119,11 @@ export class ModelDrivenCompactor implements Compactor {
     reason: "autocompact" | "manualcompact" | "reactive_compact",
     options: ContextBudgetOptions,
   ): Promise<CompactionResult> {
-    const splitIndex = computeKeepRecentSplit(messages, options);
-    const recent = messages.slice(splitIndex);
-    const older = messages.slice(0, splitIndex);
-    if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
+    if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
 
     try {
-      const summary = await this.summarizeWithModel(older, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
-      return buildCompactionResult(messages, recent, summary, reason, true);
+      const summary = await this.summarizeWithModel(messages, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
+      return buildCompactionResult(messages, summary, reason, true, options);
     } catch {
       return checkpointCompactWithSummary(messages, options, reason);
     }
@@ -115,15 +134,17 @@ export class ModelDrivenCompactor implements Compactor {
     instructions: string,
     options: ContextBudgetOptions,
   ): Promise<string> {
-    const transcript = serializeTranscriptForSummary(messages, resolveCompactInputMaxChars(options));
-    if (!transcript.trim()) return "No earlier conversation content required preservation.";
+    const compactMessages = prepareMessagesForModelSummary(messages, instructions);
+    if (compactMessages.length === 1) return "No earlier conversation content required preservation.";
 
-    let text = "";
+    let streamedText = "";
+    let finalAssistantText = "";
+    let completed = false;
     for await (const event of this.modelGateway.stream({
       model: options.compactModel,
-      instructions,
-      messages: [createTextMessage("user", transcript)],
+      messages: compactMessages,
       tools: [],
+      toolChoice: "none",
       stream: true,
       maxOutputTokens: options.compactMaxOutputTokens ?? 2500,
       queryOrigin: "compact",
@@ -131,16 +152,17 @@ export class ModelDrivenCompactor implements Compactor {
         compact: true,
       },
     })) {
-      if (event.type === "assistant_delta") text += event.text;
-      if (event.type === "assistant_message") text += extractText(event.message);
+      if (event.type === "assistant_delta") streamedText += event.text;
+      if (event.type === "assistant_message") finalAssistantText = extractText(event.message).trim() || finalAssistantText;
+      if (event.type === "response_completed") completed = true;
+      if (event.type === "response_incomplete") throw new Error(`Model compaction response was incomplete: ${event.reason ?? "unknown reason"}`);
       if (event.type === "error") throw event.error;
     }
 
-    const summary = text.trim();
+    if (!completed) throw new Error("Model compaction stream ended before completion");
+    const summary = (finalAssistantText || streamedText).trim();
     if (!summary) throw new Error("Model compaction produced an empty summary");
-    return summary.length > (options.summaryMaxChars ?? 6000)
-      ? `${summary.slice(0, options.summaryMaxChars ?? 6000)}\n- ...model summary truncated...`
-      : summary;
+    return summary;
   }
 }
 
@@ -180,6 +202,40 @@ export class ManualOnlyCompactor implements Compactor {
   async reactiveCompact(messages: readonly Message[], _error: Error, _options: ContextBudgetOptions = {}): Promise<CompactionResult> {
     return { messages: [...messages], changed: false, reason: "none" };
   }
+}
+
+export function withCompactionReport(result: CompactionResult, sourceMessages: number): CompactionResult {
+  if (!result.changed || result.report) return result;
+  const reason = result.reason && result.reason !== "none" ? result.reason : "autocompact";
+  const boundary = findLastCompactBoundary(result.messages);
+  const boundaryText = boundary ? extractText(boundary) : "";
+  const continuationState = extractCompactState(boundaryText) || result.summary || "";
+  const imageRegistry = boundary?.metadata?.imageRegistry as ImageRegistry | undefined;
+  const report: CompactionReport = {
+    reason,
+    summary: result.summary || continuationState,
+    continuationState,
+    sourceMessages: Math.max(0, Math.round(sourceMessages)),
+    preservedUserMessages: result.messages.filter((message) => message.metadata?.compactPreservedUser === true).length,
+    newWindowMessages: result.messages.length,
+    charsFreed: Math.max(0, result.charsFreed ?? result.tokensFreed ?? 0),
+    modelDriven: boundary?.metadata?.modelDriven === true,
+    imageCount: Array.isArray(imageRegistry?.images) ? imageRegistry.images.length : 0,
+  };
+  return {
+    ...result,
+    messages: result.messages.map((message) => message === boundary
+      ? { ...message, metadata: { ...message.metadata, compactionReport: report } }
+      : message),
+    report,
+  };
+}
+
+function findLastCompactBoundary(messages: readonly Message[]): Message | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].metadata?.compactBoundary === true) return messages[index];
+  }
+  return undefined;
 }
 
 export function estimateMessagesChars(messages: readonly Message[]): number {
@@ -260,16 +316,24 @@ export function microCompactIfNeeded(messages: readonly Message[], options: Cont
   };
 }
 
-export function autoCompactIfNeeded(messages: readonly Message[], options: ContextBudgetOptions = {}): CompactionResult {
+export function autoCompactIfNeeded(
+  messages: readonly Message[],
+  options: ContextBudgetOptions = {},
+  sourceMessages: readonly Message[] = messages,
+): CompactionResult {
   const maxChars = options.autoCompactMaxChars ?? 50000;
   if (!shouldCompactForBudget(messages, options, maxChars)) return { messages: [...messages], changed: false, reason: "none" };
+  if (sourceMessages.length === 0) return { messages: [], changed: false, reason: "none" };
 
-  const splitIndex = computeKeepRecentSplit(messages, options);
-  const recent = messages.slice(splitIndex);
-  const older = messages.slice(0, splitIndex);
-  if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
-  const summary = buildHistorySummary(older, options.summaryMaxChars ?? 5000);
-  return buildCompactionResult(messages, recent, summary, "autocompact", false);
+  const summary = buildCheckpointFallbackSummary(sourceMessages, options.summaryMaxChars ?? 5000);
+  return buildCompactionResult(
+    sourceMessages,
+    summary || "No conversation content was available to summarize.",
+    "autocompact",
+    false,
+    options,
+    messages,
+  );
 }
 
 function computeKeepRecentSplit(messages: readonly Message[], options: ContextBudgetOptions, fallbackCount?: number): number {
@@ -304,36 +368,31 @@ function checkpointCompactWithSummary(
   options: ContextBudgetOptions,
   reason: "autocompact" | "reactive_compact" | "manualcompact",
 ): CompactionResult {
-  const splitIndex = computeKeepRecentSplit(messages, options);
-  const recent = messages.slice(splitIndex);
-  const older = messages.slice(0, splitIndex);
-  if (older.length === 0) return { messages: [...messages], changed: false, reason: "none" };
-
-  const summary = buildHistorySummary(older, options.summaryMaxChars ?? 6000);
+  if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
+  const summary = buildCheckpointFallbackSummary(messages, options.summaryMaxChars ?? 6000);
   return buildCompactionResult(
     messages,
-    recent,
-    summary || "No older messages were available to summarize.",
+    summary || "No conversation content was available to summarize.",
     reason,
     false,
+    options,
   );
 }
 
 function reactiveCompactWithSummary(
-  messages: readonly Message[],
+  sourceMessages: readonly Message[],
+  messagesForSelection: readonly Message[],
   heading: string,
   options: ContextBudgetOptions,
 ): CompactionResult {
-  const splitIndex = computeKeepRecentSplit(messages, options);
-  const recent = messages.slice(splitIndex);
-  const older = messages.slice(0, splitIndex);
-  const summary = buildHistorySummary(older, options.summaryMaxChars ?? 6000);
+  const summary = buildCheckpointFallbackSummary(sourceMessages, options.summaryMaxChars ?? 6000);
   return buildCompactionResult(
-    messages,
-    recent,
-    `${heading}\n\n${summary || "No older messages were available to summarize."}`,
+    sourceMessages,
+    `${heading}\n\n${summary || "No conversation content was available to summarize."}`,
     "reactive_compact",
     false,
+    options,
+    messagesForSelection,
   );
 }
 
@@ -360,50 +419,13 @@ function pureCompactWithSanitizedSummary(messages: readonly Message[], options: 
   };
 }
 
-function extractPersistentFacts(messages: readonly Message[]): string[] {
-  const facts: string[] = [];
-  for (const message of messages) {
-    if (message.metadata?.compactBoundary) {
-      const text = extractText(message);
-      const existingFacts = text.match(/(?<=Persistent facts:\n)([\s\S]*?)(?=\n(?:Working context:|<\/compact_state>))/);
-      if (existingFacts) {
-        for (const line of existingFacts[1].split("\n")) {
-          const trimmed = line.trim();
-          if (trimmed && trimmed !== "- ...summary truncated...") facts.push(trimmed);
-        }
-      }
-      continue;
-    }
-    for (const block of message.blocks) {
-      if (block.type === "text") {
-        const text = block.text;
-        if (message.role === "user") {
-          if (/\b(must|require|constraint|never|always|important|rule)\b/i.test(text)) {
-            facts.push(`- User constraint: ${text.replace(/\s+/g, " ").trim().slice(0, 200)}`);
-          }
-        }
-        if (/\b(error|fail|exception|bug)\b/i.test(text) && message.role !== "progress") {
-          const errorLine = text.split("\n").find((l) => /error|fail|exception|bug/i.test(l));
-          if (errorLine) facts.push(`- Error encountered: ${errorLine.trim().slice(0, 200)}`);
-        }
-        if (/\b(decide|chosen|approach|architecture|design|agreed)\b/i.test(text) && message.role === "assistant") {
-          facts.push(`- Decision: ${text.replace(/\s+/g, " ").trim().slice(0, 200)}`);
-        }
-      }
-      if (block.type === "tool_result" && !block.ok) {
-        facts.push(`- Failed tool: ${block.name} (${serializeToolOutput(block.output).slice(0, 150)})`);
-      }
-    }
-  }
-  return dedupeLines(facts).slice(0, 30);
-}
-
 function buildCompactionResult(
   originalMessages: readonly Message[],
-  recentMessages: readonly Message[],
   summary: string,
   reason: "autocompact" | "reactive_compact" | "manualcompact",
   modelDriven: boolean,
+  options: ContextBudgetOptions,
+  messagesForSelection: readonly Message[] = originalMessages,
 ): CompactionResult {
   const label = reason === "autocompact"
     ? "Auto compacted earlier conversation."
@@ -411,23 +433,106 @@ function buildCompactionResult(
       ? "Manually compacted earlier conversation."
       : "Reactive compacted earlier conversation.";
 
-  const persistentFacts = extractPersistentFacts(originalMessages);
-  const layeredSummary = persistentFacts.length > 0
-    ? `Persistent facts:\n${persistentFacts.join("\n")}\n\nWorking context:\n${summary}`
-    : summary;
-
   const imageRegistry = buildMergedImageRegistry(originalMessages);
-  const boundary = createCompactionBoundaryMessage(`${label}\n\n${layeredSummary}`, reason, modelDriven, imageRegistry);
-  const compacted = [boundary, ...recentMessages];
+  const preservedUsers = selectRecentUserMessages(messagesForSelection, options.keepRecentTokenBudget ?? COMPACT_USER_MESSAGE_MAX_TOKENS);
+  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven, imageRegistry);
+  const compacted = [...preservedUsers, boundary];
   const freed = Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted));
   return {
     messages: compacted,
-    summary: layeredSummary,
+    summary,
     changed: true,
     reason,
     charsFreed: freed,
     tokensFreed: freed,
   };
+}
+
+function selectRecentUserMessages(messages: readonly Message[], tokenBudget: number): Message[] {
+  if (tokenBudget <= 0) return [];
+  const users = messages.filter(isRealUserMessage);
+  const selected: Message[] = [];
+  let remaining = tokenBudget;
+
+  for (let index = users.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = users[index];
+    const tokens = estimateMessageTokens(message);
+    if (tokens <= remaining) {
+      selected.push(markPreservedUserMessage(message));
+      remaining -= tokens;
+      continue;
+    }
+
+    const truncated = truncateUserMessageToTokenBudget(message, remaining);
+    if (truncated) selected.push(markPreservedUserMessage(truncated));
+    break;
+  }
+  return selected.reverse();
+}
+
+function isRealUserMessage(message: Message): boolean {
+  return message.role === "user" && message.isMeta !== true && message.metadata?.compactBoundary !== true;
+}
+
+function estimateMessageTokens(message: Message): number {
+  return estimateTextTokens(serializeMessage(message));
+}
+
+function markPreservedUserMessage(message: Message): Message {
+  return {
+    ...message,
+    blocks: message.blocks.map((block) => ({ ...block })),
+    metadata: { ...message.metadata, compactPreservedUser: true },
+  };
+}
+
+function truncateUserMessageToTokenBudget(message: Message, maxTokens: number): Message | undefined {
+  if (maxTokens <= 0) return undefined;
+  const marker = "[... user message truncated for compaction token budget ...]";
+  const textLength = message.blocks.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0);
+  if (textLength === 0) return undefined;
+
+  let low = 0;
+  let high = textLength;
+  let best: MessageBlock[] | undefined;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const blocks = truncateUserBlocks(message.blocks, mid, marker);
+    if (estimateTextTokens(blocks.map(serializeBlock).join("\n")) <= maxTokens) {
+      best = blocks;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best ? { ...message, blocks: best } : undefined;
+}
+
+function truncateUserBlocks(blocks: readonly MessageBlock[], textChars: number, marker: string): MessageBlock[] {
+  const result: MessageBlock[] = [];
+  let remaining = textChars;
+  let markerInserted = false;
+
+  for (const block of blocks) {
+    if (block.type !== "text") {
+      result.push({ ...block });
+      continue;
+    }
+    if (remaining <= 0) continue;
+    const kept = block.text.slice(0, remaining);
+    remaining -= kept.length;
+    if (kept) result.push({ type: "text", text: kept });
+  }
+
+  for (let index = result.length - 1; index >= 0; index -= 1) {
+    const block = result[index];
+    if (block.type !== "text") continue;
+    result[index] = { type: "text", text: `${block.text.trimEnd()}\n${marker}` };
+    markerInserted = true;
+    break;
+  }
+  if (!markerInserted) result.unshift({ type: "text", text: marker });
+  return result;
 }
 
 function buildMergedImageRegistry(messages: readonly Message[]): ImageRegistry {
@@ -478,12 +583,150 @@ function renderInternalContinuationState(summary: string, reason: string): strin
   ].join("\n");
 }
 
+function extractCompactState(text: string): string {
+  const match = /<compact_state>\s*([\s\S]*?)\s*<\/compact_state>/i.exec(text);
+  return match?.[1]?.trim() ?? "";
+}
+
 function normalizeSummaryForInternalState(summary: string): string {
   return summary
     .split(/\r?\n/)
     .map((line) => line.replace(/^#{1,6}\s+/, ""))
     .join("\n")
     .trim();
+}
+
+function buildCheckpointFallbackSummary(messages: readonly Message[], maxChars: number): string {
+  const previousState = findLatestCheckpointState(messages);
+  const runtimeContext = messages
+    .filter((message) => message.isMeta === true && (message.metadata?.runtimeContext === true || message.metadata?.userContext === true || message.metadata?.systemContext === true))
+    .map(extractText)
+    .filter(Boolean)
+    .at(-1);
+  const userContext = messages
+    .filter(isRealUserMessage)
+    .map((message) => summarizeMessageText(message, 700))
+    .filter(Boolean)
+    .slice(-12);
+  const assistantProgress = messages
+    .filter((message) => message.role === "assistant" && message.isApiErrorMessage !== true)
+    .map((message) => summarizeMessageText(message, 700))
+    .filter(Boolean)
+    .slice(-10);
+  const references = collectContinuationReferences(messages).slice(0, 24);
+  const toolActivity = summarizeFallbackToolActivity(messages);
+
+  const sections = [
+    formatFallbackSection("User goals, constraints, and requests", userContext),
+    formatFallbackSection("Assistant progress and decisions", assistantProgress),
+    previousState ? `Previous checkpoint state:\n${truncateSummaryText(previousState, 2400)}` : "",
+    runtimeContext ? `Runtime context:\n${truncateSummaryText(runtimeContext, 900)}` : "",
+    references.length > 0 ? `Critical references:\n${references.map((reference) => `- ${reference}`).join("\n")}` : "",
+    toolActivity ? `Tool activity relevant to continuation:\n${toolActivity}` : "",
+  ].filter(Boolean);
+  const nextStep = "Next step: continue from the latest unresolved user request using the checkpoint state above; verify the current workspace before making further changes.";
+
+  return fitSummarySectionsWithFooter(sections, nextStep, maxChars);
+}
+
+function findLatestCheckpointState(messages: readonly Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.metadata?.compactBoundary !== true) continue;
+    return extractCompactState(extractText(message)) || extractText(message);
+  }
+  return "";
+}
+
+function summarizeMessageText(message: Message, maxChars: number): string {
+  const parts = message.blocks.flatMap((block) => {
+    if (block.type === "text") return [block.text];
+    if (block.type === "image") return [`[image: ${block.label ?? "unlabeled"}, ${block.mimeType}]`];
+    return [];
+  });
+  return truncateSummaryText(parts.join("\n").replace(/\s+/g, " ").trim(), maxChars);
+}
+
+function collectContinuationReferences(messages: readonly Message[]): string[] {
+  const references: string[] = [];
+  const patterns = [
+    /[A-Za-z]:[\\/](?:[^\s"'`<>|]+[\\/]?)+/g,
+    /(?:^|\s)(\/(?:[^\s"'`<>]+\/?)+)/g,
+    /https?:\/\/[^\s"'`<>]+/g,
+    /\b[0-9a-f]{7,40}\b/gi,
+    /\b(?:task|session|request|response|artifact|turn|thread)[-_ ]?id\s*[:=]\s*[^\s,;]+/gi,
+  ];
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      const text = block.type === "text"
+        ? block.text
+        : block.type === "tool_use"
+          ? serializeToolOutput(block.input)
+          : block.type === "tool_result"
+            ? serializeToolOutput(block.output)
+            : "";
+      for (const pattern of patterns) {
+        pattern.lastIndex = 0;
+        for (const match of text.matchAll(pattern)) {
+          const value = (match[1] ?? match[0]).trim().replace(/[),.;:]+$/, "");
+          if (value) references.push(value);
+        }
+      }
+    }
+  }
+  return dedupeLines(references).slice(-24);
+}
+
+function summarizeFallbackToolActivity(messages: readonly Message[]): string {
+  const successful: string[] = [];
+  const failedByName = new Map<string, number>();
+  for (const message of messages) {
+    for (const block of message.blocks) {
+      if (block.type !== "tool_result") continue;
+      if (block.ok) {
+        const output = serializeToolOutput(block.output).replace(/\s+/g, " ").trim();
+        if (output && output !== CLEARED_TOOL_RESULT_CONTENT) {
+          successful.push(`- ${block.name}: ${truncateSummaryText(output, 320)}`);
+        }
+      } else {
+        failedByName.set(block.name, (failedByName.get(block.name) ?? 0) + 1);
+      }
+    }
+  }
+  const lines = successful.slice(-6);
+  if (failedByName.size > 0) {
+    const counts = [...failedByName.entries()].map(([name, count]) => `${name} ×${count}`).join(", ");
+    lines.push(`- Some tool attempts failed (${counts}); individual transient errors were omitted. Re-check only if still relevant.`);
+  }
+  return lines.join("\n");
+}
+
+function formatFallbackSection(title: string, items: readonly string[]): string {
+  if (items.length === 0) return "";
+  return `${title}:\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function truncateSummaryText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 1) return "…".slice(0, maxChars);
+  return `${text.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function fitSummarySectionsWithFooter(sections: readonly string[], footer: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (maxChars <= footer.length) return truncateSummaryText(footer, maxChars);
+
+  const footerWithSeparator = `\n\n${footer}`;
+  const bodyBudget = maxChars - footerWithSeparator.length;
+  let body = "";
+  for (const section of sections) {
+    const separator = body ? "\n\n" : "";
+    const remaining = bodyBudget - body.length - separator.length;
+    if (remaining <= 0) break;
+    body += separator + truncateSummaryText(section, remaining);
+    if (section.length > remaining) break;
+  }
+  return body ? `${body}${footerWithSeparator}` : footer;
 }
 
 function scoreMessageImportance(message: Message): number {
@@ -686,35 +929,59 @@ function summarizePathForPureState(value: string): string {
   return tail ? `[path:${tail}]` : "[path]";
 }
 
-function serializeTranscriptForSummary(messages: readonly Message[], maxChars: number): string {
-  const lines = messages.flatMap((message) => {
-    const content = serializeMessageForSummary(message).trim();
-    if (!content) return [];
-    const metadata = [
-      message.providerMessageId ? `provider=${message.providerMessageId}` : undefined,
-      message.requestId ? `request=${message.requestId}` : undefined,
-      message.isMeta ? "meta" : undefined,
-    ].filter(Boolean).join(" ");
-    return [`<message role="${message.role}"${metadata ? ` ${metadata}` : ""}>\n${content}\n</message>`];
+function prepareMessagesForModelSummary(messages: readonly Message[], instructions: string): Message[] {
+  const history = withoutThinkingBlocks(messages)
+    .filter((message) => message.role !== "progress" && message.role !== "tombstone")
+    .map(normalizeMessageForModelSummary);
+  const compactInstruction = {
+    ...createTextMessage("user", instructions),
+    isMeta: true,
+    metadata: { compactInstruction: true },
+  };
+  return [...history, compactInstruction];
+}
+
+function normalizeMessageForModelSummary(message: Message): Message {
+  let changed = false;
+  const blocks = message.blocks.map((block): MessageBlock => {
+    if (block.type === "image") {
+      changed = true;
+      const storage = block.storage?.path ? `; stored payload=${block.storage.path}` : "";
+      return {
+        type: "text",
+        text: `[Historical image: ${block.label ?? "unlabeled"}, ${block.mimeType}${storage}. Pixels are omitted from compaction input; preserve the image reference if it may still matter.]`,
+      };
+    }
+    if (block.type === "tool_result") {
+      const output = serializeToolOutput(block.output);
+      const normalizedOutput = summarizeToolResultForModelSummary(output);
+      if (normalizedOutput !== output) {
+        changed = true;
+        return { ...block, output: normalizedOutput };
+      }
+    }
+    return { ...block };
   });
-  const joined = lines.join("\n\n");
-  return joined.length > maxChars ? joined.slice(Math.max(0, joined.length - maxChars)) : joined;
+  return changed
+    ? { ...message, blocks, metadata: { ...message.metadata, compactInputNormalized: true } }
+    : { ...message, blocks };
+}
+
+function summarizeToolResultForModelSummary(output: string): string {
+  const maxChars = 12_000;
+  if (output.length <= maxChars) return output;
+  const edgeChars = Math.floor((maxChars - 160) / 2);
+  return [
+    `[Tool result normalized for compaction: ${output.length} chars total]`,
+    "Head:",
+    output.slice(0, edgeChars),
+    "Tail:",
+    output.slice(-edgeChars),
+  ].join("\n");
 }
 
 function serializeMessage(message: Message): string {
   return message.blocks.map(serializeBlock).join("\n");
-}
-
-function serializeMessageForSummary(message: Message): string {
-  if (message.metadata?.compactBoundary === true) return extractText(message) || "[compact boundary]";
-  return message.blocks
-    .map((block) => {
-      if (block.type !== "tool_result") return serializeBlock(block);
-      const output = serializeToolOutput(block.output);
-      if (output === CLEARED_TOOL_RESULT_CONTENT) return `tool_result ${block.name}: ${CLEARED_TOOL_RESULT_CONTENT}`;
-      return `tool_result ${block.name}: ${summarizeToolOutput(output)}`;
-    })
-    .join("\n");
 }
 
 function serializeBlock(block: MessageBlock): string {
@@ -733,11 +1000,6 @@ function serializeBlock(block: MessageBlock): string {
 
 function serializeToolOutput(output: unknown): string {
   return typeof output === "string" ? output : JSON.stringify(output);
-}
-
-function summarizeToolOutput(output: string): string {
-  if (output.length <= 800) return output;
-  return `[large tool result: ${output.length} chars, head: ${output.slice(0, 400)}]`;
 }
 
 function collectToolResultIds(messages: readonly Message[]): string[] {
@@ -762,17 +1024,10 @@ function defaultRecentTokenBudget(contextWindowTokens: number | undefined): numb
   return Math.max(4_000, Math.min(20_000, Math.floor(contextWindowTokens * 0.15)));
 }
 
-function resolveCompactInputMaxChars(options: ContextBudgetOptions): number {
-  if (options.compactInputMaxChars !== undefined) return Math.max(1, options.compactInputMaxChars);
-  if (options.contextWindowTokens) return Math.max(12_000, Math.min(400_000, Math.floor(options.contextWindowTokens * 3)));
-  return 120_000;
-}
-
 const CHECKPOINT_COMPACT_INSTRUCTIONS = [
-  "Create a context-window checkpoint that lets another model continue the agent task without access to the earlier transcript.",
-  "Preserve: user goals and constraints, decisions made, files or commands mentioned, completed work, pending work, task ids, important tool results, and any errors or blockers.",
-  "Carry forward facts from any prior compact_state and merge them with newer developments. Do not silently weaken or rewrite stable constraints.",
-  "Drop: repetitive logs, transient progress chatter, and irrelevant wording.",
-  "Return concise plain text labels, not Markdown headings. Use labels like Goal:, Constraints:, Work completed:, Important facts:, Pending work:, Open risks:.",
-  "Do not include final-answer prose; this summary is an internal continuation state only.",
+  "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task without access to the earlier transcript.",
+  "Include the current goal, progress, and key decisions; important context, constraints, and user preferences; completed work and validation status; what remains to be done with clear next steps; and any critical files, paths, identifiers, commands, data, examples, or references needed to continue.",
+  "Use task continuity and current relevance to decide what to preserve. Report tool activity through durable findings and current consequences, not as a chronological call log. Include errors only when they remain relevant as blockers, risks, unresolved failures, or important lessons.",
+  "Treat any earlier compaction summary as prior handoff state. Merge it with later developments, preserve still-valid constraints, and replace stale or superseded status with the newest known state instead of repeating both.",
+  "Be concise, structured, and specific enough for the next LLM to continue immediately. Use the conversation's primary language when practical. Do not invent facts, do not continue the task, and do not write a user-facing final answer.",
 ].join("\n");

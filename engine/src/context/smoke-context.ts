@@ -1,10 +1,11 @@
 import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
-import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, hasValidToolResultPairing } from "../core/message-pipeline.js";
+import { estimateTextTokens } from "../core/context-metrics.js";
+import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary, hasValidToolResultPairing } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
-import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor } from "./compaction.js";
+import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor, withCompactionReport } from "./compaction.js";
 import { AdditionalPromptContextManager, DefaultContextManager } from "./context-manager.js";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
 
@@ -37,13 +38,31 @@ class ContextOverflowThenSuccessGateway implements ModelGateway {
 class SummaryGateway implements ModelGateway {
   compactCalls = 0;
   requestText = "";
+  lastRequest?: ModelRequest;
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     if (request.queryOrigin !== "compact") throw new Error(`Unexpected query origin: ${request.queryOrigin}`);
     this.compactCalls += 1;
+    this.lastRequest = request;
     this.requestText += JSON.stringify(request.messages);
-    yield { type: "assistant_delta", text: "Goal: keep working.\nPending Work: finish validation." };
+    yield {
+      type: "assistant_delta",
+      text: "目标：提高压缩摘要质量。\n关键路径：C:\\Users\\qyq\\Desktop\\work\\codex\n当前状态：已完成调查。\n下一步：finish validation. AUTHORITY_SUMMARY_END",
+    };
     yield { type: "response_completed", responseId: "compact_1", stopReason: "completed" };
+  }
+}
+
+class SequenceSummaryGateway implements ModelGateway {
+  requests: ModelRequest[] = [];
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.requests.push(request);
+    const text = this.requests.length === 1
+      ? "Goal: original goal. Status: investigation pending. OLDER_CHECKPOINT"
+      : "Goal: corrected goal. Status: implementation approved and in progress. LATEST_CHECKPOINT";
+    yield { type: "assistant_delta", text };
+    yield { type: "response_completed", responseId: `compact_${this.requests.length}`, stopReason: "completed" };
   }
 }
 
@@ -97,12 +116,111 @@ async function main(): Promise<void> {
     autoCompactMaxChars: 1500,
     keepRecentMessages: 4,
   });
-  const compactBoundary = compacted.messages.find((message) => message.metadata?.compactBoundary === true);
+  const reportedCompaction = withCompactionReport(compacted, longHistory.length);
+  const compactBoundary = reportedCompaction.messages.find((message) => message.metadata?.compactBoundary === true);
+  const preservedUsers = reportedCompaction.messages.filter((message) => message.metadata?.compactPreservedUser === true);
+  const compactReportOk =
+    reportedCompaction.report?.sourceMessages === longHistory.length &&
+    reportedCompaction.report.preservedUserMessages === preservedUsers.length &&
+    reportedCompaction.report.newWindowMessages === reportedCompaction.messages.length &&
+    reportedCompaction.report.summary.length > 0 &&
+    reportedCompaction.report.continuationState.length > 0 &&
+    compactBoundary?.metadata?.compactionReport !== undefined;
   const compactOk =
     compacted.changed &&
     compactBoundary?.role === "system" &&
+    reportedCompaction.messages.at(-1)?.metadata?.compactBoundary === true &&
+    reportedCompaction.messages.slice(0, -1).every((message) => message.role === "user" && message.isMeta !== true) &&
+    getMessagesAfterCompactBoundary(reportedCompaction.messages).length === reportedCompaction.messages.length &&
     JSON.stringify(compactBoundary).includes("Internal continuation state") &&
     !JSON.stringify(compactBoundary).includes("Conversation summary");
+
+  const metaUser = { ...createTextMessage("user", "runtime metadata"), isMeta: true, metadata: { runtimeContext: true } };
+  const imageUser = {
+    ...createTextMessage("user", "latest request with image"),
+    blocks: [
+      { type: "text" as const, text: "latest request with image" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=", label: "latest-image" },
+    ],
+  };
+  const oversizedUser = createTextMessage("user", `old oversized request ${"long-token ".repeat(120)}`);
+  const budgetHistory = [
+    oversizedUser,
+    createTextMessage("assistant", "assistant content must not survive"),
+    createToolResultMessage({ id: "budget-tool", name: "read", input: {} }, true, "tool content must not survive"),
+    metaUser,
+    imageUser,
+  ];
+  const budgetCompacted = await compactor.manualCompact(budgetHistory, { keepRecentTokenBudget: 80, summaryMaxChars: 2000 });
+  const budgetPreserved = budgetCompacted.messages.slice(0, -1);
+  const budgetPreservedTokens = budgetPreserved.reduce((total, message) => total + estimateTextTokens(message.blocks.map((block) => {
+    if (block.type === "text") return block.text;
+    if (block.type === "image") return `[image ${block.label ?? "unlabeled"} ${block.mimeType}; estimated visual token chars=340; pixels are not text-summarized]`;
+    return "";
+  }).join("\n")), 0);
+  const budgetWindowOk =
+    budgetCompacted.messages.at(-1)?.metadata?.compactBoundary === true &&
+    budgetPreserved.every((message) => message.role === "user" && message.isMeta !== true) &&
+    budgetPreserved[0]?.id === oversizedUser.id &&
+    budgetPreserved.at(-1)?.id === imageUser.id &&
+    budgetPreserved.some((message) => message.blocks.some((block) => block.type === "image" && block.label === "latest-image")) &&
+    budgetPreserved.some((message) => message.blocks.some((block) => block.type === "text" && block.text.includes("truncated for compaction token budget"))) &&
+    budgetCompacted.summary?.includes("assistant content must not survive") === true &&
+    budgetCompacted.summary.includes("tool content must not survive") &&
+    budgetPreservedTokens <= 80 &&
+    !JSON.stringify(budgetPreserved).includes("assistant content must not survive") &&
+    !JSON.stringify(budgetPreserved).includes("tool content must not survive") &&
+    !JSON.stringify(budgetPreserved).includes("runtime metadata");
+
+  const defaultBudgetHistory = [
+    createTextMessage("user", `default budget boundary ${"token-word ".repeat(30_000)}`),
+    createTextMessage("assistant", "not preserved"),
+  ];
+  const defaultBudgetCompacted = await compactor.manualCompact(defaultBudgetHistory, { summaryMaxChars: 500 });
+  const defaultBudgetTokens = defaultBudgetCompacted.messages.slice(0, -1)
+    .reduce((total, message) => total + estimateTextTokens(message.blocks.map((block) => block.type === "text" ? block.text : "").join("\n")), 0);
+  const defaultBudgetOk =
+    defaultBudgetTokens <= 20_000 &&
+    defaultBudgetTokens >= 19_500 &&
+    defaultBudgetCompacted.messages.slice(0, -1).every((message) => message.role === "user") &&
+    defaultBudgetCompacted.messages.at(-1)?.metadata?.compactBoundary === true;
+
+  const fallbackToolUse = {
+    id: "assistant_fallback_tool",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "fallback_call", name: "grep", input: { query: "codex" } }],
+  };
+  const fallbackHistory = [
+    createTextMessage("user", "提高摘要质量，参考仓库 C:\\Users\\qyq\\Desktop\\work\\codex，不要使用子代理。"),
+    createTextMessage("assistant", "已完成 Codex 调查，等待实施。"),
+    fallbackToolUse,
+    ...Array.from({ length: 8 }, (_, index) => createToolResultMessage(
+      { id: `fallback_fail_${index}`, name: "grep", input: {} },
+      false,
+      `transient failure ${index}`,
+    )),
+    createToolResultMessage({ id: "fallback_call", name: "grep", input: {} }, true, "Codex compaction prompt located."),
+  ];
+  const fallbackCompacted = await compactor.manualCompact(fallbackHistory, { keepRecentTokenBudget: 200, summaryMaxChars: 1800 });
+  const fallbackSummary = fallbackCompacted.summary ?? "";
+  const fallbackQualityOk =
+    fallbackSummary.includes("提高摘要质量") &&
+    fallbackSummary.includes("C:\\Users\\qyq\\Desktop\\work\\codex") &&
+    fallbackSummary.includes("已完成 Codex 调查") &&
+    fallbackSummary.includes("Next step:") &&
+    !fallbackSummary.includes("Persistent facts:") &&
+    !fallbackSummary.includes("transient failure 0") &&
+    !fallbackSummary.includes("transient failure 7");
+
+  const consecutiveHistory = [...budgetCompacted.messages, createTextMessage("assistant", "new assistant"), createTextMessage("user", "newest real request")];
+  const secondCompacted = await compactor.manualCompact(consecutiveHistory, { keepRecentTokenBudget: 200, summaryMaxChars: 3000 });
+  const consecutiveCompactOk =
+    secondCompacted.messages.at(-1)?.metadata?.compactBoundary === true &&
+    secondCompacted.messages.filter((message) => message.metadata?.compactBoundary === true).length === 1 &&
+    secondCompacted.messages.slice(0, -1).every((message) => message.role === "user" && message.isMeta !== true) &&
+    getMessagesAfterCompactBoundary(secondCompacted.messages).length === secondCompacted.messages.length &&
+    secondCompacted.summary?.includes("newest real request") === true;
 
   const toolUseOld = {
     id: "assistant_old_tool",
@@ -156,18 +274,92 @@ async function main(): Promise<void> {
 
   const summaryGateway = new SummaryGateway();
   const modelCompactor = new ModelDrivenCompactor(summaryGateway);
-  const modelCompacted = await modelCompactor.compact([createThinkingMessage("private persisted reasoning"), ...longHistory], {
+  const summaryToolUse = {
+    id: "assistant_summary_tool",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "summary_call", name: "read", input: { path: "C:\\Users\\qyq\\Desktop\\work\\codex" } }],
+  };
+  const summaryToolResult = createToolResultMessage({ id: "summary_call", name: "read", input: {} }, false, "temporary read failure");
+  const summaryImageUser = {
+    ...createTextMessage("user", "historical image reference"),
+    blocks: [
+      { type: "text" as const, text: "historical image reference" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=", label: "summary-history-image" },
+    ],
+  };
+  const largeSummaryToolUse = {
+    id: "assistant_large_summary_tool",
+    role: "assistant" as const,
+    createdAt: new Date().toISOString(),
+    blocks: [{ type: "tool_use" as const, id: "large_summary_call", name: "read", input: { path: "large.log" } }],
+  };
+  const largeSummaryToolResult = createToolResultMessage(
+    { id: "large_summary_call", name: "read", input: {} },
+    true,
+    `START_SENTINEL ${"large-output ".repeat(1500)} END_SENTINEL`,
+  );
+  const modelHistory = [
+    createTextMessage("user", "Please improve summary quality. Codex repository: C:\\Users\\qyq\\Desktop\\work\\codex"),
+    createThinkingMessage("private persisted reasoning"),
+    summaryImageUser,
+    summaryToolUse,
+    summaryToolResult,
+    largeSummaryToolUse,
+    largeSummaryToolResult,
+    ...longHistory,
+  ];
+  const modelCompacted = await modelCompactor.compact(modelHistory, {
     snipMaxChars: 20000,
     microCompactMaxChars: 19000,
     autoCompactMaxChars: 1500,
     keepRecentMessages: 3,
+    summaryMaxChars: 24,
   });
+  const compactRequestMessages = summaryGateway.lastRequest?.messages ?? [];
+  const compactInstruction = compactRequestMessages.at(-1);
   const modelCompactOk =
     summaryGateway.compactCalls === 1 &&
+    compactRequestMessages.length === modelHistory.length &&
+    compactRequestMessages[0]?.role === "user" &&
+    compactRequestMessages.some((message) => message.blocks.some((block) => block.type === "tool_use" && block.id === "summary_call")) &&
+    compactRequestMessages.some((message) => message.blocks.some((block) => block.type === "tool_result" && block.toolUseId === "summary_call")) &&
+    compactRequestMessages.some((message) => message.metadata?.compactInputNormalized === true && message.blocks.some((block) => block.type === "text" && block.text.includes("summary-history-image"))) &&
+    !compactRequestMessages.some((message) => message.blocks.some((block) => block.type === "image")) &&
+    summaryGateway.requestText.includes("Tool result normalized for compaction") &&
+    summaryGateway.requestText.includes("START_SENTINEL") &&
+    summaryGateway.requestText.includes("END_SENTINEL") &&
+    compactInstruction?.role === "user" &&
+    compactInstruction.metadata?.compactInstruction === true &&
+    compactInstruction.blocks.some((block) => block.type === "text" && block.text.includes("CONTEXT CHECKPOINT COMPACTION")) &&
+    summaryGateway.lastRequest?.instructions === undefined &&
+    summaryGateway.lastRequest?.toolChoice === "none" &&
     !summaryGateway.requestText.includes("private persisted reasoning") &&
     modelCompacted.changed &&
-    modelCompacted.summary?.includes("Pending Work") === true &&
+    modelCompacted.summary?.includes("C:\\Users\\qyq\\Desktop\\work\\codex") === true &&
+    modelCompacted.summary.includes("AUTHORITY_SUMMARY_END") &&
+    !modelCompacted.summary.includes("Persistent facts:") &&
     modelCompacted.messages.some((message) => message.metadata?.modelDriven === true);
+
+  const sequenceGateway = new SequenceSummaryGateway();
+  const sequenceCompactor = new ModelDrivenCompactor(sequenceGateway);
+  const firstSequenceCompact = await sequenceCompactor.manualCompact?.([
+    createTextMessage("user", "original request"),
+    createTextMessage("assistant", "investigating"),
+  ], { keepRecentTokenBudget: 200 });
+  const secondSequenceCompact = await sequenceCompactor.manualCompact?.([
+    ...(firstSequenceCompact?.messages ?? []),
+    createTextMessage("user", "corrected request; implementation is approved"),
+  ], { keepRecentTokenBudget: 200 });
+  const secondSequenceRequest = sequenceGateway.requests[1];
+  const consecutiveModelCompactOk =
+    sequenceGateway.requests.length === 2 &&
+    secondSequenceRequest?.messages.some((message) => message.metadata?.compactBoundary === true && JSON.stringify(message).includes("OLDER_CHECKPOINT")) === true &&
+    secondSequenceRequest.messages.some((message) => message.role === "user" && JSON.stringify(message).includes("corrected request")) &&
+    secondSequenceRequest.messages.at(-1)?.metadata?.compactInstruction === true &&
+    secondSequenceCompact?.summary?.includes("LATEST_CHECKPOINT") === true &&
+    !secondSequenceCompact.summary.includes("OLDER_CHECKPOINT") &&
+    !secondSequenceCompact.summary.includes("Persistent facts:");
 
   const manualOnly = new ManualOnlyCompactor(modelCompactor);
   const automaticDisabled = await manualOnly.compact(longHistory, {
@@ -195,8 +387,18 @@ async function main(): Promise<void> {
 
   const events: string[] = [];
   let telemetryOk = false;
+  let reactiveCompactionReportOk = false;
   for await (const event of engine.sendUserText("trigger reactive compact")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+    if (event.type === "context.compacted") {
+      reactiveCompactionReportOk =
+        event.compaction.reason === "reactive_compact" &&
+        event.compaction.sourceMessages > 0 &&
+        event.compaction.newWindowMessages > 0 &&
+        event.compaction.preservedUserMessages > 0 &&
+        event.compaction.summary.length > 0 &&
+        event.compaction.continuationState.length > 0;
+    }
     if (event.type === "context.metrics") {
       telemetryOk ||= Boolean(
         event.metrics.cacheDiagnostics?.systemPromptHash &&
@@ -233,8 +435,8 @@ async function main(): Promise<void> {
     defaultEvents.includes("error") &&
     defaultEvents.includes("terminal:prompt_too_long");
 
-  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && automaticDisabledOk && reactiveOk && defaultAutomaticDisabledOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, automaticDisabledOk, reactiveOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
+  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticDisabledOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

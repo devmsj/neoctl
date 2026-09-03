@@ -1020,6 +1020,67 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.message.context-compaction {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 10px 0 14px 36px;
+}
+.message.context-compaction > .message-marker { display: none; }
+.compaction-message-body { width: min(920px, 100%); }
+.compaction-context-bar {
+  min-height: 54px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.compaction-context-bar.current {
+  border-color: color-mix(in srgb, var(--purple) 24%, var(--line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--purple-soft) 42%, var(--surface)), var(--surface) 48%);
+}
+.compaction-context-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compaction-context-title > strong { font-size: 13px; white-space: nowrap; }
+.compaction-context-actions { display: flex; align-items: center; gap: 6px; }
+.compaction-context-actions > span,
+.compaction-context-actions > button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--text);
+  white-space: nowrap;
+}
+.compaction-context-actions > span > span,
+.compaction-context-actions > button > span { font-size: 11px; }
+.compaction-context-actions strong {
+  min-width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.compaction-context-actions > button:hover { border-color: var(--purple); color: var(--purple); }
+.compaction-context-actions > button strong { font-size: 16px; font-weight: 400; }
+.compaction-detail-content { display: grid; align-content: start; gap: 0; }
+.compaction-detail-stats { margin: 0 0 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line-soft); }
+.compaction-detail-stats > div { min-width: 0; display: grid; gap: 5px; padding: 11px 12px; background: var(--surface); }
+.compaction-detail-stats dt { color: var(--muted); font-size: 10px; }
+.compaction-detail-stats dd { overflow: visible; color: var(--text); font-family: var(--mono); font-size: 12px; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.compaction-detail-content pre { max-height: 330px; }
 .message {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
@@ -4085,6 +4146,15 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   }
   .runtime-context-index { grid-template-columns: 1fr; }
   .runtime-context-index-item.featured { grid-column: auto; }
+  .message.context-compaction { padding: 8px 0 12px; }
+  .compaction-context-bar { min-height: 48px; gap: 8px; padding: 6px 7px 6px 10px; }
+  .compaction-context-title { gap: 5px; }
+  .compaction-context-actions { gap: 4px; }
+  .compaction-context-actions > span,
+  .compaction-context-actions > button { min-height: 32px; padding: 0 7px; }
+  .compaction-context-actions > span > span,
+  .compaction-context-actions > button > span { display: none; }
+  .compaction-detail-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .message {
     grid-template-columns: 16px minmax(0, 1fr);
     gap: 8px;

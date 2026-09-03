@@ -1,3 +1,4 @@
+import type { CompactionReport } from "../context/compaction.js";
 import type { TerminalReason } from "../core/state.js";
 import type { ModelUsage } from "../model/model-gateway.js";
 import type { Message, ToolUseRequest } from "./messages.js";
@@ -52,6 +53,7 @@ export interface ContextMetrics {
 export type AgentEvent =
   | { type: "state"; phase: string; detail?: string }
   | { type: "context.metrics"; metrics: ContextMetrics }
+  | { type: "context.compacted"; compaction: CompactionReport }
   | { type: "assistant.delta"; text: string }
   | { type: "thinking.delta"; text: string }
   | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
