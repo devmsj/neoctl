@@ -1157,14 +1157,26 @@ input[type='radio'] {
   border-color: #6b7280;
   color: #e5e7eb;
 }
+.quota-progress {
+  height: 9px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #e5e7eb !important;
+}
+.quota-progress-fill {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  background: var(--pink) !important;
+  transition: width .45s ease !important;
+}
 :root[data-theme='dark'] .quota-card { background: #303842 !important; }
 :root[data-theme='dark'] .quota-progress {
-  background: #1f2937;
-  box-shadow: inset 0 0 0 1px #6b7280;
+  border-color: #d1d5db;
+  background: #1f2937 !important;
 }
 :root[data-theme='dark'] .quota-progress-fill {
-  background: linear-gradient(90deg, #38bdf8, #a78bfa 70%, #f472b6);
-  box-shadow: 0 0 10px rgba(167, 139, 250, .28);
+  background: #f9a8d4 !important;
 }
 :root[data-theme='dark'] .metric-chip,
 :root[data-theme='dark'] [class*='pill'],

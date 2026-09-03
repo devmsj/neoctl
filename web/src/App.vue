@@ -3764,7 +3764,7 @@ function createMobileSession() {
               </div>
             </div>
             <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="normalizedQuotaPercent(currentCpaQuota.remainingPercent)" aria-valuemin="0" aria-valuemax="100">
-              <span class="quota-progress-fill" :style="{ '--quota-progress': `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
+              <span class="quota-progress-fill" :style="{ width: `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
             </div>
             <div class="quota-card-foot">
               <span>已使用 {{ quotaPercent(currentCpaQuota.usedPercent) }}</span>

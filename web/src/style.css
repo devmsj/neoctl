@@ -660,7 +660,7 @@ a { color: var(--purple); }
 }
 .quota-progress-fill {
   display: block;
-  width: var(--quota-progress, 0%);
+  width: 0;
   max-width: 100%;
   height: 100%;
   border-radius: inherit;
