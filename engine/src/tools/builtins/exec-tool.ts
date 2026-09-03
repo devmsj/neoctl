@@ -45,7 +45,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
       properties: {
         cmd: { type: "string", description: "Shell command to execute." },
         workdir: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
-        timeout_ms: { type: "integer", description: "Maximum process lifetime in milliseconds. Defaults to 600000." },
+        timeout_ms: { type: "integer", description: "Maximum wait before a foreground command is stopped. Once yielded as a background terminal, it runs until exit or explicit stop. Defaults to 600000." },
         yield_time_ms: { type: "integer", description: "Wait before yielding a running session. Defaults to 10000; range 0-30000." },
         max_output_chars: { type: "integer", description: "Maximum unread characters retained per output stream. Defaults to 40000." },
         shell: {
@@ -114,6 +114,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
 
       const env = await resolveEnvSecrets(input.env, input.envSecrets, context);
       const shell = resolveShell(input.shell);
+      const secretRedactions = context.secretRedactions;
       options.onProgress?.({
         toolName: "exec_command",
         message: input.description,
@@ -130,6 +131,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
           timeoutMs: input.timeout_ms,
           maxOutputChars: input.max_output_chars,
           tty: input.tty,
+          redactOutput: secretRedactions ? (text) => secretRedactions.redact(text) : undefined,
         },
         input.yield_time_ms,
         (delta) => emitOutputDelta(context, delta),

@@ -262,10 +262,10 @@ REPL 当前注册的内置工具：
 
 ### 命令执行
 
-`exec_command` 根据平台和 `shell` 参数选择 PowerShell、cmd、bash 或 sh。命令启动后持续收集输出；首次等待期内结束则直接返回，仍在运行则返回 `session_id`，进程不会依赖当前模型轮次存活。
+`exec_command` 根据平台和 `shell` 参数选择 PowerShell、cmd、bash 或 sh。命令启动后持续收集输出；首次等待期内结束则直接返回，仍在运行则返回 `session_id`，进程不会依赖当前模型轮次存活。`timeout_ms` 约束命令进入后台前的前台阶段；一旦命令让出成为后台终端，超时计时器会被清除，任务将持续运行到自行退出、显式停止或宿主进程关闭。
 
 - `workdir`：命令工作目录。
-- `timeout_ms`：进程总生命周期上限。
+- `timeout_ms`：命令进入后台前的前台阶段超时上限；后台任务不设自动超时。
 - `yield_time_ms`：首次等待时间；到期后将仍在运行的命令交还为后台终端。
 - `max_output_chars`：分别限制每次待读取的 stdout/stderr，超限时保留开头和结尾。
 - `tty=true`：通过 PTY/ConPTY 运行需要真实终端语义的交互程序。

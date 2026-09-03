@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 
+const LIVE_OUTPUT_MAX_CHARS = 40_000;
+
 export type ExecOutputStream = "stdout" | "stderr";
 export type ExecProcessStatus = "running" | "exited" | "failed" | "timed_out" | "killed";
 export type ExecTerminationReason =
@@ -29,12 +31,15 @@ export interface ExecProcessStartOptions {
   timeoutMs: number;
   maxOutputChars: number;
   tty: boolean;
+  redactOutput?: (text: string) => string;
 }
 
 export interface ExecProcessOutputDelta {
   sessionId: string;
   stream: ExecOutputStream;
   text: string;
+  outputStart?: number;
+  outputEnd?: number;
 }
 
 export interface ExecProcessResult {
@@ -88,6 +93,7 @@ interface ProcessSession {
   requestedTerminationReason?: Extract<ExecTerminationReason, "user_interrupt" | "user_terminate" | "user_kill" | "timeout">;
   stdout: TextWindow;
   stderr: TextWindow;
+  liveOutput: TextWindow;
   waiters: Set<() => void>;
   subscribers: Set<(delta: ExecProcessOutputDelta) => void>;
   interactionTail: Promise<void>;
@@ -99,6 +105,7 @@ interface ProcessSession {
 export class ExecProcessManager {
   private readonly sessions = new Map<string, ProcessSession>();
   private readonly subscribers = new Set<() => void>();
+  private readonly outputSubscribers = new Set<(delta: ExecProcessOutputDelta) => void>();
   private nextId = 1;
 
   constructor(
@@ -169,13 +176,15 @@ export class ExecProcessManager {
       const session = this.sessions.get(sessionId);
       if (session && !session.backgrounded) {
         session.backgrounded = true;
+        if (session.timeout) clearTimeout(session.timeout);
+        session.timeout = undefined;
         this.notify();
       }
     }
     return result;
   }
 
-  list(): Array<Pick<ExecProcessResult, "session_id" | "process_id" | "status" | "command" | "description" | "cwd" | "shell" | "duration_ms" | "tty" | "termination_reason"> & { backgrounded: boolean }> {
+  list(): Array<Pick<ExecProcessResult, "session_id" | "process_id" | "status" | "command" | "description" | "cwd" | "shell" | "duration_ms" | "tty" | "termination_reason"> & { backgrounded: boolean; output: string; outputEnd: number }> {
     return [...this.sessions.values()].map((session) => ({
       session_id: session.id,
       process_id: session.backend.pid,
@@ -188,6 +197,8 @@ export class ExecProcessManager {
       tty: session.options.tty,
       termination_reason: session.terminationReason,
       backgrounded: session.backgrounded,
+      output: session.liveOutput.snapshot().text,
+      outputEnd: session.liveOutput.observedChars(),
     }));
   }
 
@@ -195,9 +206,19 @@ export class ExecProcessManager {
     return [...this.sessions.values()].filter((session) => session.status === "running" && session.backgrounded).length;
   }
 
+  isBackgroundRunning(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return Boolean(session?.backgrounded && session.status === "running");
+  }
+
   subscribe(listener: () => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  subscribeOutput(listener: (delta: ExecProcessOutputDelta) => void): () => void {
+    this.outputSubscribers.add(listener);
+    return () => this.outputSubscribers.delete(listener);
   }
 
   terminateAll(): void {
@@ -211,16 +232,29 @@ export class ExecProcessManager {
 
   private createSession(id: string, options: ExecProcessStartOptions): ProcessSession {
     let session!: ProcessSession;
+    let redactOutput = options.redactOutput;
+    let liveOutputOffset = 0;
     const onOutput = (stream: ExecOutputStream, text: string) => {
       const normalized = normalizeOutput(text);
       if (!normalized) return;
       session[stream].push(normalized);
+      const safeOutput = redactOutput?.(normalized) ?? normalized;
+      const liveText = stream === "stderr" ? `[stderr] ${safeOutput}` : safeOutput;
+      session.liveOutput.push(liveText);
       const delta = { sessionId: id, stream, text: normalized };
       for (const subscriber of session.subscribers) subscriber(delta);
+      const outputStart = liveOutputOffset;
+      liveOutputOffset += liveText.length;
+      if (session.backgrounded) {
+        const publicDelta = { sessionId: id, stream, text: liveText, outputStart, outputEnd: liveOutputOffset };
+        for (const subscriber of this.outputSubscribers) subscriber(publicDelta);
+      }
     };
     const onExit = (exitCode: number | null, signal: string | number | null, error?: Error) => {
       if (session.finishedAt !== undefined) return;
       if (error) onOutput("stderr", `${error.message}\n`);
+      redactOutput = undefined;
+      session.options.redactOutput = undefined;
       this.finalizeSession(session, exitCode, signal, error);
       session.backend.dispose();
     };
@@ -239,6 +273,7 @@ export class ExecProcessManager {
       terminationReason: null,
       stdout: new TextWindow(options.maxOutputChars),
       stderr: new TextWindow(options.maxOutputChars),
+      liveOutput: new TextWindow(Math.min(options.maxOutputChars, LIVE_OUTPUT_MAX_CHARS)),
       waiters: new Set(),
       subscribers: new Set(),
       interactionTail: Promise.resolve(),
@@ -392,10 +427,18 @@ class TextWindow {
     this.tail = combined.slice(-tailSize);
   }
 
-  drain(): { text: string; observed: number; omitted: number } {
+  observedChars(): number {
+    return this.observed;
+  }
+
+  snapshot(): { text: string; observed: number; omitted: number } {
     const omitted = Math.max(0, this.observed - this.head.length - this.tail.length);
     const marker = omitted > 0 ? `\n[... ${omitted} characters omitted ...]\n` : "";
-    const result = { text: this.head + marker + this.tail, observed: this.observed, omitted };
+    return { text: this.head + marker + this.tail, observed: this.observed, omitted };
+  }
+
+  drain(): { text: string; observed: number; omitted: number } {
+    const result = this.snapshot();
     this.head = "";
     this.tail = "";
     this.observed = 0;

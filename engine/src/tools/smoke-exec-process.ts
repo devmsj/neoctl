@@ -25,6 +25,17 @@ async function main(): Promise<void> {
     3_000,
   );
 
+  const boundedLive = await manager.execute(
+    {
+      ...options(`process.stdout.write("HEAD" + "z".repeat(100000) + "TAIL"); setTimeout(() => {}, 5000)`, false),
+      maxOutputChars: 200_000,
+    },
+    0,
+  );
+  await delay(120);
+  const boundedLiveTask = manager.list().find((task) => task.session_id === boundedLive.session_id);
+  await manager.interact(boundedLive.session_id, { signal: "kill", yieldTimeMs: 3_000 });
+
   const incrementalId = manager.start(options(
     `process.stdin.setEncoding("utf8"); process.stdin.on("data", value => { process.stdout.write(value); if (value.includes("C")) process.exit(0); })`,
     false,
@@ -76,6 +87,12 @@ async function main(): Promise<void> {
       truncated.output_chars.stderr === 3_008 &&
       truncated.omitted_chars.stdout === 2_008 &&
       truncated.omitted_chars.stderr === 2_008,
+    liveOutputIsBounded:
+      Boolean(boundedLiveTask)
+      && String(boundedLiveTask?.output || "").length < 40_100
+      && String(boundedLiveTask?.output || "").includes("HEAD")
+      && String(boundedLiveTask?.output || "").includes("TAIL")
+      && Number(boundedLiveTask?.outputEnd || 0) === 100_008,
     outputIsIncremental:
       incrementalA.stdout === "A" && incrementalB.stdout === "B" && incrementalC.stdout === "C",
     completedDurationIsStable:

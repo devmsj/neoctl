@@ -18,7 +18,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { Tool } from "../tools/tool.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool, createWriteStdinTool } from "../tools/builtins/exec-tool.js";
-import { ExecProcessManager } from "../tools/builtins/exec-process-manager.js";
+import { ExecProcessManager, type ExecProcessOutputDelta } from "../tools/builtins/exec-process-manager.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
@@ -540,6 +540,8 @@ export class WebRepl {
   private pendingDeltaOperations: WebLineOperation[] = [];
   private pendingDeltaStatus = false;
   private pendingDeltaTimer: NodeJS.Timeout | undefined;
+  private readonly pendingTerminalOutput = new Map<string, { text: string; outputStart: number; outputEnd: number }>();
+  private terminalOutputTimer: NodeJS.Timeout | undefined;
   private lineId = 0;
   private assistantLineId: number | undefined;
   private thinkingLineId: number | undefined;
@@ -560,20 +562,18 @@ export class WebRepl {
   private runtimeContextPublishQueue: Promise<void> = Promise.resolve();
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
-  private backgroundTaskCount: number;
 
   constructor(private runtime: WebRuntime) {
     this.lines = initialLines(runtime, { current: 0 });
     this.status = initialStatus(runtime);
-    this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
     runtime.taskStore.subscribe(() => {
-      this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
       this.broadcastSync();
     });
     runtime.execProcessManager.subscribe(() => {
-      this.backgroundTaskCount = runtime.taskStore.activeCount() + runtime.execProcessManager.activeCount();
+      this.dropInactiveTerminalOutput();
       this.broadcastSync();
     });
+    runtime.execProcessManager.subscribeOutput((delta) => this.queueTerminalOutput(delta));
     runtime.engine.onSessionTitleChange(() => this.broadcastSync());
   }
 
@@ -592,14 +592,19 @@ export class WebRepl {
     res.on("close", () => this.subscribers.delete(subscriber));
   }
 
+  get backgroundTaskCount(): number {
+    return this.backgroundTasks().length;
+  }
+
   snapshot(includeCatalog = false) {
+    const backgroundTasks = this.backgroundTasks();
     return {
       lines: this.lines,
       status: this.status,
       busy: this.busy,
       queuedInput: this.queuedInput,
-      backgroundTaskCount: this.backgroundTaskCount,
-      backgroundTasks: this.backgroundTasks(),
+      backgroundTaskCount: backgroundTasks.length,
+      backgroundTasks,
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
@@ -990,10 +995,15 @@ export class WebRepl {
         kind: "agent" as const,
         taskId: task.taskId,
         agentId: task.agentId,
+        agentType: task.agentType,
         type: task.type,
         status: task.status,
         description: task.description,
+        prompt: task.prompt,
+        progress: task.progress,
+        outputFile: task.outputFile,
         createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
       }));
     const terminalTasks = this.runtime.execProcessManager.list()
       .filter((terminal) => terminal.status === "running" && terminal.backgrounded)
@@ -1011,8 +1021,25 @@ export class WebRepl {
         shell: terminal.shell,
         tty: terminal.tty,
         durationMs: terminal.duration_ms,
+        output: terminal.output,
+        outputEnd: terminal.outputEnd,
       }));
-    return [...agentTasks, ...terminalTasks];
+    const sessionTasks = [...this.backgroundSessionRuns.values()].map((run) => ({
+      kind: "session" as const,
+      taskId: `session:${run.sessionId}`,
+      type: "会话",
+      status: "running" as const,
+      description: run.title || "未命名会话",
+      createdAt: run.startedAt,
+      sessionId: run.sessionId,
+    }));
+    const createdAtTime = (value: string | number): number => {
+      if (typeof value === "number") return value;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    return [...agentTasks, ...terminalTasks, ...sessionTasks]
+      .sort((left, right) => createdAtTime(right.createdAt) - createdAtTime(left.createdAt));
   }
 
   private async detachRunningForeground(reason: string): Promise<boolean> {
@@ -1475,11 +1502,46 @@ export class WebRepl {
     this.pendingDeltaStatus = false;
   }
 
+  private dropInactiveTerminalOutput(): void {
+    for (const sessionId of this.pendingTerminalOutput.keys()) {
+      if (!this.runtime.execProcessManager.isBackgroundRunning(sessionId)) this.pendingTerminalOutput.delete(sessionId);
+    }
+  }
+
+  private queueTerminalOutput(delta: ExecProcessOutputDelta): void {
+    if (!this.subscribers.size || !this.runtime.execProcessManager.isBackgroundRunning(delta.sessionId)) return;
+    const outputStart = Number(delta.outputStart ?? 0);
+    const outputEnd = Number(delta.outputEnd ?? outputStart + delta.text.length);
+    const pending = this.pendingTerminalOutput.get(delta.sessionId);
+    if (pending && pending.outputEnd === outputStart) {
+      pending.text = appendBoundedText(pending.text, delta.text, TERMINAL_OUTPUT_EVENT_MAX_CHARS);
+      pending.outputEnd = outputEnd;
+    } else {
+      this.pendingTerminalOutput.set(delta.sessionId, { text: delta.text.slice(-TERMINAL_OUTPUT_EVENT_MAX_CHARS), outputStart, outputEnd });
+    }
+    if (this.terminalOutputTimer) return;
+    this.terminalOutputTimer = setTimeout(() => this.flushTerminalOutput(), TERMINAL_OUTPUT_FLUSH_MS);
+    this.terminalOutputTimer.unref?.();
+  }
+
+  private flushTerminalOutput(): void {
+    this.terminalOutputTimer = undefined;
+    if (!this.pendingTerminalOutput.size) return;
+    const updates = [...this.pendingTerminalOutput.entries()].map(([sessionId, output]) => ({ sessionId, ...output }));
+    this.pendingTerminalOutput.clear();
+    for (const subscriber of this.subscribers) this.send(subscriber, "terminal.output", { updates });
+  }
+
   private broadcastSync(): void {
     this.discardPendingDeltaOperations();
     const payload = this.snapshot(false);
     for (const subscriber of this.subscribers) this.send(subscriber, "sync", payload);
   }
+}
+
+function appendBoundedText(current: string, incoming: string, limit: number): string {
+  const combined = current + incoming;
+  return combined.length <= limit ? combined : combined.slice(-limit);
 }
 
 export function compactLineOperations(operations: WebLineOperation[]): WebLineOperation[] {
@@ -2582,6 +2644,8 @@ function formatNumber(value: number | undefined): string {
   return value === undefined ? "?" : new Intl.NumberFormat("en-US").format(Math.round(value));
 }
 
+const TERMINAL_OUTPUT_FLUSH_MS = 100;
+const TERMINAL_OUTPUT_EVENT_MAX_CHARS = 40_000;
 const THINKING_SUMMARY_MAX_LINES = 1000;
 const EXPANDED_SUMMARY_MAX_LINES = 1000;
 const EDIT_TOOL_SUMMARY_MAX_LINES = EXPANDED_SUMMARY_MAX_LINES;
