@@ -885,7 +885,54 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 }
 .runtime-context-syncing { color: var(--muted); font-family: var(--mono); font-size: 10px; }
 .runtime-context-retry { padding: 6px 9px; border: 1px solid var(--red); background: transparent; color: var(--red); }
-.runtime-context-open { overflow: hidden !important; }
+.runtime-context-open,
+.context-window-open { overflow: hidden !important; }
+.context-window-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 285;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 10, 14, .58);
+  backdrop-filter: blur(9px);
+  animation: tool-modal-fade .16s ease-out both;
+}
+.context-window-modal {
+  width: min(500px, calc(100vw - 48px));
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .3);
+  animation: tool-modal-enter .2s cubic-bezier(.2,.72,.2,1) both;
+}
+.context-window-modal form { display: grid; gap: 18px; padding: 24px; }
+.context-window-modal label { font-size: 15px; font-weight: 750; }
+.context-window-input-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+.context-window-input-wrap:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
+.context-window-input-wrap input {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  padding: 0 14px;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 700;
+}
+.context-window-input-wrap span { padding: 0 14px 0 8px; color: var(--muted); font-family: var(--mono); font-size: 13px; }
+.context-window-error { margin: -8px 0 0; color: var(--red); font-size: 12px; }
+.context-window-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.context-window-actions button { min-width: 82px; }
 .runtime-context-modal-backdrop,
 .runtime-context-detail-backdrop {
   position: fixed;
@@ -3093,6 +3140,28 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   color: var(--muted);
   overflow: hidden;
 }
+button.metric-chip {
+  border-radius: 0;
+  font: inherit;
+  text-align: left;
+}
+.context-window-trigger { cursor: pointer; }
+.mobile-context-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--mono);
+  font-weight: 700;
+}
+.mobile-context-button:hover,
+.mobile-context-button:focus-visible { color: var(--purple); outline: none; }
+.context-window-trigger:hover,
+.context-window-trigger:focus-visible {
+  border-color: color-mix(in srgb, var(--purple) 55%, var(--line-soft));
+  background: var(--purple-soft);
+  outline: none;
+}
 .metric-chip::after {
   content: '';
   position: absolute;
@@ -4377,8 +4446,11 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   }
   .image-preview-canvas { padding: 12px; }
   .image-preview-canvas img { max-height: calc(100dvh - 70px); }
-  .confirm-dialog-backdrop { padding: 12px; align-items: end; }
-  .confirm-dialog { width: 100%; }
+  .confirm-dialog-backdrop,
+  .context-window-backdrop { padding: 12px; align-items: end; }
+  .confirm-dialog,
+  .context-window-modal { width: 100%; }
+  .context-window-modal form { padding: 20px; }
   .toast {
     right: 12px;
     bottom: max(12px, env(safe-area-inset-bottom));

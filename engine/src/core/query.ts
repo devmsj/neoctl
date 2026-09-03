@@ -38,6 +38,7 @@ export interface QueryOptions {
   queryOrigin?: string;
   serviceTier?: ModelRequest["serviceTier"];
   maxOutputTokensOverride?: number;
+  contextWindowTokensOverride?: number;
   maxTurns?: number;
   abortSignal?: AbortSignal;
   /** Stop the query loop immediately after a successful agent_report tool result. */
@@ -166,6 +167,7 @@ async function* queryLoop(
     const systemPrompt = context.systemPrompt;
     const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
       model: state.currentModel ?? options.model,
+      contextWindowTokensOverride: options.contextWindowTokensOverride,
       systemPrompt,
       toolDefinitions,
       toolUseContext: toolContext,
@@ -251,7 +253,7 @@ async function prepareMessagesForQuery(
   context: RuntimeContext,
   dependencies: QueryDependencies,
   compactor: Compactor,
-  telemetry: { model?: string; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext },
+  telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext },
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -273,6 +275,7 @@ async function prepareMessagesForQuery(
 
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,
+    contextWindowTokensOverride: telemetry.contextWindowTokensOverride,
     messages: pairedBudgetedWithRuntimeContext,
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
@@ -295,6 +298,7 @@ async function prepareMessagesForQuery(
   const messagesForQuery = applyRuntimeContextForPromptCache(retentionAppliedMessages, context.userContext, context.systemContext);
   const metrics = buildContextMetrics({
     model: telemetry.model,
+    contextWindowTokensOverride: telemetry.contextWindowTokensOverride,
     messages: messagesForQuery,
     systemPrompt: telemetry.systemPrompt,
     tools: telemetry.toolDefinitions,
@@ -369,6 +373,7 @@ async function* callModelForTurn(
       const normalized = error instanceof Error ? error : new Error(String(error));
       const reactiveMetrics = buildContextMetrics({
         model: activeModel,
+        contextWindowTokensOverride: options.contextWindowTokensOverride,
         messages: state.messages,
         systemPrompt: telemetry.systemPrompt,
         tools: telemetry.toolDefinitions,

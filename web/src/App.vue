@@ -127,6 +127,9 @@ const ACTION_ERROR_MESSAGES = {
   PROMPT_UPDATE_FAILED: '提示词更新失败',
   PROMPT_INVALID: '提示词内容无效',
   FAST_MODE_UPDATE_FAILED: '快速模式切换失败',
+  CONTEXT_WINDOW_UPDATE_BLOCKED: '回答期间不能调整上下文窗口',
+  CONTEXT_WINDOW_INVALID: '请输入大于 0 的整数',
+  CONTEXT_WINDOW_UPDATE_FAILED: '上下文窗口调整失败',
   LOGIN_INVALID: '模型配置无效',
   LOGIN_SAVE_FAILED: '模型配置保存失败',
   API_NOT_FOUND: '当前运行时不支持此功能，请重启服务',
@@ -240,6 +243,10 @@ const state = reactive({
   sessionPlugins: { items: [], busy: false, loading: false },
   fastMode: false,
   fastModeMutating: false,
+  contextWindowModalOpen: false,
+  contextWindowDraft: '',
+  contextWindowError: '',
+  contextWindowSaving: false,
   busy: false,
   queuedInput: undefined,
   backgroundTaskCount: 0,
@@ -315,7 +322,6 @@ let toastTimer
 let scrollRaf = 0
 let syncRaf = 0
 let lineTextRaf = 0
-let lastLineTextPaint = 0
 let pendingSyncPayload
 let hasReceivedEventSync = false
 let clockTimer
@@ -329,8 +335,6 @@ let confirmDialogResolver
 const renderedLineCache = new Map()
 const toolPresentationCache = new WeakMap()
 const pendingLineText = new Map()
-const LINE_TEXT_FRAME_MS = 34
-const LINE_TEXT_MAX_BACKLOG = 72
 const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
 const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
@@ -385,6 +389,10 @@ const contextPercent = computed(() => {
 const inputTokens = computed(() => compactNumber(state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens))
 const outputTokens = computed(() => compactNumber(state.status?.usage?.outputTokens ?? state.status?.streamedOutputTokens))
 const composerContextValue = computed(() => `${state.composerMetrics.context.display.toFixed(1)}%`)
+const currentContextWindowK = computed(() => {
+  const tokens = Number(state.status?.metrics?.contextWindowTokens)
+  return Number.isFinite(tokens) && tokens > 0 ? String(Math.max(1, Math.round(tokens / 1000))) : ''
+})
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
 const composerDropHint = computed(() => {
@@ -514,7 +522,7 @@ onBeforeUnmount(() => {
   if (cpaStateTimer) clearInterval(cpaStateTimer)
   if (memoryStateTimer) clearInterval(memoryStateTimer)
   if (sessionTitleResizeObserver) sessionTitleResizeObserver.disconnect()
-  document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open')
+  document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open', 'context-window-open')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
@@ -746,32 +754,16 @@ function scheduleLineTextPaint() {
   lineTextRaf = requestAnimationFrame(paintLineText)
 }
 
-function paintLineText(timestamp) {
+function paintLineText() {
   lineTextRaf = 0
-  if (timestamp - lastLineTextPaint < LINE_TEXT_FRAME_MS) {
-    scheduleLineTextPaint()
-    return
-  }
-  lastLineTextPaint = timestamp
   const shouldFollow = isTranscriptNearBottom()
-  for (const [id, buffered] of pendingLineText) {
+  const updates = [...pendingLineText]
+  pendingLineText.clear()
+  for (const [id, buffered] of updates) {
     const index = state.lines.findIndex((line) => String(line.id) === id)
-    if (index < 0) {
-      pendingLineText.delete(id)
-      continue
-    }
-    const characters = Array.from(buffered)
-    const count = Math.min(characters.length, Math.max(
-      1,
-      Math.ceil(characters.length * .38),
-      characters.length - LINE_TEXT_MAX_BACKLOG,
-    ))
-    const visible = characters.slice(0, count).join('')
-    const remaining = characters.slice(count).join('')
+    if (index < 0) continue
     const line = state.lines[index]
-    state.lines[index] = { ...line, text: `${line.text || ''}${visible}` }
-    if (remaining) pendingLineText.set(id, remaining)
-    else pendingLineText.delete(id)
+    state.lines[index] = { ...line, text: `${line.text || ''}${buffered}` }
   }
   if (shouldFollow) scheduleTranscriptScrollBottom()
   if (pendingLineText.size) scheduleLineTextPaint()
@@ -791,7 +783,6 @@ function flushLineText(id) {
 function resetLineTextScheduler() {
   if (lineTextRaf) cancelAnimationFrame(lineTextRaf)
   lineTextRaf = 0
-  lastLineTextPaint = 0
   pendingLineText.clear()
 }
 
@@ -1295,6 +1286,56 @@ async function compressSession() {
     notify('已请求压缩上下文')
   } catch (error) {
     notifyActionError(error, '压缩上下文失败')
+  }
+}
+
+function openContextWindowModal() {
+  state.contextWindowDraft = currentContextWindowK.value
+  state.contextWindowError = ''
+  state.contextWindowModalOpen = true
+  document.body.classList.add('context-window-open')
+}
+
+function closeContextWindowModal() {
+  if (state.contextWindowSaving) return
+  state.contextWindowModalOpen = false
+  state.contextWindowError = ''
+  document.body.classList.remove('context-window-open')
+}
+
+function normalizeContextWindowDraft() {
+  state.contextWindowError = ''
+}
+
+async function saveContextWindow() {
+  const value = String(state.contextWindowDraft || '')
+  if (!/^\d+$/.test(value) || value === '0') {
+    state.contextWindowError = '请输入大于 0 的整数'
+    return
+  }
+  state.contextWindowSaving = true
+  state.contextWindowError = ''
+  try {
+    const result = await postJson('/api/context-window', { value })
+    const metrics = state.status?.metrics || {}
+    const tokens = Number(result.contextWindowTokens)
+    const estimatedInputTokens = Number(metrics.estimatedInputTokens || 0)
+    state.status = {
+      ...state.status,
+      metrics: {
+        ...metrics,
+        contextWindowTokens: tokens,
+        contextWindowSource: 'session',
+        contextUsageRatio: tokens > 0 ? estimatedInputTokens / tokens : undefined,
+      },
+    }
+    updateComposerMetricTargets()
+    state.contextWindowModalOpen = false
+    document.body.classList.remove('context-window-open')
+  } catch (error) {
+    state.contextWindowError = actionErrorMessage(error, '调整失败')
+  } finally {
+    state.contextWindowSaving = false
   }
 }
 
@@ -2600,6 +2641,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.contextWindowModalOpen) {
+    event.preventDefault()
+    closeContextWindowModal()
+    return
+  }
   if (event.key === 'Escape' && state.compactionDetailLineId !== undefined) {
     event.preventDefault()
     closeCompactionDetail()
@@ -3508,7 +3554,7 @@ function createMobileSession() {
               <div class="mobile-session-options-body">
                 <dl>
                   <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
-                  <div><dt>上下文</dt><dd>{{ composerContextValue }}</dd></div>
+                  <div><dt>上下文</dt><dd><button type="button" class="mobile-context-button" @click="openContextWindowModal">{{ composerContextValue }}</button></dd></div>
                   <div><dt>Token</dt><dd>↑ {{ composerInputTokens }} / ↓ {{ composerOutputTokens }}</dd></div>
                 </dl>
                 <div class="mobile-session-actions">
@@ -3526,7 +3572,7 @@ function createMobileSession() {
             <div class="composer-footer">
               <div class="composer-metrics" aria-label="运行状态指标">
                 <span class="metric-chip model-chip"><em>模型</em><strong>{{ modelName }}</strong></span>
-                <span :class="['metric-chip numeric', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`"><em>上下文</em><strong>{{ composerContextValue }}</strong></span>
+                <button type="button" :class="['metric-chip', 'numeric', 'context-window-trigger', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
                 <span :class="['metric-chip numeric', metricBumpClass('inputTokens')]" :key="`input-${state.composerMetrics.inputTokens.bump}`"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
                 <span :class="['metric-chip numeric', metricBumpClass('outputTokens')]" :key="`output-${state.composerMetrics.outputTokens.bump}`"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
                 <button
@@ -3866,6 +3912,34 @@ function createMobileSession() {
           <button type="button" class="ghost" @click="resolveConfirmation(false)">{{ state.confirmDialog.cancelLabel }}</button>
           <button type="button" :class="['primary', { danger: state.confirmDialog.tone === 'danger' }]" @click="resolveConfirmation(true)">{{ state.confirmDialog.confirmLabel }}</button>
         </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.contextWindowModalOpen" class="context-window-backdrop" @click.self="closeContextWindowModal">
+      <section class="context-window-modal" role="dialog" aria-modal="true" aria-label="调整上下文窗口">
+        <form @submit.prevent="saveContextWindow">
+          <label for="context-window-input">调整本次会话上下文窗口大小：</label>
+          <div class="context-window-input-wrap">
+            <input
+              id="context-window-input"
+              v-model="state.contextWindowDraft"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              autofocus
+              aria-describedby="context-window-unit"
+              @input="normalizeContextWindowDraft"
+            />
+            <span id="context-window-unit">k</span>
+          </div>
+          <p v-if="state.contextWindowError" class="context-window-error" role="alert">{{ state.contextWindowError }}</p>
+          <div class="context-window-actions">
+            <button type="button" class="ghost" :disabled="state.contextWindowSaving" @click="closeContextWindowModal">取消</button>
+            <button type="submit" class="primary" :disabled="state.contextWindowSaving">{{ state.contextWindowSaving ? '保存中…' : '确认' }}</button>
+          </div>
+        </form>
       </section>
     </div>
   </Teleport>

@@ -33,6 +33,7 @@ export interface QueryEngineOptions {
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   maxOutputTokensOverride?: number;
+  contextWindowTokensOverride?: number;
   maxTurns?: number;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
@@ -69,6 +70,7 @@ export class QueryEngine {
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
+  private currentContextWindowTokens?: number;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
   private titleSchedulerVersion = 0;
@@ -82,6 +84,7 @@ export class QueryEngine {
     this.agentId = options.agentId ?? "main";
     this.currentModel = options.model;
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
+    this.currentContextWindowTokens = normalizePositiveInteger(options.contextWindowTokensOverride);
     this.currentModelGateway = options.modelGateway;
     this.appPromptStore = options.appPromptStore ?? new InMemoryAppPromptStore();
     const baseContextManager = options.contextManagerFactory?.(options.cwd)
@@ -189,6 +192,7 @@ export class QueryEngine {
       queryOrigin: this.options.queryOrigin ?? "repl",
       serviceTier: this.currentFastMode ? "priority" : undefined,
       maxOutputTokensOverride: this.options.maxOutputTokensOverride,
+      contextWindowTokensOverride: this.currentContextWindowTokens,
       maxTurns: this.options.maxTurns,
       workspaceCwd: this.options.cwd,
       abortSignal: options.abortSignal,
@@ -258,6 +262,19 @@ export class QueryEngine {
     return this.currentFastMode;
   }
 
+  getContextWindowTokensOverride(): number | undefined {
+    return this.currentContextWindowTokens;
+  }
+
+  async setContextWindowTokensOverride(tokens: number): Promise<number> {
+    await this.initialize();
+    const normalized = normalizePositiveInteger(tokens);
+    if (!normalized) throw new Error("context window tokens must be a positive integer");
+    this.currentContextWindowTokens = normalized;
+    this.sessionStore?.recordContextWindowTokens(normalized);
+    return normalized;
+  }
+
   getAppPrompt(): AppPromptSnapshot {
     return this.appPromptStore.snapshot();
   }
@@ -287,8 +304,12 @@ export class QueryEngine {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+    const contextBudget = {
+      ...this.options.contextBudget,
+      contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
+    };
     const result = withCompactionReport(
-      await (compactor.manualCompact?.(this.history, this.options.contextBudget) ?? compactor.compact(this.history, this.options.contextBudget)),
+      await (compactor.manualCompact?.(this.history, contextBudget) ?? compactor.compact(this.history, contextBudget)),
       this.history.length,
     );
     this.applyCompactionResult(result);
@@ -300,21 +321,26 @@ export class QueryEngine {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+    const contextBudget = {
+      ...this.options.contextBudget,
+      contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
+    };
     const result = withCompactionReport(
-      await (compactor.pureCompact?.(this.history, this.options.contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const }),
+      await (compactor.pureCompact?.(this.history, contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const }),
       this.history.length,
     );
     this.applyCompactionResult(result);
     return result;
   }
 
-  snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
+  snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; contextWindowTokensOverride?: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
       model: this.currentModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       fastMode: this.currentFastMode,
+      contextWindowTokensOverride: this.currentContextWindowTokens,
       lastTerminalReason: this.lastTerminalReason,
       session: this.sessionStore?.snapshot(),
     };
@@ -345,6 +371,7 @@ export class QueryEngine {
     const messagesForMetrics = applyRuntimeContextForPromptCache(messages, promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
     return buildContextMetrics({
       model: this.currentModel,
+      contextWindowTokensOverride: this.currentContextWindowTokens,
       messages: messagesForMetrics,
       systemPrompt,
       tools,
@@ -462,6 +489,8 @@ export class QueryEngine {
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
     this.appPromptStore.setAppPrompt(this.sessionStore.getAppPrompt());
     this.currentFastMode = this.sessionStore.getFastMode();
+    this.currentContextWindowTokens = this.sessionStore.getContextWindowTokens()
+      ?? normalizePositiveInteger(this.options.contextWindowTokensOverride);
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 
@@ -618,6 +647,10 @@ function cloneReasoningConfig(reasoning: ReasoningConfig | null | undefined): Re
   if (reasoning === null) return null;
   if (!reasoning) return undefined;
   return { ...reasoning };
+}
+
+function normalizePositiveInteger(value: number | undefined): number | undefined {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
 function cloneMessage(message: Message): Message {

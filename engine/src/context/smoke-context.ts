@@ -1,7 +1,8 @@
 import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
-import { estimateTextTokens } from "../core/context-metrics.js";
+import { buildContextMetrics, estimateTextTokens } from "../core/context-metrics.js";
+import { resolveContextWindowTokens } from "../model/context-window.js";
 import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary, hasValidToolResultPairing } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
@@ -362,6 +363,20 @@ async function main(): Promise<void> {
     !secondSequenceCompact.summary.includes("Persistent facts:");
 
   const manualOnly = new ManualOnlyCompactor(modelCompactor);
+  const gpt56WindowOk = resolveContextWindowTokens("gpt-5.6", {}).tokens === 256000
+    && resolveContextWindowTokens("gpt-5.6-sol", {}).tokens === 256000
+    && resolveContextWindowTokens("gpt-5.6-terra", {}).tokens === 256000
+    && resolveContextWindowTokens("gpt-5.6-luna", {}).tokens === 256000;
+  const sessionWindowMetrics = buildContextMetrics({
+    model: "gpt-5.6",
+    contextWindowTokensOverride: 64000,
+    messages: [],
+    systemPrompt: "smoke",
+    tools: [],
+  });
+  const sessionWindowOk = sessionWindowMetrics.contextWindowTokens === 64000
+    && sessionWindowMetrics.contextWindowSource === "session";
+
   const automaticDisabled = await manualOnly.compact(longHistory, {
     autoCompactMaxChars: 1,
     estimatedInputTokens: 1000,
@@ -435,8 +450,8 @@ async function main(): Promise<void> {
     defaultEvents.includes("error") &&
     defaultEvents.includes("terminal:prompt_too_long");
 
-  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticDisabledOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
+  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && gpt56WindowOk && sessionWindowOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticDisabledOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, gpt56WindowOk, sessionWindowOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

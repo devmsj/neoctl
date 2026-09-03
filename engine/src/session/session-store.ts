@@ -17,6 +17,7 @@ export type SessionTranscriptEntry =
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
   | { type: "fast-mode"; sessionId: string; agentId: string; createdAt: string; enabled: boolean }
+  | { type: "context-window"; sessionId: string; agentId: string; createdAt: string; tokens: number }
   | {
       type: "compact";
       sessionId: string;
@@ -81,6 +82,7 @@ export interface SessionStoreSnapshot {
   contentReplacements: number;
   appPrompt?: AppPromptValue;
   fastMode: boolean;
+  contextWindowTokens?: number;
   windowNumber: number;
   lastCompaction?: CompactionReport;
   firstWindowId: string;
@@ -110,6 +112,7 @@ export class SessionStore {
   private hasTitleRefinement = false;
   private appPrompt?: AppPromptValue;
   private fastMode = false;
+  private contextWindowTokens?: number;
   private lastCompaction?: CompactionReport;
   private windowNumber: number;
   private firstWindowId: string;
@@ -130,6 +133,7 @@ export class SessionStore {
     this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.appPrompt = loaded.appPrompt;
     this.fastMode = loaded.fastMode;
+    this.contextWindowTokens = loaded.contextWindowTokens;
     this.lastCompaction = loaded.lastCompaction ? cloneCompactionReport(loaded.lastCompaction) : undefined;
     this.windowNumber = loaded.windowNumber;
     this.firstWindowId = loaded.firstWindowId ?? randomUUID();
@@ -324,6 +328,23 @@ export class SessionStore {
     });
   }
 
+  getContextWindowTokens(): number | undefined {
+    return this.contextWindowTokens;
+  }
+
+  recordContextWindowTokens(tokens: number): void {
+    if (!Number.isInteger(tokens) || tokens <= 0) throw new Error("context window tokens must be a positive integer");
+    if (tokens === this.contextWindowTokens) return;
+    this.contextWindowTokens = tokens;
+    this.appendEntry({
+      type: "context-window",
+      sessionId: this.sessionId,
+      agentId: this.agentId,
+      createdAt: new Date().toISOString(),
+      tokens,
+    });
+  }
+
   recordContentReplacements(replacements: readonly ContentReplacementRecord[]): void {
     if (replacements.length === 0) return;
     this.contentReplacements.push(...replacements);
@@ -363,6 +384,7 @@ export class SessionStore {
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
       fastMode: this.fastMode,
+      contextWindowTokens: this.contextWindowTokens,
       windowNumber: this.windowNumber,
       ...(this.lastCompaction ? { lastCompaction: cloneCompactionReport(this.lastCompaction) } : {}),
       firstWindowId: this.firstWindowId,
@@ -389,6 +411,7 @@ interface LoadedTranscript {
   hasTitleRefinement: boolean;
   appPrompt?: AppPromptValue;
   fastMode: boolean;
+  contextWindowTokens?: number;
   lastCompaction?: CompactionReport;
   windowNumber: number;
   firstWindowId?: string;
@@ -479,6 +502,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string): Promise
       }
       if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
       if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
+      if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
     } catch {
       // Skip malformed lines so a partial write does not make the session unusable.
     }

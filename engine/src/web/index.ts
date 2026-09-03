@@ -895,6 +895,24 @@ export class WebRepl {
     }
   }
 
+  async setContextWindowK(value: unknown): Promise<WebActionResult<{ contextWindowK: number; contextWindowTokens: number }>> {
+    if (this.busy) return actionFailure("CONTEXT_WINDOW_UPDATE_BLOCKED", "cannot change context window while a response is running");
+    if (typeof value !== "string" || !/^\d+$/u.test(value) || Number(value) <= 0) {
+      return actionFailure("CONTEXT_WINDOW_INVALID", "context window must be a positive integer in k");
+    }
+    const contextWindowK = Number(value);
+    const contextWindowTokens = contextWindowK * 1000;
+    try {
+      await this.runtime.engine.setContextWindowTokensOverride(contextWindowTokens);
+      const metrics = await this.runtime.engine.contextMetrics();
+      this.runtime.initialMetrics = metrics;
+      this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
+      return { ok: true, contextWindowK, contextWindowTokens };
+    } catch (error) {
+      return actionFailure("CONTEXT_WINDOW_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
+    }
+  }
+
   loginForm(providerValue?: string): LoginFormPayload {
     const provider = parseLoginProvider(providerValue);
     return createLoginFormPayload(this.runtime.envPath, provider);
@@ -1623,6 +1641,10 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "POST" && url.pathname === "/api/fast-mode") {
       const body = await readJsonBody<{ enabled?: boolean }>(req);
       return sendJson(res, await repl.setFastMode(body.enabled === true));
+    }
+    if (req.method === "POST" && url.pathname === "/api/context-window") {
+      const body = await readJsonBody<{ value?: unknown }>(req);
+      return sendJson(res, await repl.setContextWindowK(body.value));
     }
     if (req.method === "POST" && url.pathname === "/api/submit") {
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);

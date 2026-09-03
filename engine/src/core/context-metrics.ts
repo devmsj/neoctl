@@ -44,6 +44,7 @@ function cachedTokenCount(text: string): number {
 
 export interface BuildContextMetricsInput {
   model?: string;
+  contextWindowTokensOverride?: number;
   messages: readonly Message[];
   systemPrompt: string;
   tools: readonly ToolDefinition[];
@@ -70,29 +71,36 @@ export function buildContextMetrics(input: BuildContextMetricsInput): ContextMet
     estimatedInputTokens = estimateTextTokens(serialized);
   }
 
-  const window = resolveContextWindowTokens(input.model);
+  const resolvedWindow = resolveContextWindowTokens(input.model);
+  const contextWindowTokensOverride = normalizePositiveInteger(input.contextWindowTokensOverride);
+  const contextWindowTokens = contextWindowTokensOverride ?? resolvedWindow.tokens;
+  const contextWindowSource = contextWindowTokensOverride ? "session" as const : resolvedWindow.source;
   return {
     model: input.model,
     estimatedInputTokens,
     estimatedChars,
     messageCount: input.messages.length,
     toolCount: input.tools.length,
-    contextWindowTokens: window.tokens,
-    contextWindowSource: window.source,
-    contextUsageRatio: window.tokens ? estimatedInputTokens / window.tokens : undefined,
+    contextWindowTokens,
+    contextWindowSource,
+    contextUsageRatio: contextWindowTokens ? estimatedInputTokens / contextWindowTokens : undefined,
     cacheDiagnostics: input.cacheDiagnostics,
-    modelMetadata: window.model
+    modelMetadata: resolvedWindow.model
       ? {
-          id: window.model.id,
-          provider: window.model.provider,
-          maxOutputTokens: window.model.maxOutputTokens,
-          knowledgeCutoff: window.model.knowledgeCutoff,
-          reasoning: window.model.reasoning,
-          imageInput: window.model.imageInput,
-          source: window.model.source,
+          id: resolvedWindow.model.id,
+          provider: resolvedWindow.model.provider,
+          maxOutputTokens: resolvedWindow.model.maxOutputTokens,
+          knowledgeCutoff: resolvedWindow.model.knowledgeCutoff,
+          reasoning: resolvedWindow.model.reasoning,
+          imageInput: resolvedWindow.model.imageInput,
+          source: resolvedWindow.model.source,
         }
       : undefined,
   };
+}
+
+function normalizePositiveInteger(value: number | undefined): number | undefined {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
 export function estimateTextTokens(text: string): number {

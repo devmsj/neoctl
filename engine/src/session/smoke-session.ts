@@ -26,6 +26,7 @@ async function main(): Promise<void> {
   store.recordTitle("Smoke Session Title", "initial");
   store.recordTitle("Refined Smoke Session Title", "refinement");
   store.recordFastMode(true);
+  store.recordContextWindowTokens(256000);
   store.recordMessage({ ...messages[0], role: "progress" });
   const compactionBoundary = {
     ...createTextMessage("system", "<compact_state>persisted compact state</compact_state>"),
@@ -118,6 +119,8 @@ async function main(): Promise<void> {
     resumed.snapshot().hasInitialTitle &&
     resumed.snapshot().hasTitleRefinement &&
     resumed.snapshot().fastMode === true &&
+    resumed.snapshot().contextWindowTokens === 256000 &&
+    resumed.getContextWindowTokens() === 256000 &&
     latest.snapshot().sessionId === sessionId &&
     latest.snapshot().resumedMessages === 3 &&
     latest.snapshot().lastCompaction?.charsFreed === 2345 &&
@@ -137,6 +140,7 @@ async function main(): Promise<void> {
     resetResume.snapshot().resumedMessages === 0 &&
     resetResume.snapshot().lastCompaction === undefined &&
     resetResume.snapshot().fastMode === true &&
+    resetResume.snapshot().contextWindowTokens === 256000 &&
     deleted &&
     listedAfterDelete.length === 0;
 

@@ -36,7 +36,7 @@ export interface ContextMetrics {
   messageCount: number;
   toolCount: number;
   contextWindowTokens?: number;
-  contextWindowSource: "env" | "known" | "unknown";
+  contextWindowSource: "session" | "env" | "known" | "unknown";
   contextUsageRatio?: number;
   cacheDiagnostics?: PromptCacheDiagnostics;
   modelMetadata?: {
