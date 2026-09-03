@@ -1802,9 +1802,9 @@ input[type='radio'] {
 /* Current-session activity glyph: a true clipped diamond, not a rotated square. */
 .session-entry-icon {
   position: relative;
-  width: 34px;
+  width: 28px;
   height: 34px;
-  flex: 0 0 34px;
+  flex: 0 0 28px;
   overflow: visible;
   border: 0 !important;
   background: transparent !important;
@@ -1813,11 +1813,11 @@ input[type='radio'] {
 
 .session-diamond {
   position: absolute;
-  top: 9px;
-  left: 9px;
+  top: 7px;
+  left: 7px;
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 20px;
   border: 0;
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   background: var(--sky) !important;
@@ -1834,13 +1834,14 @@ input[type='radio'] {
 
 .session-entry.working .session-diamond {
   background: var(--lime) !important;
-  animation: session-diamond-work 2.8s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation: session-diamond-work 2.6s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 
 @keyframes session-diamond-work {
-  0%, 100% { transform: translateY(0) scale(.9); opacity: .78; }
-  35% { transform: translateY(-2px) scale(1.06); opacity: 1; }
-  68% { transform: translateY(1px) scale(.96); opacity: .9; }
+  0%, 100% { transform: translate(0, 0) scaleX(.92) scaleY(.88); opacity: .76; }
+  28% { transform: translate(0, -2px) scaleX(1) scaleY(1.08); opacity: 1; }
+  54% { transform: translate(1px, 1px) scaleX(.88) scaleY(.96); opacity: .86; }
+  78% { transform: translate(-1px, -1px) scaleX(.96) scaleY(1.03); opacity: .96; }
 }
 
 :root[data-theme='dark'] .session-entry:not(.working) .session-diamond {

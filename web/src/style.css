@@ -200,7 +200,7 @@ a { color: var(--purple); }
   width: calc(100% - 24px);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 5px;
   text-align: left;
   color: var(--text);
   cursor: pointer;
