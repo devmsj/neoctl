@@ -877,6 +877,13 @@ button:disabled,
   text-overflow: clip;
   white-space: normal;
 }
+.tool-group-label-count {
+  margin-left: 3px;
+  color: var(--pink);
+  font-size: .92em;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
 .tool-group-chevron {
   width: 7px;
   height: 7px;

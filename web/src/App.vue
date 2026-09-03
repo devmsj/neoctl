@@ -1859,16 +1859,15 @@ function toggleToolGroup(group) {
   state.expandedToolGroups[group.id] = !toolGroupExpanded(group)
 }
 
-function toolGroupLabel(group) {
+function toolGroupLabels(group) {
   const counts = new Map()
   for (const line of group?.lines || []) {
-    const name = lineTitle(line)
+    const name = line?.kind === 'thinking' ? '思考' : lineTitle(line)
     if (!name) continue
     counts.set(name, (counts.get(name) || 0) + 1)
   }
-  return [...counts.entries()]
-    .map(([name, count]) => count > 1 ? `${name} ×${count}` : name)
-    .join('、') || '过程'
+  const labels = [...counts.entries()].map(([name, count]) => ({ name, count }))
+  return labels.length ? labels : [{ name: '过程', count: 1 }]
 }
 
 function openToolDetail(line) {
@@ -3600,7 +3599,11 @@ function createMobileSession() {
               <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
                   <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line)">
-                    <span class="tool-group-label">{{ toolGroupLabel(line) }}</span>
+                    <span class="tool-group-label">
+                      <template v-for="(label, labelIndex) in toolGroupLabels(line)" :key="label.name">
+                        <span class="tool-group-label-name">{{ label.name }}</span><span v-if="label.count > 1" class="tool-group-label-count">×{{ label.count }}</span><span v-if="labelIndex < toolGroupLabels(line).length - 1" class="tool-group-label-separator">、</span>
+                      </template>
+                    </span>
                     <span class="tool-group-chevron" aria-hidden="true"></span>
                   </button>
                   <div v-if="toolGroupExpanded(line)" class="tool-group-lines">
