@@ -966,6 +966,7 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .runtime-context-detail-modal { width: min(940px, 92vw); max-height: min(860px, 86vh); }
 .runtime-context-modal-head {
   min-height: 68px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -987,7 +988,13 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 }
 .runtime-context-modal-head button:hover { border-color: var(--purple); color: var(--purple); }
 .runtime-context-modal-content,
-.runtime-context-detail-content { min-height: 0; overflow: auto; padding: 12px; }
+.runtime-context-detail-content {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+}
 .runtime-context-index {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1042,8 +1049,6 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .runtime-tool-detail-button code { width: fit-content; color: var(--purple); font-family: var(--mono); font-size: 12px; font-weight: 800; }
 .runtime-tool-detail-button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-tool-detail-button:disabled { cursor: default; opacity: .58; }
-.runtime-context-modal:has(.runtime-plugin-list),
-.runtime-context-modal-content:has(.runtime-plugin-list) { overflow: visible; }
 .runtime-context-empty { padding: 28px; color: var(--faint); text-align: center; }
 .runtime-context-detail-content h3 {
   margin: 0 0 8px;
