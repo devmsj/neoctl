@@ -26,6 +26,7 @@ export interface ExecProcessStartOptions {
     requested: string;
     file: string;
     args: string[];
+    commandPrefix?: string;
   };
   env: Record<string, string>;
   timeoutMs: number;
@@ -495,7 +496,7 @@ function createPtyBackend(
   host.send({
     type: "start",
     file: options.shell.file,
-    args: [...options.shell.args, options.command],
+    args: [...options.shell.args, shellCommand(options)],
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     cols: 120,
@@ -525,7 +526,7 @@ function createPipeBackend(
   onOutput: (stream: ExecOutputStream, text: string) => void,
   onExit: (exitCode: number | null, signal: string | number | null, error?: Error) => void,
 ): ProcessBackend {
-  const child = spawnChild(options.shell.file, [...options.shell.args, options.command], {
+  const child = spawnChild(options.shell.file, [...options.shell.args, shellCommand(options)], {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     windowsHide: true,
@@ -550,6 +551,10 @@ function createPipeBackend(
       child.removeAllListeners();
     },
   };
+}
+
+function shellCommand(options: ExecProcessStartOptions): string {
+  return options.shell.commandPrefix ? `${options.shell.commandPrefix}${options.command}` : options.command;
 }
 
 function normalizeOutput(text: string): string {

@@ -219,12 +219,19 @@ interface ResolvedShell {
   displayName: string;
   file: string;
   args: string[];
+  commandPrefix?: string;
 }
 
 function resolveShell(shell: ExecShell): ResolvedShell {
   const requested = shell === "auto" ? defaultShell() : shell;
   if (requested === "powershell") {
-    return { requested, displayName: "PowerShell", file: "powershell.exe", args: ["-NoProfile", "-Command"] };
+    return {
+      requested,
+      displayName: "PowerShell",
+      file: "powershell.exe",
+      args: ["-NoProfile", "-Command"],
+      commandPrefix: "try { $utf8 = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $utf8; [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8 } catch {}; $env:PYTHONIOENCODING = 'utf-8'; $env:PYTHONUTF8 = '1'; ",
+    };
   }
   if (requested === "cmd") return { requested, displayName: "cmd.exe", file: "cmd.exe", args: ["/d", "/s", "/c"] };
   if (requested === "bash") return { requested, displayName: "bash", file: "bash", args: ["-lc"] };
