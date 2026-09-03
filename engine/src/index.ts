@@ -5,6 +5,7 @@ export * from "./core/message-pipeline.js";
 export * from "./core/run-agent.js";
 export * from "./core/assistant-output-filter.js";
 export * from "./core/context-metrics.js";
+export * from "./plugins/plugin-system.js";
 export * from "./context/prompts.js";
 export * from "./context/context-manager.js";
 export * from "./context/compaction.js";

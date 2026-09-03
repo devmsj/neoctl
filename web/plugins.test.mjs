@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
+import { loadNeoPlugins } from '../engine/dist/index.js';
 import { createWebPluginHost } from './plugins.mjs';
 
 const plugins = [
@@ -24,9 +26,25 @@ test('plugin host supports all, none, and explicit allow lists', () => {
 test('plugin host rejects tool name conflicts', () => {
   assert.throws(() => createWebPluginHost({
     plugins: [
-      { id: 'one', tools: [{ name: 'same' }] },
-      { id: 'two', tools: [{ name: 'same' }] },
+      { id: 'one', name: 'One', version: '1.0.0', tools: [{ name: 'same' }] },
+      { id: 'two', name: 'Two', version: '1.0.0', tools: [{ name: 'same' }] },
     ],
     enabled: 'all',
   }), /duplicate tool name/);
+});
+
+test('core loader discovers the plugin resource directory', async () => {
+  const catalog = await loadNeoPlugins({
+    directories: path.resolve('plugins'),
+    appDataDir: path.resolve('.neoctl-web', 'test-plugin-data'),
+    env: {},
+  });
+  assert.deepEqual(catalog.map((plugin) => plugin.id), ['downloads', 'xhs-artifact']);
+  assert.deepEqual(catalog.flatMap((plugin) => plugin.tools.map((tool) => tool.name)), [
+    'expose_downloads',
+    'open_xhs_artifact_editor',
+    'read_xhs_artifact',
+  ]);
+  const host = createWebPluginHost({ plugins: catalog });
+  assert.deepEqual(host.ids, ['downloads', 'xhs-artifact']);
 });

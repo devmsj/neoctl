@@ -1,6 +1,6 @@
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
-import { ManualOnlyCompactor, ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
+import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
@@ -116,7 +116,7 @@ async function* queryLoop(
   options: QueryOptions,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
-  const compactor = dependencies.compactor ?? new ManualOnlyCompactor(new ModelDrivenCompactor(dependencies.modelGateway));
+  const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
   const appState = new InMemoryAppState(options.agentId, options.workspaceCwd);
   const maxTurns = options.maxTurns;
   let state = initialState;
@@ -369,7 +369,7 @@ async function* callModelForTurn(
   } catch (error) {
     const attempts = state.reactiveCompactAttempts ?? 0;
     if (isContextLengthError(error) && attempts < MAX_REACTIVE_COMPACT_ATTEMPTS) {
-      const compactor = dependencies.compactor ?? new ManualOnlyCompactor(new ModelDrivenCompactor(dependencies.modelGateway));
+      const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
       const normalized = error instanceof Error ? error : new Error(String(error));
       const reactiveMetrics = buildContextMetrics({
         model: activeModel,

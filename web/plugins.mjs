@@ -1,12 +1,16 @@
 function normalizePlugin(plugin) {
-  if (!plugin || typeof plugin !== 'object') throw new Error('web plugin must be an object');
+  if (!plugin || typeof plugin !== 'object') throw new Error('web plugin resource must be an object');
   const id = String(plugin.id || '').trim();
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(id)) throw new Error(`invalid web plugin id: ${id || '(empty)'}`);
+  if (!String(plugin.name || '').trim()) throw new Error(`web plugin ${id} is missing name`);
+  if (!String(plugin.version || '').trim()) throw new Error(`web plugin ${id} is missing version`);
+  if (plugin.route !== undefined && typeof plugin.route !== 'function') throw new Error(`web plugin ${id} route must be a function`);
   return {
     ...plugin,
     id,
-    name: String(plugin.name || id).trim() || id,
-    version: String(plugin.version || '0.0.0').trim() || '0.0.0',
+    name: String(plugin.name).trim(),
+    version: String(plugin.version).trim(),
+    defaultEnabled: plugin.defaultEnabled !== false,
     tools: Array.isArray(plugin.tools) ? plugin.tools : [],
     promptSections: Array.isArray(plugin.promptSections) ? plugin.promptSections : [],
   };

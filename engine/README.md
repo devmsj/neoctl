@@ -286,7 +286,7 @@ REPL 当前注册的内置工具：
 压缩实现位于 `src/context/compaction.ts`：
 
 - `DeterministicCompactor` 提供可预测的 snip、microcompact、summary fallback。
-- 默认运行时使用 `ManualOnlyCompactor`，仅保留 manual compact 和 pure compact；显式注入其它 `Compactor` 时仍可用于测试或定制策略。
+- 默认运行时使用 `ModelDrivenCompactor`：达到上下文窗口阈值时主动压缩，模型返回上下文超限错误时执行响应式压缩并重试；如需仅允许手动压缩，可显式注入 `ManualOnlyCompactor`。
 - 当工具结果过大时，session 模式下 `FileToolResultMemory` 会把完整结果写入文件，仅把预览和路径留在上下文中。
 
 ## 会话持久化
@@ -405,6 +405,40 @@ const canUseTool = createSkillAwareCanUseTool(skills, parentCanUseTool);
 ```
 
 建议：开放 `skill_create`/`skill_update` 给模型时保持 approval；对 remote/plugin skill 使用只读 root；生产环境使用 `createSkillAwareCanUseTool()` 或父级权限系统强制 `allowedTools`。
+
+## 插件协议
+
+Core 提供 `neo-plugin/v1` 目录资源协议和 `loadNeoPlugins()` 动态加载器。Core 只定义协议、校验并加载资源，不内置任何外部插件实现。
+
+一个插件根目录可以包含多个直接子目录；每个插件目录必须包含 `neo-plugin.json`：
+
+```json
+{
+  "protocol": "neo-plugin/v1",
+  "id": "example",
+  "name": "Example",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "defaultEnabled": true
+}
+```
+
+入口模块导出 `createPlugin(context)` 或默认工厂函数，返回以下能力之一或多项：
+
+- `tools`: 符合 Core `Tool` 协议的工具数组。
+- `promptSections`: 符合 `PromptSection` 协议的系统提示词段。
+- `route(req, res, url, helpers)`: 由嵌入后台托管的 HTTP 路由处理器。
+
+```ts
+import { loadNeoPlugins } from "neoctl";
+
+const plugins = await loadNeoPlugins({
+  directories: "/absolute/path/to/plugins",
+  appDataDir: "/absolute/path/to/app-data",
+});
+```
+
+加载器会校验清单版本、插件 id、入口边界、工具/提示词结构、插件 id 冲突和工具名冲突；不存在的插件根目录视为空目录。
 
 ## 作为库使用
 

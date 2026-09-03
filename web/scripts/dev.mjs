@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import { coreRuntimeInfo, createWebRuntime, runWebServer } from '../core-runtime.mjs';
-import { createDefaultWebPlugins } from '../default-plugins.mjs';
+import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } from '../core-runtime.mjs';
 import { createWebPluginHost } from '../plugins.mjs';
 import { createWebPluginSettings } from '../plugin-settings.mjs';
 import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
@@ -22,15 +21,17 @@ const appHost = process.env.VITE_HOST || '0.0.0.0';
 const appPort = String(process.env.VITE_PORT || 5173);
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
-const xhsArtifactsDir = path.resolve(process.env.NEO_XHS_ARTIFACTS_DIR || path.join(process.cwd(), '.neoctl-web', 'xhs-artifacts'));
+const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(process.cwd(), 'plugins'));
+const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || path.join(process.cwd(), '.neoctl-web'));
 const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(process.cwd(), '.neoctl-web', 'cpa-config.json'));
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(process.cwd(), '.neoctl-web', 'memory-monitor.json'));
 const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(process.cwd(), '.neoctl-web', 'plugins.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
+const pluginResources = await loadNeoPlugins({ directories: pluginDir, appDataDir: pluginDataDir });
 const pluginHost = createWebPluginHost({
-  plugins: createDefaultWebPlugins({ xhsArtifactsDir }),
+  plugins: pluginResources,
   enabled: pluginEnv?.trim() ? pluginEnv : pluginSettings.globalEnabledIds(),
   locked: Boolean(pluginEnv?.trim()),
   settings: pluginSettings,

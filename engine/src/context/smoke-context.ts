@@ -67,6 +67,25 @@ class SequenceSummaryGateway implements ModelGateway {
   }
 }
 
+class ThresholdAutoCompactGateway implements ModelGateway {
+  compactCalls = 0;
+  modelCalls = 0;
+  sawBoundary = false;
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    if (request.queryOrigin === "compact") {
+      this.compactCalls += 1;
+      yield { type: "assistant_delta", text: "Goal: preserve the current request. Status: ready after automatic compaction." };
+      yield { type: "response_completed", responseId: "compact_threshold", stopReason: "completed" };
+      return;
+    }
+    this.modelCalls += 1;
+    this.sawBoundary = request.messages.some((message) => message.metadata?.compactBoundary === true);
+    yield { type: "assistant_message", message: createTextMessage("assistant", "automatic compact succeeded") };
+    yield { type: "response_completed", responseId: "response_threshold", stopReason: "completed" };
+  }
+}
+
 async function main(): Promise<void> {
   const prompt = buildEffectiveSystemPrompt([
     { name: "Stable", content: "cache me", cacheStable: true },
@@ -441,17 +460,39 @@ async function main(): Promise<void> {
     maxTurns: 4,
   });
   const defaultEvents: string[] = [];
-  for await (const event of defaultEngine.sendUserText("do not compact automatically")) {
+  for await (const event of defaultEngine.sendUserText("recover from a provider context error")) {
     defaultEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
   }
-  const defaultAutomaticDisabledOk =
-    defaultGateway.calls === 1 &&
-    !defaultGateway.sawBoundaryOnRetry &&
-    defaultEvents.includes("error") &&
-    defaultEvents.includes("terminal:prompt_too_long");
+  const defaultAutomaticEnabledOk =
+    defaultGateway.calls === 3 &&
+    defaultGateway.sawBoundaryOnRetry &&
+    defaultEvents.includes("context.compacted") &&
+    defaultEvents.includes("terminal:completed");
 
-  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && gpt56WindowOk && sessionWindowOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticDisabledOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, gpt56WindowOk, sessionWindowOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticDisabledOk, telemetryOk, events, defaultEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls }, null, 2));
+  const thresholdGateway = new ThresholdAutoCompactGateway();
+  const thresholdEngine = new QueryEngine({
+    model: "gpt-5.6-sol",
+    contextWindowTokensOverride: 1000,
+    modelGateway: thresholdGateway,
+    tools: new ToolRegistry(),
+    contextManager,
+    contextBudget: { autoCompactTriggerRatio: 0.92, keepRecentTokenBudget: 100 },
+    maxTurns: 2,
+  });
+  const thresholdEvents: string[] = [];
+  for await (const event of thresholdEngine.sendUserText("x".repeat(5000))) {
+    thresholdEvents.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+  }
+  const thresholdAutomaticOk =
+    thresholdGateway.compactCalls === 1 &&
+    thresholdGateway.modelCalls === 1 &&
+    thresholdGateway.sawBoundary &&
+    thresholdEvents.includes("context.compacted") &&
+    thresholdEvents.includes("terminal:completed") &&
+    thresholdEngine.getHistoryMessages().some((message) => message.metadata?.compactBoundary === true);
+
+  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && gpt56WindowOk && sessionWindowOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticEnabledOk && thresholdAutomaticOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, gpt56WindowOk, sessionWindowOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticEnabledOk, thresholdAutomaticOk, telemetryOk, events, defaultEvents, thresholdEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls, thresholdCompactCalls: thresholdGateway.compactCalls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

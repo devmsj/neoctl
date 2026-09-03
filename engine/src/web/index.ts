@@ -34,6 +34,7 @@ import { writeSessionMarkdownExport } from "../session/session-export.js";
 import type { CompactionReason, CompactionReport, CompactionResult } from "../context/compaction.js";
 import { DefaultContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
+import type { NeoPluginResource } from "../plugins/plugin-system.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { WEB_HTML } from "./html.js";
@@ -66,12 +67,8 @@ export interface WebRuntime {
   pluginSupport?: WebRuntimePluginSupport;
 }
 
-export interface WebRuntimePluginDefinition {
-  id: string;
-  name: string;
-  version: string;
+export interface WebRuntimePluginDefinition extends Pick<NeoPluginResource, "id" | "name" | "version" | "tools"> {
   globallyEnabled: boolean;
-  tools: readonly Tool[];
   promptSections?: readonly PromptSection[];
 }
 

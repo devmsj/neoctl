@@ -140,7 +140,28 @@ WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 
 
 ### Web 插件
 
-下载和小红书编辑器以 Web 后端插件提供。插件统一声明工具、稳定系统提示词段和 HTTP 路由，前端发送消息时不会再追加工具提示。插件按 id 固定排序。
+下载和小红书编辑器以目录资源插件提供，不再由 core 或 Web 后台写死。插件协议由 core 的 `neo-plugin/v1` 定义，core 负责读取清单、动态导入入口、校验工具/提示词/HTTP 路由能力；Web 后台只指定插件目录并托管已加载资源。插件按 id 固定排序。
+
+默认扫描 `plugins/*/neo-plugin.json`。每个插件目录结构如下：
+
+```text
+plugins/example/
+  neo-plugin.json
+  index.mjs
+```
+
+```json
+{
+  "protocol": "neo-plugin/v1",
+  "id": "example",
+  "name": "Example",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "defaultEnabled": true
+}
+```
+
+入口需导出 `createPlugin(context)` 或默认工厂函数，并返回 `{ tools, promptSections, route }` 中的一项或多项。`NEO_WEB_PLUGIN_DIR` 可指定其他插件根目录，`NEO_WEB_PLUGIN_DATA_DIR` 可指定传给插件的通用数据目录；插件专属配置由插件自行从 `context.env` 读取。
 
 - 全局开关位于“模型配置”，保存到 `.neoctl-web/plugins.json`，重启后生效。
 - 会话开关位于“运行上下文 → 插件”，支持跟随全局、启用和关闭，从下一轮请求生效并随会话持久化。
@@ -159,7 +180,7 @@ NEO_WEB_PLUGINS=none npm run dev
 NEO_WEB_PLUGINS=downloads,xhs-artifact npm run dev
 ```
 
-可用插件为 `downloads` 和 `xhs-artifact`。`GET /api/plugins` 返回全局状态，`GET/POST /api/session-plugins` 管理当前会话状态。
+仓库自带的插件资源为 `downloads` 和 `xhs-artifact`。新增或移除符合协议的插件目录后重启后台即可更新目录。`GET /api/plugins` 返回全局状态，`GET/POST /api/session-plugins` 管理当前会话状态。
 
 ### 消息排队
 

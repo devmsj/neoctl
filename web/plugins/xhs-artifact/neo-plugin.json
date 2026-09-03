@@ -1,0 +1,9 @@
+{
+  "protocol": "neo-plugin/v1",
+  "id": "xhs-artifact",
+  "name": "小红书编辑器",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "defaultEnabled": true,
+  "description": "提供小红书稿件编辑器工具、持久化和 HTTP 访问能力。"
+}

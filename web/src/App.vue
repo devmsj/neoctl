@@ -15,7 +15,7 @@ import diff from 'highlight.js/lib/languages/diff'
 import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
 import NeoSelect from './components/NeoSelect.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
-import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../xhs-artifact-contract.mjs'
+import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../plugins/xhs-artifact/xhs-artifact-contract.mjs'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -39,7 +39,6 @@ hljs.registerLanguage('yaml', yaml)
 hljs.registerLanguage('yml', yaml)
 hljs.registerLanguage('diff', diff)
 
-const CONTEXT_COMPRESSION_WARNING_TOKENS = 100_000
 const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
 const IMAGE_MIN_QUALITY = 0.62
@@ -399,8 +398,6 @@ const composerDropHint = computed(() => {
   if (state.composerDropMode === 'files') return state.composerDropActive ? '松开即可上传附件' : '拖入这里即可上传附件'
   return state.composerDropActive ? '松开即可替换应用提示词' : '拖入这里即可替换应用提示词'
 })
-const currentContextTokens = computed(() => Number(state.status?.metrics?.estimatedInputTokens ?? state.status?.usage?.inputTokens ?? 0))
-const showCompressionWarning = computed(() => currentContextTokens.value > CONTEXT_COMPRESSION_WARNING_TOKENS)
 const composerRunning = computed(() => active.value || state.busy)
 const backgroundTaskCount = computed(() => state.backgroundTasks.length)
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
@@ -3566,7 +3563,6 @@ function createMobileSession() {
                   ><span>{{ state.fastMode ? '快速模式' : '启用快速模式' }}</span></button>
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
                 </div>
-                <p v-if="showCompressionWarning" class="mobile-compression-warning">上下文已超过 100k，建议压缩。</p>
               </div>
             </details>
             <div class="composer-footer">
@@ -3586,7 +3582,6 @@ function createMobileSession() {
                 </button>
                 <span class="compress-wrap">
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
-                  <span v-if="showCompressionWarning" class="compression-warning" role="alert">上下文已超过 100k，请压缩上下文</span>
                 </span>
               </div>
               <div>

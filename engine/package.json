@@ -45,6 +45,7 @@
     "smoke:tools": "tsx src/tools/smoke-tool-system.ts",
     "smoke:exec": "tsx src/tools/smoke-exec-process.ts",
     "smoke:context": "tsx src/context/smoke-context.ts",
+    "smoke:plugins": "tsx src/plugins/smoke-plugin-system.ts",
     "smoke:session": "tsx src/session/smoke-session.ts",
     "smoke:agents": "tsx src/agents/smoke-agents.ts",
     "smoke:skills": "tsx src/skills/smoke-skills.ts",

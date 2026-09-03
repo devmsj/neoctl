@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, XhsArtifactRegistry } from './artifacts.mjs';
-import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT, XHS_ARTIFACT_INPUT_SCHEMA } from './xhs-artifact-contract.mjs';
+import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, XhsArtifactRegistry } from './plugins/xhs-artifact/artifacts.mjs';
+import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT, XHS_ARTIFACT_INPUT_SCHEMA } from './plugins/xhs-artifact/xhs-artifact-contract.mjs';
 
 function completePayload(overrides = {}) {
   return {
