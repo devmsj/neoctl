@@ -921,10 +921,15 @@ button:disabled,
   width: fit-content;
   max-width: 100%;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.58;
   animation: tool-purpose-arrive .42s calc(var(--purpose-index) * 55ms) cubic-bezier(.2, .8, .2, 1) both;
+}
+.tool-group-purpose > span {
+  position: relative;
+  z-index: 1;
 }
 .tool-group-purpose.live {
   color: var(--text);
@@ -935,14 +940,15 @@ button:disabled,
 .tool-group-purpose.live::after {
   content: '';
   position: absolute;
-  top: 2px;
-  bottom: 2px;
+  z-index: 0;
+  top: 3px;
+  bottom: 3px;
   left: 0;
-  width: 34%;
+  width: 24%;
   pointer-events: none;
-  background: color-mix(in srgb, var(--yellow) 14%, transparent) !important;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--yellow) 18%, transparent);
-  transform: translateX(-120%);
+  background: color-mix(in srgb, var(--pink) 8%, transparent) !important;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--pink) 10%, transparent);
+  transform: translateX(-130%);
   animation: tool-purpose-light 3.2s .4s ease-in-out infinite;
 }
 .tool-purpose-enter-active,
@@ -1234,6 +1240,12 @@ code,
   border: 1px solid var(--line);
   background: #e0f2fe !important;
   color: var(--text) !important;
+}
+:root[data-theme='dark'] .markdown :not(pre) > code {
+  border-color: #657080;
+  background: #253344 !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 0 0 1px rgba(248, 250, 252, .04);
 }
 
 [class*='modal-backdrop'],
