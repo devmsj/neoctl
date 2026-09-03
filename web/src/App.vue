@@ -1858,7 +1858,7 @@ function toolGroupLabel(group) {
 }
 
 function openToolDetail(line) {
-  if (!line) return
+  if (!line || !line.text) return
   state.toolDetailLineId = line.id
   document.body.classList.add('tool-detail-open')
 }
@@ -3594,22 +3594,36 @@ function createMobileSession() {
                     <span class="tool-group-chevron" aria-hidden="true"></span>
                   </button>
                   <div v-if="toolGroupExpanded(line)" class="tool-group-lines">
-                    <button
+                    <div
                       v-for="item in line.lines"
                       :key="item.id"
-                      type="button"
-                      :class="['tool-group-line', `status-${toolResultStatus(item).key}`]"
-                      @click="openToolDetail(item)"
+                      :class="['tool-result-summary', 'tool-group-result', `status-${toolResultStatus(item).key}`]"
                     >
-                      <svg class="tool-group-line-mark" viewBox="0 0 20 28" aria-hidden="true">
-                        <path d="M10 1.5 18.5 14 10 26.5 1.5 14Z" />
-                      </svg>
-                      <span class="tool-group-line-copy">
-                        <strong>{{ lineTitle(item) }}</strong>
-                        <span v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</span>
-                      </span>
-                      <span v-if="toolResultStatus(item).key === 'failed'" class="tool-group-line-failure" aria-label="执行失败">×</span>
-                    </button>
+                      <div class="tool-result-title-row">
+                        <svg :class="['tool-result-diamond', { spinning: item.live }]" viewBox="0 0 20 20" aria-hidden="true">
+                          <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
+                        </svg>
+                        <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
+                        <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
+                      </div>
+                      <div class="tool-result-detail-row">
+                        <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">
+                          {{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}
+                        </p>
+                        <div v-if="item.toolDisplay?.previews?.length" class="tool-result-previews">
+                          <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
+                            <span v-if="preview.label">{{ preview.label }}</span>
+                            <pre>{{ preview.content }}</pre>
+                          </section>
+                        </div>
+                        <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
+                          <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
+                            <dt>{{ fact.label }}</dt>
+                            <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
+                          </div>
+                        </dl>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </article>

@@ -905,73 +905,12 @@ button:disabled,
   transform: rotate(225deg) translate(-1px, -1px);
 }
 .tool-group-lines {
-  position: relative;
   display: grid;
-  gap: 3px;
-  margin-top: 7px;
-  padding: 2px 0 2px 21px;
+  gap: 16px;
+  margin-top: 14px;
 }
-.tool-group-lines::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 4px;
-  width: 1px;
-  background: color-mix(in srgb, var(--line) 72%, transparent) !important;
-}
-.tool-group-line {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-  padding: 5px 7px;
-  border: 0 !important;
-  background: transparent !important;
-  color: var(--text) !important;
-  box-shadow: none !important;
-  text-align: left;
-}
-.tool-group-line:hover,
-.tool-group-line:focus-visible {
-  background: color-mix(in srgb, var(--sky) 8%, transparent) !important;
-  transform: none !important;
-}
-.tool-group-line-mark {
-  width: 7px;
-  height: 10px;
-  margin-top: 4px;
-  fill: var(--sky);
-  stroke: none;
-}
-.tool-group-line.status-running .tool-group-line-mark { fill: var(--lime); }
-.tool-group-line.status-failed .tool-group-line-mark { fill: var(--pink); }
-.tool-group-line-copy {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.tool-group-line-copy strong {
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 18px;
-}
-.tool-group-line-copy > span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-group-line-failure {
-  color: var(--pink);
-  font-size: 16px;
-  font-weight: 800;
-  line-height: 16px;
+.tool-group-result {
+  width: 100%;
 }
 
 .tool-result-summary {
