@@ -41,7 +41,7 @@ export function createWorkspaceRuntimeManager(options) {
         registerEngineSync(this);
         const snapshot = this.runtime.engine.snapshot().session;
         if (!snapshot) throw new Error('session transcripts are disabled');
-        await this.loadSessionPlugins(snapshot.sessionId);
+        await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
         await registry.set(snapshot.sessionId, cwd);
         await this.refreshSessionView();
         return { ok: true, cwd };
@@ -62,7 +62,7 @@ export function createWorkspaceRuntimeManager(options) {
         registerEngineSync(this);
         const snapshot = this.runtime.engine.snapshot().session;
         if (!snapshot) throw new Error('session transcripts are disabled');
-        await this.loadSessionPlugins(snapshot.sessionId);
+        await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
         await this.refreshSessionView();
         return { ok: true, cwd };
       } catch (error) {

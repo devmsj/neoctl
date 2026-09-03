@@ -65,6 +65,7 @@ export interface WebRuntime {
   envPath: string;
   envNotice?: string;
   pluginSupport?: WebRuntimePluginSupport;
+  toolSupport?: WebRuntimeToolSupport;
 }
 
 export interface WebRuntimePluginDefinition extends Pick<NeoPluginResource, "id" | "name" | "version" | "tools"> {
@@ -79,6 +80,22 @@ interface WebRuntimePluginSupport {
   basePluginIds: string[];
   persist?: (sessionId: string, overrides: Record<string, boolean>) => Promise<void>;
   resolve?: (sessionId: string) => Promise<Record<string, boolean>> | Record<string, boolean>;
+}
+
+interface WebRuntimeToolCatalogItem {
+  name: string;
+  source: "builtin" | "external" | "plugin";
+  pluginId?: string;
+  pluginName?: string;
+}
+
+interface WebRuntimeToolSupport {
+  catalog: WebRuntimeToolCatalogItem[];
+  globalOverrides: Record<string, boolean>;
+  sessionOverrides: Record<string, boolean>;
+  persistGlobal?: (overrides: Record<string, boolean>) => Promise<void>;
+  persistSession?: (sessionId: string, overrides: Record<string, boolean>) => Promise<void>;
+  resolveSession?: (sessionId: string) => Promise<Record<string, boolean>> | Record<string, boolean>;
 }
 
 export interface UsageTotals {
@@ -229,6 +246,13 @@ export interface CreateWebRuntimeOptions {
   sessionPluginOverrides?: Readonly<Record<string, boolean>>;
   persistSessionPluginOverrides?: WebRuntimePluginSupport["persist"];
   resolveSessionPluginOverrides?: WebRuntimePluginSupport["resolve"];
+  /** Global tool defaults. Missing names default to enabled. */
+  globalToolOverrides?: Readonly<Record<string, boolean>>;
+  /** Per-session tool overrides. Missing names inherit their global default. */
+  sessionToolOverrides?: Readonly<Record<string, boolean>>;
+  persistGlobalToolOverrides?: WebRuntimeToolSupport["persistGlobal"];
+  persistSessionToolOverrides?: WebRuntimeToolSupport["persistSession"];
+  resolveSessionToolOverrides?: WebRuntimeToolSupport["resolveSession"];
 }
 
 export interface WebRuntimeScope {
@@ -355,23 +379,37 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
   const activePlugins = activeWebRuntimePlugins(pluginCatalog, pluginOverrides);
   const tools = new ToolRegistry();
+  const toolCatalog: WebRuntimeToolCatalogItem[] = [];
+  const catalogedToolNames = new Set<string>();
+  const catalogTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name">) => {
+    if (catalogedToolNames.has(tool.name)) return;
+    catalogedToolNames.add(tool.name);
+    toolCatalog.push({ name: tool.name, ...item });
+  };
+  const registerTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name">) => {
+    tools.register(tool);
+    catalogTool(tool, item);
+  };
   const execProcessManager = new ExecProcessManager();
-  tools.register(editTool);
-  tools.register(writeTool);
-  tools.register(createExecTool({ processManager: execProcessManager }));
-  tools.register(createWriteStdinTool(execProcessManager));
-  tools.register(listDirectoryTool);
-  tools.register(readFileTool);
-  tools.register(grepTool);
-  tools.register(searchTool);
-  tools.register(createLoadImageTool());
-  if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
-  tools.register(planTool);
-  for (const tool of options.externalTools ?? []) tools.register(tool);
+  registerTool(editTool, { source: "builtin" });
+  registerTool(writeTool, { source: "builtin" });
+  registerTool(createExecTool({ processManager: execProcessManager }), { source: "builtin" });
+  registerTool(createWriteStdinTool(execProcessManager), { source: "builtin" });
+  registerTool(listDirectoryTool, { source: "builtin" });
+  registerTool(readFileTool, { source: "builtin" });
+  registerTool(grepTool, { source: "builtin" });
+  registerTool(searchTool, { source: "builtin" });
+  registerTool(createLoadImageTool(), { source: "builtin" });
+  if (modelConfig?.provider === "openai") registerTool(createOpenAIImageGenerationTool(), { source: "builtin" });
+  registerTool(planTool, { source: "builtin" });
+  for (const tool of options.externalTools ?? []) registerTool(tool, { source: "external" });
+  for (const plugin of pluginCatalog) {
+    for (const tool of plugin.tools) catalogTool(tool, { source: "plugin", pluginId: plugin.id, pluginName: plugin.name });
+  }
   for (const plugin of activePlugins) for (const tool of plugin.tools) tools.register(tool);
 
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
-  tools.register(createAgentTool(agentRuntime));
+  registerTool(createAgentTool(agentRuntime), { source: "builtin" });
 
   const resumeHandler: TaskResumeHandler = async (taskId, directive) => {
     const dummyContext = {
@@ -382,7 +420,11 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     };
     return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
   };
-  for (const tool of createTaskTools(taskStore, resumeHandler)) tools.register(tool);
+  for (const tool of createTaskTools(taskStore, resumeHandler)) registerTool(tool, { source: "builtin" });
+
+  const globalToolOverrides = normalizeToolOverrides(options.globalToolOverrides, toolCatalog);
+  const sessionToolOverrides = normalizeToolOverrides(options.sessionToolOverrides, toolCatalog);
+  applyToolOverrides(tools, toolCatalog, globalToolOverrides, sessionToolOverrides);
 
   const appPromptStore = new InMemoryAppPromptStore();
   const engine = new QueryEngine({
@@ -434,6 +476,14 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
       persist: options.persistSessionPluginOverrides,
       resolve: options.resolveSessionPluginOverrides,
     } : undefined,
+    toolSupport: {
+      catalog: toolCatalog,
+      globalOverrides: globalToolOverrides,
+      sessionOverrides: sessionToolOverrides,
+      persistGlobal: options.persistGlobalToolOverrides,
+      persistSession: options.persistSessionToolOverrides,
+      resolveSession: options.resolveSessionToolOverrides,
+    },
   };
 }
 
@@ -459,6 +509,20 @@ function normalizePluginOverrides(value: Readonly<Record<string, boolean>> | und
 
 function activeWebRuntimePlugins(catalog: readonly WebRuntimePluginDefinition[], overrides: Readonly<Record<string, boolean>>): WebRuntimePluginDefinition[] {
   return catalog.filter((plugin) => plugin.globallyEnabled && overrides[plugin.id] !== false);
+}
+
+function normalizeToolOverrides(value: Readonly<Record<string, boolean>> | undefined, catalog: readonly WebRuntimeToolCatalogItem[]): Record<string, boolean> {
+  const available = new Set(catalog.map((tool) => tool.name));
+  return Object.fromEntries(Object.entries(value ?? {}).filter(([name, enabled]) => available.has(name) && typeof enabled === "boolean"));
+}
+
+function applyToolOverrides(
+  registry: ToolRegistry,
+  catalog: readonly WebRuntimeToolCatalogItem[],
+  globalOverrides: Readonly<Record<string, boolean>>,
+  sessionOverrides: Readonly<Record<string, boolean>>,
+): void {
+  for (const tool of catalog) registry.setEnabled(tool.name, sessionOverrides[tool.name] ?? globalOverrides[tool.name] ?? true);
 }
 
 function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
@@ -647,6 +711,82 @@ export class WebRepl {
     };
   }
 
+  globalTools() {
+    const support = this.runtime.toolSupport;
+    if (!support) return { items: [] };
+    return {
+      items: support.catalog.map((tool) => ({
+        ...tool,
+        configuredEnabled: support.globalOverrides[tool.name] ?? true,
+      })),
+    };
+  }
+
+  sessionTools() {
+    const support = this.runtime.toolSupport;
+    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (!support) return { sessionId, busy: this.busy, items: [] };
+    const activePluginIds = new Set(this.runtime.pluginSupport
+      ? activeWebRuntimePlugins(this.runtime.pluginSupport.catalog, this.runtime.pluginSupport.overrides).map((plugin) => plugin.id)
+      : []);
+    return {
+      sessionId,
+      busy: this.busy,
+      items: support.catalog.map((tool) => {
+        const override = support.sessionOverrides[tool.name];
+        const globallyEnabled = support.globalOverrides[tool.name] ?? true;
+        const available = tool.source !== "plugin" || Boolean(tool.pluginId && activePluginIds.has(tool.pluginId));
+        return {
+          ...tool,
+          available,
+          globallyEnabled,
+          mode: override === undefined ? "inherit" : override ? "enabled" : "disabled",
+          effectiveEnabled: available && (override ?? globallyEnabled),
+        };
+      }),
+    };
+  }
+
+  async setGlobalTools(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["globalTools"]> }>> {
+    if (this.busy) return actionFailure("TOOL_UPDATE_BLOCKED", "cannot change global tools while a response is running");
+    if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "tool overrides must be an object");
+    const support = this.runtime.toolSupport;
+    if (!support) return actionFailure("TOOL_NOT_CONFIGURED", "web tools are not configured");
+    const normalized = this.parseToolOverrides(value, support);
+    if (!normalized.ok) return normalized;
+    try {
+      support.globalOverrides = normalized.value;
+      this.syncPluginToolRegistration();
+      applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
+      if (support.persistGlobal) await support.persistGlobal(support.globalOverrides);
+      await this.refreshToolConfiguration();
+      return { ok: true, state: this.globalTools() };
+    } catch (error) {
+      return actionFailure("TOOL_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async setSessionTools(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionTools"]> }>> {
+    if (this.busy) return actionFailure("TOOL_UPDATE_BLOCKED", "cannot change session tools while a response is running");
+    if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "tool overrides must be an object");
+    const support = this.runtime.toolSupport;
+    if (!support) return actionFailure("TOOL_NOT_CONFIGURED", "web tools are not configured");
+    const normalized = this.parseToolModes(value, support);
+    if (!normalized.ok) return normalized;
+    try {
+      await this.applySessionToolOverrides(normalized.value, true);
+      return { ok: true, state: this.sessionTools() };
+    } catch (error) {
+      return actionFailure("TOOL_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async loadSessionTools(sessionId: string): Promise<void> {
+    const support = this.runtime.toolSupport;
+    if (!support?.resolveSession || !sessionId) return;
+    await this.applySessionToolOverrides(await support.resolveSession(sessionId), false);
+  }
+
   async setSessionPlugins(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionPlugins"]> }>> {
     if (this.busy) return actionFailure("PLUGIN_UPDATE_BLOCKED", "cannot change session plugins while a response is running");
     if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "plugin overrides must be an object");
@@ -674,6 +814,57 @@ export class WebRepl {
     await this.applySessionPluginOverrides(await support.resolve(sessionId), false);
   }
 
+  private parseToolOverrides(value: Record<string, unknown>, support: WebRuntimeToolSupport): { ok: true; value: Record<string, boolean> } | WebActionFailure {
+    const available = new Set(support.catalog.map((tool) => tool.name));
+    const overrides: Record<string, boolean> = {};
+    for (const [name, enabled] of Object.entries(value)) {
+      if (!available.has(name)) return actionFailure("TOOL_INVALID", `unknown tool: ${name}`);
+      if (typeof enabled !== "boolean") return actionFailure("TOOL_INVALID", `invalid tool state: ${name}`);
+      overrides[name] = enabled;
+    }
+    return { ok: true, value: overrides };
+  }
+
+  private parseToolModes(value: Record<string, unknown>, support: WebRuntimeToolSupport): { ok: true; value: Record<string, boolean> } | WebActionFailure {
+    const available = new Set(support.catalog.map((tool) => tool.name));
+    const overrides: Record<string, boolean> = {};
+    for (const [name, mode] of Object.entries(value)) {
+      if (!available.has(name)) return actionFailure("TOOL_INVALID", `unknown tool: ${name}`);
+      if (mode === "enabled" || mode === true) overrides[name] = true;
+      else if (mode === "disabled" || mode === false) overrides[name] = false;
+      else if (mode !== "inherit" && mode !== null && mode !== undefined) return actionFailure("TOOL_INVALID", `invalid tool mode: ${name}`);
+    }
+    return { ok: true, value: overrides };
+  }
+
+  private async applySessionToolOverrides(overrides: Record<string, boolean>, persist: boolean): Promise<void> {
+    const support = this.runtime.toolSupport;
+    if (!support) return;
+    support.sessionOverrides = normalizeToolOverrides(overrides, support.catalog);
+    this.syncPluginToolRegistration();
+    applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
+    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (persist && sessionId && support.persistSession) await support.persistSession(sessionId, support.sessionOverrides);
+    await this.refreshToolConfiguration();
+  }
+
+  private syncPluginToolRegistration(): void {
+    const pluginSupport = this.runtime.pluginSupport;
+    if (!pluginSupport) return;
+    for (const plugin of pluginSupport.catalog) for (const tool of plugin.tools) this.runtime.tools.unregister(tool.name);
+    for (const plugin of activeWebRuntimePlugins(pluginSupport.catalog, pluginSupport.overrides)) {
+      for (const tool of plugin.tools) this.runtime.tools.register(tool);
+    }
+  }
+
+  private async refreshToolConfiguration(): Promise<void> {
+    const metrics = await this.runtime.engine.contextMetrics();
+    this.runtime.initialMetrics = metrics;
+    this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
+    this.broadcastSync();
+    this.publishRuntimeContext();
+  }
+
   private async applySessionPluginOverrides(overrides: Record<string, boolean>, persist: boolean): Promise<void> {
     const support = this.runtime.pluginSupport;
     if (!support) return;
@@ -682,6 +873,8 @@ export class WebRepl {
     const activePlugins = activeWebRuntimePlugins(support.catalog, normalized);
     for (const plugin of activePlugins) for (const tool of plugin.tools) this.runtime.tools.register(tool);
     support.overrides = normalized;
+    const toolSupport = this.runtime.toolSupport;
+    if (toolSupport) applyToolOverrides(this.runtime.tools, toolSupport.catalog, toolSupport.globalOverrides, toolSupport.sessionOverrides);
     this.runtime.engine.setRuntimePlugins(
       [...support.basePluginIds, ...activePlugins.map((plugin) => plugin.id)],
       [...support.basePromptSections, ...activePlugins.flatMap((plugin) => plugin.promptSections ?? [])],
@@ -768,7 +961,7 @@ export class WebRepl {
       await this.runtime.engine.initialize();
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
-      await this.loadSessionPlugins(snapshot.sessionId);
+      await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
       await this.refreshSessionView();
       return { ok: true };
     } catch (error) {
@@ -784,7 +977,7 @@ export class WebRepl {
       await this.runtime.engine.initialize();
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
-      await this.loadSessionPlugins(snapshot.sessionId);
+      await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
       await this.refreshSessionView();
       return { ok: true };
     } catch (error) {
@@ -1620,6 +1813,16 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
+    if (req.method === "GET" && url.pathname === "/api/tools") return sendJson(res, repl.globalTools());
+    if (req.method === "POST" && url.pathname === "/api/tools/global") {
+      const body = await readJsonBody<{ overrides?: unknown }>(req);
+      return sendJson(res, await repl.setGlobalTools(body.overrides));
+    }
+    if (req.method === "GET" && url.pathname === "/api/session-tools") return sendJson(res, repl.sessionTools());
+    if (req.method === "POST" && url.pathname === "/api/session-tools") {
+      const body = await readJsonBody<{ overrides?: unknown }>(req);
+      return sendJson(res, await repl.setSessionTools(body.overrides));
+    }
     if (req.method === "GET" && url.pathname === "/api/session-plugins") return sendJson(res, repl.sessionPlugins());
     if (req.method === "POST" && url.pathname === "/api/session-plugins") {
       const body = await readJsonBody<{ overrides?: unknown }>(req);

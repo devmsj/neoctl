@@ -11,6 +11,7 @@ export interface ToolPoolOptions {
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool<any>>();
   private readonly aliases = new Map<string, string>();
+  private readonly disabledTools = new Set<string>();
 
   register(tool: Tool<any>): void {
     if (this.tools.has(tool.name)) {
@@ -23,18 +24,20 @@ export class ToolRegistry {
   }
 
   get(name: string): Tool<any> | undefined {
-    return this.tools.get(name) ?? this.getByAlias(name);
+    const tool = this.resolve(name);
+    return tool && !this.disabledTools.has(tool.name) ? tool : undefined;
   }
 
   getByAlias(name: string): Tool<any> | undefined {
-    const canonical = this.aliases.get(name);
-    return canonical ? this.tools.get(canonical) : undefined;
+    const tool = this.resolveAlias(name);
+    return tool && !this.disabledTools.has(tool.name) ? tool : undefined;
   }
 
   unregister(name: string): boolean {
     const tool = this.tools.get(name);
     if (!tool) return false;
     this.tools.delete(name);
+    this.disabledTools.delete(name);
     for (const alias of tool.aliases ?? []) {
       if (this.aliases.get(alias) === name) this.aliases.delete(alias);
     }
@@ -50,8 +53,32 @@ export class ToolRegistry {
     }));
   }
 
-  names(): string[] {
-    return [...this.tools.keys()].sort();
+  names(options: { includeDisabled?: boolean } = {}): string[] {
+    return [...this.tools.keys()]
+      .filter((name) => options.includeDisabled || !this.disabledTools.has(name))
+      .sort();
+  }
+
+  setEnabled(name: string, enabled: boolean): boolean {
+    const tool = this.resolve(name);
+    if (!tool) return false;
+    if (enabled) this.disabledTools.delete(tool.name);
+    else this.disabledTools.add(tool.name);
+    return true;
+  }
+
+  isEnabled(name: string): boolean | undefined {
+    const tool = this.resolve(name);
+    return tool ? !this.disabledTools.has(tool.name) : undefined;
+  }
+
+  private resolve(name: string): Tool<any> | undefined {
+    return this.tools.get(name) ?? this.resolveAlias(name);
+  }
+
+  private resolveAlias(name: string): Tool<any> | undefined {
+    const canonical = this.aliases.get(name);
+    return canonical ? this.tools.get(canonical) : undefined;
   }
 
   list(context?: ToolUseContext, options: ToolPoolOptions = {}): Tool<any>[] {
@@ -62,6 +89,7 @@ export class ToolRegistry {
     const deny = new Set(options.denyTools ?? []);
     return [...this.tools.values()]
       .filter((tool) => tool.metadata.visible)
+      .filter((tool) => !this.disabledTools.has(tool.name))
       .filter((tool) => !deny.has(tool.name))
       .filter((tool) => options.includeDeferred || !tool.metadata.shouldDefer || tool.metadata.alwaysLoad)
       .filter((tool) => tool.isEnabled?.(context) ?? true)

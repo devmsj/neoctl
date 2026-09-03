@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } from './core-runtime.mjs';
 import { createWebPluginHost } from './plugins.mjs';
 import { createWebPluginSettings } from './plugin-settings.mjs';
+import { createWebToolSettings } from './tool-settings.mjs';
 import { createWorkspaceRuntimeManager } from './runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from './runtime-router-cleanup.mjs';
 import { createCpaQuotaMonitor } from './cpa-quota.mjs';
@@ -26,8 +27,10 @@ const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || path.j
 const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(__dirname, '.neoctl-web', 'cpa-config.json'));
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(__dirname, '.neoctl-web', 'memory-monitor.json'));
 const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(__dirname, '.neoctl-web', 'plugins.json'));
+const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(__dirname, '.neoctl-web', 'tools.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
+const toolSettings = await createWebToolSettings(toolSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
 const pluginResources = await loadNeoPlugins({ directories: pluginDir, appDataDir: pluginDataDir });
 const pluginHost = createWebPluginHost({
@@ -52,6 +55,11 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),
+    globalToolOverrides: toolSettings.globalOverrides(),
+    sessionToolOverrides: toolSettings.sessionOverrides(runtimeOptions.sessionId),
+    persistGlobalToolOverrides: (overrides) => toolSettings.setGlobalOverrides(overrides),
+    persistSessionToolOverrides: (sessionId, overrides) => toolSettings.setSessionOverrides(sessionId, overrides),
+    resolveSessionToolOverrides: (sessionId) => toolSettings.sessionOverrides(sessionId),
   }),
 });
 

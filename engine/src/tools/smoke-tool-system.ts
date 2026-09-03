@@ -114,6 +114,13 @@ async function main(): Promise<void> {
   registry.register(planTool);
   registry.register(delayTool);
   registry.register(largeTool);
+  const disabledToolHidden = registry.setEnabled("smoke_passthrough", false)
+    && registry.get("smoke_passthrough") === undefined
+    && registry.get("smoke_pass") === undefined
+    && !registry.names().includes("smoke_passthrough")
+    && registry.names({ includeDisabled: true }).includes("smoke_passthrough");
+  const disabledToolRestored = registry.setEnabled("smoke_passthrough", true)
+    && registry.get("smoke_passthrough") === smokePassthroughTool;
 
   const context: ToolUseContext = {
     agentId: "tool-smoke",
@@ -457,6 +464,8 @@ async function main(): Promise<void> {
       recursiveListOutput.excludedCounts?.[".agent-tasks"] !== undefined,
     recursiveListEntriesClean:
       recursiveListOutput.entries?.every((entry) => ![".git", ".idea", ".agent-tasks", "node_modules", "dist"].includes(entry.name)) === true,
+    disabledToolHidden,
+    disabledToolRestored,
     legacyExecAliasesRemoved:
       ["exec", "shell", "bash", "powershell"].every((name) => registry.get(name) === undefined),
     execOk:

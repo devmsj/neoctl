@@ -123,6 +123,10 @@ const ACTION_ERROR_MESSAGES = {
   PLUGIN_INVALID: '插件配置无效',
   PLUGIN_UPDATE_FAILED: '插件配置更新失败',
   PLUGINS_LOCKED: '插件配置已由环境变量锁定',
+  TOOL_UPDATE_BLOCKED: '模型回答期间不能修改会话工具',
+  TOOL_NOT_CONFIGURED: '工具配置功能未启用',
+  TOOL_INVALID: '工具配置无效',
+  TOOL_UPDATE_FAILED: '工具配置更新失败',
   PROMPT_UPDATE_FAILED: '提示词更新失败',
   PROMPT_INVALID: '提示词内容无效',
   FAST_MODE_UPDATE_FAILED: '快速模式切换失败',
@@ -240,6 +244,8 @@ const state = reactive({
   runtimeContextDetail: undefined,
   globalPlugins: { items: [], locked: false, restartRequired: true, loading: false },
   sessionPlugins: { items: [], busy: false, loading: false },
+  globalTools: { items: [], loading: false },
+  sessionTools: { items: [], busy: false, loading: false },
   fastMode: false,
   fastModeMutating: false,
   contextWindowModalOpen: false,
@@ -441,6 +447,7 @@ const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lin
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
 const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
+const effectiveSessionToolCount = computed(() => state.sessionTools.items.filter((item) => item.effectiveEnabled).length)
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
 const compactionDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.compactionDetailLineId)) || null)
 const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefined)
@@ -494,7 +501,7 @@ watch(() => state.backgroundTaskDetail?.output, async () => {
 })
 
 onMounted(async () => {
-  await Promise.all([fetchState(), fetchRuntimeContext(), fetchSessionPlugins(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
+  await Promise.all([fetchState(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
@@ -550,6 +557,58 @@ async function fetchRuntimeContext() {
     return false
   } finally {
     state.runtimeContextLoading = false
+  }
+}
+
+async function fetchGlobalTools() {
+  state.globalTools.loading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/tools'))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `tools ${res.status}`)
+    state.globalTools = { items: Array.isArray(body.items) ? body.items.map((item) => ({ ...item })) : [], loading: false }
+  } catch (error) {
+    state.globalTools.loading = false
+    notify(error.message || String(error))
+  }
+}
+
+async function saveGlobalTools() {
+  const overrides = Object.fromEntries(state.globalTools.items.map((item) => [item.name, item.configuredEnabled !== false]))
+  state.globalTools.loading = true
+  try {
+    const result = await postJson('/api/tools/global', { overrides })
+    state.globalTools = { ...result.state, loading: false }
+    await Promise.all([fetchSessionTools(), fetchRuntimeContext()])
+    notify('全局工具配置已保存并立即生效')
+  } catch (error) {
+    state.globalTools.loading = false
+    notifyActionError(error, '工具配置保存失败')
+  }
+}
+
+async function fetchSessionTools() {
+  state.sessionTools.loading = true
+  try {
+    const res = await fetch(runtimeUrl('/api/session-tools'))
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `session-tools ${res.status}`)
+    state.sessionTools = { ...body, items: Array.isArray(body.items) ? body.items : [], loading: false }
+  } catch (error) {
+    state.sessionTools.loading = false
+    notify(error.message || String(error))
+  }
+}
+
+async function updateSessionTool(item, mode) {
+  const overrides = Object.fromEntries(state.sessionTools.items.map((entry) => [entry.name, entry.name === item.name ? mode : entry.mode]))
+  state.sessionTools.busy = true
+  try {
+    const result = await postJson('/api/session-tools', { overrides })
+    state.sessionTools = { ...result.state, loading: false, busy: false }
+  } catch (error) {
+    state.sessionTools.busy = false
+    notifyActionError(error, '会话工具更新失败')
   }
 }
 
@@ -876,7 +935,7 @@ function applySync(payload) {
   if (!state.fastModeMutating) state.fastMode = payload.fastMode === true
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session, allowRuntimeSessionChange)
-  if (incomingSessionId && incomingSessionId !== previousSessionId) void fetchSessionPlugins()
+  if (incomingSessionId && incomingSessionId !== previousSessionId) void Promise.all([fetchSessionPlugins(), fetchSessionTools()])
   if (state.sessionResumeLoading) {
     const sessionId = payload.session?.sessionId || ''
     if (state.pendingResumeSessionId && sessionId === state.pendingResumeSessionId) {
@@ -1497,7 +1556,7 @@ async function openLogin(provider) {
     loginProvider.value = body.provider
     Object.keys(loginValues).forEach((key) => delete loginValues[key])
     Object.assign(loginValues, body.values || {})
-    await Promise.all([fetchCpaState(), fetchGlobalPlugins()])
+    await Promise.all([fetchCpaState(), fetchGlobalPlugins(), fetchGlobalTools()])
   } catch (error) {
     notifyActionError(error, '加载模型配置失败')
   }
@@ -2017,6 +2076,7 @@ function openRuntimeContextModal(kind) {
   state.runtimeContextDetail = undefined
   document.body.classList.add('runtime-context-open')
   if (kind === 'plugins') void fetchSessionPlugins()
+  if (kind === 'tools') void fetchSessionTools()
 }
 
 function closeRuntimeContextModal() {
@@ -2048,6 +2108,7 @@ function openRuntimeFullPromptDetail() {
 }
 
 function openRuntimeToolDetail(tool) {
+  if (!tool) return
   state.runtimeContextDetail = {
     kind: 'tool',
     title: tool.name,
@@ -3864,6 +3925,22 @@ function createMobileSession() {
 
             <section class="settings-card settings-plugin-card">
               <header class="settings-card-head">
+                <div><strong>工具</strong><small>内置与插件工具默认开启，关闭后立即对当前会话生效。</small></div>
+                <button type="button" class="mini-button" :disabled="state.busy || state.globalTools.loading" @click="saveGlobalTools">保存</button>
+              </header>
+              <div class="plugin-settings-list">
+                <label v-for="tool in state.globalTools.items" :key="tool.name" class="plugin-settings-row">
+                  <span><strong><code>{{ tool.name }}</code></strong><small>{{ tool.source === 'plugin' ? `插件 · ${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small></span>
+                  <span class="plugin-toggle">
+                    <input v-model="tool.configuredEnabled" type="checkbox" :aria-label="tool.name" />
+                    <span aria-hidden="true"></span>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-card settings-plugin-card">
+              <header class="settings-card-head">
                 <strong>插件</strong>
                 <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存</button>
               </header>
@@ -3998,11 +4075,25 @@ function createMobileSession() {
             </button>
           </div>
 
-          <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-context-index runtime-tool-index">
-            <button v-for="tool in runtimeTools" :key="tool.name" type="button" class="runtime-context-index-item" @click="openRuntimeToolDetail(tool)">
-              <span><code>{{ tool.name }}</code><small>{{ runtimeToolSummary(tool) }}</small></span>
-              <b>›</b>
-            </button>
+          <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-plugin-list">
+            <div v-if="state.sessionTools.loading" class="runtime-context-empty">同步中</div>
+            <template v-else>
+              <div class="runtime-tool-status"><span>当前可用 {{ effectiveSessionToolCount }} / {{ state.sessionTools.items.length }}</span><small>每个工具可跟随全局或在本会话单独覆盖</small></div>
+              <div v-for="tool in state.sessionTools.items" :key="tool.name" class="runtime-plugin-row">
+                <button type="button" class="runtime-tool-detail-button" :disabled="!runtimeTools.some((item) => item.name === tool.name)" @click="openRuntimeToolDetail(runtimeTools.find((item) => item.name === tool.name))">
+                  <code>{{ tool.name }}</code><small>{{ tool.available === false ? `插件未启用 · ${tool.pluginName || tool.pluginId}` : tool.source === 'plugin' ? `插件 · ${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small>
+                </button>
+                <NeoSelect
+                  class="runtime-plugin-control"
+                  :model-value="tool.mode"
+                  :options="SESSION_PLUGIN_MODE_OPTIONS"
+                  :disabled="state.busy || state.sessionTools.busy || tool.available === false"
+                  :aria-label="`${tool.name}状态`"
+                  :data-mode="tool.mode"
+                  @update:model-value="updateSessionTool(tool, $event)"
+                />
+              </div>
+            </template>
           </div>
 
           <div v-else class="runtime-plugin-list">
