@@ -840,6 +840,140 @@ button:disabled,
   100% { transform: translateX(110%); opacity: 0; }
 }
 
+.tool-group-message {
+  grid-template-columns: minmax(0, 1fr) !important;
+  padding-block: 7px !important;
+}
+.tool-group-shell {
+  width: min(860px, 100%);
+  min-width: 0;
+}
+.tool-group-trigger {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, auto) auto 12px;
+  align-items: center;
+  justify-content: start;
+  gap: 7px;
+  padding: 2px 0;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+  text-align: left;
+}
+.tool-group-trigger:hover,
+.tool-group-trigger:focus-visible {
+  color: var(--sky) !important;
+  transform: none !important;
+}
+.tool-group-diamond {
+  width: 10px;
+  height: 14px;
+  fill: var(--sky);
+  stroke: none;
+  transition: fill .2s ease, opacity .2s ease;
+}
+.tool-group-message.live .tool-group-diamond {
+  fill: var(--lime);
+}
+.tool-group-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-group-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.tool-group-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transform-origin: center;
+  transition: transform .2s ease;
+}
+.tool-group-trigger[aria-expanded='true'] .tool-group-chevron {
+  transform: rotate(225deg) translate(-1px, -1px);
+}
+.tool-group-lines {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 2px 0 2px 21px;
+}
+.tool-group-lines::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: color-mix(in srgb, var(--line) 72%, transparent) !important;
+}
+.tool-group-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+  text-align: left;
+}
+.tool-group-line:hover,
+.tool-group-line:focus-visible {
+  background: color-mix(in srgb, var(--sky) 8%, transparent) !important;
+  transform: none !important;
+}
+.tool-group-line-mark {
+  width: 7px;
+  height: 10px;
+  margin-top: 4px;
+  fill: var(--sky);
+  stroke: none;
+}
+.tool-group-line.status-running .tool-group-line-mark { fill: var(--lime); }
+.tool-group-line.status-failed .tool-group-line-mark { fill: var(--pink); }
+.tool-group-line-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.tool-group-line-copy strong {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 18px;
+}
+.tool-group-line-copy > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-group-line-failure {
+  color: var(--pink);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
 .tool-result-summary {
   width: min(860px, 100%);
   min-height: 0;

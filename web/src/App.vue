@@ -288,6 +288,7 @@ const state = reactive({
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
+  expandedToolGroups: {},
   compactionDetailLineId: undefined,
   backgroundTaskDetail: undefined,
   imagePreview: undefined,
@@ -453,7 +454,10 @@ const activePanelLabel = computed(() => ({
   prompts: '提示词管理',
   settings: '模型配置',
 }[state.activePanel] || state.activePanel))
-const visibleLines = computed(() => state.sessionResumeLoading ? [] : (state.lines || []).filter((line) => !shouldHideLine(line)))
+const visibleLines = computed(() => {
+  if (state.sessionResumeLoading) return []
+  return groupVisibleToolLines((state.lines || []).filter((line) => !shouldHideLine(line)))
+})
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
 const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
@@ -1798,8 +1802,63 @@ function shouldCollapseToolLine(line) {
   return isToolResult && !isInlineRichToolLine(line)
 }
 
+function isToolGroup(line) {
+  return line?.kind === 'tool-group' && Array.isArray(line.lines)
+}
+
+function groupVisibleToolLines(lines) {
+  const grouped = []
+  let pending = []
+
+  const flush = () => {
+    if (!pending.length) return
+    if (pending.length === 1) {
+      grouped.push(pending[0])
+    } else {
+      grouped.push({
+        id: `tool-group:${pending[0].id}`,
+        kind: 'tool-group',
+        lines: pending,
+        live: pending.some((line) => line?.live === true),
+      })
+    }
+    pending = []
+  }
+
+  for (const line of lines || []) {
+    if (shouldCollapseToolLine(line)) {
+      pending.push(line)
+    } else {
+      flush()
+      grouped.push(line)
+    }
+  }
+  flush()
+  return grouped
+}
+
+function toolGroupExpanded(group) {
+  return state.expandedToolGroups[group?.id] === true
+}
+
+function toggleToolGroup(group) {
+  if (!isToolGroup(group)) return
+  state.expandedToolGroups[group.id] = !toolGroupExpanded(group)
+}
+
+function toolGroupLabel(group) {
+  const lines = group?.lines || []
+  const names = []
+  for (const line of lines) {
+    const name = lineTitle(line)
+    if (name && !names.includes(name)) names.push(name)
+  }
+  const lead = names.slice(0, 2).join('、') || '过程'
+  return names.length > 2 ? `${lead}…` : lead
+}
+
 function openToolDetail(line) {
-  if (!line || !line.text) return
+  if (!line) return
   state.toolDetailLineId = line.id
   document.body.classList.add('tool-detail-open')
 }
@@ -3523,7 +3582,38 @@ function createMobileSession() {
               <span v-else class="runtime-context-syncing">同步中</span>
             </section>
 
-            <article v-for="line in visibleLines" :key="line.id" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
+            <template v-for="line in visibleLines" :key="line.id">
+              <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
+                <div class="tool-group-shell">
+                  <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line)">
+                    <svg :class="['tool-group-diamond', { spinning: line.live }]" viewBox="0 0 20 28" aria-hidden="true">
+                      <path d="M10 1.5 18.5 14 10 26.5 1.5 14Z" />
+                    </svg>
+                    <span class="tool-group-label">{{ toolGroupLabel(line) }}</span>
+                    <span class="tool-group-count">{{ line.lines.length }}</span>
+                    <span class="tool-group-chevron" aria-hidden="true"></span>
+                  </button>
+                  <div v-if="toolGroupExpanded(line)" class="tool-group-lines">
+                    <button
+                      v-for="item in line.lines"
+                      :key="item.id"
+                      type="button"
+                      :class="['tool-group-line', `status-${toolResultStatus(item).key}`]"
+                      @click="openToolDetail(item)"
+                    >
+                      <svg class="tool-group-line-mark" viewBox="0 0 20 28" aria-hidden="true">
+                        <path d="M10 1.5 18.5 14 10 26.5 1.5 14Z" />
+                      </svg>
+                      <span class="tool-group-line-copy">
+                        <strong>{{ lineTitle(item) }}</strong>
+                        <span v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</span>
+                      </span>
+                      <span v-if="toolResultStatus(item).key === 'failed'" class="tool-group-line-failure" aria-label="执行失败">×</span>
+                    </button>
+                  </div>
+                </div>
+              </article>
+              <article v-else :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
               <div :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
                   <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
@@ -3620,7 +3710,8 @@ function createMobileSession() {
                   </template>
                 </template>
               </div>
-            </article>
+              </article>
+            </template>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
                 <span class="message-loading-label">{{ transcriptLoadingLabel }}</span>
