@@ -908,6 +908,7 @@ button:disabled,
   display: grid;
   gap: 16px;
   margin-top: 14px;
+  padding-left: 21px;
 }
 .tool-group-result {
   width: 100%;
