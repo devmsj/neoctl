@@ -414,10 +414,6 @@ const currentContextWindowK = computed(() => {
 })
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
-const composerDropHint = computed(() => {
-  if (state.composerDropMode === 'files') return state.composerDropActive ? '松开即可上传附件' : '拖入这里即可上传附件'
-  return state.composerDropActive ? '松开即可替换应用提示词' : '拖入这里即可替换应用提示词'
-})
 const composerRunning = computed(() => active.value || state.busy)
 const backgroundTaskCount = computed(() => state.backgroundTasks.length)
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
@@ -3349,26 +3345,42 @@ function createMobileSession() {
   <div class="shell">
     <aside class="sidebar">
       <div class="brand-row logo-only">
-        <button class="theme-toggle" type="button" :aria-label="themeToggleLabel" :title="themeToggleLabel" @click="toggleTheme">
-          <svg v-if="isDarkTheme" class="ui-icon theme-toggle-icon" viewBox="0 0 20 20" aria-hidden="true">
-            <circle cx="10" cy="10" r="3.2" />
-            <path d="M10 2.4v2M10 15.6v2M2.4 10h2M15.6 10h2M4.6 4.6 6 6M14 14l1.4 1.4M15.4 4.6 14 6M6 14l-1.4 1.4" />
-          </svg>
-          <svg v-else class="ui-icon theme-toggle-icon" viewBox="0 0 20 20" aria-hidden="true">
-            <path d="M15.8 12.4A6.1 6.1 0 0 1 7.6 4.2 6.1 6.1 0 1 0 15.8 12.4Z" />
-          </svg>
-          <span>{{ isDarkTheme ? '日间模式' : '夜间模式' }}</span>
+        <button
+          class="theme-toggle celestial-theme-toggle"
+          type="button"
+          :aria-label="themeToggleLabel"
+          :aria-pressed="isDarkTheme"
+          :title="themeToggleLabel"
+          @click="toggleTheme"
+        >
+          <span class="theme-orbit-scene" aria-hidden="true">
+            <i class="theme-cloud theme-cloud-one"></i>
+            <i class="theme-cloud theme-cloud-two"></i>
+            <i class="theme-star theme-star-one"></i>
+            <i class="theme-star theme-star-two"></i>
+            <i class="theme-star theme-star-three"></i>
+            <span class="theme-orbit-body">
+              <svg class="theme-sun" viewBox="0 0 28 28">
+                <circle cx="14" cy="14" r="5.2" />
+                <path d="M14 2.5v3M14 22.5v3M2.5 14h3M22.5 14h3M5.9 5.9 8 8M20 20l2.1 2.1M22.1 5.9 20 8M8 20l-2.1 2.1" />
+              </svg>
+              <svg class="theme-moon" viewBox="0 0 28 28">
+                <path d="M20.8 18.8A9.2 9.2 0 0 1 9.2 7.2a9.2 9.2 0 1 0 11.6 11.6Z" />
+                <circle cx="10.2" cy="16.8" r="1" />
+                <circle cx="15.4" cy="21" r=".75" />
+              </svg>
+            </span>
+          </span>
         </button>
       </div>
 
       <nav class="nav">
-        <button :class="{ active: state.activePanel === 'chat' }" @click="state.activePanel = 'chat'">
+        <button :class="{ active: state.activePanel === 'chat' }" @click="newSession">
           <span class="nav-button-content">
             <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M4 5.5h12M4 10h7M4 14.5h9" />
-              <path d="M14.5 12.5 17 10l-2.5-2.5" />
+              <path d="M10 4v12M4 10h12" />
             </svg>
-            <span>对话工作台</span>
+            <span>新建会话</span>
           </span>
         </button>
         <button :class="{ active: state.activePanel === 'sessions' }" @click="openSessions">
@@ -3391,11 +3403,11 @@ function createMobileSession() {
         </button>
       </nav>
 
-      <button class="sidebar-card session-entry" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
+      <button :class="['sidebar-card', 'session-entry', { working: composerRunning }]" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
         <span class="session-entry-icon" aria-hidden="true">
-          <svg class="ui-icon" viewBox="0 0 20 20">
-            <path d="M4.5 5.5h11M4.5 10h7M4.5 14.5h5" />
-          </svg>
+          <i class="session-diamond session-diamond-core"></i>
+          <i class="session-diamond session-diamond-orbit-one"></i>
+          <i class="session-diamond session-diamond-orbit-two"></i>
         </span>
         <span class="session-entry-main">
           <span ref="sessionTitleViewport" :class="['session-title-line', { marquee: titleShouldMarquee }]">
@@ -3452,14 +3464,32 @@ function createMobileSession() {
               <button type="button" @click="createMobileSession">新建会话</button>
             </nav>
           </details>
-          <button class="ghost mobile-theme-toggle" type="button" :aria-label="themeToggleLabel" :title="themeToggleLabel" @click="toggleTheme">
-            <svg v-if="isDarkTheme" class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <circle cx="10" cy="10" r="3.2" />
-              <path d="M10 2.4v2M10 15.6v2M2.4 10h2M15.6 10h2M4.6 4.6 6 6M14 14l1.4 1.4M15.4 4.6 14 6M6 14l-1.4 1.4" />
-            </svg>
-            <svg v-else class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M15.8 12.4A6.1 6.1 0 0 1 7.6 4.2 6.1 6.1 0 1 0 15.8 12.4Z" />
-            </svg>
+          <button
+            class="ghost mobile-theme-toggle celestial-theme-toggle"
+            type="button"
+            :aria-label="themeToggleLabel"
+            :aria-pressed="isDarkTheme"
+            :title="themeToggleLabel"
+            @click="toggleTheme"
+          >
+            <span class="theme-orbit-scene" aria-hidden="true">
+              <i class="theme-cloud theme-cloud-one"></i>
+              <i class="theme-cloud theme-cloud-two"></i>
+              <i class="theme-star theme-star-one"></i>
+              <i class="theme-star theme-star-two"></i>
+              <i class="theme-star theme-star-three"></i>
+              <span class="theme-orbit-body">
+                <svg class="theme-sun" viewBox="0 0 28 28">
+                  <circle cx="14" cy="14" r="5.2" />
+                  <path d="M14 2.5v3M14 22.5v3M2.5 14h3M22.5 14h3M5.9 5.9 8 8M20 20l2.1 2.1M22.1 5.9 20 8M8 20l-2.1 2.1" />
+                </svg>
+                <svg class="theme-moon" viewBox="0 0 28 28">
+                  <path d="M20.8 18.8A9.2 9.2 0 0 1 9.2 7.2a9.2 9.2 0 1 0 11.6 11.6Z" />
+                  <circle cx="10.2" cy="16.8" r="1" />
+                  <circle cx="15.4" cy="21" r=".75" />
+                </svg>
+              </span>
+            </span>
           </button>
           <button class="ghost desktop-config-button" @click="openLogin()">配置模型</button>
           <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
@@ -3503,10 +3533,9 @@ function createMobileSession() {
               <div v-else-if="line.kind === 'thinking'" class="message-body reasoning-body">
                 <details class="reasoning-sheet" :open="line.live || undefined">
                   <summary>
-                    <span class="reasoning-title-mark" aria-hidden="true"></span>
+                    <span class="reasoning-title-mark" aria-hidden="true"><i></i><i></i><i></i></span>
                     <span class="reasoning-heading">思考</span>
                     <span v-if="lineElapsedText(line)" class="reasoning-elapsed">{{ lineElapsedText(line) }}</span>
-                    <span class="reasoning-chevron" aria-hidden="true"></span>
                   </summary>
                   <div class="reasoning-reveal">
                     <div class="reasoning-paper">
@@ -3583,12 +3612,12 @@ function createMobileSession() {
               </div>
             </article>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
-              <span class="message-loading-emblem" aria-hidden="true">
-                <i></i><i></i><i></i>
-              </span>
               <div class="message-loading-body">
                 <span class="message-loading-label">{{ transcriptLoadingLabel }}</span>
               </div>
+              <span class="message-loading-emblem" aria-hidden="true">
+                <i></i><i></i><i></i>
+              </span>
             </div>
           </div>
 
@@ -3607,7 +3636,6 @@ function createMobileSession() {
             @dragleave="handleComposerDragLeave"
             @drop="handleComposerDrop"
           >
-            <div class="composer-drop-hint">{{ composerDropHint }}</div>
             <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
               <span class="composer-app-prompt-label">当前提示词</span>
               <strong>{{ activeAppPromptTitle }}</strong>
@@ -3690,14 +3718,9 @@ function createMobileSession() {
         </div>
 
         <aside class="right-panel">
-          <section class="status-card compact-status">
-            <div :class="['runtime-phase', { active }]">{{ active ? '●' : '✓' }} {{ exactPhaseLabel }}</div>
-            <dl>
-              <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
-              <div><dt>上下文</dt><dd>{{ contextPercent }}</dd></div>
-              <div><dt>Token</dt><dd>↑ {{ inputTokens }} / ↓ {{ outputTokens }}</dd></div>
-              <div class="cwd-row"><dt>CWD</dt><dd :title="currentCwd">{{ currentCwd }}</dd></div>
-            </dl>
+          <section class="status-card compact-status cwd-card">
+            <strong class="cwd-card-label">CWD</strong>
+            <div class="cwd-card-path" :title="currentCwd">{{ currentCwd }}</div>
           </section>
           <section class="background-task-section">
             <div class="background-task-head">
@@ -3786,8 +3809,11 @@ function createMobileSession() {
       <section v-else-if="state.activePanel === 'sessions'" class="content-grid single">
         <div class="panel-page sessions-page">
           <div class="page-head sessions-page-head">
-            <h2>会话管理</h2>
-            <button class="primary" @click="newSession">新建会话</button>
+            <div>
+              <h2>会话管理</h2>
+              <p>查找、继续或整理历史会话</p>
+            </div>
+            <button class="primary" @click="newSession">+ 新建会话</button>
           </div>
           <div class="session-toolbar">
             <label class="session-search" aria-label="搜索会话">
@@ -3806,8 +3832,10 @@ function createMobileSession() {
                   <span v-if="isCurrentSession(session.sessionId)" class="current-pill">当前</span>
                   <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
                 </div>
-                <code :title="session.sessionId">{{ session.sessionId }}</code>
-                <time :datetime="session.updatedAt || session.createdAt">{{ formatSessionTime(session.updatedAt || session.createdAt) }}</time>
+                <div class="session-card-meta">
+                  <code :title="session.sessionId">ID · {{ session.sessionId }}</code>
+                  <time :datetime="session.updatedAt || session.createdAt">更新于 {{ formatSessionTime(session.updatedAt || session.createdAt) }}</time>
+                </div>
               </div>
               <div class="session-actions">
                 <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session.sessionId)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>

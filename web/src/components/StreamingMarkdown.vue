@@ -9,6 +9,24 @@ const props = defineProps({
 const root = ref(null)
 let parser
 let processedText = ''
+let parserSourceText = ''
+let pendingCommitTimer
+
+function cancelPendingCommit() {
+  if (pendingCommitTimer) clearTimeout(pendingCommitTimer)
+  pendingCommitTimer = undefined
+}
+
+function schedulePendingCommit() {
+  cancelPendingCommit()
+  pendingCommitTimer = setTimeout(() => {
+    pendingCommitTimer = undefined
+    // streaming-markdown waits for a following character before committing
+    // ambiguous trailing Markdown. Finish the visual buffer after a brief idle
+    // period so pre-tool status text is visible before the tool begins.
+    if (parser?.pending && processedText) rebuild(`${processedText}\n`, processedText)
+  }, 80)
+}
 
 function safeUrl(value) {
   const text = String(value || '').trim()
@@ -36,30 +54,39 @@ function createRenderer(element) {
 function appendText(text) {
   if (!parser) return
   const nextText = String(text || '')
-  if (!nextText.startsWith(processedText)) {
+  cancelPendingCommit()
+  if (!nextText.startsWith(processedText) || parserSourceText !== processedText) {
     rebuild(nextText)
+    schedulePendingCommit()
     return
   }
   const delta = nextText.slice(processedText.length)
   processedText = nextText
+  parserSourceText = nextText
   if (delta) smd.parser_write(parser, delta)
+  schedulePendingCommit()
 }
 
-function rebuild(text = props.text) {
+function rebuild(text = props.text, sourceText = text) {
   const element = root.value
   if (!element) return
   if (parser) smd.parser_end(parser)
   element.replaceChildren()
   parser = smd.parser(createRenderer(element))
-  processedText = String(text || '')
-  if (processedText) smd.parser_write(parser, processedText)
+  parserSourceText = String(text || '')
+  processedText = String(sourceText || '')
+  if (parserSourceText) smd.parser_write(parser, parserSourceText)
 }
 
-onMounted(rebuild)
+onMounted(() => {
+  rebuild()
+  schedulePendingCommit()
+})
 
 watch(() => props.text, appendText, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  cancelPendingCommit()
   if (parser) smd.parser_end(parser)
   parser = undefined
 })

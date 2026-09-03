@@ -1109,6 +1109,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     if (event.type === "tool.started") {
       finalizeLiveLine(assistantLineId.current);
       finalizeThinkingLine();
+      assistantLineId.current = undefined;
       return;
     }
     if (event.type === "tool.finished") return;

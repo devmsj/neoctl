@@ -1,6 +1,20 @@
 import type { Message } from "../types/messages.js";
 
-const STREAM_HOLD_BACK_CHARS = 64;
+const REASONING_LEAK_MARKERS = [
+  "We need",
+  "Need answer",
+  "Need respond",
+  "Need final",
+  "Need maybe",
+  "Need check",
+  "Need mention",
+  "Need say",
+  "Final maybe",
+  "The transcript shows",
+  "Our final",
+  "User asked",
+  "I should",
+] as const;
 
 export class AssistantOutputFilter {
   private buffer = "";
@@ -19,7 +33,11 @@ export class AssistantOutputFilter {
       return safe;
     }
 
-    const safeEnd = Math.max(0, this.buffer.length - STREAM_HOLD_BACK_CHARS);
+    // Only retain a suffix that could become one of the leak markers when the
+    // provider's next chunk arrives. A fixed-size hold-back makes ordinary text
+    // appear frozen during model pauses and releases it only at a later tool or
+    // final-message boundary.
+    const safeEnd = this.buffer.length - reasoningLeakPrefixSuffixLength(this.buffer);
     if (safeEnd <= this.emittedLength) return "";
 
     const safe = this.buffer.slice(this.emittedLength, safeEnd);
@@ -27,15 +45,33 @@ export class AssistantOutputFilter {
     return safe;
   }
 
+  flush(): string {
+    if (this.redacted || this.emittedLength >= this.buffer.length) return "";
+    const leakStart = findReasoningLeakStart(this.buffer);
+    const safeEnd = leakStart >= 0 ? leakStart : this.buffer.length;
+    const safe = this.buffer.slice(this.emittedLength, safeEnd);
+    this.emittedLength = safeEnd;
+    if (leakStart >= 0) this.redacted = true;
+    return safe;
+  }
+
   sanitizeMessage(message: Message): Message {
     let changed = false;
+    let hasFinalText = false;
     const blocks = message.blocks.map((block) => {
       if (block.type !== "text") return block;
+      hasFinalText = true;
       const text = stripLeakedReasoningText(block.text);
       if (text === block.text) return block;
       changed = true;
       return { ...block, text };
     });
+
+    // A provider-finalized text block is authoritative and replaces the streamed
+    // line in consumers. Mark the hold-back buffer consumed so flush() cannot
+    // emit its tail a second time. Tool-only assistant messages deliberately do
+    // not consume it: their preceding streamed text still needs to be released.
+    if (hasFinalText) this.emittedLength = this.buffer.length;
 
     return changed ? { ...message, blocks, metadata: { ...message.metadata, outputSanitized: true } } : message;
   }
@@ -45,6 +81,22 @@ export function stripLeakedReasoningText(text: string): string {
   const leakStart = findReasoningLeakStart(text);
   if (leakStart < 0) return text;
   return text.slice(0, leakStart).trimEnd();
+}
+
+function reasoningLeakPrefixSuffixLength(text: string): number {
+  const lowerText = text.toLocaleLowerCase("en-US");
+  let longest = 0;
+  for (const marker of REASONING_LEAK_MARKERS) {
+    const lowerMarker = marker.toLocaleLowerCase("en-US");
+    const maxLength = Math.min(lowerText.length, lowerMarker.length - 1);
+    for (let length = maxLength; length > longest; length -= 1) {
+      if (lowerText.endsWith(lowerMarker.slice(0, length))) {
+        longest = length;
+        break;
+      }
+    }
+  }
+  return longest;
 }
 
 function findReasoningLeakStart(text: string): number {

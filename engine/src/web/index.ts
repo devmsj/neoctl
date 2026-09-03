@@ -1459,6 +1459,7 @@ export class WebRepl {
     if (event.type === "tool.started") {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
+      this.assistantLineId = undefined;
       const id = this.append({ ...formatToolUse(event.toolUse), live: true });
       this.liveToolLineIds.set(event.toolUse.id, id);
       return;

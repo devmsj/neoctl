@@ -431,6 +431,12 @@ async function* callModelForTurn(
     return { terminal: "aborted_streaming" };
   }
 
+  // Some providers end a tool-calling turn without a finalized text message.
+  // Release the filter's safety hold-back before the tool boundary so the UI
+  // does not defer the last part of the assistant's pre-tool narration.
+  const heldBackText = outputFilter.flush();
+  if (heldBackText) yield { type: "assistant.delta", text: heldBackText };
+
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   const syntheticToolUseMessage = appendSyntheticToolUseMessage(assistantMessages, toolUses);
   if (syntheticToolUseMessage) yield { type: "message", message: syntheticToolUseMessage };
@@ -493,6 +499,8 @@ async function* handleModelEvent(
 
   if (event.type === "assistant_message") {
     const message = outputFilter.sanitizeMessage(event.message);
+    const heldBackText = outputFilter.flush();
+    if (heldBackText) yield { type: "assistant.delta", text: heldBackText };
     assistantMessages.push(message);
     for (const toolUse of extractToolUses(message)) toolUses.push(toolUse);
     yield { type: "message", message };

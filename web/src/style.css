@@ -556,14 +556,7 @@ a { color: var(--purple); }
   background: rgba(255,255,255,.88);
 }
 .topbar {
-  height: 52px;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-  background: rgba(255,255,255,.88);
-  backdrop-filter: blur(12px);
+  display: none;
 }
 .crumb { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .crumb span { color: inherit; }
@@ -4067,6 +4060,7 @@ button.metric-chip {
   .topbar {
     position: relative;
     z-index: 40;
+    display: flex;
     height: 48px;
     flex: 0 0 48px;
     padding: 0 10px 0 12px;

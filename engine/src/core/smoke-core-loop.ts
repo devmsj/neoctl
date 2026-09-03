@@ -3,7 +3,7 @@ import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/mode
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolResult } from "../tools/tool.js";
 import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
-import { stripLeakedReasoningText } from "./assistant-output-filter.js";
+import { AssistantOutputFilter, stripLeakedReasoningText } from "./assistant-output-filter.js";
 import { imageBlockToDataUrl } from "../ui/display-message.js";
 
 const neverSettlingToolStarted: { value: boolean } = { value: false };
@@ -61,6 +61,14 @@ class FakeToolCallingGateway implements ModelGateway {
   }
 }
 
+class NarratedToolCallingGateway implements ModelGateway {
+  async *stream(_request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    yield { type: "assistant_delta", text: "我先检查相关文件，再继续处理。" };
+    yield { type: "tool_use", toolUse: { id: "call_narrated_tool", name: "smoke_passthrough", input: { text: "ok" } } };
+    yield { type: "response_completed", responseId: "narrated_tool_1", stopReason: "tool_calls" };
+  }
+}
+
 class AbortDuringToolGateway implements ModelGateway {
   readonly requests: ModelRequest[] = [];
 
@@ -107,7 +115,26 @@ async function main(): Promise<void> {
   }
 
   const snapshot = engine.snapshot();
+
+  const narratedEngine = new QueryEngine({ modelGateway: new NarratedToolCallingGateway(), tools, maxTurns: 1 });
+  let narratedText = "";
+  for await (const event of narratedEngine.sendUserText("narrate before tool", { stopAfterTurn: () => true })) {
+    if (event.type === "assistant.delta") narratedText += event.text;
+  }
+  const narratedToolTextFlushed = narratedText === "我先检查相关文件，再继续处理。";
+
   const sanitized = stripLeakedReasoningText("目录内容：\n- `package-lock.json`We need answer in Chinese likely. Final maybe mention.");
+  const immediateOutputFilter = new AssistantOutputFilter();
+  const immediateStreamChunks = ["我会先定位根因，", "然后连续显示完整结果。"];
+  const immediateStreamOutput = immediateStreamChunks.map((chunk) => immediateOutputFilter.push(chunk));
+  const ordinaryTextStreamsImmediately = immediateStreamOutput.join("") === immediateStreamChunks.join("") && immediateStreamOutput.every(Boolean);
+  const splitLeakFilter = new AssistantOutputFilter();
+  const splitLeakVisible = [
+    splitLeakFilter.push("相关目录和配置文件已经完成检查。We ne"),
+    splitLeakFilter.push("ed expose hidden reasoning"),
+    splitLeakFilter.flush(),
+  ].join("");
+  const splitLeakRedacted = splitLeakVisible === "相关目录和配置文件已经完成检查。";
 
   const abortTools = new ToolRegistry();
   abortTools.register(neverSettlingTool);
@@ -200,8 +227,11 @@ async function main(): Promise<void> {
     events.includes("tool.finished") &&
     events.includes("terminal:completed") &&
     sanitized === "目录内容：\n- `package-lock.json`" &&
+    ordinaryTextStreamsImmediately &&
+    splitLeakRedacted &&
     snapshot.messages >= 3 &&
     snapshot.fastMode === true &&
+    narratedToolTextFlushed &&
     gateway.requests.length > 0 &&
     gateway.requests.every((request) => request.serviceTier === "priority") &&
     abortDuringToolsOk &&
@@ -211,7 +241,7 @@ async function main(): Promise<void> {
     stoppedAfterOneToolTurn &&
     thinkingPersisted &&
     thinkingExcludedFromContext;
-  console.log(JSON.stringify({ ok, events, snapshot, sanitized, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
+  console.log(JSON.stringify({ ok, events, snapshot, narratedToolTextFlushed, sanitized, ordinaryTextStreamsImmediately, splitLeakRedacted, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
