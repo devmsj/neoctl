@@ -207,6 +207,7 @@ interface UiLine {
   format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
   summaryMaxLines?: number;
+  presentationLevel?: "primary" | "process";
   live?: boolean;
   collapsible?: boolean;
   image?: UiLineImage;
@@ -1435,7 +1436,7 @@ export class WebRepl {
           const liveLineId = this.liveToolLineIds.get(toolUseId);
           if (liveLineId === undefined) return this.append(line);
           const liveLine = this.lines.find((item) => item.id === liveLineId);
-          this.replaceLine(liveLineId, { ...line, toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
+          this.replaceLine(liveLineId, { ...line, presentationLevel: mergePresentationLevel(line.presentationLevel, liveLine?.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
           this.liveToolLineIds.delete(toolUseId);
           return liveLineId;
         });
@@ -2024,7 +2025,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     if (line.toolUseId && line.titleStatus && historyToolLineIndexes.has(line.toolUseId)) {
       const index = historyToolLineIndexes.get(line.toolUseId)!;
       const started = lines[index];
-      lines[index] = { ...line, toolDisplay: mergeToolDisplays(line.toolDisplay, started.toolDisplay) };
+      lines[index] = { ...line, presentationLevel: mergePresentationLevel(line.presentationLevel, started.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, started.toolDisplay) };
       return index + 1;
     }
     lines.push(line);
@@ -2613,15 +2614,25 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
-  if (toolUse.name === "plan" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), collapsible: true };
-  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", collapsible: true };
+  const presentationLevel = toolPresentationLevel(toolUse.name, toolUse.input);
+  if (toolUse.name === "plan" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), presentationLevel, collapsible: true };
+  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", presentationLevel: "primary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
-  return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", collapsible: true };
+  return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
   const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, collapsible: true };
+  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, presentationLevel: toolPresentationLevel(toolName, output), collapsible: true };
+}
+
+function toolPresentationLevel(toolName: string, payload: unknown): UiLine["presentationLevel"] {
+  if (toolName === "image2" || toolName === "open_xhs_artifact_editor") return "primary";
+  if (!isRecord(payload)) return "process";
+  const direct = payload.presentationLevel;
+  const ui = isRecord(payload.ui) ? payload.ui.presentationLevel : undefined;
+  const underscoredUi = isRecord(payload._ui) ? payload._ui.presentationLevel : undefined;
+  return [direct, ui, underscoredUi].some((value) => value === "primary") ? "primary" : "process";
 }
 
 
@@ -2683,6 +2694,10 @@ function toolUsePurpose(toolName: string, input: unknown): string | undefined {
   if (toolName === "write" && typeof input.path === "string") return `写入 ${path.basename(input.path)}`;
   if (toolName === "edit" && typeof input.path === "string") return `修改 ${path.basename(input.path)}`;
   return undefined;
+}
+
+function mergePresentationLevel(result: UiLine["presentationLevel"], started: UiLine["presentationLevel"]): UiLine["presentationLevel"] {
+  return result === "primary" || started === "primary" ? "primary" : result ?? started;
 }
 
 function mergeToolDisplays(result: UiToolDisplay | undefined, started: UiToolDisplay | undefined): UiToolDisplay | undefined {

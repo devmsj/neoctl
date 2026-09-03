@@ -1806,14 +1806,27 @@ function isToolGroup(line) {
   return line?.kind === 'tool-group' && Array.isArray(line.lines)
 }
 
+function isPrimaryPresentationLine(line) {
+  if (!line) return true
+  if (line.presentationLevel === 'primary') return true
+  if (line.kind === 'user' || line.kind === 'assistant') return true
+  return isImage2Line(line) || isXhsArtifactLine(line)
+}
+
+function isGroupableProcessLine(line) {
+  if (!line || isPrimaryPresentationLine(line)) return false
+  return ['thinking', 'tool', 'error', 'meta', 'system', 'agent'].includes(String(line.kind || 'system'))
+}
+
 function groupVisibleToolLines(lines) {
   const grouped = []
   let pending = []
 
   const flush = () => {
     if (!pending.length) return
-    if (pending.length === 1) {
-      grouped.push(pending[0])
+    const hasProcessAction = pending.some((line) => line?.kind !== 'thinking')
+    if (pending.length === 1 || !hasProcessAction) {
+      grouped.push(...pending)
     } else {
       grouped.push({
         id: `tool-group:${pending[0].id}`,
@@ -1826,7 +1839,7 @@ function groupVisibleToolLines(lines) {
   }
 
   for (const line of lines || []) {
-    if (shouldCollapseToolLine(line)) {
+    if (isGroupableProcessLine(line)) {
       pending.push(line)
     } else {
       flush()
@@ -3594,34 +3607,53 @@ function createMobileSession() {
                     <span class="tool-group-chevron" aria-hidden="true"></span>
                   </button>
                   <div v-if="toolGroupExpanded(line)" class="tool-group-lines">
-                    <div
-                      v-for="item in line.lines"
-                      :key="item.id"
-                      :class="['tool-result-summary', 'tool-group-result', `status-${toolResultStatus(item).key}`]"
-                    >
-                      <div class="tool-result-title-row">
-                        <svg :class="['tool-result-diamond', { spinning: item.live }]" viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
-                        </svg>
-                        <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
-                        <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
-                      </div>
-                      <div class="tool-result-detail-row">
-                        <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">
-                          {{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}
-                        </p>
-                        <div v-if="item.toolDisplay?.previews?.length" class="tool-result-previews">
-                          <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
-                            <span v-if="preview.label">{{ preview.label }}</span>
-                            <pre>{{ preview.content }}</pre>
-                          </section>
-                        </div>
-                        <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
-                          <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
-                            <dt>{{ fact.label }}</dt>
-                            <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
+                    <div v-for="item in line.lines" :key="item.id" :class="['tool-group-result', `kind-${item.kind || 'system'}`]">
+                      <details v-if="item.kind === 'thinking'" class="reasoning-sheet" :open="item.live || undefined">
+                        <summary>
+                          <span class="reasoning-title-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <span class="reasoning-heading">思考</span>
+                        </summary>
+                        <div class="reasoning-reveal">
+                          <div class="reasoning-paper">
+                            <div class="message-text markdown reasoning-text" v-html="renderLine(item)"></div>
                           </div>
-                        </dl>
+                        </div>
+                      </details>
+                      <section v-else-if="isCompactionLine(item)" :class="['compaction-context-bar', { current: item.compaction.current }]">
+                        <div class="compaction-context-title"><strong>压缩上下文</strong></div>
+                        <div class="compaction-context-actions">
+                          <span><span>摘要</span><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
+                          <span v-if="item.compaction.imageCount"><span>图片</span><strong>{{ item.compaction.imageCount }}</strong></span>
+                          <button type="button" @click="openCompactionDetail(item)"><span>详情</span><strong>›</strong></button>
+                        </div>
+                      </section>
+                      <div v-else-if="shouldCollapseToolLine(item)" :class="['tool-result-summary', `status-${toolResultStatus(item).key}`]">
+                        <div class="tool-result-title-row">
+                          <svg :class="['tool-result-diamond', { spinning: item.live }]" viewBox="0 0 20 20" aria-hidden="true">
+                            <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
+                          </svg>
+                          <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
+                          <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
+                        </div>
+                        <div class="tool-result-detail-row">
+                          <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
+                          <div v-if="item.toolDisplay?.previews?.length" class="tool-result-previews">
+                            <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
+                              <span v-if="preview.label">{{ preview.label }}</span>
+                              <pre>{{ preview.content }}</pre>
+                            </section>
+                          </div>
+                          <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
+                            <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
+                              <dt>{{ fact.label }}</dt>
+                              <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
+                            </div>
+                          </dl>
+                        </div>
+                      </div>
+                      <div v-else>
+                        <div class="message-head"><strong>{{ lineTitle(item) }}</strong></div>
+                        <div class="message-text markdown" v-html="renderLine(item)"></div>
                       </div>
                     </div>
                   </div>
