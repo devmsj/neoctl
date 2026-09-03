@@ -3548,7 +3548,6 @@ function createMobileSession() {
                 <div v-if="line.kind !== 'tool' && !shouldCollapseToolLine(line)" class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
                   <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
-                  <span v-if="line.live && !line.toolName" class="live-pill">实时</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="isImage2Line(line)" class="image2-result-shell">
