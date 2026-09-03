@@ -896,6 +896,82 @@ button:disabled,
 .tool-group-trigger[aria-expanded='true'] .tool-group-chevron {
   transform: rotate(225deg) translate(-1px, -1px);
 }
+.tool-group-purposes {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 2px 0 3px 14px;
+  overflow: hidden;
+}
+.tool-group-purposes::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 3px;
+  left: 0;
+  width: 2px;
+  background: var(--pink) !important;
+  opacity: .65;
+  transform-origin: top;
+  animation: tool-purpose-thread .52s cubic-bezier(.2, .8, .2, 1) both;
+}
+.tool-group-purpose {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  animation: tool-purpose-arrive .42s calc(var(--purpose-index) * 55ms) cubic-bezier(.2, .8, .2, 1) both;
+}
+.tool-group-purpose.live {
+  color: var(--text);
+  animation:
+    tool-purpose-arrive .42s calc(var(--purpose-index) * 55ms) cubic-bezier(.2, .8, .2, 1) both,
+    tool-purpose-breathe 2.8s .5s ease-in-out infinite;
+}
+.tool-group-purpose.live::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 34%;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--yellow) 14%, transparent) !important;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--yellow) 18%, transparent);
+  transform: translateX(-120%);
+  animation: tool-purpose-light 3.2s .4s ease-in-out infinite;
+}
+.tool-purpose-enter-active,
+.tool-purpose-leave-active,
+.tool-purpose-move {
+  transition: opacity .32s ease, transform .4s cubic-bezier(.2, .8, .2, 1);
+}
+.tool-purpose-enter-from,
+.tool-purpose-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+@keyframes tool-purpose-arrive {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes tool-purpose-thread {
+  from { opacity: 0; transform: scaleY(0); }
+  to { opacity: .65; transform: scaleY(1); }
+}
+@keyframes tool-purpose-breathe {
+  0%, 100% { opacity: .76; }
+  50% { opacity: 1; }
+}
+@keyframes tool-purpose-light {
+  0%, 58% { transform: translateX(-120%); opacity: 0; }
+  72% { opacity: .72; }
+  100% { transform: translateX(320%); opacity: 0; }
+}
 .tool-group-lines {
   display: grid;
   gap: 16px;

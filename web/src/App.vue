@@ -1870,6 +1870,13 @@ function toolGroupLabels(group) {
   return labels.length ? labels : [{ name: '过程', count: 1 }]
 }
 
+function toolGroupPurposes(group) {
+  return (group?.lines || []).flatMap((line, index) => {
+    const purpose = String(line?.toolDisplay?.purpose || '').trim()
+    return purpose ? [{ id: `${line.id}:purpose:${index}`, text: purpose, live: line?.live === true }] : []
+  })
+}
+
 function openToolDetail(line) {
   if (!line || !line.text) return
   state.toolDetailLineId = line.id
@@ -3606,6 +3613,16 @@ function createMobileSession() {
                     </span>
                     <span class="tool-group-chevron" aria-hidden="true"></span>
                   </button>
+                  <TransitionGroup v-if="!toolGroupExpanded(line) && toolGroupPurposes(line).length" name="tool-purpose" tag="div" class="tool-group-purposes">
+                    <div
+                      v-for="(purpose, purposeIndex) in toolGroupPurposes(line)"
+                      :key="purpose.id"
+                      :class="['tool-group-purpose', { live: purpose.live }]"
+                      :style="{ '--purpose-index': purposeIndex }"
+                    >
+                      <span>{{ purpose.text }}</span>
+                    </div>
+                  </TransitionGroup>
                   <div v-if="toolGroupExpanded(line)" class="tool-group-lines">
                     <div v-for="item in line.lines" :key="item.id" :class="['tool-group-result', `kind-${item.kind || 'system'}`]">
                       <details v-if="item.kind === 'thinking'" class="reasoning-sheet" :open="item.live || undefined">
