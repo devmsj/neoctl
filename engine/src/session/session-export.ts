@@ -4,6 +4,7 @@ import type { Message, MessageBlock } from "../types/messages.js";
 import { PERSISTED_OUTPUT_TAG } from "./tool-result-memory.js";
 import type { SessionStoreSnapshot, SessionTranscriptEntry } from "./session-store.js";
 import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
+import type { ProjectMemoryDocument } from "../context/context-manager.js";
 
 const DEFAULT_MAX_TOOL_RESULT_LINES = 500;
 
@@ -17,6 +18,7 @@ export interface SessionPromptExportSnapshot {
   userContext?: unknown;
   systemContext?: unknown;
   userContextPrompt?: string;
+  projectDocuments?: ProjectMemoryDocument[];
   toolDefinitions?: unknown;
   commands?: readonly string[];
   agents?: readonly string[];

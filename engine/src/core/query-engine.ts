@@ -1,6 +1,6 @@
 import { InMemoryAppState } from "../app/app-state.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
-import { AppPromptContextManager, DefaultContextManager, type ContextManager } from "../context/context-manager.js";
+import { AppPromptContextManager, DefaultContextManager, readProjectMemoryDocuments, type ContextManager } from "../context/context-manager.js";
 import { AdditionalPromptContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { CompactionResult, Compactor, ContextBudgetOptions } from "../context/compaction.js";
@@ -51,6 +51,8 @@ export interface QueryEngineOptions {
   skills?: readonly string[];
   plugins?: readonly string[];
   exportToolCalls?: (calls: Array<{ id: string; name: string; input: unknown }>) => void;
+  cwdTransitionPaths?: readonly string[];
+  onCwdTransitionConsumed?: () => void | Promise<void>;
   appPromptStore?: AppPromptStore;
   session?: {
     enabled?: boolean;
@@ -79,6 +81,7 @@ export class QueryEngine {
   private readonly appPromptStore: AppPromptStore;
   private readonly contextManager: ContextManager;
   private readonly additionalPromptContextManager: AdditionalPromptContextManager;
+  private pendingCwdTransitionPaths?: string[];
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
@@ -92,6 +95,7 @@ export class QueryEngine {
       ?? new DefaultContextManager({ cwd: options.cwd });
     this.additionalPromptContextManager = new AdditionalPromptContextManager(baseContextManager, options.additionalPromptSections);
     this.contextManager = new AppPromptContextManager(this.additionalPromptContextManager, this.appPromptStore);
+    this.pendingCwdTransitionPaths = normalizeCwdTransitionPaths(options.cwdTransitionPaths);
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
@@ -156,6 +160,10 @@ export class QueryEngine {
 
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
+    const cwdTransitionPaths = this.pendingCwdTransitionPaths;
+    this.pendingCwdTransitionPaths = undefined;
+    this.options.cwdTransitionPaths = undefined;
+    if (cwdTransitionPaths?.length) void this.options.onCwdTransitionConsumed?.();
     const userMessage = options.blocks
       ? await this.persistMessageImages({
           ...createTextMessage("user", options.displayText ?? text),
@@ -195,6 +203,9 @@ export class QueryEngine {
       contextWindowTokensOverride: this.currentContextWindowTokens,
       maxTurns: this.options.maxTurns,
       workspaceCwd: this.options.cwd,
+      requestContext: cwdTransitionPaths?.length
+        ? { cwdTransition: { paths: cwdTransitionPaths, current: cwdTransitionPaths.at(-1) } }
+        : undefined,
       abortSignal: options.abortSignal,
       stopAfterTurn: options.stopAfterTurn,
     };
@@ -430,6 +441,7 @@ export class QueryEngine {
       userContext: context.userContext,
       systemContext: context.systemContext,
       userContextPrompt,
+      projectDocuments: readProjectMemoryDocuments(this.options.cwd ?? process.cwd()),
       toolDefinitions,
       commands: [...(this.options.commands ?? [])],
       agents: [...(this.options.agents ?? [])],
@@ -550,6 +562,12 @@ export class QueryEngine {
     this.titleAgentRun?.controller.abort();
     this.titleAgentRun = undefined;
   }
+}
+
+function normalizeCwdTransitionPaths(paths: readonly string[] | undefined): string[] | undefined {
+  if (!Array.isArray(paths)) return undefined;
+  const normalized = paths.map((value) => String(value || "").trim()).filter(Boolean);
+  return normalized.length > 1 ? normalized : undefined;
 }
 
 async function generateSessionTitle(input: {

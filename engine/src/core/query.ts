@@ -17,6 +17,7 @@ import {
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
   applyRuntimeContextForPromptCache,
+  insertUserContextBeforeLatestUser,
 } from "./message-pipeline.js";
 import {
   createInitialState,
@@ -49,6 +50,8 @@ export interface QueryOptions {
   toolChoice?: ModelRequest["toolChoice"];
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
+  /** Ephemeral request-scoped context inserted beside the latest user message. */
+  requestContext?: Record<string, unknown>;
   /**
    * Native cooperative yield point checked after a complete model turn and its
    * tool results have been appended. Returning true stops before the next model
@@ -165,12 +168,14 @@ async function* queryLoop(
     });
     const toolDefinitions = dependencies.tools.definitions(toolContext);
     const systemPrompt = context.systemPrompt;
+    const requestContextForTurn = options.requestContext;
     const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
       model: state.currentModel ?? options.model,
       contextWindowTokensOverride: options.contextWindowTokensOverride,
       systemPrompt,
       toolDefinitions,
       toolUseContext: toolContext,
+      requestContext: requestContextForTurn,
     });
     if (prepared.compaction?.changed) {
       state = { ...state, messages: prepared.compactedMessages };
@@ -189,6 +194,7 @@ async function* queryLoop(
       toolDefinitions,
       metrics: prepared.metrics,
     });
+    if (requestContextForTurn) options.requestContext = undefined;
     if (modelOutput.reactiveCompact) {
       state = modelOutput.reactiveCompact;
       continue;
@@ -253,7 +259,7 @@ async function prepareMessagesForQuery(
   context: RuntimeContext,
   dependencies: QueryDependencies,
   compactor: Compactor,
-  telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext },
+  telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown> },
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -271,7 +277,10 @@ async function prepareMessagesForQuery(
   const pairedBudgeted = ensureToolResultPairing(budgeted);
 
   const staticTokens = computeStaticTokens(telemetry.systemPrompt, telemetry.toolDefinitions);
-  const pairedBudgetedWithRuntimeContext = applyRuntimeContextForPromptCache(pairedBudgeted, context.userContext, context.systemContext);
+  const pairedBudgetedWithRuntimeContext = applyRequestContext(
+    applyRuntimeContextForPromptCache(pairedBudgeted, context.userContext, context.systemContext),
+    telemetry.requestContext,
+  );
 
   const metricsBeforeCompact = buildContextMetrics({
     model: telemetry.model,
@@ -295,7 +304,10 @@ async function prepareMessagesForQuery(
   }), pairedBudgeted.length);
   const compactedMessages = ensureToolResultPairing(compaction.messages);
   const retentionAppliedMessages = applyImageRetention(compactedMessages);
-  const messagesForQuery = applyRuntimeContextForPromptCache(retentionAppliedMessages, context.userContext, context.systemContext);
+  const messagesForQuery = applyRequestContext(
+    applyRuntimeContextForPromptCache(retentionAppliedMessages, context.userContext, context.systemContext),
+    telemetry.requestContext,
+  );
   const metrics = buildContextMetrics({
     model: telemetry.model,
     contextWindowTokensOverride: telemetry.contextWindowTokensOverride,
@@ -317,6 +329,12 @@ async function prepareMessagesForQuery(
     compaction: compaction.changed ? compaction : undefined,
     metrics,
   };
+}
+
+function applyRequestContext(messages: readonly Message[], requestContext: Record<string, unknown> | undefined): Message[] {
+  return requestContext && Object.keys(requestContext).length > 0
+    ? insertUserContextBeforeLatestUser(messages, requestContext)
+    : [...messages];
 }
 
 async function* callModelForTurn(

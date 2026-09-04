@@ -1,7 +1,14 @@
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 import type { JsonSchema, ToolDefinition } from "../tools/tool.js";
 
-export const WEB_RUNTIME_CONTEXT_PROTOCOL_VERSION = 1 as const;
+export const WEB_RUNTIME_CONTEXT_PROTOCOL_VERSION = 2 as const;
+
+export interface WebProjectContextDocument {
+  name: string;
+  path: string;
+  content: string;
+  chars: number;
+}
 
 export interface WebRuntimePromptSection {
   name: string;
@@ -36,6 +43,11 @@ export interface WebRuntimeContextPayload {
     userContextPrompt?: string;
   };
   tools: WebRuntimeToolDefinition[];
+  project: {
+    documents: WebProjectContextDocument[];
+    chars: number;
+    injected: boolean;
+  };
   capabilities: {
     commands: string[];
     agents: string[];
@@ -69,12 +81,26 @@ export function createWebRuntimeContextPayload(
       userContextPrompt: snapshot.userContextPrompt,
     },
     tools: normalizeToolDefinitions(snapshot.toolDefinitions),
+    project: normalizeProjectDocuments(snapshot.projectDocuments),
     capabilities: {
       commands: normalizeStringArray(snapshot.commands),
       agents: normalizeStringArray(snapshot.agents),
       skills: normalizeStringArray(snapshot.skills),
       plugins: normalizeStringArray(snapshot.plugins),
     },
+  };
+}
+
+function normalizeProjectDocuments(value: unknown): WebRuntimeContextPayload["project"] {
+  if (!Array.isArray(value)) return { documents: [], chars: 0, injected: false };
+  const documents = value.flatMap((document) => {
+    if (!isRecord(document) || typeof document.name !== "string" || typeof document.path !== "string" || typeof document.content !== "string") return [];
+    return [{ name: document.name, path: document.path, content: document.content, chars: document.content.length }];
+  });
+  return {
+    documents,
+    chars: documents.reduce((total, document) => total + document.chars, 0),
+    injected: documents.length > 0,
   };
 }
 

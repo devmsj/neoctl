@@ -168,7 +168,15 @@ export function applyRuntimeContextForPromptCache<TUser extends object, TSystem 
   const dynamicContextMessage = dynamicContext
     ? { ...dynamicContext, metadata: { ...dynamicContext.metadata, cacheStableRuntimeContext: false } }
     : undefined;
-  return [stableContextMessage, dynamicContextMessage, ...messages].filter((message): message is Message => Boolean(message));
+  const stableMessages = [stableContextMessage, ...messages].filter((message): message is Message => Boolean(message));
+  if (!dynamicContextMessage) return stableMessages;
+  const latestUserIndex = findLastIndex(stableMessages, (message) => message.role === "user" && !message.isMeta);
+  if (latestUserIndex < 0) return [...stableMessages, dynamicContextMessage];
+  return [
+    ...stableMessages.slice(0, latestUserIndex),
+    dynamicContextMessage,
+    ...stableMessages.slice(latestUserIndex),
+  ];
 }
 
 export function insertRuntimeContextBeforeLatestUser<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
@@ -191,9 +199,10 @@ export function appendSystemContext<T extends object>(systemPrompt: string, syst
 }
 
 function splitSystemContextForPromptCache<TSystem extends object>(systemContext: TSystem): { stableSystemContext: Record<string, unknown>; dynamicSystemContext: Record<string, unknown> } {
+  const entries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
   return {
-    stableSystemContext: Object.fromEntries(Object.entries(systemContext).filter(([, value]) => value !== undefined)),
-    dynamicSystemContext: {},
+    stableSystemContext: Object.fromEntries(entries.filter(([key]) => key !== "cwd")),
+    dynamicSystemContext: Object.fromEntries(entries.filter(([key]) => key === "cwd")),
   };
 }
 

@@ -286,6 +286,9 @@ export interface CreateWebRuntimeOptions {
   agentId?: string;
   /** Workspace root used by context, tools, and session storage. */
   cwd?: string;
+  /** Persisted CWD transition chain shown to the model on the next request only. */
+  cwdTransitionPaths?: readonly string[];
+  onCwdTransitionConsumed?: () => void | Promise<void>;
   /** Additional tools to register in the web runtime. */
   externalTools?: readonly Tool[];
   /** Stable or dynamic prompt sections supplied by the embedding application. */
@@ -498,6 +501,8 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     taskNotificationSource: createTaskNotificationSource(taskStore),
     commands: replCommandDefinitions.map((command) => command.usage),
     plugins: [...(options.plugins ?? []), ...activePlugins.map((plugin) => plugin.id)],
+    cwdTransitionPaths: options.cwdTransitionPaths,
+    onCwdTransitionConsumed: options.onCwdTransitionConsumed,
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
@@ -996,6 +1001,7 @@ export class WebRepl {
       this.broadcastSync();
       return { ok: true };
     }
+    this.publishRuntimeContext();
     this.startRun(text, attachments);
     return { ok: true };
   }
@@ -1921,6 +1927,35 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
+    const workspaceRepl = repl as WebRepl & {
+      browseWorkspace?: (value?: string) => Promise<unknown>;
+      changeWorkspace?: (value?: string) => Promise<unknown>;
+      createWorkspaceDirectory?: (value?: string) => Promise<unknown>;
+      deleteWorkspaceDirectory?: (value?: string) => Promise<unknown>;
+    };
+    if (req.method === "GET" && url.pathname === "/api/cwd") {
+      return sendJson(res, workspaceRepl.browseWorkspace
+        ? await workspaceRepl.browseWorkspace(url.searchParams.get("path") ?? undefined)
+        : actionFailure("CWD_NOT_CONFIGURED", "workspace navigation is not configured"));
+    }
+    if (req.method === "POST" && url.pathname === "/api/cwd/change") {
+      const body = await readJsonBody<{ path?: string }>(req);
+      return sendJson(res, workspaceRepl.changeWorkspace
+        ? await workspaceRepl.changeWorkspace(body.path)
+        : actionFailure("CWD_NOT_CONFIGURED", "workspace navigation is not configured"));
+    }
+    if (req.method === "POST" && url.pathname === "/api/cwd/create") {
+      const body = await readJsonBody<{ path?: string }>(req);
+      return sendJson(res, workspaceRepl.createWorkspaceDirectory
+        ? await workspaceRepl.createWorkspaceDirectory(body.path)
+        : actionFailure("CWD_NOT_CONFIGURED", "workspace navigation is not configured"));
+    }
+    if (req.method === "POST" && url.pathname === "/api/cwd/delete") {
+      const body = await readJsonBody<{ path?: string }>(req);
+      return sendJson(res, workspaceRepl.deleteWorkspaceDirectory
+        ? await workspaceRepl.deleteWorkspaceDirectory(body.path)
+        : actionFailure("CWD_NOT_CONFIGURED", "workspace navigation is not configured"));
+    }
     if (req.method === "GET" && url.pathname === "/api/tools") return sendJson(res, repl.globalTools());
     if (req.method === "POST" && url.pathname === "/api/tools/global") {
       const body = await readJsonBody<{ overrides?: unknown }>(req);

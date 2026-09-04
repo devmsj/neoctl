@@ -15,6 +15,7 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
+import CwdTreeNode from './components/CwdTreeNode.vue'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -145,6 +146,12 @@ const ACTION_ERROR_MESSAGES = {
   CONTEXT_WINDOW_UPDATE_BLOCKED: '回答期间不能调整上下文窗口',
   CONTEXT_WINDOW_INVALID: '请输入大于 0 的整数',
   CONTEXT_WINDOW_UPDATE_FAILED: '上下文窗口调整失败',
+  CWD_NOT_CONFIGURED: '当前运行时不支持工作目录切换',
+  CWD_INVALID: '路径不存在或不可访问',
+  CWD_UPDATE_BLOCKED: '模型回答期间不能切换工作目录',
+  CWD_UPDATE_FAILED: '工作目录切换失败',
+  CWD_CREATE_FAILED: '文件夹新建失败',
+  CWD_DELETE_FAILED: '只能删除空文件夹，且不能删除当前目录或其上级目录',
   LOGIN_INVALID: '模型配置无效',
   LOGIN_SAVE_FAILED: '模型配置保存失败',
   API_NOT_FOUND: '当前运行时不支持此功能，请重启服务',
@@ -260,6 +267,8 @@ const state = reactive({
   runtimeContextError: '',
   runtimeContextModal: '',
   runtimeContextDetail: undefined,
+  projectContextOpen: false,
+  projectContextDocument: undefined,
   globalPlugins: { items: [], locked: false, restartRequired: true, loading: false },
   sessionPlugins: { items: [], busy: false, loading: false },
   globalTools: { items: [], loading: false },
@@ -278,6 +287,22 @@ const state = reactive({
   runningSessionIds: [],
   session: undefined,
   cwd: '',
+  cwdPicker: {
+    open: false,
+    cwd: '',
+    parent: '',
+    home: '',
+    entries: [],
+    locations: [],
+    treeRoots: [],
+    treeChildren: {},
+    treeExpanded: {},
+    selectedPath: '',
+    input: '',
+    loading: false,
+    mutating: false,
+    error: '',
+  },
   sessionsLoading: false,
   sessionResumeLoading: false,
   pendingResumeSessionId: '',
@@ -490,6 +515,7 @@ const virtualMessageRows = computed(() => messageVirtualizer.value.getVirtualIte
 const virtualMessageTotalHeight = computed(() => messageVirtualizer.value.getTotalSize())
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
+const runtimeProjectDocuments = computed(() => Array.isArray(state.runtimeContext?.project?.documents) ? state.runtimeContext.project.documents : [])
 const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
 const effectiveSessionToolCount = computed(() => state.sessionTools.items.filter((item) => item.effectiveEnabled).length)
 const toolDetailLine = computed(() => state.lines.find((line) => String(line.id) === String(state.toolDetailLineId)) || null)
@@ -598,7 +624,7 @@ onBeforeUnmount(() => {
   if (coreEasterEggTimer) clearTimeout(coreEasterEggTimer)
   if (sessionTitleResizeObserver) sessionTitleResizeObserver.disconnect()
   if (virtualLayoutResizeObserver) virtualLayoutResizeObserver.disconnect()
-  document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open', 'context-window-open')
+  document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open', 'context-window-open', 'cwd-picker-lock')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
@@ -899,12 +925,19 @@ function triggerCoreEasterEgg() {
 }
 
 function applyRuntimeContext(payload) {
-  if (Number(payload?.protocolVersion) !== 1) throw new Error(`不支持的运行上下文协议版本：${payload?.protocolVersion ?? '未知'}`)
+  if (![1, 2].includes(Number(payload?.protocolVersion))) throw new Error(`不支持的运行上下文协议版本：${payload?.protocolVersion ?? '未知'}`)
   const incomingRevision = Number(payload.revision || 0)
   const currentRevision = Number(state.runtimeContext?.revision || 0)
   const sameSession = !payload.sessionId || !state.runtimeContext?.sessionId || payload.sessionId === state.runtimeContext.sessionId
   if (sameSession && incomingRevision < currentRevision) return
   state.runtimeContext = payload
+  if (state.projectContextDocument && !runtimeProjectDocuments.value.some((document) => document.path === state.projectContextDocument.path)) {
+    state.projectContextDocument = undefined
+  }
+  if (state.projectContextOpen && runtimeProjectDocuments.value.length === 0) {
+    state.projectContextOpen = false
+    document.body.classList.remove('runtime-context-open')
+  }
   state.runtimeContextLoading = false
   state.runtimeContextError = ''
 }
@@ -1930,7 +1963,7 @@ function openCompactionDetail(line) {
 
 function closeCompactionDetail() {
   state.compactionDetailLineId = undefined
-  if (!state.runtimeContextModal && !state.runtimeContextDetail) document.body.classList.remove('runtime-context-open')
+  if (!state.runtimeContextModal && !state.runtimeContextDetail && !state.projectContextOpen) document.body.classList.remove('runtime-context-open')
 }
 
 function shouldCollapseToolLine(line) {
@@ -2307,6 +2340,163 @@ function closeRuntimeContextModal() {
 
 function closeRuntimeContextDetail() {
   state.runtimeContextDetail = undefined
+}
+
+function openProjectContext() {
+  state.projectContextOpen = true
+  state.projectContextDocument = undefined
+  document.body.classList.add('runtime-context-open')
+}
+
+function openProjectContextDocument(document) {
+  state.projectContextDocument = document
+}
+
+function closeProjectContext() {
+  if (state.projectContextDocument) {
+    state.projectContextDocument = undefined
+    return
+  }
+  state.projectContextOpen = false
+  document.body.classList.remove('runtime-context-open')
+}
+
+async function openCwdPicker() {
+  state.cwdPicker.open = true
+  state.cwdPicker.input = state.cwd || ''
+  state.cwdPicker.error = ''
+  document.body.classList.add('cwd-picker-lock')
+  await browseCwd(state.cwd)
+}
+
+function closeCwdPicker() {
+  if (state.cwdPicker.mutating) return
+  state.cwdPicker.open = false
+  state.cwdPicker.error = ''
+  document.body.classList.remove('cwd-picker-lock')
+}
+
+async function browseCwd(path = state.cwdPicker.input) {
+  state.cwdPicker.loading = true
+  state.cwdPicker.error = ''
+  try {
+    const target = new URL('/api/cwd', window.location.origin)
+    if (String(path || '').trim()) target.searchParams.set('path', String(path).trim())
+    const res = await fetch(runtimeUrl(`${target.pathname}${target.search}`))
+    const result = await res.json().catch(() => ({}))
+    if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
+    applyCwdBrowseResult(result)
+  } catch (error) {
+    state.cwdPicker.error = actionErrorMessage(error, '无法打开路径')
+  } finally {
+    state.cwdPicker.loading = false
+  }
+}
+
+function cwdPathName(value) {
+  const normalized = String(value || '').replace(/[\\/]+$/, '')
+  return normalized.split(/[\\/]/).filter(Boolean).at(-1) || String(value || '')
+}
+
+function applyCwdBrowseResult(result) {
+  const cwd = String(result.cwd || '')
+  const root = { name: cwdPathName(cwd), path: cwd }
+  state.cwdPicker.cwd = cwd
+  state.cwdPicker.parent = result.parent || ''
+  state.cwdPicker.home = result.home || ''
+  state.cwdPicker.locations = Array.isArray(result.locations) ? result.locations : state.cwdPicker.locations
+  state.cwdPicker.entries = Array.isArray(result.entries) ? result.entries : []
+  state.cwdPicker.input = cwd
+  state.cwdPicker.selectedPath = cwd
+  state.cwdPicker.treeRoots = [root]
+  state.cwdPicker.treeChildren = { [cwd]: state.cwdPicker.entries }
+  state.cwdPicker.treeExpanded = { [cwd]: true }
+}
+
+async function fetchCwdBranch(path) {
+  const target = new URL('/api/cwd', window.location.origin)
+  target.searchParams.set('path', path)
+  const res = await fetch(runtimeUrl(`${target.pathname}${target.search}`))
+  const result = await res.json().catch(() => ({}))
+  if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
+  if (Array.isArray(result.locations)) state.cwdPicker.locations = result.locations
+  return result
+}
+
+async function toggleCwdTree(node) {
+  const path = node.path
+  if (state.cwdPicker.treeExpanded[path]) {
+    state.cwdPicker.treeExpanded = { ...state.cwdPicker.treeExpanded, [path]: false }
+    return
+  }
+  state.cwdPicker.error = ''
+  try {
+    if (!state.cwdPicker.treeChildren[path]) {
+      const result = await fetchCwdBranch(path)
+      state.cwdPicker.treeChildren = { ...state.cwdPicker.treeChildren, [path]: result.entries || [] }
+    }
+    state.cwdPicker.treeExpanded = { ...state.cwdPicker.treeExpanded, [path]: true }
+  } catch (error) {
+    state.cwdPicker.error = actionErrorMessage(error, '无法展开路径')
+  }
+}
+
+function selectCwdTreeNode(node) {
+  state.cwdPicker.selectedPath = node.path
+  state.cwdPicker.input = node.path
+}
+
+async function createCwdDirectory() {
+  const target = String(state.cwdPicker.input || '').trim()
+  if (!target) return
+  state.cwdPicker.mutating = true
+  state.cwdPicker.error = ''
+  try {
+    const result = await postJson('/api/cwd/create', { path: target })
+    applyCwdBrowseResult(result)
+  } catch (error) {
+    state.cwdPicker.error = actionErrorMessage(error, '新建失败')
+  } finally {
+    state.cwdPicker.mutating = false
+  }
+}
+
+async function deleteCwdDirectory(entry) {
+  const confirmed = await requestConfirmation({
+    title: '删除文件夹？',
+    message: entry.path,
+    confirmLabel: '删除',
+    tone: 'danger',
+  })
+  if (!confirmed) return
+  state.cwdPicker.mutating = true
+  try {
+    const result = await postJson('/api/cwd/delete', { path: entry.path })
+    applyCwdBrowseResult(result)
+  } catch (error) {
+    state.cwdPicker.error = actionErrorMessage(error, '删除失败')
+  } finally {
+    state.cwdPicker.mutating = false
+  }
+}
+
+async function selectCwd() {
+  const target = String(state.cwdPicker.selectedPath || state.cwdPicker.input || state.cwdPicker.cwd || '').trim()
+  if (!target) return
+  state.cwdPicker.mutating = true
+  state.cwdPicker.error = ''
+  try {
+    const result = await postJson('/api/cwd/change', { path: target })
+    state.cwd = result.cwd || target
+    state.cwdPicker.open = false
+    document.body.classList.remove('cwd-picker-lock')
+    await fetchRuntimeContext()
+    notify(result.unchanged ? '工作目录未变' : '工作目录已切换')
+  } catch (error) {
+    state.cwdPicker.error = actionErrorMessage(error, '切换失败')
+  } finally {
+    state.cwdPicker.mutating = false
+  }
 }
 
 function openRuntimePromptDetail(section) {
@@ -2944,6 +3134,11 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.key === 'Escape' && state.confirmDialog.open) {
+    event.preventDefault()
+    resolveConfirmation(false)
+    return
+  }
   if (event.key === 'Escape' && state.contextWindowModalOpen) {
     event.preventDefault()
     closeContextWindowModal()
@@ -2959,6 +3154,16 @@ function handleGlobalKeydown(event) {
     closeBackgroundTaskDetail()
     return
   }
+  if (event.key === 'Escape' && state.projectContextOpen) {
+    event.preventDefault()
+    closeProjectContext()
+    return
+  }
+  if (event.key === 'Escape' && state.cwdPicker.open) {
+    event.preventDefault()
+    closeCwdPicker()
+    return
+  }
   if (event.key === 'Escape' && state.runtimeContextDetail) {
     event.preventDefault()
     closeRuntimeContextDetail()
@@ -2967,11 +3172,6 @@ function handleGlobalKeydown(event) {
   if (event.key === 'Escape' && state.runtimeContextModal) {
     event.preventDefault()
     closeRuntimeContextModal()
-    return
-  }
-  if (event.key === 'Escape' && state.confirmDialog.open) {
-    event.preventDefault()
-    resolveConfirmation(false)
     return
   }
   if (event.key === 'Escape' && state.imagePreview) {
@@ -3837,6 +4037,12 @@ function createMobileSession() {
               <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" @click="fetchRuntimeContext">重试</button>
               <span v-else class="runtime-context-syncing">同步中</span>
             </section>
+            <section v-if="runtimeProjectDocuments.length" class="runtime-context-bar project-context-bar">
+              <div class="runtime-context-bar-title"><strong>项目上下文</strong></div>
+              <div class="runtime-context-bar-actions">
+                <button type="button" @click="openProjectContext"><span>文档</span><strong>{{ runtimeProjectDocuments.length }}</strong></button>
+              </div>
+            </section>
 
             <div ref="messageList" class="virtual-message-list" :style="{ height: `${virtualMessageTotalHeight}px` }">
             <template v-for="virtualRow in virtualMessageRows" :key="virtualRow.key">
@@ -4150,10 +4356,10 @@ function createMobileSession() {
         </div>
 
         <aside class="right-panel">
-          <section class="status-card compact-status cwd-card">
+          <button type="button" class="status-card compact-status cwd-card" title="切换工作目录" @click="openCwdPicker">
             <strong class="cwd-card-label">CWD</strong>
             <div class="cwd-card-path" :title="currentCwd">{{ currentCwd }}</div>
-          </section>
+          </button>
           <section class="background-task-section">
             <div class="background-task-head">
               <div class="panel-title">后台任务</div>
@@ -4472,6 +4678,83 @@ function createMobileSession() {
       <span class="core-version-spark spark-b" aria-hidden="true"></span>
       <span class="core-version-spark spark-c" aria-hidden="true"></span>
       <span>内核版本 {{ state.coreVersion }}</span>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.cwdPicker.open" class="cwd-picker-backdrop" @click.self="closeCwdPicker">
+      <section class="cwd-picker-modal" role="dialog" aria-modal="true" aria-label="选择工作目录">
+        <header class="cwd-picker-head">
+          <strong>CWD</strong>
+          <button type="button" aria-label="关闭" @click="closeCwdPicker">×</button>
+        </header>
+        <form class="cwd-picker-path" @submit.prevent="browseCwd()">
+          <input v-model="state.cwdPicker.input" autocomplete="off" spellcheck="false" aria-label="工作目录路径" />
+          <button type="submit" :disabled="state.cwdPicker.loading">前往</button>
+          <button type="button" :disabled="state.cwdPicker.mutating" @click="createCwdDirectory">新建</button>
+        </form>
+        <div class="cwd-picker-shortcuts">
+          <button v-if="state.cwdPicker.parent" type="button" @click="browseCwd(state.cwdPicker.parent)">← 上级</button>
+          <span>{{ state.cwdPicker.selectedPath || state.cwdPicker.cwd }}</span>
+        </div>
+        <div class="cwd-picker-browser">
+          <nav class="cwd-picker-locations" aria-label="常用位置">
+            <button
+              v-for="location in state.cwdPicker.locations"
+              :key="`${location.id}-${location.path}`"
+              type="button"
+              :class="{ active: state.cwdPicker.cwd === location.path }"
+              :title="location.path"
+              @click="browseCwd(location.path)"
+            >
+              <span aria-hidden="true">{{ location.kind === 'drive' || location.kind === 'volume' ? '▣' : location.kind === 'home' ? '◆' : '◇' }}</span>
+              <strong>{{ location.label }}</strong>
+            </button>
+          </nav>
+          <div class="cwd-picker-tree">
+            <div v-if="state.cwdPicker.loading" class="cwd-picker-empty">读取中</div>
+            <div v-else-if="state.cwdPicker.error" class="cwd-picker-error">{{ state.cwdPicker.error }}</div>
+            <CwdTreeNode
+              v-else
+              :nodes="state.cwdPicker.treeRoots"
+              :children="state.cwdPicker.treeChildren"
+              :expanded="state.cwdPicker.treeExpanded"
+              :selected-path="state.cwdPicker.selectedPath"
+              :allow-delete="false"
+              @toggle="toggleCwdTree"
+              @select="selectCwdTreeNode"
+              @delete="deleteCwdDirectory"
+            />
+          </div>
+        </div>
+        <footer class="cwd-picker-actions">
+          <button type="button" @click="closeCwdPicker">取消</button>
+          <button type="button" class="primary" :disabled="state.cwdPicker.mutating || state.cwdPicker.loading" @click="selectCwd">选择</button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.projectContextOpen" class="runtime-context-modal-backdrop" @click.self="closeProjectContext">
+      <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="项目上下文">
+        <header class="runtime-context-modal-head">
+          <div>
+            <span v-if="state.projectContextDocument" class="runtime-context-kicker">{{ state.projectContextDocument.path }}</span>
+            <strong>{{ state.projectContextDocument?.name || '项目上下文' }}</strong>
+          </div>
+          <button type="button" :aria-label="state.projectContextDocument ? '返回' : '关闭'" @click="closeProjectContext">×</button>
+        </header>
+        <div class="runtime-context-modal-content">
+          <div v-if="!state.projectContextDocument" class="runtime-context-index">
+            <button v-for="document in runtimeProjectDocuments" :key="document.path" type="button" class="runtime-context-index-item" @click="openProjectContextDocument(document)">
+              <span><strong>{{ document.name }}</strong><small>{{ compactNumber(document.chars || 0) }} 字符</small></span>
+              <b>›</b>
+            </button>
+          </div>
+          <pre v-else class="project-context-document">{{ state.projectContextDocument.content }}</pre>
+        </div>
+      </section>
     </div>
   </Teleport>
 

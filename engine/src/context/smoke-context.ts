@@ -3,7 +3,7 @@ import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/mode
 import { QueryEngine } from "../core/query-engine.js";
 import { buildContextMetrics, estimateTextTokens } from "../core/context-metrics.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
-import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary, hasValidToolResultPairing } from "../core/message-pipeline.js";
+import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary, hasValidToolResultPairing, insertUserContextBeforeLatestUser } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor, withCompactionReport } from "./compaction.js";
@@ -111,7 +111,13 @@ async function main(): Promise<void> {
   const secondHistory = [...firstHistory, createTextMessage("assistant", "answer"), createTextMessage("user", "second")];
   const runtimeContextMessages = applyRuntimeContextForPromptCache(firstHistory, runtime.userContext, runtime.systemContext);
   const nextRuntimeContextMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, runtime.systemContext);
+  const changedCwdMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, { ...runtime.systemContext, cwd: `${runtime.systemContext.cwd}-next` });
+  const cwdTransitionMessages = insertUserContextBeforeLatestUser(changedCwdMessages, { cwdTransition: { paths: ["A", "B", "C"], current: "C" } });
   const lastRuntimeBlock = runtimeContextMessages.at(-1)?.blocks[0];
+  const firstRuntimeBlock = runtimeContextMessages[0]?.blocks[0];
+  const nextFirstRuntimeBlock = nextRuntimeContextMessages[0]?.blocks[0];
+  const changedFirstRuntimeBlock = changedCwdMessages[0]?.blocks[0];
+  const cwdTransitionBlock = cwdTransitionMessages.at(-2)?.blocks[0];
   const toolBudgetPromptOccurrences = runtime.systemPrompt.split("Tool results use a default context budget").length - 1;
   const contextOk =
     toolBudgetPromptOccurrences === 1 &&
@@ -122,9 +128,14 @@ async function main(): Promise<void> {
     !runtime.systemPrompt.includes("## System Context") &&
     runtimeContextMessages[0]?.metadata?.userContext === true &&
     runtimeContextMessages[0]?.metadata?.systemContext === true &&
-    runtimeContextMessages[0]?.blocks[0]?.type === "text" &&
-    nextRuntimeContextMessages[0]?.blocks[0]?.type === "text" &&
-    runtimeContextMessages[0].blocks[0].text === nextRuntimeContextMessages[0].blocks[0].text &&
+    firstRuntimeBlock?.type === "text" &&
+    nextFirstRuntimeBlock?.type === "text" &&
+    changedFirstRuntimeBlock?.type === "text" &&
+    firstRuntimeBlock.text === nextFirstRuntimeBlock.text &&
+    firstRuntimeBlock.text === changedFirstRuntimeBlock.text &&
+    changedCwdMessages.at(-2)?.metadata?.cacheStableRuntimeContext === false &&
+    cwdTransitionBlock?.type === "text" &&
+    cwdTransitionBlock.text.includes('"paths":["A","B","C"]') === true &&
     lastRuntimeBlock?.type === "text" &&
     lastRuntimeBlock.text === "first";
 

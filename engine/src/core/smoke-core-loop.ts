@@ -222,6 +222,32 @@ async function main(): Promise<void> {
     request.messages.every((message) => message.blocks.every((block) => block.type !== "thinking")),
   );
 
+  const cwdGateway = new FakeToolCallingGateway();
+  const cwdTools = new ToolRegistry();
+  cwdTools.register(smokePassthroughTool);
+  let cwdTransitionConsumed = 0;
+  const cwdEngine = new QueryEngine({
+    cwd: process.cwd(),
+    modelGateway: cwdGateway,
+    tools: cwdTools,
+    maxTurns: 4,
+    cwdTransitionPaths: ["A", "B", "C"],
+    onCwdTransitionConsumed: () => { cwdTransitionConsumed += 1; },
+  });
+  for await (const _event of cwdEngine.sendUserText("after move")) {
+    // Capture the one-shot transition context.
+  }
+  for await (const _event of cwdEngine.sendUserText("next turn")) {
+    // The transition context must already be consumed.
+  }
+  const requestContainsCwdTransition = (request: ModelRequest | undefined) => request?.messages.some((message) =>
+    message.blocks.some((block) => block.type === "text" && block.text.includes('"paths":["A","B","C"]')),
+  ) === true;
+  const cwdTransitionOneShot =
+    cwdTransitionConsumed === 1 &&
+    requestContainsCwdTransition(cwdGateway.requests[0]) &&
+    cwdGateway.requests.slice(1).every((request) => !requestContainsCwdTransition(request));
+
   const ok =
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
@@ -240,8 +266,9 @@ async function main(): Promise<void> {
     historyImageDowngraded &&
     stoppedAfterOneToolTurn &&
     thinkingPersisted &&
-    thinkingExcludedFromContext;
-  console.log(JSON.stringify({ ok, events, snapshot, narratedToolTextFlushed, sanitized, ordinaryTextStreamsImmediately, splitLeakRedacted, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext }, null, 2));
+    thinkingExcludedFromContext &&
+    cwdTransitionOneShot;
+  console.log(JSON.stringify({ ok, events, snapshot, narratedToolTextFlushed, sanitized, ordinaryTextStreamsImmediately, splitLeakRedacted, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext, cwdTransitionOneShot }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

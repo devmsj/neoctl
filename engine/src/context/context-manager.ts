@@ -30,6 +30,12 @@ export interface SystemContext {
   platform: NodeJS.Platform;
 }
 
+export interface ProjectMemoryDocument {
+  name: string;
+  path: string;
+  content: string;
+}
+
 export interface RuntimeContext {
   systemPrompt: string;
   promptSections: PromptSection[];
@@ -86,7 +92,6 @@ function normalizeAdditionalPromptSections(sections: readonly PromptSection[]): 
 
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
-  private userContextCache?: UserContext;
   private systemContextCache?: SystemContext;
 
   constructor(private readonly options: DefaultContextManagerOptions = {}) {
@@ -112,13 +117,11 @@ export class DefaultContextManager implements ContextManager {
   }
 
   private getUserContext(cwd: string): UserContext {
-    if (this.userContextCache) return this.userContextCache;
     const memory = readProjectMemory(cwd, this.options.memoryFileNames ?? DEFAULT_MEMORY_FILE_NAMES);
-    this.userContextCache = {
+    return {
       currentDate: this.options.currentDate?.() ?? new Date().toISOString().slice(0, 10),
       ...(memory.content ? { projectMemory: memory.content, memoryFiles: memory.files } : {}),
     };
-    return this.userContextCache;
   }
 
   private getSystemContext(cwd: string): SystemContext {
@@ -160,25 +163,34 @@ export class AppPromptContextManager implements ContextManager {
   }
 }
 
-const DEFAULT_MEMORY_FILE_NAMES = [
+export const DEFAULT_MEMORY_FILE_NAMES = [
   "AGENTS.md",
+  "AGENT.md",
   "CLAUDE.md",
+  "GEMINI.md",
+  ".cursorrules",
+  ".windsurfrules",
   ".agent/memory.md",
   ".codex/memory.md",
   ".github/copilot-instructions.md",
 ];
 
-function readProjectMemory(cwd: string, memoryFileNames: readonly string[]): { content?: string; files?: string[] } {
-  const parts: string[] = [];
-  const files: string[] = [];
+export function readProjectMemoryDocuments(cwd: string, memoryFileNames: readonly string[] = DEFAULT_MEMORY_FILE_NAMES): ProjectMemoryDocument[] {
+  const documents: ProjectMemoryDocument[] = [];
   for (const name of memoryFileNames) {
     const path = join(cwd, name);
     if (!existsSync(path)) continue;
     const content = readFileSync(path, "utf8").trim();
     if (!content) continue;
-    files.push(path);
-    parts.push(`### ${name}\n${content}`);
+    documents.push({ name, path, content });
   }
+  return documents;
+}
+
+function readProjectMemory(cwd: string, memoryFileNames: readonly string[]): { content?: string; files?: string[] } {
+  const documents = readProjectMemoryDocuments(cwd, memoryFileNames);
+  const parts = documents.map((document) => `### ${document.name}\n${document.content}`);
+  const files = documents.map((document) => document.path);
   return parts.length ? { content: parts.join("\n\n"), files } : {};
 }
 
