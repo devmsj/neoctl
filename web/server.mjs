@@ -14,6 +14,8 @@ import { createMemoryMonitor } from './memory-monitor.mjs';
 
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
+process.env.NEO_CORE_VERSION = coreRuntimeInfo.version;
+process.env.NEO_CLIENT_REVISION ||= `${coreRuntimeInfo.version}-${Date.now().toString(36)}`;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));

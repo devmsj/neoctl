@@ -44,6 +44,8 @@ import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./p
 import { createWebRuntimeContextPayload, type WebRuntimeContextPayload } from "./runtime-context-protocol.js";
 
 const require = createRequire(import.meta.url);
+const corePackage = require("../../package.json") as { version?: string };
+const CORE_VERSION = String(corePackage.version || "unknown");
 const markedPackageDir = path.dirname(require.resolve("marked/package.json"));
 const highlightPackageDir = path.dirname(require.resolve("@highlightjs/cdn-assets/package.json"));
 const markedAssetPath = path.join(markedPackageDir, "lib", "marked.esm.js");
@@ -384,6 +386,7 @@ interface WebSubscriber {
   blocked: boolean;
   needsSync: boolean;
   needsRuntimeContext: boolean;
+  pendingClientReload?: WebClientReloadPayload;
 }
 
 interface WebBackgroundSessionRun {
@@ -612,6 +615,8 @@ export class WebRuntimeRouter {
   private readonly repls = new Map<string, Promise<WebRepl>>();
   private readonly createRuntime: (options?: CreateWebRuntimeOptions) => Promise<WebRuntime>;
   private readonly createRepl: (runtime: WebRuntime) => WebRepl;
+  private readonly clientRevision = process.env.NEO_CLIENT_REVISION?.trim() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  private readonly coreVersion = process.env.NEO_CORE_VERSION?.trim() || CORE_VERSION;
 
   constructor(options: WebRuntimeRouterOptions = {}) {
     this.createRuntime = options.createRuntime ?? createWebRuntime;
@@ -636,6 +641,38 @@ export class WebRuntimeRouter {
   activeScopes(): string[] {
     return [...this.repls.keys()];
   }
+
+  clientInfo(): WebClientInfoPayload {
+    return {
+      protocolVersion: 1,
+      revision: this.clientRevision,
+      coreVersion: this.coreVersion,
+    };
+  }
+
+  async requestClientReload(options: { clearCache?: boolean; reason?: string } = {}): Promise<WebClientReloadPayload & { clients: number }> {
+    const payload: WebClientReloadPayload = {
+      ...this.clientInfo(),
+      requestId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+      clearCache: options.clearCache !== false,
+      reason: options.reason?.trim() || "deployment",
+    };
+    const repls = await Promise.all([...this.repls.values()]);
+    const clients = repls.reduce((total, repl) => total + repl.requestClientReload(payload), 0);
+    return { ...payload, clients };
+  }
+}
+
+interface WebClientInfoPayload {
+  protocolVersion: 1;
+  revision: string;
+  coreVersion: string;
+}
+
+interface WebClientReloadPayload extends WebClientInfoPayload {
+  requestId: string;
+  clearCache: boolean;
+  reason: string;
 }
 
 export async function createWebRuntimeRouter(options: WebRuntimeRouterOptions = {}): Promise<WebRuntimeRouter> {
@@ -697,7 +734,7 @@ export class WebRepl {
     runtime.engine.onSessionTitleChange(() => this.broadcastSync());
   }
 
-  subscribe(res: ServerResponse): void {
+  subscribe(res: ServerResponse, clientInfo?: WebClientInfoPayload): void {
     const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false, needsRuntimeContext: false };
     this.subscribers.add(subscriber);
     res.writeHead(200, {
@@ -706,6 +743,7 @@ export class WebRepl {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
+    if (clientInfo) this.send(subscriber, "client.version", clientInfo);
     this.send(subscriber, "sync", this.snapshot(true));
     this.publishRuntimeContext([subscriber]);
     reqKeepAlive(res);
@@ -714,6 +752,12 @@ export class WebRepl {
 
   get backgroundTaskCount(): number {
     return this.backgroundTasks().length;
+  }
+
+  requestClientReload(payload: WebClientReloadPayload): number {
+    const subscribers = [...this.subscribers].filter((subscriber) => !subscriber.response.destroyed);
+    for (const subscriber of subscribers) this.send(subscriber, "client.reload", payload);
+    return subscribers.length;
   }
 
   snapshot(includeCatalog = false) {
@@ -1700,7 +1744,8 @@ export class WebRepl {
 
   private send(subscriber: WebSubscriber, event: string, data: unknown): void {
     if (subscriber.blocked) {
-      if (event === "runtime.context") subscriber.needsRuntimeContext = true;
+      if (event === "client.reload") subscriber.pendingClientReload = data as WebClientReloadPayload;
+      else if (event === "runtime.context") subscriber.needsRuntimeContext = true;
       else subscriber.needsSync = true;
       return;
     }
@@ -1711,6 +1756,11 @@ export class WebRepl {
     subscriber.response.once("drain", () => {
       subscriber.blocked = false;
       if (subscriber.response.destroyed) return;
+      if (subscriber.pendingClientReload) {
+        const payload = subscriber.pendingClientReload;
+        subscriber.pendingClientReload = undefined;
+        this.send(subscriber, "client.reload", payload);
+      }
       if (subscriber.needsSync) {
         subscriber.needsSync = false;
         this.send(subscriber, "sync", this.snapshot(false));
@@ -1861,9 +1911,14 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, markedAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, highlightAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, highlightThemeAssetPath, "text/css; charset=utf-8");
+    if (req.method === "GET" && url.pathname === "/api/client-info") return sendJson(res, router.clientInfo());
+    if (req.method === "POST" && url.pathname === "/api/client-reload") {
+      const body = await readJsonBody<{ clearCache?: boolean; reason?: string }>(req);
+      return sendJson(res, await router.requestClientReload(body));
+    }
     const scope = webRuntimeScopeFromUrl(url);
     const repl = await router.get(scope);
-    if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res);
+    if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     if (req.method === "GET" && url.pathname === "/api/tools") return sendJson(res, repl.globalTools());

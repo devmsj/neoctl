@@ -14,6 +14,8 @@ import { createMemoryMonitor } from '../memory-monitor.mjs';
 
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
+process.env.NEO_CORE_VERSION = coreRuntimeInfo.version;
+process.env.NEO_CLIENT_REVISION ||= `${coreRuntimeInfo.version}-${Date.now().toString(36)}`;
 
 const host = process.env.NEO_RUNTIME_HOST || '127.0.0.1';
 const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);

@@ -153,6 +153,9 @@ const CPA_PASSWORD_MASK = '•••••••••••••••••�
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
 const THEME_STORAGE_KEY = 'neoctl-web.theme'
+const CLIENT_REVISION_STORAGE_KEY = 'neoctl-web.clientRevision'
+const CLIENT_RELOAD_STORAGE_KEY = 'neoctl-web.clientReloadRequest'
+const CLIENT_RELOAD_QUERY_KEY = '__neo_reload'
 let runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
 let allowRuntimeSessionChange = !runtimeSessionId
@@ -245,6 +248,7 @@ function rememberRuntimeSession(session, force = false) {
 const state = reactive({
   connected: false,
   connecting: true,
+  coreVersion: '',
   lines: [],
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
@@ -348,6 +352,9 @@ let fastModeMutationQueue = Promise.resolve()
 let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
+let clientReloading = false
+
+removeClientReloadQuery()
 const renderedLineCache = new Map()
 const pendingLineText = new Map()
 const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
@@ -745,6 +752,20 @@ function connectEvents() {
       // A later sync snapshot repairs malformed or missed output events.
     }
   })
+  es.addEventListener('client.version', (event) => {
+    try {
+      handleClientVersion(JSON.parse(event.data))
+    } catch {
+      // Ignore malformed deployment metadata; the connection remains usable.
+    }
+  })
+  es.addEventListener('client.reload', (event) => {
+    try {
+      void handleClientReload(JSON.parse(event.data))
+    } catch {
+      // Ignore malformed reload requests.
+    }
+  })
   es.addEventListener('runtime.context', (event) => {
     try {
       applyRuntimeContext(JSON.parse(event.data))
@@ -760,6 +781,54 @@ function connectEvents() {
       state.runtimeContextError = '运行上下文同步失败'
     }
   })
+}
+
+function handleClientVersion(payload) {
+  if (Number(payload?.protocolVersion) !== 1) return
+  state.coreVersion = String(payload.coreVersion || '')
+  const revision = String(payload.revision || '').trim()
+  if (!revision) return
+  const previousRevision = localStorage.getItem(CLIENT_REVISION_STORAGE_KEY)
+  localStorage.setItem(CLIENT_REVISION_STORAGE_KEY, revision)
+  if (previousRevision && previousRevision !== revision) void reloadClient({ ...payload, requestId: `revision:${revision}`, clearCache: true })
+}
+
+async function handleClientReload(payload) {
+  if (Number(payload?.protocolVersion) !== 1) return
+  const requestId = String(payload.requestId || '').trim()
+  if (!requestId || sessionStorage.getItem(CLIENT_RELOAD_STORAGE_KEY) === requestId) return
+  sessionStorage.setItem(CLIENT_RELOAD_STORAGE_KEY, requestId)
+  const revision = String(payload.revision || '').trim()
+  if (revision) localStorage.setItem(CLIENT_REVISION_STORAGE_KEY, revision)
+  state.coreVersion = String(payload.coreVersion || state.coreVersion || '')
+  await reloadClient(payload)
+}
+
+async function reloadClient(payload) {
+  if (clientReloading) return
+  clientReloading = true
+  if (payload.clearCache !== false) await clearClientCaches()
+  const nextUrl = new URL(window.location.href)
+  nextUrl.searchParams.set(CLIENT_RELOAD_QUERY_KEY, String(payload.requestId || payload.revision || Date.now()))
+  window.location.replace(nextUrl.href)
+}
+
+async function clearClientCaches() {
+  const tasks = []
+  if ('caches' in window) {
+    tasks.push(caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))))
+  }
+  if ('serviceWorker' in navigator) {
+    tasks.push(navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister()))))
+  }
+  await Promise.allSettled(tasks)
+}
+
+function removeClientReloadQuery() {
+  const currentUrl = new URL(window.location.href)
+  if (!currentUrl.searchParams.has(CLIENT_RELOAD_QUERY_KEY)) return
+  currentUrl.searchParams.delete(CLIENT_RELOAD_QUERY_KEY)
+  window.history.replaceState(window.history.state, '', currentUrl.href)
 }
 
 function applyRuntimeContext(payload) {
@@ -4256,6 +4325,7 @@ function createMobileSession() {
       </section>
     </main>
 
+    <div v-if="state.coreVersion" class="core-version" :title="`内核版本 ${state.coreVersion}`">内核 {{ state.coreVersion }}</div>
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>
 
