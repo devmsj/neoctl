@@ -87,6 +87,21 @@ body {
   font-family: var(--sans);
 }
 
+.core-version {
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: #9d2f69;
+  font-family: 'Comic Sans MS', 'Trebuchet MS', var(--sans);
+  box-shadow: none !important;
+  transform: rotate(-1deg);
+}
+
+:root[data-theme='dark'] .core-version {
+  color: #fbcfe8;
+  box-shadow: none !important;
+}
+
 button,
 a,
 input,

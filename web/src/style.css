@@ -3290,12 +3290,12 @@ button.metric-chip {
 .capability-card { border: 1px solid var(--line); padding: 18px; background: #fff; min-height: 92px; }
 .core-version {
   position: fixed;
-  right: 12px;
-  bottom: 8px;
-  z-index: 8;
-  color: var(--muted);
-  font: 600 10px/1.2 var(--font-mono);
-  letter-spacing: .02em;
+  right: 14px;
+  bottom: 12px;
+  z-index: 260;
+  color: var(--text);
+  font: 800 11px/1 var(--sans);
+  letter-spacing: .035em;
   user-select: text;
 }
 

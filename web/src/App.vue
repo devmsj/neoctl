@@ -524,7 +524,7 @@ watch(() => state.backgroundTaskDetail?.output, async () => {
 })
 
 onMounted(async () => {
-  await Promise.all([fetchState(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
+  await Promise.all([fetchState(), fetchClientInfo(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
@@ -566,6 +566,16 @@ async function fetchState(options = {}) {
   } catch (error) {
     if (!options.silent) notify(`运行时不可用：${error.message || error}`)
     return false
+  }
+}
+
+async function fetchClientInfo() {
+  try {
+    const res = await fetch(runtimeUrl('/api/client-info'), { cache: 'no-store' })
+    if (!res.ok) return
+    handleClientVersion(await res.json())
+  } catch {
+    // SSE will retry version synchronization when the runtime reconnects.
   }
 }
 
@@ -4325,9 +4335,12 @@ function createMobileSession() {
       </section>
     </main>
 
-    <div v-if="state.coreVersion" class="core-version" :title="`内核版本 ${state.coreVersion}`">内核 {{ state.coreVersion }}</div>
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
   </div>
+
+  <Teleport to="body">
+    <div v-if="state.coreVersion" class="core-version" :title="`内核版本 ${state.coreVersion}`">内核 {{ state.coreVersion }}</div>
+  </Teleport>
 
   <Teleport to="body">
     <div v-if="state.confirmDialog.open" class="confirm-dialog-backdrop" @click.self="resolveConfirmation(false)">
