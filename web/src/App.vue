@@ -3901,7 +3901,7 @@ function createMobileSession() {
                           <div v-if="item.toolDisplay?.previews?.length" class="tool-result-previews">
                             <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
                               <span v-if="preview.label">{{ preview.label }}</span>
-                              <pre>{{ preview.content }}</pre>
+                              <pre tabindex="0">{{ preview.content }}</pre>
                             </section>
                           </div>
                           <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
@@ -3992,7 +3992,7 @@ function createMobileSession() {
                     <div v-if="line.toolDisplay?.previews?.length" class="tool-result-previews">
                       <section v-for="(preview, previewIndex) in line.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
                         <span v-if="preview.label">{{ preview.label }}</span>
-                        <pre>{{ preview.content }}</pre>
+                        <pre tabindex="0">{{ preview.content }}</pre>
                       </section>
                     </div>
                     <dl v-if="visibleToolFacts(line).length" class="tool-result-facts">

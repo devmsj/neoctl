@@ -1169,41 +1169,54 @@ button:disabled,
 .tool-result-previews {
   flex: 1 0 100%;
   display: grid;
-  gap: 6px;
+  gap: 16px;
   min-width: 0;
+  margin-top: 2px;
 }
 .tool-result-preview {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 6px;
+  padding: 11px 15px 10px;
+  border: 0 !important;
+  background: rgba(203, 211, 222, .34) !important;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .9), inset -1px -1px 0 rgba(71, 85, 105, .12), 0 8px 22px rgba(31, 41, 55, .08) !important;
+  backdrop-filter: blur(18px) saturate(.82) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(.82) !important;
 }
 .tool-result-preview > span {
-  color: var(--muted);
+  color: var(--faint);
   font-size: 11px;
   font-weight: 700;
+  letter-spacing: .06em;
 }
 .tool-result-preview pre {
+  height: auto;
   max-height: 180px;
   margin: 0;
   overflow: auto;
-  padding: 10px 12px;
-  border: 1px solid #9ca3af !important;
-  background: #f9fafb !important;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 0 7px;
+  border: 0 !important;
+  background: transparent !important;
   color: var(--text) !important;
-  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.1) !important;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.55;
+  box-shadow: none !important;
+  font-family: 'Cascadia Code', 'Microsoft YaHei UI', 'PingFang SC', monospace;
+  font-size: 12px;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.tool-result-preview pre::-webkit-scrollbar { display: none; }
+.tool-result-preview pre:focus-visible {
+  outline: 0;
+}
 .tool-result-preview.kind-diff pre {
-  border-color: #64748b !important;
-  background: #f3f4f6 !important;
+  background: transparent !important;
 }
 .tool-result-preview.kind-list pre {
-  max-height: 140px;
-  background: #ffffff !important;
+  background: transparent !important;
   white-space: pre-line;
 }
 .composer {
@@ -1423,7 +1436,11 @@ input[type='radio'] {
 :root[data-theme='dark'] .tool-result-fact.tone-success dd { color: #bef264; }
 :root[data-theme='dark'] .tool-result-fact.tone-warning dd { color: #fde68a; }
 :root[data-theme='dark'] .tool-result-fact.tone-danger dd { color: #fecaca; }
-:root[data-theme='dark'] .tool-result-preview pre { background: #2f353d !important; color: #f3f4f6 !important; }
+:root[data-theme='dark'] .tool-result-preview {
+  background: rgba(148, 163, 184, .14) !important;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .18), inset -1px -1px 0 rgba(0, 0, 0, .18), 0 10px 28px rgba(0, 0, 0, .22) !important;
+}
+:root[data-theme='dark'] .tool-result-preview pre { color: #f3f4f6 !important; }
 
 :root[data-theme='dark'] .sidebar .prompt-stack {
   border-color: #6b7280 !important;
