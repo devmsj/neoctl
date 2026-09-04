@@ -67,23 +67,7 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
 
-const DEFAULT_APP_PROMPT_LIBRARY = [
-  {
-    id: 'product-copilot',
-    title: '产品副驾',
-    content: '你当前承担应用层产品副驾角色。优先关注产品意图、用户目标、体验取舍、边界情况、上线风险与下一步决策。回答要清晰、结构化，以判断和推进为主。',
-  },
-  {
-    id: 'frontend-crafter',
-    title: '前端工匠',
-    content: '你当前承担应用层前端工匠角色。优先关注交互细节、布局清晰度、视觉层级、响应式表现和可落地的界面实现建议。提出 UI 方案时要具体、有审美，不要泛泛而谈。',
-  },
-  {
-    id: 'delivery-driver',
-    title: '交付推进',
-    content: '你当前承担应用层交付推进角色。优先追求执行速度、解除阻塞、减少绕路、快速验证和务实落地。除非用户明确要求分析，否则优先给出直接可执行的下一步。',
-  },
-];
+const DEFAULT_APP_PROMPT_LIBRARY = [];
 
 await runWebServer(['--host', host, '--port', String(upstreamPort)], {
   createRuntime: workspaceRuntime.createRuntime,

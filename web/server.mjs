@@ -22,14 +22,15 @@ const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
 const host = process.env.APP_HOST || '0.0.0.0';
 const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
 const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
-const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(__dirname, '.neoctl-web', 'prompt-library.json'));
-const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(__dirname, '.neoctl-web', 'uploads'));
+const dataRoot = path.resolve(process.env.NEO_WEB_DATA_DIR || path.join(process.cwd(), '.neoctl-web'));
+const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
+const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
 const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(__dirname, 'plugins'));
-const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || path.join(__dirname, '.neoctl-web'));
-const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(__dirname, '.neoctl-web', 'cpa-config.json'));
-const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(__dirname, '.neoctl-web', 'memory-monitor.json'));
-const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(__dirname, '.neoctl-web', 'plugins.json'));
-const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(__dirname, '.neoctl-web', 'tools.json'));
+const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || dataRoot);
+const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(dataRoot, 'cpa-config.json'));
+const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(dataRoot, 'memory-monitor.json'));
+const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(dataRoot, 'plugins.json'));
+const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(dataRoot, 'tools.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
@@ -52,8 +53,8 @@ const memoryMonitor = createMemoryMonitor({
   maxPersistedBytes: process.env.NEO_MEMORY_MAX_PERSISTED_BYTES,
 });
 const workspaceRuntime = createWorkspaceRuntimeManager({
-  projectRoot: __dirname,
-  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(__dirname, 'workspace')),
+  projectRoot: process.cwd(),
+  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),
@@ -65,23 +66,7 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
   }),
 });
 
-const DEFAULT_APP_PROMPT_LIBRARY = [
-  {
-    id: 'product-copilot',
-    title: '产品副驾',
-    content: '你当前承担应用层产品副驾角色。优先关注产品意图、用户目标、体验取舍、边界情况、上线风险与下一步决策。回答要清晰、结构化，以判断和推进为主。',
-  },
-  {
-    id: 'frontend-crafter',
-    title: '前端工匠',
-    content: '你当前承担应用层前端工匠角色。优先关注交互细节、布局清晰度、视觉层级、响应式表现和可落地的界面实现建议。提出 UI 方案时要具体、有审美，不要泛泛而谈。',
-  },
-  {
-    id: 'delivery-driver',
-    title: '交付推进',
-    content: '你当前承担应用层交付推进角色。优先追求执行速度、解除阻塞、减少绕路、快速验证和务实落地。除非用户明确要求分析，否则优先给出直接可执行的下一步。',
-  },
-];
+const DEFAULT_APP_PROMPT_LIBRARY = [];
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -110,8 +95,13 @@ server.headersTimeout = 75_000;
 if (embedRuntime) await startEmbeddedRuntime();
 await cpaQuotaMonitor.start();
 await memoryMonitor.start();
-server.listen(port, host, () => {
-  console.log(`maker web listening on http://${host}:${port}, dist=${root}, runtime=${runtimeTarget.href}`);
+await new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(port, host, () => {
+    server.off('error', reject);
+    console.log(`neo web listening on http://${host}:${port}, dist=${root}, runtime=${runtimeTarget.href}`);
+    resolve();
+  });
 });
 
 async function startEmbeddedRuntime() {

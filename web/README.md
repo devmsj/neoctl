@@ -2,6 +2,15 @@
 
 一个 Render 风格的 Vue 3 + Vite 单页应用，面向设计人员和工作流用户封装 `neoctl` 本地 AI Agent 运行时。
 
+## 全局安装
+
+```bash
+npm install -g neoctl-web
+neow
+```
+
+`neow` 会启动内置核心、Web 后台和已构建的 Vue 页面；默认使用 `5173` 与 `3101`，端口被占用时自动顺延。运行 `neow --help` 查看全部选项。
+
 当前版本目标：先复刻 `neo web` 的能力；绘图工具等待后续 `neoctl` 更新后再接入。
 
 ## 开发启动
