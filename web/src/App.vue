@@ -249,6 +249,7 @@ const state = reactive({
   connected: false,
   connecting: true,
   coreVersion: '',
+  coreEasterEgg: false,
   lines: [],
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
@@ -353,6 +354,7 @@ let fastModeMutationVersion = 0
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 let clientReloading = false
+let coreEasterEggTimer
 
 removeClientReloadQuery()
 const renderedLineCache = new Map()
@@ -549,6 +551,7 @@ onBeforeUnmount(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (cpaStateTimer) clearInterval(cpaStateTimer)
   if (memoryStateTimer) clearInterval(memoryStateTimer)
+  if (coreEasterEggTimer) clearTimeout(coreEasterEggTimer)
   if (sessionTitleResizeObserver) sessionTitleResizeObserver.disconnect()
   document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open', 'context-window-open')
   if (confirmDialogResolver) resolveConfirmation(false)
@@ -839,6 +842,15 @@ function removeClientReloadQuery() {
   if (!currentUrl.searchParams.has(CLIENT_RELOAD_QUERY_KEY)) return
   currentUrl.searchParams.delete(CLIENT_RELOAD_QUERY_KEY)
   window.history.replaceState(window.history.state, '', currentUrl.href)
+}
+
+function triggerCoreEasterEgg() {
+  if (coreEasterEggTimer) clearTimeout(coreEasterEggTimer)
+  state.coreEasterEgg = false
+  requestAnimationFrame(() => {
+    state.coreEasterEgg = true
+    coreEasterEggTimer = setTimeout(() => { state.coreEasterEgg = false }, 1300)
+  })
 }
 
 function applyRuntimeContext(payload) {
@@ -4339,7 +4351,21 @@ function createMobileSession() {
   </div>
 
   <Teleport to="body">
-    <div v-if="state.coreVersion" class="core-version" :title="`内核版本 ${state.coreVersion}`">内核 {{ state.coreVersion }}</div>
+    <div
+      v-if="state.coreVersion"
+      :class="['core-version', { celebrating: state.coreEasterEgg }]"
+      role="button"
+      tabindex="0"
+      :title="`内核版本 ${state.coreVersion} · 点击试试`"
+      @click="triggerCoreEasterEgg"
+      @keydown.enter.prevent="triggerCoreEasterEgg"
+      @keydown.space.prevent="triggerCoreEasterEgg"
+    >
+      <span class="core-version-spark spark-a" aria-hidden="true"></span>
+      <span class="core-version-spark spark-b" aria-hidden="true"></span>
+      <span class="core-version-spark spark-c" aria-hidden="true"></span>
+      <span>内核版本 {{ state.coreVersion }}</span>
+    </div>
   </Teleport>
 
   <Teleport to="body">
