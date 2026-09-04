@@ -182,7 +182,7 @@ async function main(): Promise<void> {
   const budgetHistory = [
     oversizedUser,
     createTextMessage("assistant", "assistant content must not survive"),
-    createToolResultMessage({ id: "budget-tool", name: "read", input: {} }, true, "tool content must not survive"),
+    createToolResultMessage({ id: "budget-tool", name: "file_read", input: {} }, true, "tool content must not survive"),
     metaUser,
     imageUser,
   ];
@@ -224,18 +224,18 @@ async function main(): Promise<void> {
     id: "assistant_fallback_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "fallback_call", name: "grep", input: { query: "codex" } }],
+    blocks: [{ type: "tool_use" as const, id: "fallback_call", name: "file_search", input: { query: "codex" } }],
   };
   const fallbackHistory = [
     createTextMessage("user", "提高摘要质量，参考仓库 C:\\Users\\qyq\\Desktop\\work\\codex，不要使用子代理。"),
     createTextMessage("assistant", "已完成 Codex 调查，等待实施。"),
     fallbackToolUse,
     ...Array.from({ length: 8 }, (_, index) => createToolResultMessage(
-      { id: `fallback_fail_${index}`, name: "grep", input: {} },
+      { id: `fallback_fail_${index}`, name: "file_search", input: {} },
       false,
       `transient failure ${index}`,
     )),
-    createToolResultMessage({ id: "fallback_call", name: "grep", input: {} }, true, "Codex compaction prompt located."),
+    createToolResultMessage({ id: "fallback_call", name: "file_search", input: {} }, true, "Codex compaction prompt located."),
   ];
   const fallbackCompacted = await compactor.manualCompact(fallbackHistory, { keepRecentTokenBudget: 200, summaryMaxChars: 1800 });
   const fallbackSummary = fallbackCompacted.summary ?? "";
@@ -261,22 +261,22 @@ async function main(): Promise<void> {
     id: "assistant_old_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_old", name: "grep", input: { query: "old" } }],
+    blocks: [{ type: "tool_use" as const, id: "call_old", name: "file_search", input: { query: "old" } }],
   };
   const toolUseNew = {
     id: "assistant_new_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_new", name: "grep", input: { query: "new" } }],
+    blocks: [{ type: "tool_use" as const, id: "call_new", name: "file_search", input: { query: "new" } }],
   };
-  const oldResult = createToolResultMessage({ id: "call_old", name: "grep", input: {} }, true, "old".repeat(1200));
-  const newResult = createToolResultMessage({ id: "call_new", name: "grep", input: {} }, true, "new".repeat(1200));
+  const oldResult = createToolResultMessage({ id: "call_old", name: "file_search", input: {} }, true, "old".repeat(1200));
+  const newResult = createToolResultMessage({ id: "call_new", name: "file_search", input: {} }, true, "new".repeat(1200));
   const micro = microCompactIfNeeded([toolUseOld, oldResult, toolUseNew, newResult], { microCompactMaxChars: 100, keepRecentToolResults: 1 });
   const oldOutput = micro.messages[1]?.blocks[0]?.type === "tool_result" ? micro.messages[1].blocks[0].output : undefined;
   const newOutput = micro.messages[3]?.blocks[0]?.type === "tool_result" ? micro.messages[3].blocks[0].output : undefined;
   const microOk = micro.changed && oldOutput === CLEARED_TOOL_RESULT_CONTENT && typeof newOutput === "string" && newOutput.startsWith("new");
 
-  const orphanResult = createToolResultMessage({ id: "call_orphan", name: "grep", input: {} }, true, "orphan");
+  const orphanResult = createToolResultMessage({ id: "call_orphan", name: "file_search", input: {} }, true, "orphan");
   const paired = ensureToolResultPairing([toolUseOld, createTextMessage("assistant", "done"), orphanResult]);
   const pairedJson = JSON.stringify(paired);
   const pairingOk =
@@ -289,10 +289,10 @@ async function main(): Promise<void> {
     id: "assistant_big_grep",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "call_big_grep", name: "grep", input: { query: "^|\\S", root: ".." } }],
+    blocks: [{ type: "tool_use" as const, id: "call_big_grep", name: "file_search", input: { query: "^|\\S", root: ".." } }],
   };
   const bigGrepResult = createToolResultMessage(
-    { id: "call_big_grep", name: "grep", input: {} },
+    { id: "call_big_grep", name: "file_search", input: {} },
     true,
     JSON.stringify({ query: "^|\\S", root: "..", matches: Array.from({ length: 600 }, (_, index) => `match ${index}: ${"x".repeat(80)}`) }),
   );
@@ -313,9 +313,9 @@ async function main(): Promise<void> {
     id: "assistant_summary_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "summary_call", name: "read", input: { path: "C:\\Users\\qyq\\Desktop\\work\\codex" } }],
+    blocks: [{ type: "tool_use" as const, id: "summary_call", name: "file_read", input: { path: "C:\\Users\\qyq\\Desktop\\work\\codex" } }],
   };
-  const summaryToolResult = createToolResultMessage({ id: "summary_call", name: "read", input: {} }, false, "temporary read failure");
+  const summaryToolResult = createToolResultMessage({ id: "summary_call", name: "file_read", input: {} }, false, "temporary read failure");
   const summaryImageUser = {
     ...createTextMessage("user", "historical image reference"),
     blocks: [
@@ -327,10 +327,10 @@ async function main(): Promise<void> {
     id: "assistant_large_summary_tool",
     role: "assistant" as const,
     createdAt: new Date().toISOString(),
-    blocks: [{ type: "tool_use" as const, id: "large_summary_call", name: "read", input: { path: "large.log" } }],
+    blocks: [{ type: "tool_use" as const, id: "large_summary_call", name: "file_read", input: { path: "large.log" } }],
   };
   const largeSummaryToolResult = createToolResultMessage(
-    { id: "large_summary_call", name: "read", input: {} },
+    { id: "large_summary_call", name: "file_read", input: {} },
     true,
     `START_SENTINEL ${"large-output ".repeat(1500)} END_SENTINEL`,
   );

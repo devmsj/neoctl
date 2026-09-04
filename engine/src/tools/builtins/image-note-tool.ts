@@ -32,7 +32,6 @@ export interface ImageNoteToolOutput {
 export function createImageNoteTool(): Tool<ImageNoteToolInput> {
   return {
     name: "image_note",
-    aliases: ["note_image", "annotate_image"],
     description:
       "Record concise semantic notes for one or more images the model has actually inspected. " +
       "Use this after seeing newly provided or loaded images when they may be referenced later. " +

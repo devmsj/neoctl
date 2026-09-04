@@ -20,8 +20,8 @@ export interface EffectiveSystemPromptOptions {
 }
 
 export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = []): PromptSection[] {
-  const hasImageGenerationTool = enabledTools.includes("image2");
-  const hasLoadImageTool = enabledTools.includes("load_image");
+  const hasImageGenerationTool = enabledTools.includes("image_create");
+  const hasLoadImageTool = enabledTools.includes("image_inspect");
   const hasSecretTools = enabledTools.includes("secret_list") || enabledTools.includes("secret_request");
   return [
     {
@@ -53,13 +53,13 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
         "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
         `Tool results use a default context budget of ${DEFAULT_TOOL_RESULT_BUDGET_CHARS} serialized characters unless a tool specifies a larger default. Use maxResultChars on an individual call to override it within 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`,
         hasLoadImageTool
-          ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the load_image tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
+          ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the image_inspect tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
           : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",
         hasImageGenerationTool
-          ? "When the user asks for drawing/image generation or image editing/modification, use the image2 tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image2 validation fails, tell the user the model and exact parameter reason from the tool result."
+          ? "When the user asks for drawing/image generation or image editing/modification, use the image_create tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image_create validation fails, tell the user the model and exact parameter reason from the tool result."
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
         hasSecretTools
-          ? "Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>. Do not ask users to paste secret values into the conversation; pass secret keys to tools that accept secret references such as exec_command.envSecrets."
+          ? "Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>. Do not ask users to paste secret values into the conversation; pass secret keys to tools that accept secret references such as terminal_run.envSecrets."
           : "",
       ].join("\n"),
     },

@@ -16,7 +16,7 @@ async function main(): Promise<void> {
       description: "Review a plan before implementation.",
       entrypoint: "Review the supplied plan for correctness and missing validation.",
       execution: "inline",
-      allowedTools: ["plan"],
+      allowedTools: ["plan_update"],
       model: "gpt-5.5",
       effort: "high",
     },
@@ -76,20 +76,20 @@ async function main(): Promise<void> {
         description: "Generated review workflow",
         entrypoint: "Review generated output and list risks.",
         execution: "inline",
-        allowedTools: ["read"],
+        allowedTools: ["file_read"],
       },
     },
   }, fsContext);
   const createdSkill = await fsCatalog.get("generated-review");
 
   const guard = createSkillAwareCanUseTool(catalog);
-  const allowedDecision = await guard({ id: "allowed", name: "plan", input: {} }, {
+  const allowedDecision = await guard({ id: "allowed", name: "plan_update", input: {} }, {
     ...context,
-    options: { activeSkill: { name: "review-plan", allowedTools: ["plan"] } },
+    options: { activeSkill: { name: "review-plan", allowedTools: ["plan_update"] } },
   });
   const deniedDecision = await guard({ id: "denied", name: "exec", input: {} }, {
     ...context,
-    options: { activeSkill: { name: "review-plan", allowedTools: ["plan"] } },
+    options: { activeSkill: { name: "review-plan", allowedTools: ["plan_update"] } },
   });
 
   const inlineResult = inline.find((update) => update.message.blocks.some((block) => block.type === "tool_result"));

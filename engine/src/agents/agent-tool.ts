@@ -21,13 +21,13 @@ import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
 import { globalAgentActivityStore, type AgentActivityStore } from "./agent-activity.js";
 import path from "node:path";
 
-export const AGENT_TOOL_NAME = "agent";
+export const AGENT_TOOL_NAME = "subagent_run";
 
 export const AGENT_TOOL_PROMPT_RULES = [
   "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
   "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
   "Background agents return an output file and task notification; do not fabricate results before the task completes.",
-  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents can inspect with exec_command but cannot edit/write or spawn subagents.",
+  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents can inspect with terminal_run but cannot use file_edit/file_write or spawn subagents.",
   "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
   "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
   "Launch independent agents in the same model turn when parallel work is useful.",
@@ -78,7 +78,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         subagent_type: { type: "string", description: "Agent definition to use. Omit for general-purpose or fork mode." },
         model: { type: "string" },
         run_in_background: { type: "boolean" },
-        name: { type: "string", description: "Optional stable name for later SendMessage routing." },
+        name: { type: "string", description: "Optional stable name for later subagent_message routing." },
         team_name: { type: "string" },
         mode: { type: "string", description: "Execution/special mode: sync, background, fork, explore, or permission aliases." },
         isolation: { type: "string", enum: ["shared", "worktree", "remote"] },
@@ -180,7 +180,7 @@ async function runSyncAgent(input: {
       workspaceCwd,
     });
 
-    input.options.onProgress?.({ toolName: "agent", message: input.description, channel: "state", operation: "replace", phase: "running", data: { agent_id: input.agentId, agent_type: input.agent.agentType } });
+    input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { agent_id: input.agentId, agent_type: input.agent.agentType } });
     let completed = await stream.next();
     while (!completed.done) {
       activityStore.recordEvent(input.agentId, completed.value);
@@ -222,14 +222,14 @@ function emitSyncAgentEvent(
   if (!emit) return;
   const childKey = (key: string | undefined, toolUseId: string) => `${agentId}:${toolUseId}:${key ?? "state"}`;
   if (event.type === "tool.started") {
-    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: "tool_running", data: { agent_id: agentId, child_event: event } });
+    emit({ toolName: AGENT_TOOL_NAME, message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: "tool_running", data: { agent_id: agentId, child_event: event } });
     return;
   }
   if (event.type === "tool.progress") {
     const progress = event.progress;
     emit({
       ...progress,
-      toolName: "agent",
+      toolName: AGENT_TOOL_NAME,
       toolUseId: undefined,
       message: progress.message || childToolPurpose(event.toolUse),
       key: childKey(progress.key, event.toolUse.id),
@@ -238,11 +238,11 @@ function emitSyncAgentEvent(
     return;
   }
   if (event.type === "tool.result.available") {
-    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
+    emit({ toolName: AGENT_TOOL_NAME, message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
     return;
   }
   if (event.type === "state" && event.phase !== "running_tools") {
-    emit({ toolName: "agent", message: event.detail || event.phase, channel: "state", operation: "replace", key: `${agentId}:agent:state`, phase: event.phase, data: { agent_id: agentId } });
+    emit({ toolName: AGENT_TOOL_NAME, message: event.detail || event.phase, channel: "state", operation: "replace", key: `${agentId}:agent:state`, phase: event.phase, data: { agent_id: agentId } });
   }
 }
 
@@ -256,10 +256,10 @@ function childToolPurpose(toolUse: { name: string; input: unknown }): string {
     const input = toolUse.input as Record<string, unknown>;
     const description = typeof input.description === "string" ? input.description.trim() : "";
     if (description) return description;
-    if (toolUse.name === "read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
-    if (toolUse.name === "list" && typeof input.path === "string") return `查看 ${input.path}`;
-    if (toolUse.name === "grep" && typeof input.query === "string") return `搜索 ${input.query}`;
-    if (toolUse.name === "exec_command" && typeof input.cmd === "string") return input.cmd;
+    if (toolUse.name === "file_read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
+    if (toolUse.name === "file_list" && typeof input.path === "string") return `查看 ${input.path}`;
+    if (toolUse.name === "file_search" && typeof input.query === "string") return `搜索 ${input.query}`;
+    if (toolUse.name === "terminal_run" && typeof input.cmd === "string") return input.cmd;
   }
   return toolUse.name;
 }

@@ -820,7 +820,7 @@ function buildSmartMessageSummary(message: Message): string {
     } else if (block.type === "image") {
       const label = block.label ? `"${block.label}"` : "unlabeled";
       const stored = block.storage?.path ? ", stored payload available via image registry" : "";
-      parts.push(`[image omitted from text compaction: ${label}, ${block.mimeType}${stored}; use load_image by id/label for visual inspection]`);
+      parts.push(`[image omitted from text compaction: ${label}, ${block.mimeType}${stored}; use image_inspect by id/label for visual inspection]`);
     } else if (block.type === "tool_result") {
       parts.push(extractStructuredToolResult(block));
     } else if (block.type === "tool_use") {

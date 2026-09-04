@@ -52,7 +52,7 @@ function planItemSchema(depth = 3): JsonSchema {
 }
 
 export const planTool: Tool<PlanToolInput> = {
-  name: "plan",
+  name: "plan_update",
   description: "Create or update the current task plan. Use this to make multi-step work visible; mark items completed as they are finished. When implementing a main plan item, you may reasonably split it into subitems to keep progress more detailed and verifiable.",
   inputSchema: {
     type: "object",

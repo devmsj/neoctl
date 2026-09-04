@@ -12,7 +12,7 @@ import type { Tool, ToolUseContext } from "../tools/tool.js";
 import { createTextMessage } from "../types/messages.js";
 import { createAgentTool } from "./agent-tool.js";
 import { StaticAgentCatalog, EXPLORE_AGENT, GENERAL_PURPOSE_AGENT } from "./agent-definition.js";
-import { createTaskTools } from "../tasks/task-tools.js";
+import { createSubagentTools } from "../tasks/subagent-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 
 function makeSmokeTool(name: string, readOnly: boolean): Tool<Record<string, never>> {
@@ -25,8 +25,8 @@ function makeSmokeTool(name: string, readOnly: boolean): Tool<Record<string, nev
       return {};
     },
     async call(_input, _context, options) {
-      if (name === "exec_command") options.onProgress?.({ toolName: name, message: "terminal output", channel: "stdout", operation: "append", key: "output", data: { type: "terminal.output.delta", stream: "stdout", text: "child-output" } });
-      if (name === "read") options.onProgress?.({ toolName: name, message: "patch output", channel: "patch", operation: "append", key: "patch", data: { patch: "child-patch" } });
+      if (name === "terminal_run") options.onProgress?.({ toolName: name, message: "terminal output", channel: "stdout", operation: "append", key: "output", data: { type: "terminal.output.delta", stream: "stdout", text: "child-output" } });
+      if (name === "file_read") options.onProgress?.({ toolName: name, message: "patch output", channel: "patch", operation: "append", key: "patch", data: { patch: "child-patch" } });
       return { ok: true, output: name };
     },
   };
@@ -71,16 +71,16 @@ class ParentAndSubagentGateway implements ModelGateway {
       const isExploreSmoke = allPromptText.includes("map readonly paths");
       const isTitleRequest = allPromptText.includes("Summarize this session as a short title") || allPromptText.includes("Refine this existing session title");
       if (lastPrompt.includes("REQUIRED FINALIZATION:")) this.reportRecoveryPrompts += 1;
-      if (request.toolChoice && typeof request.toolChoice === "object" && request.toolChoice.type === "function" && request.toolChoice.name === "agent_report") {
+      if (request.toolChoice && typeof request.toolChoice === "object" && request.toolChoice.type === "function" && request.toolChoice.name === "subagent_report") {
         this.forcedReportToolChoices += 1;
       }
       const hasToolResult = request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"));
       const hasAgentReportResult = request.messages.some((message) =>
-        message.blocks.some((block) => block.type === "tool_result" && block.name === "agent_report"),
+        message.blocks.some((block) => block.type === "tool_result" && block.name === "subagent_report"),
       );
       const hasFinalAgentReportResult = request.messages.some((message) =>
         message.blocks.some((block) => {
-          if (block.type !== "tool_result" || block.name !== "agent_report" || !block.ok) return false;
+          if (block.type !== "tool_result" || block.name !== "subagent_report" || !block.ok) return false;
           const output = block.output;
           if (!output || typeof output !== "object") return false;
           const status = (output as { status?: unknown }).status;
@@ -93,7 +93,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           type: "tool_use",
           toolUse: {
             id: "call_explore_list",
-            name: "list",
+            name: "file_list",
             input: {},
           },
         };
@@ -105,7 +105,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           type: "tool_use",
           toolUse: {
             id: "call_explore_report_final",
-            name: "agent_report",
+            name: "subagent_report",
             input: {
               content: [
                 "## Scope",
@@ -135,7 +135,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           type: "tool_use",
           toolUse: {
             id: "call_explore_report_draft",
-            name: "agent_report",
+            name: "subagent_report",
             input: { content: "## Draft\n- src/agents/agent-definition.ts inspection is in progress.", status: "draft" },
           },
         };
@@ -149,13 +149,13 @@ class ParentAndSubagentGateway implements ModelGateway {
       }
 
       if (!isTitleRequest && !hasFinalAgentReportResult) {
-        const workerToolName = hasToolResult ? "agent_report" : "exec_command";
+        const workerToolName = hasToolResult ? "subagent_report" : "terminal_run";
         yield {
           type: "tool_use",
           toolUse: {
             id: `call_worker_${workerToolName}_${this.subagentCalls}`,
             name: workerToolName,
-            input: workerToolName === "agent_report"
+            input: workerToolName === "subagent_report"
               ? { content: `worker result: ${lastPrompt.slice(0, 24)}`, status: "completed" }
               : {},
           },
@@ -183,7 +183,7 @@ class ParentAndSubagentGateway implements ModelGateway {
         type: "tool_use",
         toolUse: {
           id: "call_agent_sync",
-          name: "agent",
+          name: "subagent_run",
           input: { prompt: "investigate sync path", description: "sync investigation" },
         },
       };
@@ -201,10 +201,10 @@ async function main(): Promise<void> {
   const sessionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agent-title-smoke-"));
   const taskStore = new TaskStore();
   const tools = new ToolRegistry();
-  for (const name of ["list", "read", "grep", "search", "plan"]) tools.register(makeSmokeTool(name, true));
-  for (const name of ["edit", "write", "exec_command", "write_stdin"]) tools.register(makeSmokeTool(name, false));
+  for (const name of ["file_list", "file_read", "file_search", "web_search", "plan_update"]) tools.register(makeSmokeTool(name, true));
+  for (const name of ["file_edit", "file_write", "terminal_run", "terminal_control"]) tools.register(makeSmokeTool(name, false));
   tools.register(smokePassthroughTool);
-  for (const tool of createTaskTools(taskStore)) tools.register(tool);
+  for (const tool of createSubagentTools(taskStore)) tools.register(tool);
   tools.register(createAgentTool({
     modelGateway: gateway,
     tools,
@@ -213,8 +213,8 @@ async function main(): Promise<void> {
   }));
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
-    ["list", "read", "grep", "search", "exec_command", "write_stdin", "agent_report"].every((name) => exploreToolNames.has(name)) &&
-    ["edit", "write", "agent", "plan", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
+    ["file_list", "file_read", "file_search", "web_search", "terminal_run", "terminal_control", "subagent_report"].every((name) => exploreToolNames.has(name)) &&
+    ["file_edit", "file_write", "subagent_run", "plan_update", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
@@ -222,7 +222,7 @@ async function main(): Promise<void> {
   const childProgressChannels: string[] = [];
   for await (const event of engine.sendUserText("delegate once")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
-    if (event.type === "tool.progress" && event.toolUse.name === "agent" && event.progress.channel) childProgressChannels.push(event.progress.channel);
+    if (event.type === "tool.progress" && event.toolUse.name === "subagent_run" && event.progress.channel) childProgressChannels.push(event.progress.channel);
   }
   await waitFor(async () => (await engine.listSessions(1))[0]?.title === "Delegate Once Smoke Title");
   const afterInitialTitleCalls = gateway.subagentCalls;
@@ -276,7 +276,7 @@ async function main(): Promise<void> {
 
   const launch = await runToolUse({
     id: "call_agent_async",
-    name: "agent",
+    name: "subagent_run",
     input: { prompt: "background check", description: "background worker", run_in_background: true, name: "bg1" },
   }, context);
   const launchResult = launch.at(-1)?.message.blocks.find((block) => block.type === "tool_result");
@@ -288,20 +288,20 @@ async function main(): Promise<void> {
 
   const output = taskId ? await runToolUse({
     id: "call_task_output",
-    name: "TaskOutput",
+    name: "subagent_output",
     input: { task_id: taskId, block: false },
   }, context) : [];
   const send = await runToolUse({
     id: "call_send",
-    name: "SendMessage",
+    name: "subagent_message",
     input: { target: "bg1", message: "follow up" },
   }, context);
-  const list = await runToolUse({ id: "call_list", name: "TaskList", input: {} }, context);
+  const list = await runToolUse({ id: "call_list", name: "subagent_list", input: {} }, context);
   const memoryCallsBeforeExplore = inheritedToolResultMemoryCalls;
 
   const explore = await runToolUse({
     id: "call_agent_explore",
-    name: "agent",
+    name: "subagent_run",
     input: { prompt: "map readonly paths", description: "explore worker", mode: "explore" },
   }, context);
   const exploreResult = explore.flatMap((update) => update.message.blocks).find((block) => block.type === "tool_result");
@@ -338,7 +338,7 @@ async function main(): Promise<void> {
   });
   const missingReportOk =
     missingReport.status === "incomplete" &&
-    missingReport.content.includes("Subagent ended without a final agent_report") &&
+    missingReport.content.includes("Subagent ended without a final subagent_report") &&
     missingReport.content.includes("## Partial output");
 
   const task = taskId ? taskStore.get(taskId) : undefined;

@@ -59,8 +59,7 @@ export interface GrepToolOutput {
 }
 
 export const grepTool: Tool<GrepToolInput> = {
-  name: "grep",
-  aliases: ["rg"],
+  name: "file_search",
   description: "Grep files with the bundled ripgrep binary. Accepts absolute paths and cwd-relative paths. It does not exclude heavy directories by default; pass explicit negated glob filters such as !node_modules/** when you want to skip them.",
   inputSchema: {
     type: "object",
@@ -134,7 +133,7 @@ export const grepTool: Tool<GrepToolInput> = {
     const stat = await fs.stat(target).catch(() => undefined);
     if (!stat) return { ok: false, output: { error: `grep.path does not exist: ${target}` } };
 
-    options.onProgress?.({ toolName: "grep", message: `Searching with bundled rg (${platformKey})` });
+    options.onProgress?.({ toolName: "file_search", message: `Searching with bundled rg (${platformKey})` });
     return runRipgrep(executablePath, root, target, input);
   },
 };

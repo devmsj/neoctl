@@ -69,32 +69,6 @@ const LINE_TITLE_LABELS = {
   Config: '配置',
   Reasoning: '思考',
   'Runtime tool': '运行时工具',
-  agent: '子任务',
-  edit: '编辑文件',
-  exec_command: '执行命令',
-  write_stdin: '终端交互',
-  expose_downloads: '文件下载',
-  grep: '搜索文本',
-  image2: '图片生成',
-  image_note: '记录图片',
-  list: '列出文件',
-  load_image: '读取图片',
-  plan: '任务计划',
-  read: '读取文件',
-  search: '网络搜索',
-  write: '写入文件',
-  SendMessage: '发送协作消息',
-  sendmessage: '发送协作消息',
-  TaskGet: '读取后台任务',
-  taskget: '读取后台任务',
-  TaskList: '后台任务列表',
-  tasklist: '后台任务列表',
-  TaskOutput: '读取任务输出',
-  taskoutput: '读取任务输出',
-  TaskResume: '继续后台任务',
-  taskresume: '继续后台任务',
-  TaskStop: '停止后台任务',
-  taskstop: '停止后台任务',
   multi_tool_use: '并行执行工具',
   '文件下载': '文件下载',
 }
@@ -1906,6 +1880,7 @@ function localizeSystemText(text) {
 function lineTitle(line) {
   if (line.kind === 'tool' || line.toolName) {
     const name = exactToolName(line)
+    if (line?.toolPresentation?.label) return String(line.toolPresentation.label)
     if (isPlanToolLine(line)) return '任务计划'
     if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
     return LINE_TITLE_LABELS[name] || name
@@ -1922,7 +1897,7 @@ function exactToolName(line) {
 }
 
 function isPlanToolLine(line) {
-  return line?.kind === 'tool' && exactToolName(line).toLowerCase() === 'plan'
+  return line?.kind === 'tool' && exactToolName(line) === 'plan_update'
 }
 
 function isInlineRichToolLine(line) {
@@ -2110,12 +2085,12 @@ function toolStreamSteps(line) {
 }
 
 function isAgentToolLine(line) {
-  return exactToolName(line).toLowerCase() === 'agent'
+  return exactToolName(line) === 'subagent_run'
 }
 
 function isTerminalToolLine(line) {
   const name = exactToolName(line).toLowerCase()
-  return name === 'exec_command' || name === 'write_stdin'
+  return name === 'terminal_run' || name === 'terminal_control'
 }
 
 function showToolResultPreviews(line) {
@@ -2155,7 +2130,7 @@ function agentToolSummary(line) {
   }
   return [...counts.entries()].map(([name, count]) => ({
     name,
-    label: LINE_TITLE_LABELS[name] || LINE_TITLE_LABELS[name.toLowerCase()] || name,
+    label: String(step?.toolLabel || name),
     count,
   }))
 }
@@ -2218,6 +2193,7 @@ function isImage2PendingReplacementLine(line) {
 
 function shouldHideLine(line) {
   if (isGeneratedImageLine(line) && !isImage2Line(line)) return true
+  if (line?.toolPresentation?.visibility === 'hidden' && line?.kind !== 'error') return true
   if (line?.kind !== 'user') return false
   const group = userMessageGroup(line)
   if (userGroupHasImages(group)) return String(userMessageOwner(group)?.id) !== String(line?.id)

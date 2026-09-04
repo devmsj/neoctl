@@ -31,7 +31,7 @@ import { InMemorySecretRedactionRegistry } from "../secrets/secret-redaction.js"
 import type { SecretMetadata } from "../secrets/secret-types.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
 import { AgentActivityStore, type AgentActivity } from "../agents/agent-activity.js";
-import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
+import { createSubagentTools, type SubagentResumeHandler } from "../tasks/subagent-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
 import { cliHelpText, isModelReasoningArgument, isValidReplCommandLine, parseCliReplCommandArgs, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
@@ -418,7 +418,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore, agentActivityStore };
   tools.register(createAgentTool(agentRuntime));
 
-  const resumeHandler: TaskResumeHandler = async (taskId, directive) => {
+  const resumeHandler: SubagentResumeHandler = async (taskId, directive) => {
     const dummyContext = {
       agentId: "main",
       tools,
@@ -430,7 +430,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
     return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
   };
 
-  for (const tool of createTaskTools(taskStore, resumeHandler)) tools.register(tool);
+  for (const tool of createSubagentTools(taskStore, resumeHandler)) tools.register(tool);
 
   const taskNotificationSource = createTaskNotificationSource(taskStore);
 
@@ -4143,7 +4143,7 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
     };
   }
 
-  const description = toolUse.name === "exec_command" ? execDescriptionFromInput(toolUse.input) : undefined;
+  const description = toolUse.name === "terminal_run" ? execDescriptionFromInput(toolUse.input) : undefined;
   return {
     kind: "tool",
     title: toolTitle(toolUse.name),
@@ -4199,12 +4199,12 @@ function toolTitle(toolName: string): string {
     skill_validate: "skill validation",
     skill_create: "skill create",
     skill_update: "skill update",
-    TaskList: "task list",
-    TaskGet: "task detail",
-    TaskOutput: "task output",
-    TaskStop: "task stop",
-    TaskResume: "task resume",
-    SendMessage: "task message",
+    subagent_list: "task list",
+    subagent_get: "task detail",
+    subagent_output: "task output",
+    subagent_stop: "task stop",
+    subagent_resume: "task resume",
+    subagent_message: "task message",
   };
   return `\u25c6 ${labels[toolName] ?? `tool: ${toolName}`}`;
 }
@@ -4346,23 +4346,23 @@ function formatToolResult(toolName: string, output: unknown, ok: boolean): { tex
     return { text: output, format: "ansi" };
   }
 
-  if (toolName === "list" && isRecord(output)) {
+  if (toolName === "file_list" && isRecord(output)) {
     return { text: formatListToolResult(output, ok), format: "ansi" };
   }
 
-  if (toolName === "read" && isRecord(output)) {
+  if (toolName === "file_read" && isRecord(output)) {
     return { text: formatReadToolResult(output, ok), format: "ansi" };
   }
 
-  if (toolName === "grep" && isRecord(output)) {
+  if (toolName === "file_search" && isRecord(output)) {
     return { text: formatGrepToolResult(output, ok), format: "ansi" };
   }
 
-  if (toolName === "search" && isRecord(output)) {
+  if (toolName === "web_search" && isRecord(output)) {
     return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   }
 
-  if (toolName === "image2" && isRecord(output)) {
+  if (toolName === "image_create" && isRecord(output)) {
     return { text: formatImageGenerationToolResult(output, ok), format: "ansi", summaryMaxLines: 8 };
   }
 

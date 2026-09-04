@@ -358,7 +358,7 @@ function formatIncompleteExploreResult(error: string, content: string): string {
 function formatMissingRequiredReportResult(content: string): string {
   const lastOutput = content.trim() || "<empty>";
   return [
-    "INCOMPLETE: Subagent ended without a final agent_report.",
+    "INCOMPLETE: Subagent ended without a final subagent_report.",
     "",
     "## Protocol diagnostic",
     "- This agent is configured with requiresReport=true.",

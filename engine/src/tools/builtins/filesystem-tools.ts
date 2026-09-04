@@ -18,8 +18,7 @@ export interface ListDirectoryToolInput {
 }
 
 export const readFileTool: Tool<ReadFileToolInput> = {
-  name: "read",
-  aliases: ["view"],
+  name: "file_read",
   description: "Read a text file by line range. Use offset and limit to inspect specific locations without loading the whole file.",
   inputSchema: {
     type: "object",
@@ -103,8 +102,7 @@ export const readFileTool: Tool<ReadFileToolInput> = {
 };
 
 export const listDirectoryTool: Tool<ListDirectoryToolInput> = {
-  name: "list",
-  aliases: ["ls"],
+  name: "file_list",
   description: "List a file or directory. Recursive listings are bounded and skip heavy directories by default; use exclude/maxDepth to control scope.",
   inputSchema: {
     type: "object",

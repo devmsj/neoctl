@@ -79,8 +79,7 @@ function loadExternalImage(filePath: string): { base64: string; mimeType: string
 
 export function createLoadImageTool(): Tool<LoadImageToolInput> {
   return {
-    name: "load_image",
-    aliases: ["view_image", "inspect_image"],
+    name: "image_inspect",
     description:
       "Load one or more images into the current context for direct visual inspection by the model. " +
       "Supports two sources: (1) conversation history images via ids (img_1), labels, or numeric refs; " +
@@ -291,7 +290,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         blocks: [{
           type: "tool_result" as const,
           toolUseId: request.id,
-          name: "load_image",
+          name: "image_inspect",
           ok: result.ok,
           output: text,
         }],

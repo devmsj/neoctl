@@ -22,9 +22,9 @@ export interface AgentDefinition {
   memory?: "user" | "project" | "local";
   isolation?: AgentIsolation;
   omitProjectMemory?: boolean;
-  /** Require an authoritative final result via agent_report instead of normal assistant text. */
+  /** Require an authoritative final result via subagent_report instead of normal assistant text. */
   requiresReport?: boolean;
-  /** Report tool name used when requiresReport is enabled. Defaults to agent_report. */
+  /** Report tool name used when requiresReport is enabled. Defaults to subagent_report. */
   reportToolName?: string;
   /** Number of extra short turns allowed to recover a missing report. */
   reportRetryTurns?: number;
@@ -37,7 +37,7 @@ export const FORK_AGENT: AgentDefinition = {
   agentType: "fork",
   whenToUse: "Fork the current conversation into an isolated worker for scoped parallel work.",
   tools: ["*"],
-  disallowedTools: ["plan"],
+  disallowedTools: ["plan_update"],
   model: "inherit",
   permissionMode: "bubble",
   requiresReport: true,
@@ -49,13 +49,13 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   agentType: "general-purpose",
   whenToUse: "General engineering worker for scoped implementation, investigation, or verification tasks.",
   tools: ["*"],
-  disallowedTools: ["plan"],
+  disallowedTools: ["plan_update"],
   permissionMode: "inherit",
   requiresReport: true,
   reportRetryTurns: 1,
   buildSystemPrompt: () => [
     "You are a subagent worker inside the same neo runtime.",
-    "Complete the assigned scope, then end with agent_report status='completed' or status='incomplete'.",
+    "Complete the assigned scope, then end with subagent_report status='completed' or status='incomplete'.",
     "If blocked or out of scope, use status='incomplete' and include what was and was not done.",
   ].join("\n"),
 };
@@ -63,15 +63,15 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
 export const EXPLORE_AGENT: AgentDefinition = {
   agentType: "explore",
   whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  tools: ["list", "read", "grep", "search", "exec_command", "write_stdin", "agent_report"],
-  disallowedTools: ["edit", "write", "agent", "plan"],
+  tools: ["file_list", "file_read", "file_search", "web_search", "terminal_run", "terminal_control", "subagent_report"],
+  disallowedTools: ["file_edit", "file_write", "subagent_run", "plan_update"],
   permissionMode: "readonly",
   requiresReport: true,
   reportRetryTurns: 1,
   buildSystemPrompt: () => [
     "You are a read-only codebase exploration subagent.",
     "Use read-only tools to inspect the assigned scope; do not edit files or spawn agents.",
-    "End with agent_report status='completed' or status='incomplete'.",
+    "End with subagent_report status='completed' or status='incomplete'.",
     "Report files inspected, findings with file-path evidence, risks/unknowns, and next steps.",
   ].join("\n"),
 };

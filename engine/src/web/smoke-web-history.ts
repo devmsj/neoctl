@@ -65,7 +65,7 @@ assert.equal(compactions[1]?.compaction?.createdAt, "2026-09-03T06:44:41.985Z");
 
 const commandRequest = {
   id: "call_structured_command",
-  name: "exec_command",
+  name: "terminal_run",
   input: { cmd: "npm test", description: "运行测试" },
 };
 const commandUseMessage = {
@@ -126,11 +126,11 @@ assert.equal(afterAppend.lines.at(-1)?.kind, "assistant");
 
 const handleEvent = (repl as unknown as { handleEvent: (event: unknown) => void }).handleEvent.bind(repl);
 handleEvent({ type: "tool.started", toolUse: commandRequest, index: 0, total: 1 });
-handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "准备", channel: "item", operation: "upsert", key: "phase", phase: "running", sequence: 1 } });
-handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "完成", channel: "item", operation: "append", key: "phase", phase: "completed", sequence: 2 } });
-handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "重复事件", channel: "item", operation: "upsert", key: "duplicate", phase: "running", sequence: 2 } });
-handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "移除", channel: "item", operation: "remove", key: "phase", sequence: 3 } });
-handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "输出", channel: "stdout", operation: "append", sequence: 4, data: "live-output" } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "准备", channel: "item", operation: "upsert", key: "phase", phase: "running", sequence: 1 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "完成", channel: "item", operation: "append", key: "phase", phase: "completed", sequence: 2 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "重复事件", channel: "item", operation: "upsert", key: "duplicate", phase: "running", sequence: 2 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "移除", channel: "item", operation: "remove", key: "phase", sequence: 3 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "输出", channel: "stdout", operation: "append", sequence: 4, data: "live-output" } });
 handleEvent({ type: "tool.result.available", toolUse: commandRequest, ok: true, messages: [commandResultMessage], index: 0, total: 1 });
 handleEvent({ type: "tool.finished", toolUse: commandRequest, ok: true, index: 0, total: 1 });
 handleEvent({ type: "message", message: commandResultMessage });
@@ -142,40 +142,47 @@ assert.equal(streamedToolLines[0]?.toolDisplay?.purpose, "运行测试");
 assert.equal(streamedToolLines[0]?.toolStream?.stdout, "live-output");
 assert.deepEqual(streamedToolLines[0]?.toolStream?.steps, []);
 
-const agentRequest = { id: "call_agent", name: "agent", input: { description: "检查前端" } };
+const agentRequest = { id: "call_agent", name: "subagent_run", input: { description: "检查前端" } };
 handleEvent({ type: "tool.started", toolUse: agentRequest, index: 0, total: 1 });
 handleEvent({
   type: "tool.progress",
   toolUse: agentRequest,
   progress: {
-    toolName: "agent",
+    toolName: "subagent_run",
     message: "读取入口文件",
     channel: "item",
     operation: "upsert",
     key: "child_read",
     phase: "tool_running",
     sequence: 1,
-    data: { child_event: { type: "tool.started", toolUse: { id: "child_read", name: "read", input: { description: "读取入口文件" } } } },
+    data: { child_event: { type: "tool.started", toolUse: { id: "child_read", name: "file_read", input: { description: "读取入口文件" } } } },
   },
 });
 handleEvent({
   type: "tool.progress",
   toolUse: agentRequest,
   progress: {
-    toolName: "agent",
+    toolName: "subagent_run",
     message: "搜索事件处理",
     channel: "item",
     operation: "upsert",
     key: "child_grep",
     phase: "tool_running",
     sequence: 2,
-    data: { child_event: { type: "tool.started", toolUse: { id: "child_grep", name: "grep", input: { description: "搜索事件处理" } } } },
+    data: { child_event: { type: "tool.started", toolUse: { id: "child_grep", name: "file_search", input: { description: "搜索事件处理" } } } },
   },
 });
 const agentLine = (repl.snapshot(false) as { lines: Array<Record<string, any>> }).lines.find((line) => line.toolUseId === agentRequest.id);
-assert.deepEqual(agentLine?.toolStream?.steps?.map((step: Record<string, unknown>) => [step.toolName, step.message]), [
-  ["read", "读取入口文件"],
-  ["grep", "搜索事件处理"],
+assert.deepEqual(agentLine?.toolPresentation, { family: "subagent", action: "run", label: "子任务", visibility: "primary" });
+assert.deepEqual(agentLine?.toolStream?.steps?.map((step: Record<string, unknown>) => [step.toolName, step.toolLabel, step.message]), [
+  ["file_read", "读取文件", "读取入口文件"],
+  ["file_search", "搜索文本", "搜索事件处理"],
 ]);
+
+const subagentGetRequest = { id: "call_subagent_get", name: "subagent_get", input: { task_id: "task_123" } };
+handleEvent({ type: "tool.started", toolUse: subagentGetRequest, index: 0, total: 1 });
+const subagentGetLine = (repl.snapshot(false) as { lines: Array<Record<string, any>> }).lines.find((line) => line.toolUseId === subagentGetRequest.id);
+assert.deepEqual(subagentGetLine?.toolPresentation, { family: "subagent", action: "get", label: "查看子任务", visibility: "hidden" });
+assert.equal(subagentGetLine?.toolDisplay?.purpose, "查看子任务 task_123");
 
 console.log("web history smoke ok");

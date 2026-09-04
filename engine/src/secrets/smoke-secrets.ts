@@ -46,7 +46,7 @@ async function main(): Promise<void> {
 
   const execResult = await runToolUse({
     id: "exec_secret",
-    name: "exec_command",
+    name: "terminal_run",
     input: {
       cmd: "node -e \"console.log(process.env.API_TOKEN)\"",
       description: "verify secret env redaction",

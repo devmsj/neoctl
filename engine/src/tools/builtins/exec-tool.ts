@@ -37,7 +37,7 @@ export interface ExecToolRuntime {
 export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
   const manager = runtime.processManager;
   return {
-    name: "exec_command",
+    name: "terminal_run",
     description:
       "Run a command in a managed terminal session. Output is collected asynchronously. Commands still running after yield_time_ms return a session_id that can be polled or controlled with write_stdin. Set tty=true for interactive terminal programs.",
     inputSchema: {
@@ -116,7 +116,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
       const shell = resolveShell(input.shell);
       const secretRedactions = context.secretRedactions;
       options.onProgress?.({
-        toolName: "exec_command",
+        toolName: "terminal_run",
         message: input.description || input.cmd,
         channel: "state",
         operation: "replace",
@@ -150,7 +150,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
 
 export function createWriteStdinTool(processManager: ExecProcessManager): Tool<WriteStdinToolInput> {
   return {
-    name: "write_stdin",
+    name: "terminal_control",
     description:
       "Interact with a managed terminal returned by exec_command. Send exact characters, poll with empty chars, interrupt the foreground program, or terminate the terminal.",
     inputSchema: {
@@ -199,7 +199,7 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
     async call(input, context, options): Promise<ToolResult> {
       try {
         options.onProgress?.({
-          toolName: "write_stdin",
+          toolName: "terminal_control",
           message: input.signal ? `发送 ${input.signal} 信号` : input.chars ? "发送终端输入" : "读取终端输出",
           channel: "state",
           operation: "replace",
@@ -287,7 +287,7 @@ function isExecShell(value: string): value is ExecShell {
 function emitOutputDelta(context: ToolUseContext, delta: ExecProcessOutputDelta): void {
   const text = context.secretRedactions?.redact(delta.text) ?? delta.text;
   context.emit({
-    toolName: "exec_command",
+    toolName: "terminal_run",
     message: delta.stream === "stderr" ? "终端错误输出" : "终端输出",
     channel: delta.stream,
     operation: "append",

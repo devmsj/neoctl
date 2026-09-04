@@ -1,6 +1,6 @@
 import type { Tool, ToolUseContext } from "../tools/tool.js";
 
-export const AGENT_REPORT_TOOL_NAME = "agent_report";
+export const AGENT_REPORT_TOOL_NAME = "subagent_report";
 
 export type AgentReportStatus = "draft" | "completed" | "incomplete";
 
@@ -41,13 +41,13 @@ export function createAgentReportTool(): Tool<AgentReportInput> {
     },
     metadata: { readOnly: true, concurrent: false, visible: true },
     validate(input: unknown, _context: ToolUseContext): AgentReportInput {
-      if (!input || typeof input !== "object") throw new Error("agent_report input must be an object");
+      if (!input || typeof input !== "object") throw new Error("subagent_report input must be an object");
       const value = input as Record<string, unknown>;
       if (typeof value.content !== "string" || value.content.trim().length === 0) {
-        throw new Error("agent_report.content must be a non-empty string");
+        throw new Error("subagent_report.content must be a non-empty string");
       }
       if (value.status !== undefined && value.status !== "draft" && value.status !== "completed" && value.status !== "incomplete") {
-        throw new Error("agent_report.status must be 'draft', 'completed', or 'incomplete'");
+        throw new Error("subagent_report.status must be 'draft', 'completed', or 'incomplete'");
       }
       return { content: value.content, status: value.status as AgentReportInput["status"] };
     },

@@ -22,6 +22,12 @@ export interface WebRuntimeToolDefinition {
   description: string;
   inputSchema: JsonSchema;
   strict: boolean;
+  presentation?: {
+    family: string;
+    action: string;
+    label: string;
+    visibility: "primary" | "nested" | "hidden";
+  };
 }
 
 export interface WebRuntimeContextPayload {
@@ -58,7 +64,12 @@ export interface WebRuntimeContextPayload {
 
 export function createWebRuntimeContextPayload(
   snapshot: SessionPromptExportSnapshot,
-  options: { revision: number; sessionId?: string; generatedAt?: string },
+  options: {
+    revision: number;
+    sessionId?: string;
+    generatedAt?: string;
+    toolPresentations?: Readonly<Record<string, NonNullable<WebRuntimeToolDefinition["presentation"]>>>;
+  },
 ): WebRuntimeContextPayload {
   const sections = normalizePromptSections(snapshot.promptSections);
   const systemPrompt = typeof snapshot.systemPrompt === "string" ? snapshot.systemPrompt : "";
@@ -80,7 +91,7 @@ export function createWebRuntimeContextPayload(
       systemContext: snapshot.systemContext,
       userContextPrompt: snapshot.userContextPrompt,
     },
-    tools: normalizeToolDefinitions(snapshot.toolDefinitions),
+    tools: normalizeToolDefinitions(snapshot.toolDefinitions, options.toolPresentations),
     project: normalizeProjectDocuments(snapshot.projectDocuments),
     capabilities: {
       commands: normalizeStringArray(snapshot.commands),
@@ -117,7 +128,10 @@ function normalizePromptSections(value: unknown): WebRuntimePromptSection[] {
   });
 }
 
-function normalizeToolDefinitions(value: unknown): WebRuntimeToolDefinition[] {
+function normalizeToolDefinitions(
+  value: unknown,
+  presentations?: Readonly<Record<string, NonNullable<WebRuntimeToolDefinition["presentation"]>>>,
+): WebRuntimeToolDefinition[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((tool) => {
     if (!isToolDefinition(tool)) return [];
@@ -126,6 +140,7 @@ function normalizeToolDefinitions(value: unknown): WebRuntimeToolDefinition[] {
       description: tool.description,
       inputSchema: tool.inputSchema,
       strict: tool.strict === true,
+      presentation: presentations?.[tool.name],
     }];
   });
 }

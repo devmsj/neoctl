@@ -151,21 +151,21 @@ async function main(): Promise<void> {
   const unknown = await runToolUseToMessages({ id: "missing", name: "missing", input: {} }, context);
   const large = await runToolUseToMessages({ id: "large", name: "large", input: { size: 20, maxResultChars: 8 } }, context);
   const grep = await runToolUseToMessages(
-    { id: "grep", name: "grep", input: { query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 5 } },
+    { id: "grep", name: "file_search", input: { query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 5 } },
     context,
   );
   const truncatedGrep = await runToolUseToMessages(
-    { id: "grep-truncated", name: "grep", input: { query: "import", path: "src", maxResults: 1 } },
+    { id: "grep-truncated", name: "file_search", input: { query: "import", path: "src", maxResults: 1 } },
     context,
   );
   const webSearch = await runToolUseToMessages(
-    { id: "web-search", name: "search", input: { query: "agent scaffold", numResults: 1 } },
+    { id: "web-search", name: "web_search", input: { query: "agent scaffold", numResults: 1 } },
     context,
   );
   const plan = await runToolUseToMessages(
     {
       id: "plan",
-      name: "plan",
+      name: "plan_update",
       input: {
         title: "Smoke plan",
         items: [
@@ -178,27 +178,27 @@ async function main(): Promise<void> {
     context,
   );
   const contextGrep = await runToolUseToMessages(
-    { id: "grep-context", name: "grep", input: { query: "description", path: "src/tools/builtins/grep-tool.ts", contextLines: 1, maxResults: 2 } },
+    { id: "grep-context", name: "file_search", input: { query: "description", path: "src/tools/builtins/grep-tool.ts", contextLines: 1, maxResults: 2 } },
     context,
   );
   const read = await runToolUseToMessages(
-    { id: "read", name: "read", input: { path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 5 } },
+    { id: "read", name: "file_read", input: { path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 5 } },
     context,
   );
   const list = await runToolUseToMessages(
-    { id: "list", name: "list", input: { path: "src/tools/builtins", recursive: false, maxEntries: 20 } },
+    { id: "list", name: "file_list", input: { path: "src/tools/builtins", recursive: false, maxEntries: 20 } },
     context,
   );
   const readWithDescription = await runToolUseToMessages(
-    { id: "read-description", name: "read", input: { description: "Verify description is tolerated", path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 2, ignoredField: "ignored" } },
+    { id: "read-description", name: "file_read", input: { description: "Verify description is tolerated", path: "src/tools/builtins/grep-tool.ts", offset: 1, limit: 2, ignoredField: "ignored" } },
     context,
   );
   const listWithDescription = await runToolUseToMessages(
-    { id: "list-description", name: "list", input: { description: "Verify description is tolerated", path: "src/tools/builtins", recursive: false, maxEntries: 5, ignoredField: "ignored" } },
+    { id: "list-description", name: "file_list", input: { description: "Verify description is tolerated", path: "src/tools/builtins", recursive: false, maxEntries: 5, ignoredField: "ignored" } },
     context,
   );
   const grepWithDescription = await runToolUseToMessages(
-    { id: "grep-description", name: "grep", input: { description: "Verify description is tolerated", query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 1, ignoredField: "ignored" } },
+    { id: "grep-description", name: "file_search", input: { description: "Verify description is tolerated", query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 1, ignoredField: "ignored" } },
     context,
   );
   const recursiveListRoot = path.join(tempDir, "recursive-list");
@@ -209,47 +209,47 @@ async function main(): Promise<void> {
   await fs.writeFile(path.join(recursiveListRoot, ".agent-tasks", "task.json"), "ignored", "utf8");
   await fs.writeFile(path.join(recursiveListRoot, "visible", "keep.ts"), "export {};", "utf8");
   const recursiveList = await runToolUseToMessages(
-    { id: "list-recursive", name: "list", input: { path: recursiveListRoot, recursive: true, maxEntries: 20, includeHidden: true } },
+    { id: "list-recursive", name: "file_list", input: { path: recursiveListRoot, recursive: true, maxEntries: 20, includeHidden: true } },
     context,
   );
   const exec = await runToolUseToMessages(
-    { id: "exec", name: "exec_command", input: { cmd: "node -e \"console.log(process.cwd()); console.error('warn')\"", description: "Verify exec captures stdout, stderr, and cwd", timeout_ms: 10000, max_output_chars: 4000 } },
+    { id: "exec", name: "terminal_run", input: { cmd: "node -e \"console.log(process.cwd()); console.error('warn')\"", description: "Verify exec captures stdout, stderr, and cwd", timeout_ms: 10000, max_output_chars: 4000 } },
     context,
   );
   const execFailure = await runToolUseToMessages(
-    { id: "exec-fail", name: "exec_command", input: { cmd: "node -e \"process.exit(7)\"", description: "Verify exec reports non-zero exit status", timeout_ms: 10000 } },
+    { id: "exec-fail", name: "terminal_run", input: { cmd: "node -e \"process.exit(7)\"", description: "Verify exec reports non-zero exit status", timeout_ms: 10000 } },
     context,
   );
   const interactiveStart = await runToolUseToMessages(
-    { id: "exec-interactive", name: "exec_command", input: { cmd: "node -e \"process.stdin.once('data', value => { console.log('received:' + value.toString().trim()); process.exit(0); })\"", description: "Verify a running terminal accepts later input", timeout_ms: 10000, yield_time_ms: 20 } },
+    { id: "exec-interactive", name: "terminal_run", input: { cmd: "node -e \"process.stdin.once('data', value => { console.log('received:' + value.toString().trim()); process.exit(0); })\"", description: "Verify a running terminal accepts later input", timeout_ms: 10000, yield_time_ms: 20 } },
     context,
   );
   const interactiveStartOutput = toolOutput(interactiveStart[interactiveStart.length - 1]) as { session_id?: string; status?: string };
   const interactiveWrite = await runToolUseToMessages(
-    { id: "exec-interactive-write", name: "write_stdin", input: { session_id: interactiveStartOutput.session_id, chars: "hello\n", yield_time_ms: 2000 } },
+    { id: "exec-interactive-write", name: "terminal_control", input: { session_id: interactiveStartOutput.session_id, chars: "hello\n", yield_time_ms: 2000 } },
     context,
   );
   const interactiveWriteOutput = toolOutput(interactiveWrite[interactiveWrite.length - 1]) as { stdout?: string; status?: string; exit_code?: number | null };
   const editCreate = await runToolUseToMessages(
-    { id: "edit-create", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "", newString: "alpha\nbeta\nalpha\n" } },
+    { id: "edit-create", name: "file_edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "", newString: "alpha\nbeta\nalpha\n" } },
     context,
   );
   const editAmbiguous = await runToolUseToMessages(
-    { id: "edit-ambiguous", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma" } },
+    { id: "edit-ambiguous", name: "file_edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma" } },
     context,
   );
   const editReplaceAll = await runToolUseToMessages(
-    { id: "edit-all", name: "edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma", replaceAll: true } },
+    { id: "edit-all", name: "file_edit", input: { path: path.join(tempDir, "sample.txt"), oldString: "alpha", newString: "gamma", replaceAll: true } },
     context,
   );
   const crlfPath = path.join(tempDir, "crlf.txt");
   await fs.writeFile(crlfPath, "one\r\ntwo\r\nthree\r\n", "utf8");
   const editCrlfWithLfOldString = await runToolUseToMessages(
-    { id: "edit-crlf-lf-old", name: "edit", input: { path: crlfPath, oldString: "one\ntwo\n", newString: "uno\ndos\n" } },
+    { id: "edit-crlf-lf-old", name: "file_edit", input: { path: crlfPath, oldString: "one\ntwo\n", newString: "uno\ndos\n" } },
     context,
   );
   const write = await runToolUseToMessages(
-    { id: "write", name: "write", input: { path: path.join(tempDir, "nested", "write.txt"), content: "full\ncontent\n" } },
+    { id: "write", name: "file_write", input: { path: path.join(tempDir, "nested", "write.txt"), content: "full\ncontent\n" } },
     context,
   );
   const grepOutput = toolOutput(grep[grep.length - 1]) as {
@@ -302,7 +302,7 @@ async function main(): Promise<void> {
   const defaultOpenAISearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv);
   const explicitExaSearchProvider = createSearchProvider({}, { MODEL_PROVIDER: "openai", SEARCH_PROVIDER: "exa" } as NodeJS.ProcessEnv);
   const fallbackSearchProvider = createSearchProvider({}, {} as NodeJS.ProcessEnv);
-  const searchToolDefinition = registry.get("search");
+  const searchToolDefinition = registry.get("web_search");
   const searchToolPrompt = JSON.stringify({ description: searchToolDefinition?.description, schema: searchToolDefinition?.inputSchema });
   const generatedDefinitions = registry.definitions(context);
   const generatedPassthroughDefinition = generatedDefinitions.find((tool) => tool.name === "smoke_passthrough");
@@ -446,9 +446,9 @@ async function main(): Promise<void> {
     webSearchDefaultsToOpenAIWithoutConfig: fallbackSearchProvider.name === "openai",
     webSearchResponsesUrlAddsV1: openAIResponsesUrl("https://api.openai.com") === "https://api.openai.com/v1/responses",
     webSearchResponsesUrlPreservesV1: openAIResponsesUrl("https://api.openai.com/v1/") === "https://api.openai.com/v1/responses",
-    webSearchPromptUsesOpenAIDefault: searchToolPrompt.includes("OpenAI is the default"),
-    webSearchPromptFallsBackToExa: searchToolPrompt.includes("exa") && searchToolPrompt.includes("unavailable") && searchToolPrompt.includes("partially unavailable"),
-    image2OnlyToolName: imageTool.name === "image2" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
+    webSearchPromptUsesOpenAIDefault: searchToolPrompt.includes("OpenAI Responses web search is the default provider"),
+    webSearchPromptFallsBackToExa: searchToolPrompt.includes("Exa") && searchToolPrompt.includes("unavailable") && searchToolPrompt.includes("partially unavailable"),
+    image2OnlyToolName: imageTool.name === "image_create" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
     image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
     image2DefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
     image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),

@@ -130,7 +130,7 @@ const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
  */
 export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenerationToolOptions = {}): Tool<ImageGenerationToolInput> {
   return {
-    name: "image2",
+    name: "image_create",
     description: `Generate or edit images with OpenAI's Images API. Stable tool name: image2. Defaults to model ${DEFAULT_IMAGE_MODEL}. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.`,
     inputSchema: {
       type: "object",
@@ -223,7 +223,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_IMAGE_TIMEOUT_MS;
 
       const mode = input.mode ?? "generate";
-      callOptions.onProgress?.({ toolName: "image2", message: `${mode === "edit" ? "Editing" : "Generating"} image with OpenAI ${model}` });
+      callOptions.onProgress?.({ toolName: "image_create", message: `${mode === "edit" ? "Editing" : "Generating"} image with OpenAI ${model}` });
       const startedAt = Date.now();
       try {
         const editSources = mode === "edit" ? resolveImageEditSources(input, context.messages) : [];
@@ -676,7 +676,7 @@ function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: s
   const blocks: Message["blocks"] = [{
     type: "tool_result",
     toolUseId,
-    name: "image2",
+    name: "image_create",
     ok: result.ok,
     output: compactImageGenerationOutput(output),
   }];
@@ -698,7 +698,7 @@ function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: s
     role: "tool_result",
     createdAt: new Date().toISOString(),
     blocks,
-    metadata: result.ok ? { generatedImages: true, tool: "image2" } : undefined,
+    metadata: result.ok ? { generatedImages: true, tool: "image_create" } : undefined,
   };
 }
 

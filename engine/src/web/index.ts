@@ -16,6 +16,7 @@ import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool } from "../tools/tool.js";
+import { builtinToolPresentation, toolPresentationForSource, type ToolPresentation } from "../tools/tool-catalog.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool, createWriteStdinTool } from "../tools/builtins/exec-tool.js";
 import { ExecProcessManager, type ExecProcessOutputDelta } from "../tools/builtins/exec-process-manager.js";
@@ -26,7 +27,7 @@ import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
-import { createTaskTools, type TaskResumeHandler } from "../tasks/task-tools.js";
+import { createSubagentTools, type SubagentResumeHandler } from "../tasks/subagent-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
 import { isModelReasoningArgument, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument } from "../repl/commands.js";
@@ -88,6 +89,7 @@ interface WebRuntimePluginSupport {
 interface WebRuntimeToolCatalogItem {
   name: string;
   source: "builtin" | "external" | "plugin";
+  presentation: ToolPresentation;
   pluginId?: string;
   pluginName?: string;
 }
@@ -220,6 +222,7 @@ interface UiToolStreamStep {
   key: string;
   message: string;
   toolName?: string;
+  toolLabel?: string;
   status: "running" | "completed" | "failed";
   phase?: string;
   sequence?: number;
@@ -253,6 +256,7 @@ interface UiLine {
   text: string;
   messageId?: string;
   toolName?: string;
+  toolPresentation?: ToolPresentation;
   parentToolName?: string;
   toolUseId?: string;
   parentToolUseId?: string;
@@ -470,12 +474,12 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const tools = new ToolRegistry();
   const toolCatalog: WebRuntimeToolCatalogItem[] = [];
   const catalogedToolNames = new Set<string>();
-  const catalogTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name">) => {
+  const catalogTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name" | "presentation">) => {
     if (catalogedToolNames.has(tool.name)) return;
     catalogedToolNames.add(tool.name);
-    toolCatalog.push({ name: tool.name, ...item });
+    toolCatalog.push({ name: tool.name, presentation: toolPresentationForSource(tool.name, item.source), ...item });
   };
-  const registerTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name">) => {
+  const registerTool = (tool: Tool<any>, item: Omit<WebRuntimeToolCatalogItem, "name" | "presentation">) => {
     tools.register(tool);
     catalogTool(tool, item);
   };
@@ -500,7 +504,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   registerTool(createAgentTool(agentRuntime), { source: "builtin" });
 
-  const resumeHandler: TaskResumeHandler = async (taskId, directive) => {
+  const resumeHandler: SubagentResumeHandler = async (taskId, directive) => {
     const dummyContext = {
       agentId: "main",
       tools,
@@ -509,7 +513,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     };
     return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
   };
-  for (const tool of createTaskTools(taskStore, resumeHandler)) registerTool(tool, { source: "builtin" });
+  for (const tool of createSubagentTools(taskStore, resumeHandler)) registerTool(tool, { source: "builtin" });
 
   const globalToolOverrides = normalizeToolOverrides(options.globalToolOverrides, toolCatalog);
   const sessionToolOverrides = normalizeToolOverrides(options.sessionToolOverrides, toolCatalog);
@@ -634,7 +638,7 @@ function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSou
 }
 
 function syncImageGenerationTool(runtime: WebRuntime, provider: ModelProviderName | undefined): void {
-  runtime.tools.unregister("image2");
+  runtime.tools.unregister("image_create");
   if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
@@ -1542,10 +1546,12 @@ export class WebRepl {
         const message = operation === "append" && index >= 0
           ? `${steps[index].message}${progress.message}`
           : progress.message;
+        const stepToolName = childToolName(progress.data) ?? steps[index]?.toolName;
         const step: UiToolStreamStep = {
           key,
           message,
-          toolName: childToolName(progress.data) ?? steps[index]?.toolName,
+          toolName: stepToolName,
+          toolLabel: stepToolName ? toolTitle(stepToolName, "running") : steps[index]?.toolLabel,
           status,
           phase: progress.phase,
           sequence: progress.sequence,
@@ -1948,6 +1954,7 @@ export class WebRepl {
     return createWebRuntimeContextPayload(snapshot, {
       revision,
       sessionId: this.runtime.engine.snapshot().session?.sessionId,
+      toolPresentations: Object.fromEntries((this.runtime.toolSupport?.catalog ?? []).map((tool) => [tool.name, tool.presentation])),
     });
   }
 
@@ -2967,11 +2974,12 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
+  const toolPresentation = toolPresentationForSource(toolUse.name);
   const presentationLevel = toolPresentationLevel(toolUse.name, toolUse.input);
-  if (toolUse.name === "plan" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, title: toolTitle(toolUse.name, "running"), bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), presentationLevel, collapsible: true };
-  if (toolUse.name === "image2") return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", presentationLevel: "primary", collapsible: true };
+  if (toolUse.name === "plan_update" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, toolPresentation, title: toolPresentation.label, bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), presentationLevel, collapsible: true };
+  if (toolUse.name === "image_create") return { kind: "tool", toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", presentationLevel: "primary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
-  return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
+  return { kind: "tool", toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean, presentToolResult?: UiToolResultPresenter): Omit<UiLine, "id"> {
@@ -2983,6 +2991,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean, pr
   return {
     kind: ok ? "tool" : "error",
     toolName,
+    toolPresentation: toolPresentationForSource(toolName),
     title: presentation?.title ?? toolTitle(toolName, "finished"),
     bodyTitle: presentation?.bodyTitle ?? formatted.bodyTitle,
     titleStatus: ok ? "success" : "failure",
@@ -2999,7 +3008,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean, pr
 }
 
 function toolPresentationLevel(toolName: string, payload: unknown): UiLine["presentationLevel"] {
-  if (toolName === "image2") return "primary";
+  if (toolName === "image_create") return "primary";
   if (!isRecord(payload)) return "process";
   const direct = payload.presentationLevel;
   const ui = isRecord(payload.ui) ? payload.ui.presentationLevel : undefined;
@@ -3088,40 +3097,7 @@ function safeResourceUrl(value: string): boolean {
 }
 
 function toolTitle(toolName: string, _phase: "running" | "finished"): string {
-  const labels: Record<string, string> = {
-    agent: "子任务",
-    edit: "编辑文件",
-    exec_command: "执行命令",
-    write_stdin: "终端交互",
-    expose_downloads: "文件下载",
-    grep: "搜索文本",
-    image2: "图片生成",
-    image_note: "记录图片",
-    list: "列出文件",
-    load_image: "读取图片",
-    plan: "任务计划",
-    read: "读取文件",
-    search: "网络搜索",
-    write: "写入文件",
-    SendMessage: "发送协作消息",
-    sendmessage: "发送协作消息",
-    TaskGet: "读取后台任务",
-    taskget: "读取后台任务",
-    TaskList: "后台任务列表",
-    tasklist: "后台任务列表",
-    TaskOutput: "读取任务输出",
-    taskoutput: "读取任务输出",
-    TaskResume: "继续后台任务",
-    taskresume: "继续后台任务",
-    TaskStop: "停止后台任务",
-    taskstop: "停止后台任务",
-    multi_tool_use: "并行执行工具",
-    secret_list: "密钥列表",
-    secret_info: "查看密钥",
-    secret_request: "申请密钥",
-    agent_report: "子任务报告",
-  };
-  return labels[toolName] ?? toolName;
+  return builtinToolPresentation(toolName)?.label ?? toolName;
 }
 
 function summarizeToolUse(toolName: string, input: unknown): { text: string; bodyTitle?: string } {
@@ -3136,12 +3112,19 @@ function toolUsePurpose(toolName: string, input: unknown): string | undefined {
   if (!isRecord(input)) return undefined;
   const description = typeof input.description === "string" ? input.description.trim() : "";
   if (description) return description;
+  const taskId = stringValue(input.task_id);
+  if (toolName === "subagent_output") return taskId ? `读取子任务 ${taskId} 的输出` : "读取子任务输出";
+  if (toolName === "subagent_list") return "查看子任务状态";
+  if (toolName === "subagent_get") return taskId ? `查看子任务 ${taskId}` : "查看子任务";
+  if (toolName === "subagent_stop") return taskId ? `停止子任务 ${taskId}` : "停止子任务";
+  if (toolName === "subagent_resume") return taskId ? `恢复子任务 ${taskId}` : "恢复子任务";
+  if (toolName === "subagent_message") return stringValue(input.target) ? `向 ${stringValue(input.target)} 发送消息` : "发送子任务消息";
   if (toolName === "expose_downloads") return "准备网页下载链接";
-  if (toolName === "read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
-  if (toolName === "list" && typeof input.path === "string") return `查看 ${input.path}`;
-  if (toolName === "grep" && typeof input.query === "string") return `搜索 ${input.query}`;
-  if (toolName === "write" && typeof input.path === "string") return `写入 ${path.basename(input.path)}`;
-  if (toolName === "edit" && typeof input.path === "string") return `修改 ${path.basename(input.path)}`;
+  if (toolName === "file_read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
+  if (toolName === "file_list" && typeof input.path === "string") return `查看 ${input.path}`;
+  if (toolName === "file_search" && typeof input.query === "string") return `搜索 ${input.query}`;
+  if (toolName === "file_write" && typeof input.path === "string") return `写入 ${path.basename(input.path)}`;
+  if (toolName === "file_edit" && typeof input.path === "string") return `修改 ${path.basename(input.path)}`;
   return undefined;
 }
 
@@ -3194,26 +3177,26 @@ function normalizeDisplayText(value: string): string {
 
 function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
   const data = isRecord(input) ? input : {};
-  const purpose = stringValue(data.description);
-  const subject = toolName === "exec_command" ? undefined : toolDisplaySubject(toolName, data);
+  const purpose = toolUsePurpose(toolName, input);
+  const subject = toolName === "terminal_run" ? undefined : toolDisplaySubject(toolName, data);
   const facts: UiToolFact[] = [];
   const previews: UiToolPreview[] = [];
-  if (toolName === "exec_command") pushToolPreview(previews, "命令", "code", data.cmd);
-  else if (toolName === "write_stdin") {
+  if (toolName === "terminal_run") pushToolPreview(previews, "命令", "code", data.cmd);
+  else if (toolName === "terminal_control") {
     pushToolFact(facts, "会话", data.session_id, true);
     pushToolFact(facts, "输入", data.chars, true);
-  } else if (toolName === "grep") pushToolFact(facts, "范围", data.path, true);
-  else if (toolName === "load_image") pushToolFact(facts, "图片", arrayLabel(data.imageRefs), true);
-  else if (toolName === "image2") {
+  } else if (toolName === "file_search") pushToolFact(facts, "范围", data.path, true);
+  else if (toolName === "image_inspect") pushToolFact(facts, "图片", arrayLabel(data.imageRefs), true);
+  else if (toolName === "image_create") {
     pushToolFact(facts, "模式", data.mode === "edit" ? "编辑" : "生成");
     pushToolFact(facts, "名称", data.semanticName);
   } else if (toolName === "expose_downloads") pushToolFact(facts, "文件", arrayLabel(data.paths), true);
-  else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") pushToolFact(facts, "接收方", data.target);
-  else if (toolName.toLowerCase().startsWith("task")) pushToolFact(facts, "任务", data.task_id, true);
+  else if (toolName === "subagent_message") pushToolFact(facts, "接收方", data.target);
+  else if (toolName.startsWith("subagent_")) pushToolFact(facts, "任务", data.task_id, true);
   else if (toolName.startsWith("secret_")) {
     pushToolFact(facts, "密钥", data.key, true);
     pushToolFact(facts, "用途", data.reason);
-  } else if (toolName === "agent") {
+  } else if (toolName === "subagent_run") {
     pushToolFact(facts, "任务", data.description ?? data.prompt);
     pushToolFact(facts, "类型", data.subagent_type ?? data.mode);
   }
@@ -3227,7 +3210,7 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
   let subject = toolDisplaySubject(toolName, data);
   let purpose = stringValue(data.description);
 
-  if ((toolName === "edit" || toolName === "write") && isEditToolOutput(data)) {
+  if ((toolName === "file_edit" || toolName === "file_write") && isEditToolOutput(data)) {
     subject = data.path;
     pushToolPreview(previews, undefined, "diff", compactEditDiff(data));
   } else if (isExecOutput(data)) {
@@ -3238,36 +3221,36 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
     if (outputText) pushToolPreview(previews, data.stderr ? "输出 / 错误" : "输出", "code", outputText);
     if (data.timed_out && !outputText) pushToolFact(facts, "状态", "命令执行超时", false, "warning");
     else if ((!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) && !outputText) pushToolFact(facts, "状态", `退出码 ${data.exit_code ?? "未知"}`, false, "danger");
-  } else if (toolName === "grep") {
+  } else if (toolName === "file_search") {
     subject = stringValue(data.query) || stringValue(data.grepPath) || stringValue(data.path);
     pushToolPreview(previews, undefined, "list", grepPreview(data));
-  } else if (toolName === "search") {
+  } else if (toolName === "web_search") {
     subject = stringValue(data.query);
     pushToolPreview(previews, undefined, "list", searchPreview(data));
-  } else if (toolName === "read") {
+  } else if (toolName === "file_read") {
     subject = stringValue(data.path);
     if (numberValue(data.startLine) !== undefined && numberValue(data.endLine) !== undefined) pushToolFact(facts, "范围", `${data.startLine}–${data.endLine} 行`);
     pushToolPreview(previews, undefined, "code", data.content);
-  } else if (toolName === "list") {
+  } else if (toolName === "file_list") {
     subject = stringValue(data.path);
     pushToolPreview(previews, undefined, "list", listPreview(data));
-  } else if (toolName === "image2") {
+  } else if (toolName === "image_create") {
     subject = stringValue(data.semanticName);
     pushToolFact(facts, "图片", `${numberValue(data.returnedImages) ?? arrayLength(data.images)} 张`);
     pushToolFact(facts, "尺寸", data.size);
-  } else if (toolName === "load_image") {
+  } else if (toolName === "image_inspect") {
     subject = arrayLabel(data.imageRefs);
   } else if (toolResources(output)?.length) {
     subject = toolResources(output)?.map((item) => item.label || item.downloadName).filter(Boolean).join("、");
-  } else if (toolName.toLowerCase().startsWith("task") || toolName === "agent") {
+  } else if (toolName.startsWith("subagent_") || toolName === "subagent_run") {
     subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
-  } else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") {
+  } else if (toolName === "subagent_message") {
     subject = stringValue(data.target);
   } else if (toolName.startsWith("secret_")) {
     subject = stringValue(data.key);
     pushToolFact(facts, "密钥", data.key, true);
     if (toolName === "secret_list") pushToolFact(facts, "数量", `${arrayLength(data.secrets)} 项`);
-  } else if (toolName === "agent_report") {
+  } else if (toolName === "subagent_report") {
   } else {
     subject = subject || stringValue(data.path) || stringValue(data.id) || stringValue(data.name);
   }
@@ -3275,12 +3258,12 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
 }
 
 function toolDisplaySubject(toolName: string, data: Record<string, unknown>): string | undefined {
-  if (["read", "write", "edit", "list"].includes(toolName)) return stringValue(data.path);
-  if (toolName === "exec_command") return stringValue(data.cmd) || stringValue(data.command);
-  if (toolName === "grep" || toolName === "search") return stringValue(data.query);
-  if (toolName === "image2") return stringValue(data.semanticName);
-  if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") return stringValue(data.target);
-  if (toolName.toLowerCase().startsWith("task")) return stringValue(data.task_id);
+  if (["file_read", "file_write", "file_edit", "file_list"].includes(toolName)) return stringValue(data.path);
+  if (toolName === "terminal_run") return stringValue(data.cmd) || stringValue(data.command);
+  if (toolName === "file_search" || toolName === "web_search") return stringValue(data.query);
+  if (toolName === "image_create") return stringValue(data.semanticName);
+  if (toolName === "subagent_message") return stringValue(data.target);
+  if (toolName.startsWith("subagent_")) return stringValue(data.task_id);
   return undefined;
 }
 
@@ -3364,16 +3347,16 @@ function taskStatusDisplay(value: unknown, ok: boolean): string {
 }
 
 function formatToolResult(toolName: string, output: unknown, ok: boolean): { text: string; bodyTitle?: string; format?: UiLine["format"]; full?: boolean; summaryMaxLines?: number } {
-  if ((toolName === "edit" || toolName === "write") && isRecord(output) && isEditToolOutput(output)) return { text: formatEditToolDiff(output, ok), format: "diff", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
+  if ((toolName === "file_edit" || toolName === "file_write") && isRecord(output) && isEditToolOutput(output)) return { text: formatEditToolDiff(output, ok), format: "diff", summaryMaxLines: EDIT_TOOL_SUMMARY_MAX_LINES };
   if (isExecOutput(output)) return { text: formatExecToolResult(output, ok), format: "plain", summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
-  if (toolName === "list" && isRecord(output)) return { text: formatListToolResult(output, ok) };
-  if (toolName === "read" && isRecord(output)) return { text: formatReadToolResult(output, ok) };
-  if (toolName === "grep" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
-  if (toolName === "search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
-  if (toolName === "image2" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
+  if (toolName === "file_list" && isRecord(output)) return { text: formatListToolResult(output, ok) };
+  if (toolName === "file_read" && isRecord(output)) return { text: formatReadToolResult(output, ok) };
+  if (toolName === "file_search" && isRecord(output)) return { text: formatGrepToolResult(output, ok) };
+  if (toolName === "web_search" && isRecord(output)) return { text: formatWebSearchToolResult(output, ok), summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
+  if (toolName === "image_create" && isRecord(output)) return { text: formatImageGenerationToolResult(output, ok), format: "plain", summaryMaxLines: 4 };
   const resources = toolResources(output);
   if (resources?.length) return { text: ok ? "资源已准备好。" : "资源准备失败。", full: true, bodyTitle: ok ? "资源已就绪" : "资源准备失败" };
-  if (toolName === "plan" && isWebPlanPayload(output)) return { text: serializeWebPlanPayload(output), full: true, bodyTitle: webPlanBodyTitle(output) };
+  if (toolName === "plan_update" && isWebPlanPayload(output)) return { text: serializeWebPlanPayload(output), full: true, bodyTitle: webPlanBodyTitle(output) };
   if (typeof output === "string") return { text: output, format: hasAnsi(output) ? "ansi" : undefined, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
   return { text: `${ok ? "ok" : "failed"}\n${formatReplData(output, 6000)}`, summaryMaxLines: EXPANDED_SUMMARY_MAX_LINES };
 }

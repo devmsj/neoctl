@@ -14,7 +14,7 @@ export * from "./agents/agent-tool.js";
 export * from "./agents/local-agent-task.js";
 export * from "./agents/team.js";
 export * from "./tasks/task-store.js";
-export * from "./tasks/task-tools.js";
+export * from "./tasks/subagent-tools.js";
 export * from "./skills/skill-tool.js";
 export * from "./skills/skill-filesystem.js";
 export * from "./skills/skill-management-tools.js";
