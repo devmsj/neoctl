@@ -11,6 +11,7 @@ import { createWorkspaceRuntimeManager } from '../runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from '../runtime-router-cleanup.mjs';
 import { createCpaQuotaMonitor } from '../cpa-quota.mjs';
 import { createMemoryMonitor } from '../memory-monitor.mjs';
+import { resolveWebStorage } from '../platform-paths.mjs';
 
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
@@ -22,14 +23,15 @@ const runtimePort = Number(process.env.NEO_RUNTIME_PORT || 3101);
 const upstreamPort = Number(process.env.NEO_RUNTIME_UPSTREAM_PORT || runtimePort + 1);
 const appHost = process.env.VITE_HOST || '0.0.0.0';
 const appPort = String(process.env.VITE_PORT || 5173);
-const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(process.cwd(), '.neoctl-web', 'prompt-library.json'));
-const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(process.cwd(), '.neoctl-web', 'uploads'));
+const { dataRoot, workspaceRoot } = resolveWebStorage();
+const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
+const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
 const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(process.cwd(), 'plugins'));
-const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || path.join(process.cwd(), '.neoctl-web'));
-const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(process.cwd(), '.neoctl-web', 'cpa-config.json'));
-const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(process.cwd(), '.neoctl-web', 'memory-monitor.json'));
-const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(process.cwd(), '.neoctl-web', 'plugins.json'));
-const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(process.cwd(), '.neoctl-web', 'tools.json'));
+const pluginDataDir = path.resolve(process.env.NEO_WEB_PLUGIN_DATA_DIR || dataRoot);
+const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(dataRoot, 'cpa-config.json'));
+const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(dataRoot, 'memory-monitor.json'));
+const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(dataRoot, 'plugins.json'));
+const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(dataRoot, 'tools.json'));
 const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
@@ -52,7 +54,8 @@ const memoryMonitor = createMemoryMonitor({
 });
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
-  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
+  workspaceRoot,
+  registryFile: path.join(dataRoot, 'session-workspaces.json'),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),

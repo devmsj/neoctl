@@ -26,7 +26,13 @@ npm run dev
 
 局域网设备可通过 `http://<本机局域网 IP>:5173` 访问。Windows 防火墙需要允许本地子网访问 TCP 5173；不要将该端口直接映射到公网，因为应用内 Agent 具备文件读写和命令执行能力。若只允许本机访问，可设置 `VITE_HOST=127.0.0.1`。
 
-每个新建对话会自动创建独立工作目录：`workspace/YYMMDDHHMMSS`。可通过 `NEO_WORKSPACE_ROOT` 覆盖 `workspace` 根目录；会话恢复时会自动回到该会话原有的工作目录。
+每个新建对话会在用户数据目录的 `workspaces/YYMMDDHHMMSS` 下创建独立工作目录，不会向启动 `neow` 的当前目录写入数据。默认用户数据目录遵循各平台约定：
+
+- Windows：`%LOCALAPPDATA%\neoctl-web`
+- macOS：`~/Library/Application Support/neoctl-web`
+- Linux：`${XDG_DATA_HOME:-~/.local/share}/neoctl-web`
+
+可通过 `NEO_WEB_DATA_DIR` 覆盖整个数据目录，或通过 `NEO_WORKSPACE_ROOT` 单独覆盖 workspace 根目录；会话恢复时会自动回到该会话原有的工作目录。
 
 同一个 `sessionId` 只保留一个运行时。多个浏览器标签页或用户打开同一会话时会共享实时输出和输入队列，不会各自启动一份并发 Agent。会话运行时在无人连接且没有前台或后台任务后自动回收。
 
@@ -43,7 +49,7 @@ NEO_RUNTIME_MAX_SESSIONS=64
 NEO_SESSION_MAX_SUBSCRIBERS=32
 ```
 
-右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，接口单次最多返回最近 60 个点；落盘数据默认最多保留 1440 个点且不超过 256 KiB，并原子写入 `.neoctl-web/memory-monitor.json`。可通过 `NEO_MEMORY_MAX_PERSISTED_SAMPLES` 和 `NEO_MEMORY_MAX_PERSISTED_BYTES` 进一步收紧限制；该功能仅观测和展示，不会自动回收会话或重启进程。
+右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，接口单次最多返回最近 60 个点；落盘数据默认最多保留 1440 个点且不超过 256 KiB，并原子写入用户数据目录的 `memory-monitor.json`。可通过 `NEO_MEMORY_MAX_PERSISTED_SAMPLES` 和 `NEO_MEMORY_MAX_PERSISTED_BYTES` 进一步收紧限制；该功能仅观测和展示，不会自动回收会话或重启进程。
 
 ```env
 # 可选：内存采样间隔与落盘保留窗口（毫秒）
@@ -51,7 +57,7 @@ NEO_MEMORY_SAMPLE_MS=60000
 NEO_MEMORY_RETENTION_MS=86400000
 ```
 
-模型配置页可填写 CPA 管理地址和密码；配置成功后，右侧栏显示 Codex 凭据的周额度。配置默认保存在 `.neoctl-web/cpa-config.json`，也可通过 `NEO_CPA_CONFIG_FILE` 指定路径。
+模型配置页可填写 CPA 管理地址和密码；配置成功后，右侧栏显示 Codex 凭据的周额度。配置默认保存在用户数据目录的 `cpa-config.json`，也可通过 `NEO_CPA_CONFIG_FILE` 指定路径。
 
 Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo web` 相同的后端能力：
 
@@ -172,7 +178,7 @@ plugins/example/
 
 入口需导出 `createPlugin(context)` 或默认工厂函数，并返回 `{ tools, promptSections, route }` 中的一项或多项。`NEO_WEB_PLUGIN_DIR` 可指定其他插件根目录，`NEO_WEB_PLUGIN_DATA_DIR` 可指定传给插件的通用数据目录；插件专属配置由插件自行从 `context.env` 读取。
 
-- 全局开关位于“模型配置”，保存到 `.neoctl-web/plugins.json`，重启后生效。
+- 全局开关位于“模型配置”，保存到用户数据目录的 `plugins.json`，重启后生效。
 - 会话开关位于“运行上下文 → 插件”，支持跟随全局、启用和关闭，从下一轮请求生效并随会话持久化。
 - `NEO_WEB_PLUGINS` 可作为部署级强制白名单；设置后全局界面只读。
 

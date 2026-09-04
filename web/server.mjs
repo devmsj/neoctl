@@ -11,6 +11,7 @@ import { createWorkspaceRuntimeManager } from './runtime-workspaces.mjs';
 import { installRuntimeRouterIdleCleanup } from './runtime-router-cleanup.mjs';
 import { createCpaQuotaMonitor } from './cpa-quota.mjs';
 import { createMemoryMonitor } from './memory-monitor.mjs';
+import { resolveWebStorage } from './platform-paths.mjs';
 
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
@@ -22,7 +23,7 @@ const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
 const host = process.env.APP_HOST || '0.0.0.0';
 const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
 const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
-const dataRoot = path.resolve(process.env.NEO_WEB_DATA_DIR || path.join(process.cwd(), '.neoctl-web'));
+const { dataRoot, workspaceRoot } = resolveWebStorage();
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
 const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(__dirname, 'plugins'));
@@ -54,7 +55,8 @@ const memoryMonitor = createMemoryMonitor({
 });
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
-  workspaceRoot: path.resolve(process.env.NEO_WORKSPACE_ROOT || path.join(process.cwd(), 'workspace')),
+  workspaceRoot,
+  registryFile: path.join(dataRoot, 'session-workspaces.json'),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),

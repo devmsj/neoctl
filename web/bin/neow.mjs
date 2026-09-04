@@ -2,6 +2,7 @@
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,8 +129,23 @@ function openBrowser(url) {
   child.unref();
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
-if (invokedPath === fileURLToPath(import.meta.url)) {
+export function isMainModule(invokedPath, moduleUrl) {
+  if (!invokedPath) return false;
+  return comparablePath(invokedPath) === comparablePath(fileURLToPath(moduleUrl));
+}
+
+function comparablePath(value) {
+  const absolutePath = path.resolve(value);
+  let resolvedPath = absolutePath;
+  try {
+    resolvedPath = realpathSync.native(absolutePath);
+  } catch {
+    // Keep the absolute path so invalid invocations still fail in main().
+  }
+  return process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
   main().catch((error) => {
     console.error(`neow 启动失败：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
