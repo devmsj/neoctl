@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const webRoot = path.dirname(fileURLToPath(import.meta.url));
 const source = resolveCoreSource();
-const localEngineRoot = path.resolve(webRoot, '..', 'engine');
+const localEngineRoot = path.resolve(process.env.NEO_LOCAL_ENGINE_ROOT || path.join(webRoot, '..', 'engine'));
 const coreSpecifier = source === 'local'
   ? pathToFileURL(path.join(localEngineRoot, 'dist', 'index.js')).href
   : 'neoctl';

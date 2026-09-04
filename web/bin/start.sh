@@ -11,6 +11,11 @@ APP_NAME="neoctl-web"
 
 cd "$APP_DIR"
 
+if [[ -d "$APP_DIR/.runtime/engine/dist" ]]; then
+  export NEO_CORE_SOURCE="local"
+  export NEO_LOCAL_ENGINE_ROOT="$APP_DIR/.runtime/engine"
+fi
+
 if [[ ! -f dist/index.html ]]; then
   npm run build
 fi
