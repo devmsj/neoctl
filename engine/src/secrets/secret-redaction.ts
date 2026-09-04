@@ -33,6 +33,48 @@ export class InMemorySecretRedactionRegistry implements SecretRedactionRegistry 
     }
     return output;
   }
+
+  private secretAt(input: string, offset: number): { key: string; secret: string } | undefined {
+    let best: { key: string; secret: string } | undefined;
+    for (const [key, values] of this.values.entries()) {
+      for (const secret of values) {
+        if (secret && input.startsWith(secret, offset) && (!best || secret.length > best.secret.length)) best = { key, secret };
+      }
+    }
+    return best;
+  }
+
+  createStreamingRedactor(): { push(chunk: string): string; flush(): string } {
+    const secrets = [...this.values.values()].flatMap((values) => [...values]).filter(Boolean);
+    const carryLength = Math.max(0, ...secrets.map((secret) => secret.length - 1));
+    let carry = "";
+    return {
+      push: (chunk) => {
+        const combined = carry + chunk;
+        if (carryLength === 0) return this.redactString(combined);
+        const safeLength = Math.max(0, combined.length - carryLength);
+        let cursor = 0;
+        let output = "";
+        while (cursor < safeLength) {
+          const match = this.secretAt(combined, cursor);
+          if (match) {
+            output += `[secret:${match.key}]`;
+            cursor += match.secret.length;
+          } else {
+            output += combined[cursor];
+            cursor += 1;
+          }
+        }
+        carry = combined.slice(cursor);
+        return output;
+      },
+      flush: () => {
+        const output = this.redactString(carry);
+        carry = "";
+        return output;
+      },
+    };
+  }
 }
 
 export function redactWithRegistry<T>(registry: SecretRedactionRegistry | undefined, value: T): T {

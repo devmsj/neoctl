@@ -40,6 +40,7 @@ export interface AgentActivity {
   totalEvents: number;
   totalToolUseCount: number;
   totalTokens?: number;
+  activeTools?: Record<string, AgentToolActivity>;
   currentTool?: AgentToolActivity;
   timeline: AgentTimelineEntry[];
   lastText?: string;
@@ -97,6 +98,8 @@ export class AgentActivityStore {
       totalEvents: existing?.totalEvents ?? 0,
       totalToolUseCount: existing?.totalToolUseCount ?? 0,
       totalTokens: existing?.totalTokens,
+      activeTools: {},
+      currentTool: undefined,
       timeline: existing?.timeline ?? [],
       lastText: existing?.lastText,
       resultPreview: undefined,
@@ -121,11 +124,13 @@ export class AgentActivityStore {
     } else if (event.type === "tool.started") {
       this.recordToolStarted(activity, event.toolUse);
     } else if (event.type === "tool.progress") {
-      if (activity.currentTool?.id === event.toolUse.id) activity.currentTool.inputPreview = previewText(event.progress.message);
+      const active = activity.activeTools?.[event.toolUse.id];
+      if (active) active.inputPreview = previewText(event.progress.message);
+      this.refreshCurrentTool(activity);
     } else if (event.type === "tool.result.available") {
       this.recordToolFinished(activity, event.toolUse, event.ok);
     } else if (event.type === "tool.finished") {
-      if (activity.currentTool?.id === event.toolUse.id) activity.currentTool = undefined;
+      this.removeActiveTool(activity, event.toolUse.id);
     } else if (event.type === "usage") {
       this.recordUsage(activity, event.usage);
     } else if (event.type === "retrying") {
@@ -150,6 +155,7 @@ export class AgentActivityStore {
     activity.totalTokens = result.total_tokens ?? activity.totalTokens;
     activity.totalToolUseCount = result.total_tool_use_count || activity.totalToolUseCount;
     activity.resultPreview = previewText(result.content);
+    activity.activeTools = {};
     activity.currentTool = undefined;
     this.push(activity, { kind: "status", title: "completed", detail: activity.resultPreview, status: "ok" });
     this.activities.set(agentId, activity);
@@ -163,6 +169,7 @@ export class AgentActivityStore {
     activity.error = error;
     activity.completedAt = new Date().toISOString();
     activity.updatedAt = activity.completedAt;
+    activity.activeTools = {};
     activity.currentTool = undefined;
     this.push(activity, { kind: "error", title: status, detail: error, status: "failed" });
     this.activities.set(agentId, activity);
@@ -184,7 +191,7 @@ export class AgentActivityStore {
         this.push(activity, { kind: "thinking", title: "thinking", detail: text, status: "running" });
       } else if (block.type === "tool_use") {
         // Some providers surface tool_use only as a message block. Avoid double-counting if tool.started already ran.
-        if (activity.currentTool?.id !== block.id) this.recordToolStarted(activity, block);
+        if (!activity.activeTools?.[block.id]) this.recordToolStarted(activity, block);
       } else if (block.type === "tool_result") {
         this.push(activity, {
           kind: "tool_result",
@@ -197,29 +204,44 @@ export class AgentActivityStore {
   }
 
   private recordToolStarted(activity: AgentActivity, toolUse: ToolUseRequest): void {
+    if (activity.activeTools?.[toolUse.id]) return;
     activity.totalToolUseCount += 1;
-    activity.currentTool = {
+    const tool = {
       id: toolUse.id,
       name: toolUse.name,
       inputPreview: previewValue(toolUse.input),
       startedAt: new Date().toISOString(),
     };
+    activity.activeTools = { ...(activity.activeTools ?? {}), [toolUse.id]: tool };
+    this.refreshCurrentTool(activity);
     this.push(activity, {
       kind: "tool_start",
       title: toolUse.name,
-      detail: activity.currentTool.inputPreview,
+      detail: tool.inputPreview,
       status: "running",
     });
   }
 
   private recordToolFinished(activity: AgentActivity, toolUse: ToolUseRequest, ok: boolean): void {
-    if (activity.currentTool?.id === toolUse.id) activity.currentTool = undefined;
+    this.removeActiveTool(activity, toolUse.id);
     this.push(activity, {
       kind: "tool_result",
       title: `${toolUse.name} ${ok ? "finished" : "failed"}`,
       detail: previewValue(toolUse.input),
       status: ok ? "ok" : "failed",
     });
+  }
+
+  private removeActiveTool(activity: AgentActivity, toolUseId: string): void {
+    if (!activity.activeTools?.[toolUseId]) return;
+    const activeTools = { ...activity.activeTools };
+    delete activeTools[toolUseId];
+    activity.activeTools = activeTools;
+    this.refreshCurrentTool(activity);
+  }
+
+  private refreshCurrentTool(activity: AgentActivity): void {
+    activity.currentTool = Object.values(activity.activeTools ?? {}).sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
   }
 
   private recordUsage(activity: AgentActivity, usage: ModelUsage): void {

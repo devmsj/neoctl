@@ -2,7 +2,7 @@ import type { ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, type Message } from "../types/messages.js";
-import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
+import type { Tool, ToolProgressEvent, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
 import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage } from "./local-agent-task.js";
@@ -146,7 +146,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
 async function runSyncAgent(input: {
   input: AgentToolInput;
   context: ToolUseContext;
-  options: { onProgress?: (event: { toolName: string; message: string; data?: unknown; channel?: "state" | "item" | "stdout" | "stderr" | "patch" | "artifact" | "metric"; operation?: "replace" | "append" | "upsert" | "remove"; key?: string; phase?: string }) => void };
+  options: { onProgress?: (event: ToolProgressEvent) => void };
   runtime: AgentToolRuntime;
   agent: AgentDefinition;
   fork: boolean;
@@ -188,15 +188,18 @@ async function runSyncAgent(input: {
       if (completed.value.type === "message") agentMessages.push(completed.value.message);
       completed = await stream.next();
     }
+    if (completed.value.status === "aborted") {
+      activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
+      return { ok: false, output: { status: "cancelled", error: completed.value.terminalReason, description: input.description, ...completed.value.result } };
+    }
+    if (completed.value.status === "failed") {
+      activityStore.fail(input.agentId, completed.value.terminalReason);
+      return { ok: false, output: { status: "failed", error: completed.value.terminalReason, description: input.description, ...completed.value.result } };
+    }
     activityStore.complete(input.agentId, completed.value.result);
-
     return {
       ok: true,
-      output: {
-        status: "completed",
-        description: input.description,
-        ...completed.value.result,
-      },
+      output: { status: "completed", description: input.description, ...completed.value.result },
       newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
     };
   } catch (error) {
@@ -212,26 +215,40 @@ async function runSyncAgent(input: {
 }
 
 function emitSyncAgentEvent(
-  emit: ((event: { toolName: string; message: string; data?: unknown; channel?: "state" | "item" | "stdout" | "stderr" | "patch" | "artifact" | "metric"; operation?: "replace" | "append" | "upsert" | "remove"; key?: string; phase?: string }) => void) | undefined,
+  emit: ((event: ToolProgressEvent) => void) | undefined,
   agentId: string,
   event: import("../types/events.js").AgentEvent,
 ): void {
   if (!emit) return;
+  const childKey = (key: string | undefined, toolUseId: string) => `${agentId}:${toolUseId}:${key ?? "state"}`;
   if (event.type === "tool.started") {
-    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: event.toolUse.id, phase: "tool_running", data: { agent_id: agentId, child_event: event } });
+    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: "tool_running", data: { agent_id: agentId, child_event: event } });
     return;
   }
   if (event.type === "tool.progress") {
-    emit({ toolName: "agent", message: event.progress.message || childToolPurpose(event.toolUse), channel: "state", operation: "replace", key: event.toolUse.id, phase: event.progress.phase ?? "tool_progress", data: { agent_id: agentId, child_event: event } });
+    const progress = event.progress;
+    emit({
+      ...progress,
+      toolName: "agent",
+      toolUseId: undefined,
+      message: progress.message || childToolPurpose(event.toolUse),
+      key: childKey(progress.key, event.toolUse.id),
+      data: childProgressData(progress.data, agentId, event),
+    });
     return;
   }
   if (event.type === "tool.result.available") {
-    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: event.toolUse.id, phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
+    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
     return;
   }
   if (event.type === "state" && event.phase !== "running_tools") {
-    emit({ toolName: "agent", message: event.detail || event.phase, channel: "state", operation: "replace", phase: event.phase, data: { agent_id: agentId } });
+    emit({ toolName: "agent", message: event.detail || event.phase, channel: "state", operation: "replace", key: `${agentId}:agent:state`, phase: event.phase, data: { agent_id: agentId } });
   }
+}
+
+function childProgressData(data: unknown, agentId: string, childEvent: import("../types/events.js").AgentEvent): unknown {
+  if (data && typeof data === "object" && !Array.isArray(data)) return { ...data, agent_id: agentId, child_event: childEvent };
+  return data ?? { agent_id: agentId, child_event: childEvent };
 }
 
 function childToolPurpose(toolUse: { name: string; input: unknown }): string {
@@ -302,7 +319,11 @@ async function runAsyncAgentLifecycle(input: {
   abortController: AbortController;
   isResume?: boolean;
   existingMessages?: Message[];
+  runGeneration?: number;
 }): Promise<void> {
+  const runGeneration = input.runGeneration ?? input.taskStore.get(input.taskId)?.runGeneration ?? 1;
+  const ownsRun = () => input.taskStore.get(input.taskId)?.runGeneration === runGeneration;
+  if (!ownsRun()) return;
   input.taskStore.markRunning(input.taskId);
   const task = input.taskStore.get(input.taskId);
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
@@ -337,12 +358,11 @@ async function runAsyncAgentLifecycle(input: {
     let completed = await stream.next();
     while (!completed.done) {
       const event = completed.value;
-      activityStore.recordEvent(input.agentId, event);
       const current = input.taskStore.get(input.taskId);
-      if (!current || current.status === "killed") {
-        activityStore.fail(input.agentId, "Task killed", "killed");
+      if (!ownsRun() || !current || current.status === "killed") {
         return;
       }
+      activityStore.recordEvent(input.agentId, event);
       if (event.type !== "message") {
         updateProgressFromEvent(current, event);
         input.taskStore.upsert(current);
@@ -373,12 +393,9 @@ async function runAsyncAgentLifecycle(input: {
       let remaining = await stream.next();
       while (!remaining.done) {
         const event = remaining.value;
-        activityStore.recordEvent(input.agentId, event);
         const current = input.taskStore.get(input.taskId);
-        if (!current || current.status === "killed") {
-          activityStore.fail(input.agentId, "Task killed", "killed");
-          return;
-        }
+        if (!ownsRun() || !current || current.status === "killed") return;
+        activityStore.recordEvent(input.agentId, event);
         if (event.type === "message") {
           current.messages.push(event.message);
           updateProgressFromMessage(current, event.message);
@@ -389,6 +406,17 @@ async function runAsyncAgentLifecycle(input: {
       completed = remaining;
     }
 
+    if (!ownsRun()) return;
+    if (completed.value.status === "aborted") {
+      input.taskStore.kill(input.taskId, completed.value.terminalReason);
+      activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
+      return;
+    }
+    if (completed.value.status === "failed") {
+      input.taskStore.fail(input.taskId, completed.value.terminalReason);
+      activityStore.fail(input.agentId, completed.value.terminalReason);
+      return;
+    }
     input.taskStore.complete(input.taskId, completed.value.result);
     activityStore.complete(input.agentId, completed.value.result);
     const finished = input.taskStore.get(input.taskId);
@@ -398,6 +426,7 @@ async function runAsyncAgentLifecycle(input: {
     }
     if (task) task.notified = false;
   } catch (error) {
+    if (!ownsRun()) return;
     const message = error instanceof Error ? error.message : String(error);
     input.taskStore.fail(input.taskId, message);
     activityStore.fail(input.agentId, message);
@@ -422,6 +451,8 @@ export function resumeAgentTask(
   const abortController = new AbortController();
 
   task.status = "pending";
+  task.runGeneration = (task.runGeneration ?? 0) + 1;
+  const runGeneration = task.runGeneration;
   task.abortController = abortController;
   task.error = undefined;
   task.completedAt = undefined;
@@ -441,8 +472,9 @@ export function resumeAgentTask(
     abortController,
     isResume: true,
     existingMessages: [...task.messages],
+    runGeneration,
   }).catch((error) => {
-    taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+    if (taskStore.get(taskId)?.runGeneration === runGeneration) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
   });
 
   return Promise.resolve({ ok: true });

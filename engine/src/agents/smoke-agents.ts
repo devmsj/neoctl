@@ -24,7 +24,9 @@ function makeSmokeTool(name: string, readOnly: boolean): Tool<Record<string, nev
     validate() {
       return {};
     },
-    async call() {
+    async call(_input, _context, options) {
+      if (name === "exec_command") options.onProgress?.({ toolName: name, message: "terminal output", channel: "stdout", operation: "append", key: "output", data: { type: "terminal.output.delta", stream: "stdout", text: "child-output" } });
+      if (name === "read") options.onProgress?.({ toolName: name, message: "patch output", channel: "patch", operation: "append", key: "patch", data: { patch: "child-patch" } });
       return { ok: true, output: name };
     },
   };
@@ -147,12 +149,15 @@ class ParentAndSubagentGateway implements ModelGateway {
       }
 
       if (!isTitleRequest && !hasFinalAgentReportResult) {
+        const workerToolName = hasToolResult ? "agent_report" : "exec_command";
         yield {
           type: "tool_use",
           toolUse: {
-            id: `call_worker_report_${this.subagentCalls}`,
-            name: "agent_report",
-            input: { content: `worker result: ${lastPrompt.slice(0, 24)}`, status: "completed" },
+            id: `call_worker_${workerToolName}_${this.subagentCalls}`,
+            name: workerToolName,
+            input: workerToolName === "agent_report"
+              ? { content: `worker result: ${lastPrompt.slice(0, 24)}`, status: "completed" }
+              : {},
           },
         };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
@@ -214,8 +219,10 @@ async function main(): Promise<void> {
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
   const events: string[] = [];
+  const childProgressChannels: string[] = [];
   for await (const event of engine.sendUserText("delegate once")) {
     events.push(event.type === "terminal" ? `${event.type}:${event.reason}` : event.type);
+    if (event.type === "tool.progress" && event.toolUse.name === "agent" && event.progress.channel) childProgressChannels.push(event.progress.channel);
   }
   await waitFor(async () => (await engine.listSessions(1))[0]?.title === "Delegate Once Smoke Title");
   const afterInitialTitleCalls = gateway.subagentCalls;
@@ -238,7 +245,7 @@ async function main(): Promise<void> {
   );
   const childSessionsHiddenFromList = listedSessions.length === 1;
   const syncOk =
-    afterInitialTitleCalls === 2 &&
+    afterInitialTitleCalls === 3 &&
     afterRefinementTitleCalls === afterInitialTitleCalls + 1 &&
     events.includes("tool.started") &&
     events.includes("tool.finished") &&
@@ -341,8 +348,9 @@ async function main(): Promise<void> {
   const outputFileOk = Boolean(task?.outputFile && existsSync(task.outputFile));
   const asyncOk = Boolean(taskId && task?.status === "completed" && outputText.includes("retrieval_status") && sendOk && listOk && outputFileOk);
 
-  const ok = syncOk && asyncOk && exploreToolsOk && exploreOk && missingReportOk;
-  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, missingReportOk, exploreReportOk, exploreDraftDidNotEndRun, exploreInheritedToolResultMemory, inheritedToolResultMemoryCalls, memoryCallsBeforeExplore, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, childTranscriptOk, childSessionsHiddenFromList, childSessionRoot, childSessionEntries: childSessionEntries.map((entry) => entry.name), events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, reportRecoveryPrompts: gateway.reportRecoveryPrompts, forcedReportToolChoices: gateway.forcedReportToolChoices, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
+  const childProgressSemanticsOk = childProgressChannels.includes("stdout");
+  const ok = syncOk && asyncOk && exploreToolsOk && exploreOk && missingReportOk && childProgressSemanticsOk;
+  console.log(JSON.stringify({ ok, syncOk, asyncOk, exploreToolsOk, exploreOk, missingReportOk, childProgressSemanticsOk, childProgressChannels, exploreReportOk, exploreDraftDidNotEndRun, exploreInheritedToolResultMemory, inheritedToolResultMemoryCalls, memoryCallsBeforeExplore, exploreNoProgressOnly, exploreOutput, outputFileOk, sessionTitle: listedSessions[0]?.title, childTranscriptOk, childSessionsHiddenFromList, childSessionRoot, childSessionEntries: childSessionEntries.map((entry) => entry.name), events, parentCalls: gateway.parentCalls, subagentCalls: gateway.subagentCalls, reportRecoveryPrompts: gateway.reportRecoveryPrompts, forcedReportToolChoices: gateway.forcedReportToolChoices, afterInitialTitleCalls, afterRefinementTitleCalls, taskId, taskStatus: task?.status, taskAgentType: task?.agentType, outputFile: task?.outputFile }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

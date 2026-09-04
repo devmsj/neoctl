@@ -403,6 +403,8 @@ export async function browseWorkspace(value, currentCwd) {
   const locations = await locationsPromise;
   return {
     cwd: current,
+    requested,
+    fallback: path.resolve(current) !== path.resolve(requested),
     parent: current === path.parse(current).root ? undefined : path.dirname(current),
     home: os.homedir(),
     locations,

@@ -598,7 +598,7 @@ async function* executeToolsForTurn(
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
-  const events = new AsyncEventQueue<RunToolsEvent>();
+  const events = new AsyncEventQueue<RunToolsEvent>(2048, compactRunToolsQueue);
   const closeOnAbort = () => events.close();
   options.abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
   const running = abortable(
@@ -664,16 +664,39 @@ function maybeRecoverWithoutTools(
   return undefined;
 }
 
+function compactRunToolsQueue(values: RunToolsEvent[], incoming: RunToolsEvent): boolean {
+  if (incoming.type === "progress") {
+    for (let index = values.length - 1; index >= 0; index -= 1) {
+      const existing = values[index];
+      if (existing.type === "settled" && existing.request.id === incoming.request.id) break;
+      if (existing.type !== "progress" || existing.request.id !== incoming.request.id) continue;
+      if (existing.progress.channel !== incoming.progress.channel || existing.progress.key !== incoming.progress.key) break;
+      values[index] = incoming;
+      return true;
+    }
+  }
+  const disposable = values.findIndex((event) => event.type === "progress");
+  if (disposable < 0) return false;
+  values.splice(disposable, 1);
+  values.push(incoming);
+  return true;
+}
+
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
   private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
   private closed = false;
 
+  constructor(
+    private readonly maxValues = Number.POSITIVE_INFINITY,
+    private readonly compact?: (values: T[], incoming: T) => boolean,
+  ) {}
+
   push(value: T): void {
     if (this.closed) return;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false });
-    else this.values.push(value);
+    else if (this.values.length < this.maxValues || !this.compact?.(this.values, value)) this.values.push(value);
   }
 
   close(): void {

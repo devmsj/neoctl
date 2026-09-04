@@ -94,6 +94,7 @@ assert.equal(commandLines[0]?.toolDisplay?.purpose, "运行测试");
 assert.deepEqual(commandLines[0]?.toolDisplay?.facts, []);
 assert.deepEqual(commandLines[0]?.toolDisplay?.previews?.map((preview: Record<string, unknown>) => [preview.label, preview.kind, preview.content]), [
   ["命令", "code", "npm test"],
+  ["输出", "code", "ok"],
 ]);
 
 const runtime = {
@@ -122,5 +123,59 @@ const afterAppend = repl.snapshot(false);
 assert.ok(appendedId > Math.max(...initialIds));
 assert.equal(new Set(afterAppend.lines.map((line) => line.id)).size, afterAppend.lines.length);
 assert.equal(afterAppend.lines.at(-1)?.kind, "assistant");
+
+const handleEvent = (repl as unknown as { handleEvent: (event: unknown) => void }).handleEvent.bind(repl);
+handleEvent({ type: "tool.started", toolUse: commandRequest, index: 0, total: 1 });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "准备", channel: "item", operation: "upsert", key: "phase", phase: "running", sequence: 1 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "完成", channel: "item", operation: "append", key: "phase", phase: "completed", sequence: 2 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "重复事件", channel: "item", operation: "upsert", key: "duplicate", phase: "running", sequence: 2 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "移除", channel: "item", operation: "remove", key: "phase", sequence: 3 } });
+handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "exec_command", message: "输出", channel: "stdout", operation: "append", sequence: 4, data: "live-output" } });
+handleEvent({ type: "tool.result.available", toolUse: commandRequest, ok: true, messages: [commandResultMessage], index: 0, total: 1 });
+handleEvent({ type: "tool.finished", toolUse: commandRequest, ok: true, index: 0, total: 1 });
+handleEvent({ type: "message", message: commandResultMessage });
+const streamedSnapshot = repl.snapshot(false) as { lines: Array<Record<string, any>> };
+const streamedToolLines = streamedSnapshot.lines.filter((line) => line.toolUseId === commandRequest.id);
+assert.equal(streamedToolLines.length, 1);
+assert.equal(streamedToolLines[0]?.live, false);
+assert.equal(streamedToolLines[0]?.toolDisplay?.purpose, "运行测试");
+assert.equal(streamedToolLines[0]?.toolStream?.stdout, "live-output");
+assert.deepEqual(streamedToolLines[0]?.toolStream?.steps, []);
+
+const agentRequest = { id: "call_agent", name: "agent", input: { description: "检查前端" } };
+handleEvent({ type: "tool.started", toolUse: agentRequest, index: 0, total: 1 });
+handleEvent({
+  type: "tool.progress",
+  toolUse: agentRequest,
+  progress: {
+    toolName: "agent",
+    message: "读取入口文件",
+    channel: "item",
+    operation: "upsert",
+    key: "child_read",
+    phase: "tool_running",
+    sequence: 1,
+    data: { child_event: { type: "tool.started", toolUse: { id: "child_read", name: "read", input: { description: "读取入口文件" } } } },
+  },
+});
+handleEvent({
+  type: "tool.progress",
+  toolUse: agentRequest,
+  progress: {
+    toolName: "agent",
+    message: "搜索事件处理",
+    channel: "item",
+    operation: "upsert",
+    key: "child_grep",
+    phase: "tool_running",
+    sequence: 2,
+    data: { child_event: { type: "tool.started", toolUse: { id: "child_grep", name: "grep", input: { description: "搜索事件处理" } } } },
+  },
+});
+const agentLine = (repl.snapshot(false) as { lines: Array<Record<string, any>> }).lines.find((line) => line.toolUseId === agentRequest.id);
+assert.deepEqual(agentLine?.toolStream?.steps?.map((step: Record<string, unknown>) => [step.toolName, step.message]), [
+  ["read", "读取入口文件"],
+  ["grep", "搜索事件处理"],
+]);
 
 console.log("web history smoke ok");

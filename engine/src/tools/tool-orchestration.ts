@@ -121,7 +121,9 @@ async function runToolUseWithEvents(
   const contextWithEvents: ToolUseContext = {
     ...context,
     emit(progress) {
-      const normalized = { ...progress, toolUseId: progress.toolUseId ?? item.request.id, sequence: progress.sequence ?? ++sequence };
+      if (progress.sequence !== undefined) sequence = Math.max(sequence, progress.sequence);
+      else sequence += 1;
+      const normalized = { ...progress, toolUseId: progress.toolUseId ?? item.request.id, sequence };
       options.onEvent?.({ type: "progress", index, total, request: item.request, progress: normalized });
       context.emit(normalized);
     },

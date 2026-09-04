@@ -56,6 +56,10 @@ async function main(): Promise<void> {
   }, context);
   const execJson = JSON.stringify(execResult);
   const execRedactedOk = execJson.includes("[secret:api_token]") && !execJson.includes("super-secret-token");
+  redactions.record("split_token", "ABCDEF");
+  const streamRedactor = redactions.createStreamingRedactor();
+  const splitRedacted = `${streamRedactor.push("prefix ABC")}${streamRedactor.push("DEF suffix")}${streamRedactor.flush()}`;
+  const splitChunkRedactionOk = splitRedacted === "prefix [secret:split_token] suffix" && !splitRedacted.includes("ABCDEF");
 
   let emptyErrorOk = false;
   try {
@@ -64,8 +68,8 @@ async function main(): Promise<void> {
     emptyErrorOk = error instanceof Error && error.message.includes("has no value");
   }
 
-  const ok = encryptedAtRestOk && metadataOk && listToolOk && requestOk && execRedactedOk && emptyErrorOk;
-  console.log(JSON.stringify({ ok, encryptedAtRestOk, metadataOk, listToolOk, requestOk, execRedactedOk, emptyErrorOk }, null, 2));
+  const ok = encryptedAtRestOk && metadataOk && listToolOk && requestOk && execRedactedOk && splitChunkRedactionOk && emptyErrorOk;
+  console.log(JSON.stringify({ ok, encryptedAtRestOk, metadataOk, listToolOk, requestOk, execRedactedOk, splitChunkRedactionOk, emptyErrorOk }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

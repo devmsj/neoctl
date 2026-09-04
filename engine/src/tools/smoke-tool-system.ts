@@ -43,6 +43,21 @@ const smokePassthroughTool: Tool<{ text: string }> = {
   },
 };
 
+const sequenceTool: Tool<Record<string, never>> = {
+  name: "sequence_smoke",
+  description: "Emit explicit and implicit progress sequences.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  metadata: { readOnly: true, concurrent: true, visible: true },
+  validate() {
+    return {};
+  },
+  async call(_input, _context, options) {
+    options.onProgress?.({ toolName: "sequence_smoke", message: "explicit", sequence: 10 });
+    options.onProgress?.({ toolName: "sequence_smoke", message: "implicit" });
+    return { ok: true, output: { ok: true } };
+  },
+};
+
 const delayTool: Tool<{ id: string; delayMs: number }> = {
   name: "delay",
   description: "Wait briefly and return an id.",
@@ -113,6 +128,7 @@ async function main(): Promise<void> {
   registry.register(createSearchTool({ provider: mockSearchProvider }));
   registry.register(planTool);
   registry.register(delayTool);
+  registry.register(sequenceTool);
   registry.register(largeTool);
   const disabledToolHidden = registry.setEnabled("smoke_passthrough", false)
     && registry.get("smoke_passthrough") === undefined
@@ -398,6 +414,12 @@ async function main(): Promise<void> {
     context,
   );
   const elapsedMs = Date.now() - started;
+  const sequenceEvents: number[] = [];
+  await runTools(
+    [{ id: "sequence", name: "sequence_smoke", input: {} }],
+    context,
+    { onEvent: (event) => { if (event.type === "progress" && event.progress.sequence !== undefined) sequenceEvents.push(event.progress.sequence); } },
+  );
 
   const checks = {
     validTool: toolOk(valid[valid.length - 1]),
@@ -518,6 +540,7 @@ async function main(): Promise<void> {
       (await fs.readFile(path.join(tempDir, "nested", "write.txt"), "utf8")) === "full\ncontent\n",
     batchMessages: batch.messages.length === 2,
     batchConcurrent: elapsedMs < 110,
+    progressSequenceMonotonic: sequenceEvents.length === 2 && sequenceEvents[0] === 10 && sequenceEvents[1] === 11,
   };
   const ok = Object.values(checks).every(Boolean);
 

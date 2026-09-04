@@ -135,6 +135,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
           maxOutputChars: input.max_output_chars,
           tty: input.tty,
           redactOutput: secretRedactions ? (text) => secretRedactions.redact(text) : undefined,
+          createStreamingRedactor: secretRedactions?.createStreamingRedactor?.bind(secretRedactions),
         },
         input.yield_time_ms,
         (delta) => emitOutputDelta(context, delta),

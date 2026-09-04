@@ -33,6 +33,7 @@ export interface ExecProcessStartOptions {
   maxOutputChars: number;
   tty: boolean;
   redactOutput?: (text: string) => string;
+  createStreamingRedactor?: () => { push(chunk: string): string; flush(): string };
 }
 
 export interface ExecProcessOutputDelta {
@@ -234,15 +235,14 @@ export class ExecProcessManager {
   private createSession(id: string, options: ExecProcessStartOptions): ProcessSession {
     let session!: ProcessSession;
     let redactOutput = options.redactOutput;
+    const streamingRedactor = options.createStreamingRedactor?.();
     let liveOutputOffset = 0;
-    const onOutput = (stream: ExecOutputStream, text: string) => {
-      const normalized = normalizeOutput(text);
-      if (!normalized) return;
-      session[stream].push(normalized);
-      const safeOutput = redactOutput?.(normalized) ?? normalized;
+    let lastStream: ExecOutputStream = "stdout";
+    const publishSafeOutput = (stream: ExecOutputStream, safeOutput: string) => {
+      if (!safeOutput) return;
       const liveText = stream === "stderr" ? `[stderr] ${safeOutput}` : safeOutput;
       session.liveOutput.push(liveText);
-      const delta = { sessionId: id, stream, text: normalized };
+      const delta = { sessionId: id, stream, text: safeOutput };
       for (const subscriber of session.subscribers) subscriber(delta);
       const outputStart = liveOutputOffset;
       liveOutputOffset += liveText.length;
@@ -251,9 +251,18 @@ export class ExecProcessManager {
         for (const subscriber of this.outputSubscribers) subscriber(publicDelta);
       }
     };
+    const onOutput = (stream: ExecOutputStream, text: string) => {
+      const normalized = normalizeOutput(text);
+      if (!normalized) return;
+      session[stream].push(normalized);
+      lastStream = stream;
+      const safeOutput = streamingRedactor?.push(normalized) ?? redactOutput?.(normalized) ?? normalized;
+      publishSafeOutput(stream, safeOutput);
+    };
     const onExit = (exitCode: number | null, signal: string | number | null, error?: Error) => {
       if (session.finishedAt !== undefined) return;
       if (error) onOutput("stderr", `${error.message}\n`);
+      publishSafeOutput(lastStream, streamingRedactor?.flush() ?? "");
       redactOutput = undefined;
       session.options.redactOutput = undefined;
       this.finalizeSession(session, exitCode, signal, error);

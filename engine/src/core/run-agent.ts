@@ -41,11 +41,10 @@ export interface RunAgentOptions {
   workspaceCwd?: string;
 }
 
-export interface RunAgentCompleted {
-  result: AgentToolResult;
-  messages: Message[];
-  terminalReason?: string;
-}
+export type RunAgentCompleted =
+  | { status: "completed"; result: AgentToolResult; messages: Message[]; terminalReason?: string }
+  | { status: "aborted"; result: AgentToolResult; messages: Message[]; terminalReason: string }
+  | { status: "failed"; result: AgentToolResult; messages: Message[]; terminalReason: string };
 
 export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent, RunAgentCompleted, void> {
   const startedAt = Date.now();
@@ -115,19 +114,22 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     }
   }
 
-  return {
-    result: finalizeAgentTool({
-      agentId: options.agentId,
-      agentType: options.agent.agentType,
-      agent: options.agent,
-      messages: agentMessages,
-      durationMs: Date.now() - startedAt,
-      usage: lastUsage,
-      totalToolUseCount,
-    }),
+  const result = finalizeAgentTool({
+    agentId: options.agentId,
+    agentType: options.agent.agentType,
+    agent: options.agent,
     messages: agentMessages,
-    terminalReason,
-  };
+    durationMs: Date.now() - startedAt,
+    usage: lastUsage,
+    totalToolUseCount,
+  });
+  if (terminalReason === "aborted_streaming" || terminalReason === "aborted_tools" || options.abortSignal?.aborted) {
+    return { status: "aborted", result, messages: agentMessages, terminalReason: terminalReason ?? "aborted" };
+  }
+  if (terminalReason === "model_error" || terminalReason === "image_error" || terminalReason === "prompt_too_long") {
+    return { status: "failed", result, messages: agentMessages, terminalReason };
+  }
+  return { status: "completed", result, messages: agentMessages, terminalReason };
 }
 
 export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition): ToolRegistry {

@@ -99,6 +99,8 @@ test('browsing a reserved workspace falls back without creating it', async (t) =
   const result = await browseWorkspace(candidate, candidate);
 
   assert.equal(result.cwd, root);
+  assert.equal(result.requested, candidate);
+  assert.equal(result.fallback, true);
   assert.equal(result.locations.some((item) => item.kind === 'home'), true);
   assert.equal(Array.isArray(result.entries), true);
   await assert.rejects(stat(candidate), { code: 'ENOENT' });

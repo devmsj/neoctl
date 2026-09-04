@@ -282,6 +282,7 @@ const state = reactive({
     treeChildren: {},
     treeExpanded: {},
     selectedPath: '',
+    selectionExplicit: false,
     input: '',
     loading: false,
     mutating: false,
@@ -815,6 +816,7 @@ function connectEvents() {
   })
   es.addEventListener('terminal.output', (event) => {
     try {
+      flushQueuedSync()
       applyTerminalOutput(JSON.parse(event.data))
     } catch {
       // A later sync snapshot repairs malformed or missed output events.
@@ -2116,27 +2118,66 @@ function isTerminalToolLine(line) {
   return name === 'exec_command' || name === 'write_stdin'
 }
 
-function toolSubtasksExpanded(line) {
-  return state.expandedToolGroups[`subtasks:${line?.id}`] === true
-}
-
-function toggleToolSubtasks(line) {
-  const key = `subtasks:${line?.id}`
-  state.expandedToolGroups[key] = !state.expandedToolGroups[key]
-}
-
 function showToolResultPreviews(line) {
-  return Array.isArray(line?.toolDisplay?.previews) && line.toolDisplay.previews.length > 0 && !(isTerminalToolLine(line) && hasToolStream(line))
+  return Array.isArray(line?.toolDisplay?.previews)
+    && line.toolDisplay.previews.length > 0
+    && !(isTerminalToolLine(line) && line?.live === true && hasToolStream(line))
 }
 
 function toolStreamOutput(line) {
+  const chunks = Array.isArray(line?.toolStream?.chunks) ? line.toolStream.chunks : []
+  if (chunks.length) return chunks.map((chunk) => String(chunk?.text || '')).join('').trimEnd()
   const stdout = String(line?.toolStream?.stdout || '')
   const stderr = String(line?.toolStream?.stderr || '')
-  return [stdout, stderr].filter(Boolean).join(stderr && stdout ? '\n' : '').trimEnd()
+  const output = String(line?.toolStream?.output || '')
+  return [stdout, stderr, output].filter(Boolean).join('\n').trimEnd()
+}
+
+function toolStreamCurrentText(line) {
+  const message = String(line?.toolStream?.message || '').trim()
+  const purpose = String(line?.toolDisplay?.purpose || line?.toolDisplay?.subject || '').trim()
+  return message && message !== purpose ? message : ''
+}
+
+function toolStreamStepsText(line) {
+  return toolStreamSteps(line).map((step) => {
+    const mark = step?.status === 'completed' ? '✓' : step?.status === 'failed' ? '×' : '•'
+    return `${mark} ${String(step?.message || '').trim()}`.trimEnd()
+  }).join('\n')
+}
+
+function agentToolSummary(line) {
+  const counts = new Map()
+  for (const step of toolStreamSteps(line)) {
+    const name = String(step?.toolName || '').trim()
+    if (!name) continue
+    counts.set(name, (counts.get(name) || 0) + 1)
+  }
+  return [...counts.entries()].map(([name, count]) => ({
+    name,
+    label: LINE_TITLE_LABELS[name] || LINE_TITLE_LABELS[name.toLowerCase()] || name,
+    count,
+  }))
+}
+
+function agentToolPurposes(line) {
+  return toolStreamSteps(line).flatMap((step, index) => {
+    const purpose = String(step?.message || '').trim()
+    return purpose ? [{ key: `${step.key}:${index}`, purpose }] : []
+  })
+}
+
+function agentToolExpanded(line) {
+  return state.expandedToolGroups[`agent:${line?.id}`] === true
+}
+
+function toggleAgentTool(line) {
+  const key = `agent:${line?.id}`
+  state.expandedToolGroups[key] = !state.expandedToolGroups[key]
 }
 
 function hasToolStream(line) {
-  return Boolean(String(line?.toolStream?.message || '').trim() || toolStreamSteps(line).length || toolStreamOutput(line))
+  return Boolean(toolStreamCurrentText(line) || toolStreamSteps(line).length || toolStreamOutput(line))
 }
 
 function toolStreamProgressText(line) {
@@ -2396,6 +2437,7 @@ function closeProjectContext() {
 async function openCwdPicker() {
   state.cwdPicker.open = true
   state.cwdPicker.input = state.cwd || ''
+  state.cwdPicker.selectionExplicit = false
   state.cwdPicker.error = ''
   document.body.classList.add('cwd-picker-lock')
   await browseCwd(state.cwd)
@@ -2439,7 +2481,8 @@ function applyCwdBrowseResult(result) {
   state.cwdPicker.locations = Array.isArray(result.locations) ? result.locations : state.cwdPicker.locations
   state.cwdPicker.entries = Array.isArray(result.entries) ? result.entries : []
   state.cwdPicker.input = cwd
-  state.cwdPicker.selectedPath = cwd
+  state.cwdPicker.selectedPath = result.fallback ? '' : cwd
+  state.cwdPicker.selectionExplicit = false
   state.cwdPicker.treeRoots = [root]
   state.cwdPicker.treeChildren = { [cwd]: state.cwdPicker.entries }
   state.cwdPicker.treeExpanded = { [cwd]: true }
@@ -2475,6 +2518,7 @@ async function toggleCwdTree(node) {
 
 function selectCwdTreeNode(node) {
   state.cwdPicker.selectedPath = node.path
+  state.cwdPicker.selectionExplicit = true
   state.cwdPicker.input = node.path
 }
 
@@ -2513,8 +2557,9 @@ async function deleteCwdDirectory(entry) {
 }
 
 async function selectCwd() {
-  const target = String(state.cwdPicker.selectedPath || state.cwdPicker.input || state.cwdPicker.cwd || '').trim()
+  const target = String(state.cwdPicker.selectionExplicit ? state.cwdPicker.selectedPath : state.cwdPicker.input).trim()
   if (!target) return
+  if (!state.cwdPicker.selectionExplicit && target === state.cwdPicker.cwd && target !== state.cwd) return
   state.cwdPicker.mutating = true
   state.cwdPicker.error = ''
   try {
@@ -4135,31 +4180,34 @@ function createMobileSession() {
                           <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
                         </div>
                         <div class="tool-result-detail-row">
-                          <div v-if="hasToolStream(item)" class="tool-stream-view">
-                            <div v-if="item.toolStream?.message" class="tool-stream-current">
-                              <span class="tool-stream-pulse" aria-hidden="true"></span>
-                              <strong>{{ item.toolStream.message }}</strong>
-                              <span v-if="toolStreamProgressText(item)" class="tool-stream-count">{{ toolStreamProgressText(item) }}</span>
-                            </div>
-                            <button v-if="isAgentToolLine(item) && toolStreamSteps(item).length" type="button" class="tool-subtask-trigger" :aria-expanded="toolSubtasksExpanded(item)" @click="toggleToolSubtasks(item)">
-                              <strong>子任务</strong><span>×{{ toolStreamSteps(item).length }}</span><i aria-hidden="true"></i>
+                          <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
+                          <div v-if="isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-group-shell">
+                            <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(item)" @click="toggleAgentTool(item)">
+                              <span class="tool-group-label">
+                                <template v-for="(tool, toolIndex) in agentToolSummary(item)" :key="tool.name">
+                                  <span class="tool-group-label-name">{{ tool.label }}</span><span v-if="tool.count > 1" class="tool-group-label-count">×{{ tool.count }}</span><span v-if="toolIndex < agentToolSummary(item).length - 1" class="tool-group-label-separator">、</span>
+                                </template>
+                              </span>
+                              <span class="tool-group-chevron" aria-hidden="true"></span>
                             </button>
-                            <TransitionGroup v-if="toolStreamSteps(item).length && (!isAgentToolLine(item) || toolSubtasksExpanded(item))" name="tool-step" tag="ol" class="tool-stream-steps">
-                              <li v-for="step in toolStreamSteps(item)" :key="step.key" :class="`status-${step.status}`">
-                                <span class="tool-stream-step-mark" aria-hidden="true"></span>
-                                <strong>{{ step.message }}</strong>
-                              </li>
-                            </TransitionGroup>
-                            <pre v-if="toolStreamOutput(item)" class="tool-stream-output" tabindex="0">{{ toolStreamOutput(item) }}</pre>
+                            <div v-if="agentToolExpanded(item)" class="tool-group-purposes">
+                              <div v-for="(purpose, purposeIndex) in agentToolPurposes(item)" :key="purpose.key" class="tool-group-purpose" :style="{ '--purpose-index': purposeIndex }"><span>{{ purpose.purpose }}</span></div>
+                            </div>
                           </div>
-                          <p v-else-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
-                          <div v-if="showToolResultPreviews(item)" class="tool-result-previews">
+                          <p v-else-if="toolStreamCurrentText(item)" class="tool-result-primary">{{ toolStreamCurrentText(item) }}<span v-if="toolStreamProgressText(item)"> {{ toolStreamProgressText(item) }}</span></p>
+                          <div v-if="!isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-result-previews">
+                            <section class="tool-result-preview kind-list"><pre tabindex="0">{{ toolStreamStepsText(item) }}</pre></section>
+                          </div>
+                          <div v-if="!isAgentToolLine(item) && toolStreamOutput(item) && (!isTerminalToolLine(item) || item.live === true)" class="tool-result-previews">
+                            <section class="tool-result-preview kind-code"><pre tabindex="0">{{ toolStreamOutput(item) }}</pre></section>
+                          </div>
+                          <div v-if="!isAgentToolLine(item) && showToolResultPreviews(item)" class="tool-result-previews">
                             <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
                               <span v-if="preview.label">{{ preview.label }}</span>
                               <pre tabindex="0">{{ preview.content }}</pre>
                             </section>
                           </div>
-                          <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
+                          <dl v-if="!isAgentToolLine(item) && visibleToolFacts(item).length" class="tool-result-facts">
                             <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
                               <dt>{{ fact.label }}</dt>
                               <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
@@ -4241,33 +4289,36 @@ function createMobileSession() {
                     <span v-if="toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
                   </div>
                   <div class="tool-result-detail-row">
-                    <div v-if="hasToolStream(line)" class="tool-stream-view">
-                      <div v-if="line.toolStream?.message" class="tool-stream-current">
-                        <span class="tool-stream-pulse" aria-hidden="true"></span>
-                        <strong>{{ line.toolStream.message }}</strong>
-                        <span v-if="toolStreamProgressText(line)" class="tool-stream-count">{{ toolStreamProgressText(line) }}</span>
-                      </div>
-                      <button v-if="isAgentToolLine(line) && toolStreamSteps(line).length" type="button" class="tool-subtask-trigger" :aria-expanded="toolSubtasksExpanded(line)" @click="toggleToolSubtasks(line)">
-                        <strong>子任务</strong><span>×{{ toolStreamSteps(line).length }}</span><i aria-hidden="true"></i>
-                      </button>
-                      <TransitionGroup v-if="toolStreamSteps(line).length && (!isAgentToolLine(line) || toolSubtasksExpanded(line))" name="tool-step" tag="ol" class="tool-stream-steps">
-                        <li v-for="step in toolStreamSteps(line)" :key="step.key" :class="`status-${step.status}`">
-                          <span class="tool-stream-step-mark" aria-hidden="true"></span>
-                          <strong>{{ step.message }}</strong>
-                        </li>
-                      </TransitionGroup>
-                      <pre v-if="toolStreamOutput(line)" class="tool-stream-output" tabindex="0">{{ toolStreamOutput(line) }}</pre>
-                    </div>
-                    <p v-else-if="line.toolDisplay?.purpose || line.toolDisplay?.subject" class="tool-result-primary">
+                    <p v-if="line.toolDisplay?.purpose || line.toolDisplay?.subject" class="tool-result-primary">
                       {{ line.toolDisplay?.purpose || line.toolDisplay?.subject }}
                     </p>
-                    <div v-if="showToolResultPreviews(line)" class="tool-result-previews">
+                    <div v-if="isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-group-shell">
+                      <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(line)" @click="toggleAgentTool(line)">
+                        <span class="tool-group-label">
+                          <template v-for="(tool, toolIndex) in agentToolSummary(line)" :key="tool.name">
+                            <span class="tool-group-label-name">{{ tool.label }}</span><span v-if="tool.count > 1" class="tool-group-label-count">×{{ tool.count }}</span><span v-if="toolIndex < agentToolSummary(line).length - 1" class="tool-group-label-separator">、</span>
+                          </template>
+                        </span>
+                        <span class="tool-group-chevron" aria-hidden="true"></span>
+                      </button>
+                      <div v-if="agentToolExpanded(line)" class="tool-group-purposes">
+                        <div v-for="(purpose, purposeIndex) in agentToolPurposes(line)" :key="purpose.key" class="tool-group-purpose" :style="{ '--purpose-index': purposeIndex }"><span>{{ purpose.purpose }}</span></div>
+                      </div>
+                    </div>
+                    <p v-else-if="toolStreamCurrentText(line)" class="tool-result-primary">{{ toolStreamCurrentText(line) }}<span v-if="toolStreamProgressText(line)"> {{ toolStreamProgressText(line) }}</span></p>
+                    <div v-if="!isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-result-previews">
+                      <section class="tool-result-preview kind-list"><pre tabindex="0">{{ toolStreamStepsText(line) }}</pre></section>
+                    </div>
+                    <div v-if="!isAgentToolLine(line) && toolStreamOutput(line) && (!isTerminalToolLine(line) || line.live === true)" class="tool-result-previews">
+                      <section class="tool-result-preview kind-code"><pre tabindex="0">{{ toolStreamOutput(line) }}</pre></section>
+                    </div>
+                    <div v-if="!isAgentToolLine(line) && showToolResultPreviews(line)" class="tool-result-previews">
                       <section v-for="(preview, previewIndex) in line.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
                         <span v-if="preview.label">{{ preview.label }}</span>
                         <pre tabindex="0">{{ preview.content }}</pre>
                       </section>
                     </div>
-                    <dl v-if="visibleToolFacts(line).length" class="tool-result-facts">
+                    <dl v-if="!isAgentToolLine(line) && visibleToolFacts(line).length" class="tool-result-facts">
                       <div v-for="fact in visibleToolFacts(line)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
                         <dt>{{ fact.label }}</dt>
                         <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
@@ -5049,16 +5100,8 @@ function createMobileSession() {
             </section>
             <section v-else-if="backgroundTaskActivity(state.backgroundTaskDetail) || backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-output-section">
               <div class="background-task-output-head"><strong>进度</strong><i v-if="state.backgroundTaskDetail.status === 'running'" aria-label="实时更新"></i></div>
-              <div v-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-current-action">
-                <span class="tool-stream-pulse" aria-hidden="true"></span>
-                <strong>{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</strong>
-              </div>
-              <TransitionGroup v-if="backgroundTaskSteps(state.backgroundTaskDetail).length" name="tool-step" tag="ol" class="tool-stream-steps background-task-steps">
-                <li v-for="step in backgroundTaskSteps(state.backgroundTaskDetail)" :key="step.id" :class="`status-${step.status}`">
-                  <span class="tool-stream-step-mark" aria-hidden="true"></span>
-                  <strong>{{ step.title }}</strong>
-                </li>
-              </TransitionGroup>
+              <pre v-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-activity">{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</pre>
+              <pre v-if="backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-activity">{{ backgroundTaskSteps(state.backgroundTaskDetail).map((step) => `${step.status === 'completed' ? '✓' : step.status === 'failed' ? '×' : '•'} ${step.title}`).join('\n') }}</pre>
             </section>
           </article>
         </div>

@@ -600,6 +600,7 @@ async function generateSessionTitle(input: {
 
     let completed = await stream.next();
     while (!completed.done) completed = await stream.next();
+    if (completed.value.status !== "completed") return undefined;
     return normalizeGeneratedTitle(completed.value.result.content);
   } catch {
     return undefined;

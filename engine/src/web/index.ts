@@ -219,9 +219,16 @@ interface UiToolDisplay {
 interface UiToolStreamStep {
   key: string;
   message: string;
+  toolName?: string;
   status: "running" | "completed" | "failed";
   phase?: string;
   sequence?: number;
+}
+
+interface UiToolStreamChunk {
+  sequence: number;
+  stream: "stdout" | "stderr" | "output";
+  text: string;
 }
 
 interface UiToolStream {
@@ -234,6 +241,8 @@ interface UiToolStream {
   unit?: string;
   stdout?: string;
   stderr?: string;
+  output?: string;
+  chunks?: UiToolStreamChunk[];
   steps?: UiToolStreamStep[];
   expanded?: boolean;
 }
@@ -1334,7 +1343,7 @@ export class WebRepl {
     this.pendingUserImageEchoIds = undefined;
     this.pendingUserImageEchoMessageId = undefined;
     this.finalizeForegroundView();
-    this.finalizeLiveToolLines();
+    this.cancelLiveToolLines(reason);
     this.busy = false;
     this.status = { ...this.status, phase: "ready", detail: undefined, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
     this.broadcastSync();
@@ -1465,12 +1474,23 @@ export class WebRepl {
     this.liveToolLineIds.clear();
   }
 
+  private cancelLiveToolLines(reason: string): void {
+    for (const id of this.liveToolLineIds.values()) {
+      const line = this.lines.find((item) => item.id === id);
+      const steps = (line?.toolStream?.steps ?? []).map((step) => step.status === "running" ? { ...step, status: "failed" as const, phase: "cancelled" } : step);
+      this.lines = this.lines.map((item) => item.id === id ? { ...item, live: false, kind: "error", titleStatus: "failure", bodyTitle: reason, toolStream: { ...item.toolStream, phase: "cancelled", message: reason, steps } } : item);
+      this.queueDeltaOperation({ type: "line.patch", id, patch: { live: false, kind: "error", titleStatus: "failure", bodyTitle: reason, toolStream: { ...line?.toolStream, phase: "cancelled", message: reason, steps } } });
+    }
+    this.liveToolLineIds.clear();
+  }
+
   private patchLiveToolLine(toolUseId: string, patch: Partial<UiLine>): void {
     const id = this.liveToolLineIds.get(toolUseId);
     if (id === undefined) return;
     const line = this.lines.find((item) => item.id === id);
     if (!line) return;
-    this.replaceLine(id, patch);
+    this.lines = this.lines.map((item) => item.id === id ? { ...item, ...patch } : item);
+    this.queueDeltaOperation({ type: "line.patch", id, patch });
   }
 
   private applyToolProgress(event: Extract<AgentEvent, { type: "tool.progress" }>): void {
@@ -1479,32 +1499,66 @@ export class WebRepl {
     const line = this.lines.find((item) => item.id === id);
     if (!line) return;
     const progress = event.progress;
+    const previousStream = line.toolStream ?? {};
+    if (progress.sequence !== undefined && previousStream.sequence !== undefined && progress.sequence <= previousStream.sequence) return;
     const channel = progress.channel ?? inferToolStreamChannel(progress.data);
     const operation = progress.operation ?? (channel === "stdout" || channel === "stderr" ? "append" : "replace");
-    const stream = { ...(line.toolStream ?? {}) };
+    const stream = { ...previousStream };
     stream.channel = channel;
     stream.phase = progress.phase;
-    stream.sequence = progress.sequence;
+    stream.sequence = progress.sequence ?? stream.sequence;
     if (progress.progress) {
       stream.current = progress.progress.current;
       stream.total = progress.progress.total;
       stream.unit = progress.progress.unit;
     }
     const terminalDelta = terminalOutputDelta(progress.data);
+    const textDelta = toolStreamTextDelta(progress.data);
     if (terminalDelta) {
       const key = terminalDelta.stream === "stderr" ? "stderr" : "stdout";
-      stream[key] = appendToolStreamText(stream[key], terminalDelta.text, 40_000);
-      stream.message ||= line.toolDisplay?.purpose || line.bodyTitle || "终端输出";
-    } else if (operation === "upsert") {
+      stream[key] = operation === "replace"
+        ? trimToolStreamText(terminalDelta.text, 40_000)
+        : appendToolStreamText(stream[key], terminalDelta.text, 40_000);
+      stream.chunks = appendToolStreamChunk(stream.chunks, progress.sequence, key, terminalDelta.text, operation);
+    } else if ((channel === "stdout" || channel === "stderr") && textDelta !== undefined) {
+      stream[channel] = operation === "replace"
+        ? trimToolStreamText(textDelta, 40_000)
+        : appendToolStreamText(stream[channel], textDelta, 40_000);
+      stream.chunks = appendToolStreamChunk(stream.chunks, progress.sequence, channel, textDelta, operation);
+    } else if ((channel === "patch" || channel === "artifact") && textDelta !== undefined) {
+      stream.output = operation === "replace"
+        ? trimToolStreamText(textDelta, 40_000)
+        : appendToolStreamText(stream.output, textDelta, 40_000);
+      stream.chunks = appendToolStreamChunk(stream.chunks, progress.sequence, "output", textDelta, operation);
+      stream.message = progress.message;
+    } else if (channel === "item") {
       const key = progress.key || progress.phase || `step-${progress.sequence ?? Date.now()}`;
-      const terminalStatus = progress.phase?.includes("failed") ? "failed" : progress.phase?.includes("completed") ? "completed" : "running";
-      const steps = [...(stream.steps ?? [])].map((step) => step.status === "running" && step.key !== key ? { ...step, status: "completed" as const } : step);
+      const steps = [...(stream.steps ?? [])];
       const index = steps.findIndex((step) => step.key === key);
-      const step: UiToolStreamStep = { key, message: progress.message, status: terminalStatus, phase: progress.phase, sequence: progress.sequence };
-      if (index >= 0) steps[index] = step;
-      else steps.push(step);
+      if (operation === "remove") {
+        if (index >= 0) steps.splice(index, 1);
+      } else {
+        const status = toolStreamStepStatus(progress.phase);
+        const message = operation === "append" && index >= 0
+          ? `${steps[index].message}${progress.message}`
+          : progress.message;
+        const step: UiToolStreamStep = {
+          key,
+          message,
+          toolName: childToolName(progress.data) ?? steps[index]?.toolName,
+          status,
+          phase: progress.phase,
+          sequence: progress.sequence,
+        };
+        if (index >= 0) steps[index] = step;
+        else steps.push(step);
+      }
       stream.steps = steps.slice(-24);
       stream.message = progress.message;
+    } else if (operation === "append") {
+      stream.message = `${stream.message ?? ""}${progress.message}`;
+    } else if (operation === "remove") {
+      stream.message = undefined;
     } else {
       stream.message = progress.message;
     }
@@ -2371,9 +2425,58 @@ function terminalOutputDelta(data: unknown): { stream: "stdout" | "stderr"; text
   return { stream: record.stream === "stderr" ? "stderr" : "stdout", text: record.text };
 }
 
+function toolStreamTextDelta(data: unknown): string | undefined {
+  if (typeof data === "string") return data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const record = data as { text?: unknown; delta?: unknown; patch?: unknown; content?: unknown };
+  for (const value of [record.text, record.delta, record.patch, record.content]) {
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function childToolName(data: unknown): string | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const childEvent = (data as { child_event?: unknown }).child_event;
+  if (!childEvent || typeof childEvent !== "object" || Array.isArray(childEvent)) return undefined;
+  const toolUse = (childEvent as { toolUse?: unknown }).toolUse;
+  if (!toolUse || typeof toolUse !== "object" || Array.isArray(toolUse)) return undefined;
+  return stringValue((toolUse as { name?: unknown }).name);
+}
+
+function appendToolStreamChunk(
+  chunks: UiToolStreamChunk[] | undefined,
+  sequence: number | undefined,
+  stream: UiToolStreamChunk["stream"],
+  text: string,
+  operation: string,
+): UiToolStreamChunk[] {
+  const next = operation === "replace" ? [] : [...(chunks ?? [])];
+  next.push({ sequence: sequence ?? (next.at(-1)?.sequence ?? 0) + 1, stream, text });
+  let total = 0;
+  const retained: UiToolStreamChunk[] = [];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const chunk = next[index];
+    if (total >= 40_000) break;
+    retained.push(chunk);
+    total += chunk.text.length;
+  }
+  return retained.reverse();
+}
+
+function trimToolStreamText(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : value.slice(value.length - maxChars);
+}
+
 function appendToolStreamText(current: string | undefined, delta: string, maxChars: number): string {
-  const combined = `${current ?? ""}${delta}`;
-  return combined.length <= maxChars ? combined : combined.slice(combined.length - maxChars);
+  return trimToolStreamText(`${current ?? ""}${delta}`, maxChars);
+}
+
+function toolStreamStepStatus(phase: string | undefined): UiToolStreamStep["status"] {
+  const normalized = phase?.toLowerCase() ?? "";
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("cancel") || normalized.includes("abort")) return "failed";
+  if (normalized.includes("complete") || normalized.includes("finish") || normalized.includes("done") || normalized.includes("success")) return "completed";
+  return "running";
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
@@ -3130,8 +3233,11 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
   } else if (isExecOutput(data)) {
     subject = undefined;
     purpose = stringValue(data.description);
-    if (data.timed_out) pushToolFact(facts, "状态", "命令执行超时", false, "warning");
-    else if (!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) pushToolFact(facts, "状态", `退出码 ${data.exit_code ?? "未知"}`, false, "danger");
+    pushToolPreview(previews, "命令", "code", data.command);
+    const outputText = [stringValue(data.stdout), stringValue(data.stderr)].filter(Boolean).join("\n");
+    if (outputText) pushToolPreview(previews, data.stderr ? "输出 / 错误" : "输出", "code", outputText);
+    if (data.timed_out && !outputText) pushToolFact(facts, "状态", "命令执行超时", false, "warning");
+    else if ((!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) && !outputText) pushToolFact(facts, "状态", `退出码 ${data.exit_code ?? "未知"}`, false, "danger");
   } else if (toolName === "grep") {
     subject = stringValue(data.query) || stringValue(data.grepPath) || stringValue(data.path);
     pushToolPreview(previews, undefined, "list", grepPreview(data));

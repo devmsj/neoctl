@@ -43,6 +43,7 @@ export interface LocalAgentTask {
   retain: boolean;
   abortController?: AbortController;
   pendingMessages: Message[];
+  runGeneration: number;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -87,6 +88,7 @@ export function createLocalAgentTask(input: {
     retain: input.retain ?? true,
     abortController: input.abortController,
     pendingMessages: [],
+    runGeneration: 1,
     createdAt: now,
     updatedAt: now,
   };
@@ -101,7 +103,6 @@ export function updateProgressFromMessage(task: LocalAgentTask, message: Message
     .join("\n")
     .trim();
   if (text) task.progress.lastText = text.slice(-1000);
-  task.progress.totalToolUseCount += message.blocks.filter((block) => block.type === "tool_use").length;
   task.updatedAt = new Date().toISOString();
 }
 
@@ -111,9 +112,10 @@ export function updateProgressFromEvent(task: LocalAgentTask, event: AgentEvent)
   task.progress.lastActivity = now;
   const steps = [...(task.progress.steps ?? [])];
   const upsert = (id: string, title: string, status: AgentProgressStep["status"], detail?: string) => {
-    const previousRunning = steps.find((step) => step.status === "running" && step.id !== id);
-    if (previousRunning) previousRunning.status = "completed";
     const index = steps.findIndex((step) => step.id === id);
+    const existing = index >= 0 ? steps[index] : undefined;
+    const terminal = existing?.status === "completed" || existing?.status === "failed";
+    if (terminal && status === "running") return;
     const step = { id, title, status, detail, updatedAt: now };
     if (index >= 0) steps[index] = step;
     else steps.push(step);
