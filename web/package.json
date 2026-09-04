@@ -25,6 +25,7 @@
     "neo:help": "neo -help"
   },
   "dependencies": {
+    "@tanstack/vue-virtual": "^3.13.36",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.3",
     "neoctl": "0.2.30",

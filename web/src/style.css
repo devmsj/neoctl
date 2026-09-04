@@ -821,21 +821,19 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   flex: 1;
   overflow: auto;
   padding: 20px;
-  overflow-anchor: auto;
+  overflow-anchor: none;
 }
-.virtual-message-list,
-.virtual-message-row {
+.virtual-message-list {
+  position: relative;
   width: 100%;
   min-width: 0;
 }
-.virtual-message-row.scrollbar-dragging {
-  overflow: hidden;
-  contain: layout paint;
-}
-.virtual-message-spacer {
+.virtual-message-row {
+  position: absolute;
+  inset: 0 0 auto;
   width: 100%;
-  contain: strict;
-  pointer-events: none;
+  min-width: 0;
+  will-change: transform;
 }
 .runtime-context-kicker {
   color: var(--purple);
