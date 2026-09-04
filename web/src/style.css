@@ -828,6 +828,10 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   width: 100%;
   min-width: 0;
 }
+.virtual-message-row.scrollbar-dragging {
+  overflow: hidden;
+  contain: layout paint;
+}
 .virtual-message-spacer {
   width: 100%;
   contain: strict;

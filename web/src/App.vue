@@ -364,13 +364,17 @@ let messageResizeObserver
 let virtualScrollRaf = 0
 let observedTranscript
 let observedMessageList
+let virtualScrollbarPointerDown = false
+let virtualDragIdleTimer
+let virtualProgrammaticScrollTop = -1
 
 removeClientReloadQuery()
 const renderedLineCache = new Map()
 const pendingLineText = new Map()
 const virtualMessageHeights = new Map()
 const virtualMessageElements = new Map()
-const virtualViewport = reactive({ scrollTop: 0, height: 0, listTop: 0 })
+const pendingVirtualMessageHeights = new Map()
+const virtualViewport = reactive({ scrollTop: 0, height: 0, listTop: 0, draggingScrollbar: false })
 const virtualHeightRevision = ref(0)
 const vVirtualMessage = {
   mounted: registerVirtualMessageElement,
@@ -484,7 +488,7 @@ const virtualMessageEntries = computed(() => {
   virtualHeightRevision.value
   const lines = visibleLines.value
   if (lines.length <= MESSAGE_VIRTUALIZATION_THRESHOLD || !virtualViewport.height) {
-    return lines.map((line, index) => ({ type: 'line', key: virtualMessageKey(line), line, index }))
+    return lines.map((line, index) => ({ type: 'line', key: virtualMessageKey(line), line, index, height: 0 }))
   }
 
   const heights = lines.map((line) => virtualMessageHeights.get(virtualMessageKey(line)) || MESSAGE_VIRTUAL_ESTIMATED_HEIGHT)
@@ -518,7 +522,7 @@ const virtualMessageEntries = computed(() => {
       continue
     }
     flushSpacer(index - 1)
-    entries.push({ type: 'line', key: virtualMessageKey(line), line, index })
+    entries.push({ type: 'line', key: virtualMessageKey(line), line, index, height: heights[index] })
   }
   flushSpacer(lines.length - 1)
   return entries
@@ -617,6 +621,8 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
   document.addEventListener('click', handleDocumentResourceClick)
+  window.addEventListener('pointerup', handleTranscriptPointerUp)
+  window.addEventListener('pointercancel', handleTranscriptPointerUp)
   if (typeof ResizeObserver !== 'undefined' && sessionTitleViewport.value) {
     sessionTitleResizeObserver = new ResizeObserver(updateSessionTitleMarquee)
     sessionTitleResizeObserver.observe(sessionTitleViewport.value)
@@ -629,6 +635,7 @@ onBeforeUnmount(() => {
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (syncRaf) cancelAnimationFrame(syncRaf)
   if (virtualScrollRaf) cancelAnimationFrame(virtualScrollRaf)
+  if (virtualDragIdleTimer) clearTimeout(virtualDragIdleTimer)
   resetLineTextScheduler()
   pendingSyncPayload = undefined
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
@@ -645,6 +652,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
   document.removeEventListener('click', handleDocumentResourceClick)
+  window.removeEventListener('pointerup', handleTranscriptPointerUp)
+  window.removeEventListener('pointercancel', handleTranscriptPointerUp)
 })
 
 async function fetchState(options = {}) {
@@ -3590,11 +3599,86 @@ function observeVirtualViewportElements() {
 }
 
 function handleTranscriptScroll() {
+  const scroller = transcript.value
+  const nextScrollTop = scroller?.scrollTop || 0
+  const programmatic = virtualProgrammaticScrollTop >= 0 && Math.abs(nextScrollTop - virtualProgrammaticScrollTop) <= 2
+  if (programmatic) virtualProgrammaticScrollTop = -1
+  const largeJump = Math.abs(nextScrollTop - virtualViewport.scrollTop) > Math.max(180, virtualViewport.height * 0.45)
+  if (!programmatic && largeJump && visibleLines.value.length > MESSAGE_VIRTUALIZATION_THRESHOLD) {
+    virtualViewport.draggingScrollbar = true
+  }
+  if (virtualViewport.draggingScrollbar && !virtualScrollbarPointerDown) scheduleVirtualDragFinish()
   if (virtualScrollRaf) return
   virtualScrollRaf = requestAnimationFrame(() => {
     virtualScrollRaf = 0
     updateVirtualViewport()
   })
+}
+
+function handleTranscriptPointerDown(event) {
+  const scroller = transcript.value
+  if (!scroller || visibleLines.value.length <= MESSAGE_VIRTUALIZATION_THRESHOLD) return
+  const rect = scroller.getBoundingClientRect()
+  const scrollbarWidth = Math.max(0, scroller.offsetWidth - scroller.clientWidth)
+  const scrollbarEdge = rect.right - Math.max(12, scrollbarWidth)
+  if (event.clientX < scrollbarEdge) return
+  updateVirtualViewport()
+  virtualScrollbarPointerDown = true
+  virtualViewport.draggingScrollbar = true
+}
+
+function handleTranscriptPointerUp() {
+  virtualScrollbarPointerDown = false
+  finishVirtualScrollbarDrag()
+}
+
+function scheduleVirtualDragFinish() {
+  if (virtualDragIdleTimer) clearTimeout(virtualDragIdleTimer)
+  virtualDragIdleTimer = setTimeout(finishVirtualScrollbarDrag, 140)
+}
+
+function finishVirtualScrollbarDrag() {
+  if (!virtualViewport.draggingScrollbar) return
+  if (virtualDragIdleTimer) clearTimeout(virtualDragIdleTimer)
+  virtualDragIdleTimer = undefined
+  updateVirtualViewport()
+  const anchor = currentVirtualScrollAnchor()
+  for (const element of virtualMessageElements.values()) measureVirtualMessage(element)
+  virtualViewport.draggingScrollbar = false
+  if (pendingVirtualMessageHeights.size) {
+    for (const [key, height] of pendingVirtualMessageHeights) virtualMessageHeights.set(key, height)
+    pendingVirtualMessageHeights.clear()
+    virtualHeightRevision.value += 1
+  }
+  void nextTick(() => restoreVirtualScrollAnchor(anchor))
+}
+
+function currentVirtualScrollAnchor() {
+  const lines = visibleLines.value
+  if (!lines.length) return null
+  const localTop = Math.max(0, virtualViewport.scrollTop - virtualViewport.listTop)
+  let top = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    const height = virtualMessageHeights.get(virtualMessageKey(lines[index])) || MESSAGE_VIRTUAL_ESTIMATED_HEIGHT
+    if (top + height > localTop) return { key: virtualMessageKey(lines[index]), offset: localTop - top }
+    top += height
+  }
+  return { key: virtualMessageKey(lines[lines.length - 1]), offset: 0 }
+}
+
+function restoreVirtualScrollAnchor(anchor) {
+  const scroller = transcript.value
+  if (!scroller || !anchor) return
+  let top = 0
+  for (const line of visibleLines.value) {
+    const key = virtualMessageKey(line)
+    if (key === anchor.key) {
+      scroller.scrollTop = virtualViewport.listTop + top + anchor.offset
+      updateVirtualViewport()
+      return
+    }
+    top += virtualMessageHeights.get(key) || MESSAGE_VIRTUAL_ESTIMATED_HEIGHT
+  }
 }
 
 function registerVirtualMessageElement(element, binding) {
@@ -3620,7 +3704,12 @@ function unregisterVirtualMessageElement(element) {
 function measureVirtualMessage(element) {
   const key = element?.dataset?.virtualMessageKey
   if (!key) return
-  const height = Math.max(1, Math.ceil(element.getBoundingClientRect().height))
+  const contentHeight = element.firstElementChild?.getBoundingClientRect().height
+  const height = Math.max(1, Math.ceil(contentHeight || element.scrollHeight || element.getBoundingClientRect().height))
+  if (virtualViewport.draggingScrollbar) {
+    pendingVirtualMessageHeights.set(key, height)
+    return
+  }
   if (virtualMessageHeights.get(key) === height) return
   const shouldFollow = isTranscriptNearBottom()
   virtualMessageHeights.set(key, height)
@@ -3630,6 +3719,11 @@ function measureVirtualMessage(element) {
 
 function resetVirtualMessages() {
   virtualMessageHeights.clear()
+  pendingVirtualMessageHeights.clear()
+  virtualScrollbarPointerDown = false
+  if (virtualDragIdleTimer) clearTimeout(virtualDragIdleTimer)
+  virtualDragIdleTimer = undefined
+  virtualViewport.draggingScrollbar = false
   virtualHeightRevision.value += 1
 }
 
@@ -3645,6 +3739,7 @@ function scrollTranscriptBottom() {
   const el = transcript.value
   if (!el) return
   el.scrollTop = el.scrollHeight
+  virtualProgrammaticScrollTop = el.scrollTop
   updateVirtualViewport()
 }
 
@@ -3880,7 +3975,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" class="transcript" @scroll.passive="handleTranscriptScroll">
+          <div ref="transcript" class="transcript" @scroll.passive="handleTranscriptScroll" @pointerdown.capture="handleTranscriptPointerDown">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <strong>运行上下文</strong>
@@ -3897,7 +3992,12 @@ function createMobileSession() {
             <div ref="messageList" class="virtual-message-list">
             <template v-for="entry in virtualMessageEntries" :key="entry.key">
               <div v-if="entry.type === 'spacer'" class="virtual-message-spacer" :style="{ height: `${entry.height}px` }" aria-hidden="true"></div>
-              <div v-else v-virtual-message="entry.line" class="virtual-message-row">
+              <div
+                v-else
+                v-virtual-message="entry.line"
+                :class="['virtual-message-row', { 'scrollbar-dragging': virtualViewport.draggingScrollbar }]"
+                :style="virtualViewport.draggingScrollbar && entry.height ? { height: `${entry.height}px` } : undefined"
+              >
               <template v-for="line in [entry.line]" :key="line.id">
               <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
