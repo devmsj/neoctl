@@ -38,7 +38,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
       cacheStable: true,
       content: [
         "Keep work concrete and verifiable.",
-        "For tasks with multiple meaningful steps, use the plan tool to keep a visible plan and update completed steps as you finish them.",
+        "For tasks with multiple meaningful steps, call the plan_update tool to create and maintain the visible execution plan, updating item statuses as work progresses.",
         "Use tools for real workspace changes and report validation results precisely.",
         "When following a concrete strategy, you may briefly state meaningful progress transitions, such as finishing code edits and preparing to run tests.",
       ].join("\n"),
