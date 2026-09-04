@@ -1646,6 +1646,7 @@ export class WebRepl {
       return;
     }
     if (event.type === "message") {
+      if (event.message.isMeta === true) return;
       let replacedStreamingContent = false;
       if (event.message.role === "assistant" && this.assistantLineId !== undefined) {
         const text = assistantText(event.message);

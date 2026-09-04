@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
+import { createTaskNotificationMessage, createTextMessage, createThinkingMessage, createToolResultMessage } from "../types/messages.js";
 import type { SessionDisplayEntry } from "../session/session-store.js";
 import { restoreWebHistoryLines, WebRepl } from "./index.js";
 
@@ -32,6 +32,7 @@ const entries: SessionDisplayEntry[] = [
   { type: "message", message: createTextMessage("assistant", "assistant between compacts") },
   { type: "compact", createdAt: "2026-09-03T06:44:41.985Z", reason: "manualcompact", report: newReport },
   { type: "message", message: createTextMessage("assistant", "assistant after second compact") },
+  { type: "message", message: createTaskNotificationMessage({ taskId: "task_hidden", agentId: "agent_hidden", status: "completed", type: "agent", content: "must not render" }) },
 ];
 
 const lines = restoreWebHistoryLines({
@@ -125,6 +126,9 @@ assert.equal(new Set(afterAppend.lines.map((line) => line.id)).size, afterAppend
 assert.equal(afterAppend.lines.at(-1)?.kind, "assistant");
 
 const handleEvent = (repl as unknown as { handleEvent: (event: unknown) => void }).handleEvent.bind(repl);
+const beforeInternalNotification = repl.snapshot(false).lines.length;
+handleEvent({ type: "message", message: createTaskNotificationMessage({ taskId: "task_live_hidden", agentId: "agent_live_hidden", status: "completed", type: "agent", content: "must not render live" }) });
+assert.equal(repl.snapshot(false).lines.length, beforeInternalNotification);
 handleEvent({ type: "tool.started", toolUse: commandRequest, index: 0, total: 1 });
 handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "准备", channel: "item", operation: "upsert", key: "phase", phase: "running", sequence: 1 } });
 handleEvent({ type: "tool.progress", toolUse: commandRequest, progress: { toolName: "terminal_run", message: "完成", channel: "item", operation: "append", key: "phase", phase: "completed", sequence: 2 } });

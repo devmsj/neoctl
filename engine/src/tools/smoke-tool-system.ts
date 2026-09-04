@@ -201,6 +201,14 @@ async function main(): Promise<void> {
     { id: "grep-description", name: "file_search", input: { description: "Verify description is tolerated", query: "grepTool", path: "src/tools/builtins/grep-tool.ts", maxResults: 1, ignoredField: "ignored" } },
     context,
   );
+  const editWithDescription = await runToolUseToMessages(
+    { id: "edit-description", name: "file_edit", input: { description: "Verify edit purpose is accepted", path: path.join(tempDir, "described-edit.txt"), oldString: "", newString: "described\n" } },
+    context,
+  );
+  const writeWithDescription = await runToolUseToMessages(
+    { id: "write-description", name: "file_write", input: { description: "Verify write purpose is accepted", path: path.join(tempDir, "described-write.txt"), content: "described\n" } },
+    context,
+  );
   const recursiveListRoot = path.join(tempDir, "recursive-list");
   await fs.mkdir(path.join(recursiveListRoot, ".idea"), { recursive: true });
   await fs.mkdir(path.join(recursiveListRoot, ".agent-tasks"), { recursive: true });
@@ -486,7 +494,9 @@ async function main(): Promise<void> {
     simpleReadOnlyToolsTolerateDescription:
       toolOk(readWithDescription[readWithDescription.length - 1]) &&
       toolOk(listWithDescription[listWithDescription.length - 1]) &&
-      toolOk(grepWithDescription[grepWithDescription.length - 1]),
+      toolOk(grepWithDescription[grepWithDescription.length - 1]) &&
+      toolOk(editWithDescription[editWithDescription.length - 1]) &&
+      toolOk(writeWithDescription[writeWithDescription.length - 1]),
     recursiveListOk: toolOk(recursiveList[recursiveList.length - 1]),
     recursiveListDefaultExcludes:
       recursiveListOutput.exclude?.includes(".git") === true &&

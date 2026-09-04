@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 
 export interface EditToolInput {
+  description?: string;
   path: string;
   oldString: string;
   newString: string;
@@ -10,6 +11,7 @@ export interface EditToolInput {
 }
 
 export interface WriteToolInput {
+  description?: string;
   path: string;
   content: string;
 }
@@ -40,6 +42,7 @@ export const editTool: Tool<EditToolInput> = {
   inputSchema: {
     type: "object",
     properties: {
+      description: { type: "string", description: "Optional model-facing reason for this edit request. Ignored by the tool." },
       path: { type: "string", description: "Absolute or cwd-relative path of the text file to modify." },
       oldString: { type: "string", description: "Text to replace. LF/CRLF line-ending differences and straight/curly quote differences are tolerated. Use an empty string only when creating a new file." },
       newString: { type: "string", description: "Replacement text. Must differ from oldString." },
@@ -60,6 +63,7 @@ export const editTool: Tool<EditToolInput> = {
   validate(input) {
     const record = input as Partial<EditToolInput>;
     return {
+      description: record.description,
       path: record.path ?? "",
       oldString: record.oldString ?? "",
       newString: record.newString ?? "",
@@ -159,6 +163,7 @@ export const writeTool: Tool<WriteToolInput> = {
   inputSchema: {
     type: "object",
     properties: {
+      description: { type: "string", description: "Optional model-facing reason for this write request. Ignored by the tool." },
       path: { type: "string", description: "Absolute or cwd-relative path of the file to write." },
       content: { type: "string", description: "Full text content to write." },
     },
@@ -177,6 +182,7 @@ export const writeTool: Tool<WriteToolInput> = {
   validate(input) {
     const record = input as Partial<WriteToolInput>;
     return {
+      description: record.description,
       path: record.path ?? "",
       content: record.content ?? "",
     };

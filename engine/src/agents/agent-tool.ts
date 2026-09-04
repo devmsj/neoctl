@@ -1,7 +1,7 @@
 import type { ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway } from "../model/model-gateway.js";
-import { createTextMessage, type Message } from "../types/messages.js";
+import { createTaskNotificationMessage, createTextMessage, type Message } from "../types/messages.js";
 import type { Tool, ToolProgressEvent, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
@@ -491,7 +491,7 @@ function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependenc
 }
 
 function createTaskNotification(agentId: string, taskId: string, status: string, content: string): Message {
-  return createTextMessage("user", `<task-notification agent_id="${agentId}" task_id="${taskId}" status="${status}">\n${content}\n</task-notification>`);
+  return createTaskNotificationMessage({ agentId, taskId, status, type: "agent", content });
 }
 
 function resolveAgentActivityMode(input: AgentToolInput, fork: boolean, fallback: "sync" | "background") {

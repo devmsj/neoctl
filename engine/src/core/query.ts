@@ -11,7 +11,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { runTools, type RunToolsEvent } from "../tools/tool-orchestration.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
-import { createTextMessage, createThinkingMessage, withoutThinkingBlocks, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
+import { createTaskNotificationMessage, createTextMessage, createThinkingMessage, withoutThinkingBlocks, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import {
   applyToolResultBudget,
   ensureToolResultPairing,
@@ -890,9 +890,12 @@ function collectTaskNotifications(source?: TaskNotificationSource): Message[] {
   const completed = source.collectUnnotifiedCompletions();
   return completed.map((task) => {
     source.markNotified(task.taskId);
-    return createTextMessage(
-      "user",
-      `<task-notification task_id="${task.taskId}" agent_id="${task.agentId}" status="${task.status}" type="${task.type}">\n${task.content}\n</task-notification>`,
-    );
+    return createTaskNotificationMessage({
+      taskId: task.taskId,
+      agentId: task.agentId,
+      status: task.status,
+      type: task.type,
+      content: task.content,
+    });
   });
 }

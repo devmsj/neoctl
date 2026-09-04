@@ -71,6 +71,34 @@ export function createTextMessage(role: MessageRole, text: string): Message {
   };
 }
 
+export interface TaskNotificationPayload {
+  taskId: string;
+  agentId: string;
+  status: string;
+  type?: string;
+  content: string;
+}
+
+export function createTaskNotificationMessage(payload: TaskNotificationPayload): Message {
+  const typeAttribute = payload.type ? ` type="${payload.type}"` : "";
+  return {
+    ...createTextMessage(
+      "user",
+      `<task-notification task_id="${payload.taskId}" agent_id="${payload.agentId}" status="${payload.status}"${typeAttribute}>\n${payload.content}\n</task-notification>`,
+    ),
+    isMeta: true,
+    metadata: {
+      internalNotification: true,
+      taskNotification: {
+        taskId: payload.taskId,
+        agentId: payload.agentId,
+        status: payload.status,
+        type: payload.type,
+      },
+    },
+  };
+}
+
 export function createThinkingMessage(text: string, signature?: string): Message {
   return {
     id: cryptoId(),

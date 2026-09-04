@@ -1067,6 +1067,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       event.type === "thinking.delta"
     ) return;
     if (event.type === "message") {
+      if (event.message.isMeta === true) return;
       let replacedStreamingContent = false;
       if (event.message.role === "assistant" && assistantLineId.current !== undefined) {
         const text = assistantText(event.message);
