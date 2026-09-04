@@ -5,6 +5,7 @@ function normalizePlugin(plugin) {
   if (!String(plugin.name || '').trim()) throw new Error(`web plugin ${id} is missing name`);
   if (!String(plugin.version || '').trim()) throw new Error(`web plugin ${id} is missing version`);
   if (plugin.route !== undefined && typeof plugin.route !== 'function') throw new Error(`web plugin ${id} route must be a function`);
+  if (plugin.presentToolResult !== undefined && typeof plugin.presentToolResult !== 'function') throw new Error(`web plugin ${id} presentToolResult must be a function`);
   return {
     ...plugin,
     id,
@@ -40,6 +41,7 @@ export function createWebPluginHost(options = {}) {
           globallyEnabled: enabledIds.has(plugin.id),
           tools: plugin.tools,
           promptSections: plugin.promptSections,
+          presentToolResult: plugin.presentToolResult,
         })),
         sessionPluginOverrides: overrides,
         persistSessionPluginOverrides: (resolvedSessionId, next) => options.settings?.setSessionOverrides(resolvedSessionId, next),

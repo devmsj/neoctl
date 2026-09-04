@@ -37,8 +37,21 @@ function safeUrl(value) {
 }
 
 function exposedResource(value) {
-  const href = String(value || '')
-  return props.exposedResources.find((item) => String(item?.url || '') === href)
+  const reference = String(value || '').trim()
+  return props.exposedResources.find((item) => String(item?.reference || '').trim() === reference)
+}
+
+function compactFileSize(value) {
+  const bytes = Number(value)
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = bytes
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)}${units[unit]}`
 }
 
 function createRenderer(element) {
@@ -46,11 +59,12 @@ function createRenderer(element) {
   return {
     ...renderer,
     set_attr(data, type, value) {
-      if ((type === smd.HREF || type === smd.SRC) && !safeUrl(value)) return
-      smd.default_set_attr(data, type, value)
+      const resource = type === smd.HREF ? exposedResource(value) : undefined
+      const attributeValue = resource?.url || value
+      if ((type === smd.HREF || type === smd.SRC) && !safeUrl(attributeValue)) return
+      smd.default_set_attr(data, type, attributeValue)
       if (type === smd.HREF) {
         const link = data.nodes[data.index]
-        const resource = exposedResource(value)
         if (resource) {
           link.classList.add('inline-resource-link', `inline-resource-${resource.kind || 'link'}`)
           if (resource.kind === 'download' || resource.downloadName) {
@@ -58,6 +72,10 @@ function createRenderer(element) {
             link.setAttribute('title', `下载 ${resource.label || resource.downloadName || '资源'}`)
             link.removeAttribute('target')
             link.removeAttribute('rel')
+            link.dataset.resourceDownload = 'true'
+            link.dataset.resourceExpiresAt = String(Number(resource.expiresAt) || 0)
+            const size = compactFileSize(resource.sizeBytes)
+            if (size) link.dataset.resourceSize = `(${size})`
           }
         } else {
           link.setAttribute('target', '_blank')

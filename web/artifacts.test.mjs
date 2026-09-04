@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createOpenXhsArtifactEditorTool, createReadXhsArtifactTool, XhsArtifactRegistry } from './plugins/xhs-artifact/artifacts.mjs';
+import { renderXhsEditorPage } from './plugins/xhs-artifact/editor-page.mjs';
 import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT, XHS_ARTIFACT_INPUT_SCHEMA } from './plugins/xhs-artifact/xhs-artifact-contract.mjs';
 
 function completePayload(overrides = {}) {
@@ -98,10 +99,13 @@ test('editor keeps正文, image path, overlay and review in separate fields', as
     payload: completePayload({ body: '保留用户修改，再补充一句。' }),
   });
   const updated = await openTool.execute(revised, { session: { sessionId: 'session-1' } });
-  const updatedOutput = JSON.parse(updated.output);
+  const updatedOutput = updated.output;
   assert.equal(updatedOutput.action, 'updated');
   assert.equal(updatedOutput.artifact.id, artifact.id);
   assert.equal(updatedOutput.artifact.payload.body, '保留用户修改，再补充一句。');
+  assert.equal(updatedOutput._ui.presentationLevel, 'primary');
+  assert.equal(updatedOutput._ui.resources[0].kind, 'embed');
+  assert.match(updatedOutput._ui.resources[0].url, new RegExp(`/api/xhs-artifacts/${artifact.id}/editor`));
 });
 
 test('client parser renders only complete JSON tool artifacts', () => {
@@ -135,6 +139,15 @@ test('client keeps the newest update for the same editor id', () => {
   assert.equal(selectNewestXhsArtifact(initial, updated), updated);
   assert.equal(selectNewestXhsArtifact(updated, initial), updated);
   assert.equal(selectNewestXhsArtifact(initial, { ...initial }), initial);
+});
+
+test('plugin editor page owns its Xiaohongshu presentation and fullscreen UI', () => {
+  const artifact = { id: 'artifact-1', title: completePayload().title, payload: completePayload() };
+  const html = renderXhsEditorPage(artifact, '/api/xhs-artifacts/artifact-1');
+  assert.match(html, /id="fullscreen"/);
+  assert.match(html, /requestFullscreen/);
+  assert.match(html, /关注/);
+  assert.doesNotMatch(html, /插件资源/);
 });
 
 test('registry persists artifacts across process-style restarts and isolates sessions', async (t) => {

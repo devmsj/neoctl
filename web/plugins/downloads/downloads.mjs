@@ -36,7 +36,7 @@ export function createExposeDownloadsTool(options) {
   return {
     name: 'expose_downloads',
     description:
-      'Expose one or more existing local files for the web user to download. Input must be absolute file paths. Use this after creating or locating files that the user may want to download in the browser.',
+      'Expose one or more existing local files for the web user to download. Input must be absolute file paths. The result follows neoctl.resource-link.v1: copy each downloads[].markdown value verbatim into the final response, without rewriting or prefixing its link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -81,27 +81,35 @@ export function createExposeDownloadsTool(options) {
           expiresAt: Date.now() + ttlMs,
           sessionId: context.session?.sessionId,
         });
+        const url = `/api/downloads/${encodeURIComponent(entry.id)}`;
+        const reference = `sandbox:${url}`;
         downloads.push({
           id: entry.id,
           filename: entry.filename,
           sizeBytes: entry.sizeBytes,
-          url: `/api/downloads/${encodeURIComponent(entry.id)}`,
-          expiresAt: entry.expiresAt,
+          url,
+          reference,
+          markdown: `[${entry.filename.replace(/([\\\]])/g, '\\$1')}](${reference})`,
+          expiresAt: new Date(entry.expiresAt).toISOString(),
+          expiresAtEpochMs: entry.expiresAt,
         });
       }
       await options.onExpose?.({ sessionId: context.session?.sessionId, downloads });
       return {
         ok: true,
         output: {
+          resourceProtocol: 'neoctl.resource-link.v1',
+          usage: 'Copy downloads[].markdown verbatim when linking the resource. Do not alter the reference URI.',
           downloads,
           _ui: {
             resources: downloads.map((item) => ({
               kind: 'download',
               url: item.url,
+              reference: item.reference,
               label: item.filename,
               downloadName: item.filename,
               sizeBytes: item.sizeBytes,
-              expiresAt: item.expiresAt,
+              expiresAt: item.expiresAtEpochMs,
             })),
           },
         },

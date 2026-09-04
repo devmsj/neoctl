@@ -540,15 +540,16 @@ button:disabled,
 .message-marker {
   align-self: start;
   justify-self: center;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 20px;
   min-height: 0;
-  margin-top: 4px;
+  margin-top: 0;
   padding: 0 !important;
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
   color: var(--yellow);
+  align-items: center;
 }
 .message-marker-icon {
   display: block;
@@ -569,11 +570,35 @@ button:disabled,
 .message.compact-tool > .message-marker {
   display: none;
 }
+.message.compact-tool .tool-result-title-row {
+  gap: 12px;
+}
+.message.compact-tool .tool-result-diamond {
+  flex-basis: 18px;
+}
+.message.compact-tool .tool-result-detail-row {
+  padding-left: 30px;
+}
 .message.system .message-marker { color: var(--yellow) !important; }
 .message.prompt-usage .message-marker { color: var(--pink) !important; }
 
 .runtime-context-bar,
 .compaction-context-bar { background: #e0f2fe !important; }
+
+.plugin-resource-stack {
+  display: grid;
+  gap: 14px;
+  width: min(980px, 100%);
+}
+
+.plugin-resource-frame {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  border: 0;
+  background: #09090b;
+  box-shadow: none;
+}
 
 .message.thinking {
   padding: 10px 0 14px 30px;
@@ -1274,9 +1299,17 @@ input[type='radio'] {
 :root[data-theme='dark'] .ghost,
 :root[data-theme='dark'] .mini-button,
 :root[data-theme='dark'] .compact-button,
+:root[data-theme='dark'] .fast-mode-button,
 :root[data-theme='dark'] .link-button,
 :root[data-theme='dark'] .session-actions button,
 :root[data-theme='dark'] .chips button,
+:root[data-theme='dark'] .runtime-context-bar button,
+:root[data-theme='dark'] .compaction-context-actions button,
+:root[data-theme='dark'] .image2-detail-button,
+:root[data-theme='dark'] .image-download,
+:root[data-theme='dark'] .queued button,
+:root[data-theme='dark'] .mobile-nav-menu summary,
+:root[data-theme='dark'] .mobile-nav-menu nav button,
 :root[data-theme='dark'] .composer,
 :root[data-theme='dark'] .composer textarea,
 :root[data-theme='dark'] input:not([type='checkbox']):not([type='radio']),
@@ -1284,6 +1317,11 @@ input[type='radio'] {
 :root[data-theme='dark'] select {
   background: var(--surface) !important;
   color: var(--text) !important;
+}
+
+:root[data-theme='dark'] button:disabled,
+:root[data-theme='dark'] [aria-disabled='true'] {
+  opacity: 0.72 !important;
 }
 
 :root[data-theme='dark'] .primary,

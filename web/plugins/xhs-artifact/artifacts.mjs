@@ -137,10 +137,31 @@ export function createOpenXhsArtifactEditorTool(options) {
       const action = input.artifactId ? 'Updated' : 'Opened';
       return {
         ok: true,
-        output: JSON.stringify({ artifact: clientArtifact(artifact), action: action.toLowerCase() }),
+        output: {
+          artifact: clientArtifact(artifact),
+          action: action.toLowerCase(),
+          _ui: xhsArtifactPresentation(artifact),
+        },
         summary: `${action} Xiaohongshu editor ${artifact.id}`,
       };
     },
+  };
+}
+
+export function xhsArtifactPresentation(artifact, sessionId = artifact?.sessionId) {
+  if (!artifact?.id) return undefined;
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  return {
+    title: '编辑小红书笔记',
+    bodyTitle: artifact.title || '小红书笔记',
+    text: '可编辑笔记已就绪。',
+    presentationLevel: 'primary',
+    resources: [{
+      kind: 'embed',
+      url: `/api/xhs-artifacts/${encodeURIComponent(artifact.id)}/editor${query}`,
+      label: artifact.title || '小红书笔记编辑器',
+      height: 720,
+    }],
   };
 }
 

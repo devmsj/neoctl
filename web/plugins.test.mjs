@@ -47,4 +47,6 @@ test('core loader discovers the plugin resource directory', async () => {
   ]);
   const host = createWebPluginHost({ plugins: catalog });
   assert.deepEqual(host.ids, ['downloads', 'xhs-artifact']);
+  const runtimePlugin = host.runtimePlugins('session-1').externalPlugins.find((plugin) => plugin.id === 'xhs-artifact');
+  assert.equal(typeof runtimePlugin.presentToolResult, 'function');
 });

@@ -136,7 +136,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       type: "object",
       properties: {
         mode: { type: "string", enum: ["generate", "edit"], description: "Operation mode. generate creates a new image; edit modifies existing image(s). Defaults to generate." },
-        semanticName: { type: "string", description: "Required short semantic image name used as the conversation label and default output filename, e.g. realistic-blue-kitten, checkout-redesign-v2, hero-banner. Must describe the image meaning; do not use generic names like image, output, result, gen, or img." },
+        semanticName: { type: "string", description: "Required short semantic image name used as the conversation label and default output filename. Chinese and English names are supported, e.g. 下班后30分钟重启仪式, realistic-blue-kitten, hero-banner. Must describe the image meaning; do not use generic names like image, 图片, output, result, gen, or img." },
         prompt: { type: "string", description: "Detailed image prompt/instruction. For edit mode, describe exactly how to modify the source image(s)." },
         model: { type: "string", enum: [...SUPPORTED_IMAGE_MODELS], description: `Optional OpenAI Images API model. Defaults to OPENAI_IMAGE_MODEL or ${DEFAULT_IMAGE_MODEL}. Supported by this tool: ${SUPPORTED_MODEL_LIST}.` },
         size: { type: "string", enum: ["auto", "1024x1024", "1536x1024", "1024x1536"], description: `${DEFAULT_IMAGE_MODEL} output image size. Supported values: auto, 1024x1024, 1536x1024, 1024x1536. Defaults to auto.` },
@@ -186,7 +186,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
       if (!isImageToolMode(input.mode)) return { ok: false, message: image2ValidationError(model, "mode", "must be generate or edit") };
       const semanticSlug = semanticNameSlug(input.semanticName);
-      if (!semanticSlug) return { ok: false, message: image2ValidationError(model, "semanticName", "is required and must be a meaningful non-generic image name, e.g. realistic-blue-kitten or checkout-redesign-v2") };
+      if (!semanticSlug) return { ok: false, message: image2ValidationError(model, "semanticName", "is required and must be a meaningful non-generic Chinese or English image name, e.g. 下班后30分钟重启仪式 or realistic-blue-kitten") };
       if (!input.prompt.trim()) return { ok: false, message: image2ValidationError(model, "prompt", "cannot be empty") };
       if (!isSupportedImageModel(model)) return { ok: false, message: image2ValidationError(model, "model", `is not supported by image2. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
       if (!isImageSize(input.size)) return { ok: false, message: image2ValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
@@ -646,26 +646,29 @@ function extensionForMimeType(mimeType: string): string {
 }
 
 function sanitizeFilename(value: string): string {
-  return value.replace(/[^a-z0-9._#-]/giu, "_");
+  return value
+    .normalize("NFKC")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_")
+    .replace(/[. ]+$/gu, "")
+    .slice(0, 120) || "image";
 }
 
 function semanticNameSlug(value: string | undefined): string {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return "";
-  const slug = trimmed
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/gu, "")
+  const normalized = trimmed
+    .normalize("NFKC")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/gu, "")
-    .replace(/-{2,}/gu, "-")
-    .slice(0, 80);
+    .replace(/-{2,}/gu, "-");
+  const slug = [...normalized].slice(0, 80).join("");
   if (!slug || isGenericImageName(slug)) return "";
   return slug;
 }
 
 function isGenericImageName(value: string): boolean {
-  return /^(?:image|img|picture|photo|output|result|generated|generation|gen|edit|edited|final|new|untitled|file|pic)(?:-?\d+)?$/iu.test(value);
+  return /^(?:(?:image|img|picture|photo|output|result|generated|generation|gen|edit|edited|final|new|untitled|file|pic)(?:-?\d+)?|(?:图片|图像|照片|输出|结果|生成图|最终图)\d*)$/iu.test(value);
 }
 
 function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: string): Message | undefined {

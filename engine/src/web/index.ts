@@ -71,6 +71,7 @@ export interface WebRuntime {
 export interface WebRuntimePluginDefinition extends Pick<NeoPluginResource, "id" | "name" | "version" | "tools"> {
   globallyEnabled: boolean;
   promptSections?: readonly PromptSection[];
+  presentToolResult?: NeoPluginResource["presentToolResult"];
 }
 
 interface WebRuntimePluginSupport {
@@ -174,12 +175,24 @@ interface UiCompactionReport extends CompactionReport {
 interface UiResource {
   kind: string;
   url: string;
+  reference?: string;
   label?: string;
   downloadName?: string;
   sizeBytes?: number;
   expiresAt?: number;
   mimeType?: string;
+  height?: number;
 }
+
+interface UiToolResultPresentation {
+  title?: string;
+  bodyTitle?: string;
+  text?: string;
+  presentationLevel?: UiLine["presentationLevel"];
+  resources?: UiResource[];
+}
+
+type UiToolResultPresenter = (toolName: string, output: unknown, ok: boolean) => unknown;
 
 interface UiToolFact {
   label: string;
@@ -1450,7 +1463,7 @@ export class WebRepl {
           this.replaceLine(liveLineId, { ...line, presentationLevel: mergePresentationLevel(line.presentationLevel, liveLine?.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
           this.liveToolLineIds.delete(toolUseId);
           return liveLineId;
-        });
+        }, runtimeToolResultPresenter(this.runtime));
         renderMessageImages(event.message, (line) => this.append(line));
         return;
       }
@@ -2053,7 +2066,11 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
   }
   for (const [entryIndex, entry] of entries.entries()) {
     if (entry.type === "message") {
-      renderMessage(entry.message, append, undefined, { includeToolUseBlocks: true, includeThinkingBlocks: true });
+      renderMessage(entry.message, append, undefined, {
+        includeToolUseBlocks: true,
+        includeThinkingBlocks: true,
+        presentToolResult: runtimeToolResultPresenter(runtime),
+      });
       continue;
     }
     const report = entry.report ?? legacyCompactionReport(entry.reason);
@@ -2449,11 +2466,12 @@ function formatReasoningSetting(reasoning: ReasoningConfig | null | undefined): 
   return reasoning?.effort ?? "default";
 }
 
-function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number, options: { includeToolUseBlocks?: boolean; includeThinkingBlocks?: boolean } = {}): boolean {
+function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => number, activeAssistantId?: number, options: { includeToolUseBlocks?: boolean; includeThinkingBlocks?: boolean; presentToolResult?: UiToolResultPresenter } = {}): boolean {
   if (message.metadata?.syntheticToolUse === true) return false;
   if (message.role === "progress" || message.isMeta) return false;
   if (message.role === "assistant" && activeAssistantId !== undefined && message.blocks.some((block) => block.type === "text")) return true;
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
+  const parentToolUseId = message.blocks.find((block) => block.type === "tool_result")?.toolUseId;
   let rendered = false;
   for (const [blockIndex, block] of message.blocks.entries()) {
     if (block.type === "text") {
@@ -2465,7 +2483,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
     } else if (block.type === "image") {
       const line = imageLineForBlock(message.role, block, message.id, blockIndex);
       if (!line) continue;
-      append({ ...line, messageId: message.id, parentToolName });
+      append({ ...line, messageId: message.id, parentToolName, parentToolUseId });
       rendered = true;
     } else if (block.type === "thinking") {
       if (options.includeThinkingBlocks === false) continue;
@@ -2475,18 +2493,18 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       append({ ...formatToolUse(block), messageId: message.id, toolUseId: block.id, live: false });
       rendered = true;
     } else if (block.type === "tool_result") {
-      append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id, toolUseId: block.toolUseId });
+      append({ ...formatToolResultLine(block.name, block.output, block.ok, options.presentToolResult), messageId: message.id, toolUseId: block.toolUseId });
       rendered = true;
     }
   }
   return rendered;
 }
 
-function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">, toolUseId: string) => number): boolean {
+function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "id">, toolUseId: string) => number, presentToolResult?: UiToolResultPresenter): boolean {
   let rendered = false;
   for (const block of message.blocks) {
     if (block.type !== "tool_result") continue;
-    append({ ...formatToolResultLine(block.name, block.output, block.ok), messageId: message.id, toolUseId: block.toolUseId }, block.toolUseId);
+    append({ ...formatToolResultLine(block.name, block.output, block.ok, presentToolResult), messageId: message.id, toolUseId: block.toolUseId }, block.toolUseId);
     rendered = true;
   }
   return rendered;
@@ -2632,13 +2650,32 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
   return { kind: "tool", toolName: toolUse.name, toolUseId: toolUse.id, title: toolTitle(toolUse.name, "running"), bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
 }
 
-function formatToolResultLine(toolName: string, output: unknown, ok: boolean): Omit<UiLine, "id"> {
-  const formatted = formatToolResult(toolName, output, ok);
-  return { kind: ok ? "tool" : "error", toolName, title: toolTitle(toolName, "finished"), bodyTitle: formatted.bodyTitle, titleStatus: ok ? "success" : "failure", text: formatted.text, toolDisplay: buildToolResultDisplay(toolName, output, ok), format: formatted.format, live: false, previewStyle: formatted.full ? undefined : "summary", summaryMaxLines: formatted.summaryMaxLines, presentationLevel: toolPresentationLevel(toolName, output), resources: toolResources(output), collapsible: true };
+function formatToolResultLine(toolName: string, output: unknown, ok: boolean, presentToolResult?: UiToolResultPresenter): Omit<UiLine, "id"> {
+  const presentation = normalizeToolResultPresentation(presentToolResult?.(toolName, output, ok));
+  const resources = presentation?.resources ?? toolResources(output);
+  const formatted = resources?.length
+    ? { text: ok ? "资源已准备好。" : "资源准备失败。", full: true, bodyTitle: ok ? "资源已就绪" : "资源准备失败" }
+    : formatToolResult(toolName, output, ok);
+  return {
+    kind: ok ? "tool" : "error",
+    toolName,
+    title: presentation?.title ?? toolTitle(toolName, "finished"),
+    bodyTitle: presentation?.bodyTitle ?? formatted.bodyTitle,
+    titleStatus: ok ? "success" : "failure",
+    text: presentation?.text ?? formatted.text,
+    toolDisplay: resources?.length ? undefined : buildToolResultDisplay(toolName, output, ok),
+    format: formatted.format,
+    live: false,
+    previewStyle: formatted.full ? undefined : "summary",
+    summaryMaxLines: formatted.summaryMaxLines,
+    presentationLevel: presentation?.presentationLevel ?? toolPresentationLevel(toolName, output),
+    resources,
+    collapsible: true,
+  };
 }
 
 function toolPresentationLevel(toolName: string, payload: unknown): UiLine["presentationLevel"] {
-  if (toolName === "image2" || toolName === "open_xhs_artifact_editor") return "primary";
+  if (toolName === "image2") return "primary";
   if (!isRecord(payload)) return "process";
   const direct = payload.presentationLevel;
   const ui = isRecord(payload.ui) ? payload.ui.presentationLevel : undefined;
@@ -2659,7 +2696,12 @@ function toolUiMetadata(payload: unknown): Record<string, unknown> | undefined {
 function toolResources(payload: unknown): UiResource[] | undefined {
   const ui = toolUiMetadata(payload);
   if (!ui || !Array.isArray(ui.resources)) return undefined;
-  const resources = ui.resources.flatMap((value): UiResource[] => {
+  return normalizeUiResources(ui.resources);
+}
+
+function normalizeUiResources(values: unknown): UiResource[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const resources = values.flatMap((value): UiResource[] => {
     if (!isRecord(value)) return [];
     const kind = stringValue(value.kind);
     const url = stringValue(value.url);
@@ -2667,14 +2709,54 @@ function toolResources(payload: unknown): UiResource[] | undefined {
     return [{
       kind,
       url,
+      reference: stringValue(value.reference) ?? canonicalResourceReference(url),
       label: stringValue(value.label),
       downloadName: stringValue(value.downloadName),
       sizeBytes: numberValue(value.sizeBytes),
       expiresAt: numberValue(value.expiresAt),
       mimeType: stringValue(value.mimeType),
+      height: clampResourceHeight(numberValue(value.height)),
     }];
   });
   return resources.length > 0 ? resources : undefined;
+}
+
+function canonicalResourceReference(url: string): string {
+  return url.startsWith("/") ? `sandbox:${url}` : url;
+}
+
+function clampResourceHeight(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : Math.max(240, Math.min(1600, Math.round(value)));
+}
+
+function normalizeToolResultPresentation(value: unknown): UiToolResultPresentation | undefined {
+  if (!isRecord(value)) return undefined;
+  const level = value.presentationLevel === "primary" || value.presentationLevel === "process" ? value.presentationLevel : undefined;
+  return {
+    title: stringValue(value.title),
+    bodyTitle: stringValue(value.bodyTitle),
+    text: stringValue(value.text),
+    presentationLevel: level,
+    resources: normalizeUiResources(value.resources),
+  };
+}
+
+function runtimeToolResultPresenter(runtime: Pick<WebRuntime, "engine"> & Partial<Pick<WebRuntime, "pluginSupport">>): UiToolResultPresenter {
+  return (toolName, output, ok) => {
+    const support = runtime.pluginSupport;
+    if (!support) return undefined;
+    const sessionId = runtime.engine.snapshot().session?.sessionId;
+    for (const plugin of activeWebRuntimePlugins(support.catalog, support.overrides)) {
+      if (typeof plugin.presentToolResult !== "function") continue;
+      try {
+        const presentation = plugin.presentToolResult({ toolName, output, ok, sessionId });
+        if (presentation !== undefined && presentation !== null) return presentation;
+      } catch (error) {
+        console.warn(`plugin ${plugin.id} failed to present ${toolName}:`, error);
+      }
+    }
+    return undefined;
+  };
 }
 
 function safeResourceUrl(value: string): boolean {
@@ -2697,8 +2779,6 @@ function toolTitle(toolName: string, _phase: "running" | "finished"): string {
     read: "读取文件",
     search: "网络搜索",
     write: "写入文件",
-    read_xhs_artifact: "读取小红书笔记",
-    open_xhs_artifact_editor: "编辑小红书笔记",
     SendMessage: "发送协作消息",
     sendmessage: "发送协作消息",
     TaskGet: "读取后台任务",
@@ -2806,8 +2886,6 @@ function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
   } else if (toolName === "expose_downloads") pushToolFact(facts, "文件", arrayLabel(data.paths), true);
   else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") pushToolFact(facts, "接收方", data.target);
   else if (toolName.toLowerCase().startsWith("task")) pushToolFact(facts, "任务", data.task_id, true);
-  else if (toolName === "read_xhs_artifact") pushToolFact(facts, "笔记", data.id, true);
-  else if (toolName === "open_xhs_artifact_editor") pushToolFact(facts, "标题", isRecord(data.payload) ? data.payload.title : undefined);
   else if (toolName.startsWith("secret_")) {
     pushToolFact(facts, "密钥", data.key, true);
     pushToolFact(facts, "用途", data.reason);
@@ -2861,8 +2939,6 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
     subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
   } else if (toolName === "SendMessage" || toolName.toLowerCase() === "sendmessage") {
     subject = stringValue(data.target);
-  } else if (toolName === "open_xhs_artifact_editor" || toolName === "read_xhs_artifact") {
-    subject = stringValue(data.artifact_id) || stringValue(data.id) || (isRecord(data.payload) ? stringValue(data.payload.title) : undefined);
   } else if (toolName.startsWith("secret_")) {
     subject = stringValue(data.key);
     pushToolFact(facts, "密钥", data.key, true);

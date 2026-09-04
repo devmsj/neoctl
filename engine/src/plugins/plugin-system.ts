@@ -30,9 +30,19 @@ export interface NeoPluginRouteHelpers {
   sendJson?: (response: ServerResponse, payload: unknown, status?: number) => unknown;
 }
 
+export interface NeoPluginToolResultPresentationContext {
+  toolName: string;
+  output: unknown;
+  ok: boolean;
+  sessionId?: string;
+}
+
+export type NeoPluginToolResultPresenter = (context: NeoPluginToolResultPresentationContext) => unknown;
+
 export interface NeoPluginCapabilities {
   tools?: readonly Tool[];
   promptSections?: readonly PromptSection[];
+  presentToolResult?: NeoPluginToolResultPresenter;
   route?: (
     request: IncomingMessage,
     response: ServerResponse,
@@ -51,6 +61,7 @@ export interface NeoPluginResource {
   manifestPath: string;
   tools: readonly Tool[];
   promptSections: readonly PromptSection[];
+  presentToolResult?: NeoPluginToolResultPresenter;
   route?: NeoPluginCapabilities["route"];
 }
 
@@ -156,7 +167,7 @@ async function loadPluginRoot(root: string, options: LoadNeoPluginsOptions): Pro
   return plugins;
 }
 
-function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPluginResource, "tools" | "promptSections" | "route"> {
+function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPluginResource, "tools" | "promptSections" | "presentToolResult" | "route"> {
   if (!isRecord(value)) throw new Error(`invalid plugin module ${entryPath}: factory must return an object`);
   const tools = value.tools === undefined ? [] : requireArray<unknown>(value.tools, "tools", entryPath);
   const promptSections = value.promptSections === undefined ? [] : requireArray<unknown>(value.promptSections, "promptSections", entryPath);
@@ -165,12 +176,16 @@ function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPlugi
   if (value.route !== undefined && typeof value.route !== "function") {
     throw new Error(`invalid plugin module ${entryPath}: route must be a function`);
   }
+  if (value.presentToolResult !== undefined && typeof value.presentToolResult !== "function") {
+    throw new Error(`invalid plugin module ${entryPath}: presentToolResult must be a function`);
+  }
   const normalizedTools = tools as Tool[];
   const normalizedSections = promptSections as PromptSection[];
   assertUnique(normalizedTools.map((tool) => tool.name), `duplicate tool name in plugin module ${entryPath}`);
   return {
     tools: [...normalizedTools],
     promptSections: normalizedSections.map((section) => ({ ...section })),
+    ...(typeof value.presentToolResult === "function" ? { presentToolResult: value.presentToolResult as NeoPluginCapabilities["presentToolResult"] } : {}),
     ...(typeof value.route === "function" ? { route: value.route as NeoPluginCapabilities["route"] } : {}),
   };
 }

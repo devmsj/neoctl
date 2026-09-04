@@ -12,10 +12,8 @@ import xml from 'highlight.js/lib/languages/xml'
 import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
-import XhsArtifactEditor from './components/XhsArtifactEditor.vue'
 import NeoSelect from './components/NeoSelect.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
-import { parseXhsArtifactToolOutput, selectNewestXhsArtifact, XHS_ARTIFACT_EDITOR_HINT } from '../plugins/xhs-artifact/xhs-artifact-contract.mjs'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -83,8 +81,6 @@ const LINE_TITLE_LABELS = {
   read: '读取文件',
   search: '网络搜索',
   write: '写入文件',
-  read_xhs_artifact: '读取小红书笔记',
-  open_xhs_artifact_editor: '编辑小红书笔记',
   SendMessage: '发送协作消息',
   sendmessage: '发送协作消息',
   TaskGet: '读取后台任务',
@@ -310,7 +306,6 @@ const state = reactive({
   attachmentCounter: 0,
   uploadingFiles: false,
   messageImagePreviews: [],
-  xhsArtifacts: {},
   liveToolStartedAt: {},
   clockTick: Date.now(),
   composerMetrics: {
@@ -529,6 +524,7 @@ onMounted(async () => {
   memoryStateTimer = setInterval(fetchMemoryState, 60_000)
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
+  document.addEventListener('click', handleDocumentResourceClick)
   if (typeof ResizeObserver !== 'undefined' && sessionTitleViewport.value) {
     sessionTitleResizeObserver = new ResizeObserver(updateSessionTitleMarquee)
     sessionTitleResizeObserver.observe(sessionTitleViewport.value)
@@ -551,6 +547,7 @@ onBeforeUnmount(() => {
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
+  document.removeEventListener('click', handleDocumentResourceClick)
 })
 
 async function fetchState(options = {}) {
@@ -1753,7 +1750,9 @@ function localizeSystemText(text) {
 function lineTitle(line) {
   if (line.kind === 'tool' || line.toolName) {
     const name = exactToolName(line)
-    return isPlanToolLine(line) ? '任务计划' : LINE_TITLE_LABELS[name] || name
+    if (isPlanToolLine(line)) return '任务计划'
+    if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
+    return LINE_TITLE_LABELS[name] || name
   }
   if (line.title) return LINE_TITLE_LABELS[line.title] || LINE_TITLE_LABELS[String(line.title).toLowerCase()] || line.title
   if (line.kind === 'assistant') return '助手'
@@ -1771,7 +1770,7 @@ function isPlanToolLine(line) {
 }
 
 function isInlineRichToolLine(line) {
-  return isPlanToolLine(line) || isImage2Line(line) || isXhsArtifactLine(line)
+  return isPlanToolLine(line) || isImage2Line(line) || lineResources(line).length > 0
 }
 
 function isPromptUsageLine(line) {
@@ -1810,7 +1809,7 @@ function isPrimaryPresentationLine(line) {
   if (!line) return true
   if (line.presentationLevel === 'primary') return true
   if (line.kind === 'user' || line.kind === 'assistant') return true
-  return isImage2Line(line) || isXhsArtifactLine(line)
+  return isImage2Line(line)
 }
 
 function isGroupableProcessLine(line) {
@@ -1896,6 +1895,35 @@ function handleDocumentImageClick(event) {
   event.preventDefault()
   event.stopPropagation()
   openImagePreview(previewSource, image.alt)
+}
+
+async function handleDocumentResourceClick(event) {
+  const anchor = event.target instanceof Element ? event.target.closest('a[data-resource-download="true"]') : null
+  if (!(anchor instanceof HTMLAnchorElement)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const expiresAt = Number(anchor.dataset.resourceExpiresAt)
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
+    notify('下载链接已过期，请重新生成')
+    return
+  }
+  try {
+    const response = await fetch(anchor.href)
+    if (!response.ok) {
+      notify(response.status === 404 || response.status === 410 ? '下载链接已过期，请重新生成' : `下载失败（${response.status}）`)
+      return
+    }
+    const blobUrl = URL.createObjectURL(await response.blob())
+    const downloadAnchor = document.createElement('a')
+    downloadAnchor.href = blobUrl
+    downloadAnchor.download = anchor.download || 'download'
+    document.body.appendChild(downloadAnchor)
+    downloadAnchor.click()
+    downloadAnchor.remove()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+  } catch {
+    notify('下载失败，请稍后重试')
+  }
 }
 
 function openImagePreview(src, caption = '') {
@@ -2183,19 +2211,18 @@ function renderLine(line) {
   if (isPlanToolLine(line)) return renderPlanResult(line)
   if (isImage2ResultLine(line)) return renderImage2Result(line)
   if (lineResources(line).length) return renderLineResources(line)
-  if (isReadXhsArtifactLine(line)) return sanitizeMarkdown(marked.parse('已读取稿件'))
   if (isImageNoteLine(line)) return renderImageNoteResult(line)
   if (isSkillReadLine(line)) return renderSkillReadResult(line)
   const text = lineText(line)
   const exposedResources = exposedResourcesBeforeLine(line)
-  const resourceKey = exposedResources.map((item) => `${item.kind}:${item.url}:${item.label || item.downloadName || ''}`).join('|')
+  const resourceKey = exposedResources.map((item) => `${item.kind}:${item.reference || ''}:${item.url}:${item.label || item.downloadName || ''}:${item.expiresAt || ''}`).join('|')
   const key = [line.id, line.kind, line.format, line.title, line.titleStatus, line.live ? '1' : '0', resourceKey, text].join('\u001f')
   const cached = renderedLineCache.get(key)
   if (cached !== undefined) return cached
   let html
   if (line.format === 'diff') html = renderDiff(text)
   else if (line.format === 'ansi' || !shouldMarkdown(line)) html = linkify(escapeHtml(stripAnsi(text)))
-  else html = enhanceExposedResourceLinks(sanitizeMarkdown(marked.parse(text || '')), exposedResources)
+  else html = enhanceExposedResourceLinks(sanitizeMarkdown(marked.parse(text || ''), exposedResources.map(resourceReference)), exposedResources)
   renderedLineCache.set(key, html)
   return html
 }
@@ -2317,11 +2344,6 @@ function isImage2ResultLine(line) {
   return isImage2Line(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
 }
 
-function isReadXhsArtifactLine(line) {
-  const title = String(line?.title || '').toLowerCase()
-  return line?.kind === 'tool' && title === 'read_xhs_artifact'
-}
-
 function isImageNoteLine(line) {
   const title = String(line?.title || '').toLowerCase()
   return line?.kind === 'tool' && title === 'image_note'
@@ -2376,21 +2398,6 @@ function cleanImageNoteLabel(value) {
   return text.length > 18 ? `${text.slice(0, 18)}...` : text
 }
 
-function isXhsArtifactLine(line) {
-  const title = String(line?.title || '').toLowerCase()
-  return line?.kind === 'tool' && (title === 'open_xhs_artifact_editor' || title === '小红书产物编辑器')
-}
-
-function xhsArtifactForLine(line) {
-  const artifact = parseXhsArtifactToolOutput(line?.artifact) || parseXhsArtifactToolOutput(line?.text)
-  if (!artifact) return null
-  const id = String(artifact.id)
-  const current = state.xhsArtifacts[id]
-  const selected = selectNewestXhsArtifact(current, artifact)
-  if (selected !== current) state.xhsArtifacts[id] = selected
-  return state.xhsArtifacts[id]
-}
-
 async function repairRuntimeSessionBinding() {
   if (runtimeSessionRepairing || !runtimeSessionId) return
   runtimeSessionRepairing = true
@@ -2442,22 +2449,33 @@ function disconnectRuntimeEvents() {
   state.connecting = true
 }
 
-function handleXhsArtifactSaved(artifact) {
-  if (artifact?.id) state.xhsArtifacts[artifact.id] = artifact
-}
-
-function handleXhsArtifactError(message) {
-  notify(message || '小红书产物保存失败')
-}
-
 function lineResources(line) {
   return Array.isArray(line?.resources)
     ? line.resources.filter((item) => item && typeof item === 'object' && typeof item.url === 'string' && item.url)
     : []
 }
 
+function embeddedLineResources(line) {
+  return lineResources(line).filter((item) => item.kind === 'embed')
+}
+
+function linkedLineResources(line) {
+  return lineResources(line).filter((item) => item.kind !== 'embed')
+}
+
+function pluginResourceUrl(item) {
+  const url = new URL(item.url, window.location.origin)
+  url.searchParams.set('theme', theme.value)
+  return url.origin === window.location.origin ? `${url.pathname}${url.search}${url.hash}` : url.href
+}
+
+function pluginResourceHeight(item) {
+  const height = Number(item?.height)
+  return Number.isFinite(height) ? Math.max(240, Math.min(1600, Math.round(height))) : 640
+}
+
 function renderLineResources(line) {
-  const resources = lineResources(line)
+  const resources = linkedLineResources(line)
   if (!resources.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
   const items = resources.map((item, index) => {
     const label = escapeHtml(item.label || item.downloadName || `资源 ${index + 1}`)
@@ -2468,6 +2486,11 @@ function renderLineResources(line) {
     const downloadable = item.kind === 'download' || item.downloadName
     const action = downloadable ? '下载' : '打开'
     const download = downloadable ? ` download="${escapeHtml(item.downloadName || item.label || '')}"` : ' target="_blank" rel="noreferrer noopener"'
+    if (downloadable) {
+      const compactSize = escapeHtml(size.replace(/\s+/g, ''))
+      const expiresAt = Number(item.expiresAt) || 0
+      return `<a class="resource-file-link" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
+    }
     return `<a class="resource-card resource-${escapeHtml(item.kind || 'link')}" href="${href}"${download}><span class="resource-icon" aria-hidden="true"></span><span class="resource-main"><strong>${label}</strong><span>${escapeHtml(meta || (downloadable ? '文件已就绪' : '资源已就绪'))}</span></span><span class="resource-action"><span>${action}</span><i aria-hidden="true">${downloadable ? '↓' : '↗'}</i></span></a>`
   }).join('')
   return `<div class="resource-result"><div class="resource-grid">${items}</div></div>`
@@ -2494,7 +2517,7 @@ function exposedResourcesBeforeLine(line) {
 
 function enhanceExposedResourceLinks(html, resources) {
   if (!resources.length) return html
-  const allowed = new Map(resources.map((item) => [item.url, item]))
+  const allowed = new Map(resources.map((item) => [resourceReference(item), item]).filter(([reference]) => reference))
   const template = document.createElement('template')
   template.innerHTML = String(html || '')
   for (const anchor of template.content.querySelectorAll('a[href]')) {
@@ -2502,14 +2525,22 @@ function enhanceExposedResourceLinks(html, resources) {
     const item = allowed.get(href)
     if (!item) continue
     anchor.classList.add('inline-resource-link', `inline-resource-${item.kind || 'link'}`)
+    anchor.setAttribute('href', item.url)
     if (item.kind === 'download' || item.downloadName) {
       anchor.setAttribute('download', item.downloadName || item.label || '')
       anchor.removeAttribute('target')
       anchor.removeAttribute('rel')
       anchor.setAttribute('title', `下载 ${item.label || item.downloadName || '资源'}`)
+      anchor.dataset.resourceDownload = 'true'
+      anchor.dataset.resourceExpiresAt = String(Number(item.expiresAt) || 0)
+      if (item.sizeBytes) anchor.dataset.resourceSize = `(${formatBytes(item.sizeBytes).replace(/\s+/g, '')})`
     }
   }
   return template.innerHTML
+}
+
+function resourceReference(item) {
+  return String(item?.reference || '').trim()
 }
 
 function parseFirstJsonObject(text) {
@@ -2569,7 +2600,7 @@ function formatDownloadExpiry(value) {
 
 function renderImage2Stage(line) {
   const images = lineImagePreviews(line)
-  if (images.length) return `<div class="image2-result-block">${renderImage2Result(line)}${renderImageGrid(images)}</div>`
+  if (images.length) return renderImage2Result(line)
   if (isImage2ResultLine(line)) return renderImage2Result(line)
   return renderImage2Skeleton(line)
 }
@@ -2700,7 +2731,8 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function sanitizeMarkdown(html) {
+function sanitizeMarkdown(html, resourceReferences = []) {
+  const allowedResourceReferences = new Set(resourceReferences.map((value) => String(value || '').trim()).filter(Boolean))
   const template = document.createElement('template')
   template.innerHTML = String(html)
   const allowed = new Set(['A', 'P', 'BR', 'STRONG', 'B', 'EM', 'I', 'CODE', 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'DEL', 'S', 'INPUT'])
@@ -2715,14 +2747,14 @@ function sanitizeMarkdown(html) {
     for (const attr of Array.from(node.attributes)) {
       const name = attr.name.toLowerCase()
       const value = attr.value
-      const keep = (node.tagName === 'A' && name === 'href' && safeHref(value)) ||
+      const keep = (node.tagName === 'A' && name === 'href' && (safeHref(value) || allowedResourceReferences.has(value))) ||
         (node.tagName === 'A' && name === 'title') ||
         (node.tagName === 'CODE' && name === 'class' && /^language-[\w-]+$/.test(value)) ||
         (node.tagName === 'PRE' && name === 'data-lang' && /^[\w-]+$/.test(value)) ||
         (node.tagName === 'INPUT' && ['type', 'checked', 'disabled'].includes(name))
       if (!keep) node.removeAttribute(attr.name)
     }
-    if (node.tagName === 'A') {
+    if (node.tagName === 'A' && !allowedResourceReferences.has(node.getAttribute('href') || '')) {
       node.setAttribute('target', '_blank')
       node.setAttribute('rel', 'noreferrer noopener')
     }
@@ -2952,7 +2984,6 @@ function stripImageOperationHint(text) {
     .replace(LEGACY_IMAGE_GENERATION_HINT, '')
     .replace(LEGACY_IMAGE_OPERATION_HINT, '')
     .replace(LEGACY_DOWNLOAD_EXPOSURE_HINT, '')
-    .replace(XHS_ARTIFACT_EDITOR_HINT, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }
@@ -3727,14 +3758,29 @@ function createMobileSession() {
                 </details>
               </div>
               <div v-else class="message-body">
-                <div v-if="line.kind !== 'tool' && !shouldCollapseToolLine(line)" class="message-head">
+                <div v-if="(line.kind !== 'tool' || lineResources(line).length) && !shouldCollapseToolLine(line)" class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
                   <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
                 <div v-if="isImage2Line(line)" class="image2-result-shell">
                   <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
-                  <button v-if="isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
+                  <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-image2-images`">
+                    <div v-if="images.length" class="message-image-attachments image2-output-images">
+                      <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
+                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
+                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
+                        </button>
+                        <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
+                        <figcaption>{{ imageCaption(item, index) }}</figcaption>
+                        <div class="image-card-actions">
+                          <a v-if="item.available && item.previewUrl" class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
+                          <button v-if="index === 0 && isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
+                        </div>
+                      </figure>
+                    </div>
+                    <button v-else-if="isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
+                  </template>
                 </div>
                 <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">
                   <div class="tool-result-title-row">
@@ -3763,15 +3809,21 @@ function createMobileSession() {
                   </div>
                 </div>
                 <template v-else>
-                  <template v-if="isXhsArtifactLine(line)">
-                    <XhsArtifactEditor
-                      v-if="xhsArtifactForLine(line)"
-                      :artifact="xhsArtifactForLine(line)"
-                      :session-id="state.session?.sessionId || ''"
-                      @saved="handleXhsArtifactSaved"
-                      @error="handleXhsArtifactError"
-                    />
-                    <div v-else class="message-text markdown" v-html="renderLine(line)"></div>
+                  <template v-if="embeddedLineResources(line).length">
+                    <div class="plugin-resource-stack">
+                      <iframe
+                        v-for="resource in embeddedLineResources(line)"
+                        :key="resource.url"
+                        class="plugin-resource-frame"
+                        :src="pluginResourceUrl(resource)"
+                        :title="resource.label || '插件资源'"
+                        :style="{ height: `${pluginResourceHeight(resource)}px` }"
+                        loading="lazy"
+                        allow="fullscreen"
+                        allowfullscreen
+                      ></iframe>
+                    </div>
+                    <div v-if="linkedLineResources(line).length" class="message-text markdown" v-html="renderLineResources(line)"></div>
                   </template>
                   <div v-else-if="line.kind === 'assistant' && line.live" class="message-text markdown streaming-markdown">
                     <StreamingMarkdown :text="line.text || ''" :exposed-resources="exposedResourcesBeforeLine(line)" />
