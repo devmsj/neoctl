@@ -90,6 +90,20 @@ test('workspace input tolerates either slash style and browsing returns director
   assert.deepEqual(result.entries, []);
 });
 
+test('browsing a reserved workspace falls back without creating it', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'neo-workspace-browse-reserved-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await reserveWorkspace(root);
+
+  await assert.rejects(stat(candidate), { code: 'ENOENT' });
+  const result = await browseWorkspace(candidate, candidate);
+
+  assert.equal(result.cwd, root);
+  assert.equal(result.locations.some((item) => item.kind === 'home'), true);
+  assert.equal(Array.isArray(result.entries), true);
+  await assert.rejects(stat(candidate), { code: 'ENOENT' });
+});
+
 test('workspace locations expose human-friendly roots', async () => {
   const locations = await discoverWorkspaceLocations();
 

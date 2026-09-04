@@ -397,11 +397,10 @@ export class SessionWorkspaceRegistry {
 }
 
 export async function browseWorkspace(value, currentCwd) {
-  const current = await validateWorkspaceDirectory(resolveWorkspaceInput(value, currentCwd));
-  const [entries, locations] = await Promise.all([
-    readdir(current, { withFileTypes: true }),
-    discoverWorkspaceLocations(),
-  ]);
+  const requested = resolveWorkspaceInput(value, currentCwd);
+  const locationsPromise = discoverWorkspaceLocations();
+  const { current, entries } = await browseWorkspaceDirectoryOrAncestor(requested);
+  const locations = await locationsPromise;
   return {
     cwd: current,
     parent: current === path.parse(current).root ? undefined : path.dirname(current),
@@ -412,6 +411,24 @@ export async function browseWorkspace(value, currentCwd) {
       .map((entry) => ({ name: entry.name, path: path.join(current, entry.name) }))
       .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
   };
+}
+
+async function browseWorkspaceDirectoryOrAncestor(candidate) {
+  let current = path.resolve(candidate);
+  let missingError;
+  while (true) {
+    try {
+      const info = await stat(current);
+      if (!info.isDirectory()) throw new Error('路径不是文件夹');
+      return { current, entries: await readdir(current, { withFileTypes: true }) };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      missingError ||= error;
+      const parent = path.dirname(current);
+      if (parent === current) throw missingError;
+      current = parent;
+    }
+  }
 }
 
 let workspaceLocationsCache;
