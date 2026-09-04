@@ -77,6 +77,7 @@ export const editTool: Tool<EditToolInput> = {
   },
   async call(input, context) {
     const target = resolveTarget(context, input.path);
+    emitFileStep(context, "edit", target, "read", `读取 ${path.basename(target)}`);
     const current = await readExistingText(target);
 
     if (!current.exists) {
@@ -121,6 +122,7 @@ export const editTool: Tool<EditToolInput> = {
 
     const actualOldString = match.actual;
     const matches = countOccurrences(current.content, actualOldString);
+    emitFileStep(context, "edit", target, "match", `定位 ${matches} 处匹配`);
     if (matches > 1 && !input.replaceAll) {
       return {
         ok: false,
@@ -137,7 +139,8 @@ export const editTool: Tool<EditToolInput> = {
       ? current.content.replaceAll(actualOldString, actualNewString)
       : replaceOne(current.content, actualOldString, actualNewString);
 
-    return writeUpdatedText({
+    emitFileStep(context, "edit", target, "write", `写入 ${path.basename(target)}`);
+    const result = await writeUpdatedText({
       target,
       before: current.content,
       after,
@@ -146,6 +149,8 @@ export const editTool: Tool<EditToolInput> = {
       encoding: current.encoding,
       lineEnding: current.lineEnding,
     });
+    emitFileStep(context, "edit", target, "completed", `完成 ${input.replaceAll ? matches : 1} 处替换`);
+    return result;
   },
 };
 
@@ -187,8 +192,10 @@ export const writeTool: Tool<WriteToolInput> = {
   },
   async call(input, context) {
     const target = resolveTarget(context, input.path);
+    emitFileStep(context, "write", target, "read", `检查 ${path.basename(target)}`);
     const current = await readExistingText(target);
-    return writeUpdatedText({
+    emitFileStep(context, "write", target, "write", `写入 ${path.basename(target)}`);
+    const result = await writeUpdatedText({
       target,
       before: current.exists ? current.content : "",
       after: input.content,
@@ -197,8 +204,22 @@ export const writeTool: Tool<WriteToolInput> = {
       encoding: current.exists ? current.encoding : "utf8",
       lineEnding: current.exists ? current.lineEnding : detectLineEnding(input.content),
     });
+    emitFileStep(context, "write", target, "completed", `完成写入 ${Buffer.byteLength(input.content)} 字节`);
+    return result;
   },
 };
+
+function emitFileStep(context: ToolUseContext, toolName: "edit" | "write", target: string, phase: string, message: string): void {
+  context.emit({
+    toolName,
+    message,
+    channel: "item",
+    operation: "upsert",
+    key: `${target}:${phase}`,
+    phase,
+    data: { path: target },
+  });
+}
 
 async function writeUpdatedText(input: {
   target: string;

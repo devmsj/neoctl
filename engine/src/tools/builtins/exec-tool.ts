@@ -117,7 +117,10 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
       const secretRedactions = context.secretRedactions;
       options.onProgress?.({
         toolName: "exec_command",
-        message: input.description,
+        message: input.description || input.cmd,
+        channel: "state",
+        operation: "replace",
+        phase: "starting",
         data: { cwd, shell: shell.displayName, command: input.cmd, tty: input.tty },
       });
       const result = await manager.execute(
@@ -192,8 +195,16 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
     isConcurrencySafe() {
       return true;
     },
-    async call(input, context): Promise<ToolResult> {
+    async call(input, context, options): Promise<ToolResult> {
       try {
+        options.onProgress?.({
+          toolName: "write_stdin",
+          message: input.signal ? `发送 ${input.signal} 信号` : input.chars ? "发送终端输入" : "读取终端输出",
+          channel: "state",
+          operation: "replace",
+          phase: input.signal ? "signaling" : input.chars ? "writing" : "polling",
+          data: { session_id: input.session_id, signal: input.signal, chars_written: input.chars.length },
+        });
         const result = await processManager.interact(input.session_id, {
           ownerId: context.session?.sessionId ?? context.agentId,
           chars: input.chars,
@@ -276,8 +287,12 @@ function emitOutputDelta(context: ToolUseContext, delta: ExecProcessOutputDelta)
   const text = context.secretRedactions?.redact(delta.text) ?? delta.text;
   context.emit({
     toolName: "exec_command",
-    message: "Terminal output",
-    data: { type: "terminal.output.delta", session_id: delta.sessionId, stream: delta.stream, text },
+    message: delta.stream === "stderr" ? "终端错误输出" : "终端输出",
+    channel: delta.stream,
+    operation: "append",
+    phase: "running",
+    key: delta.sessionId,
+    data: { type: "terminal.output.delta", session_id: delta.sessionId, stream: delta.stream, text, output_start: delta.outputStart, output_end: delta.outputEnd },
   });
 }
 

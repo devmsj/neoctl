@@ -216,6 +216,28 @@ interface UiToolDisplay {
   previews: UiToolPreview[];
 }
 
+interface UiToolStreamStep {
+  key: string;
+  message: string;
+  status: "running" | "completed" | "failed";
+  phase?: string;
+  sequence?: number;
+}
+
+interface UiToolStream {
+  message?: string;
+  phase?: string;
+  channel?: string;
+  sequence?: number;
+  current?: number;
+  total?: number;
+  unit?: string;
+  stdout?: string;
+  stderr?: string;
+  steps?: UiToolStreamStep[];
+  expanded?: boolean;
+}
+
 interface UiLine {
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
@@ -229,6 +251,7 @@ interface UiLine {
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
   toolDisplay?: UiToolDisplay;
+  toolStream?: UiToolStream;
   format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
   summaryMaxLines?: number;
@@ -1442,6 +1465,78 @@ export class WebRepl {
     this.liveToolLineIds.clear();
   }
 
+  private patchLiveToolLine(toolUseId: string, patch: Partial<UiLine>): void {
+    const id = this.liveToolLineIds.get(toolUseId);
+    if (id === undefined) return;
+    const line = this.lines.find((item) => item.id === id);
+    if (!line) return;
+    this.replaceLine(id, patch);
+  }
+
+  private applyToolProgress(event: Extract<AgentEvent, { type: "tool.progress" }>): void {
+    const id = this.liveToolLineIds.get(event.toolUse.id);
+    if (id === undefined) return;
+    const line = this.lines.find((item) => item.id === id);
+    if (!line) return;
+    const progress = event.progress;
+    const channel = progress.channel ?? inferToolStreamChannel(progress.data);
+    const operation = progress.operation ?? (channel === "stdout" || channel === "stderr" ? "append" : "replace");
+    const stream = { ...(line.toolStream ?? {}) };
+    stream.channel = channel;
+    stream.phase = progress.phase;
+    stream.sequence = progress.sequence;
+    if (progress.progress) {
+      stream.current = progress.progress.current;
+      stream.total = progress.progress.total;
+      stream.unit = progress.progress.unit;
+    }
+    const terminalDelta = terminalOutputDelta(progress.data);
+    if (terminalDelta) {
+      const key = terminalDelta.stream === "stderr" ? "stderr" : "stdout";
+      stream[key] = appendToolStreamText(stream[key], terminalDelta.text, 40_000);
+      stream.message ||= line.toolDisplay?.purpose || line.bodyTitle || "终端输出";
+    } else if (operation === "upsert") {
+      const key = progress.key || progress.phase || `step-${progress.sequence ?? Date.now()}`;
+      const terminalStatus = progress.phase?.includes("failed") ? "failed" : progress.phase?.includes("completed") ? "completed" : "running";
+      const steps = [...(stream.steps ?? [])].map((step) => step.status === "running" && step.key !== key ? { ...step, status: "completed" as const } : step);
+      const index = steps.findIndex((step) => step.key === key);
+      const step: UiToolStreamStep = { key, message: progress.message, status: terminalStatus, phase: progress.phase, sequence: progress.sequence };
+      if (index >= 0) steps[index] = step;
+      else steps.push(step);
+      stream.steps = steps.slice(-24);
+      stream.message = progress.message;
+    } else {
+      stream.message = progress.message;
+    }
+    this.patchLiveToolLine(event.toolUse.id, { toolStream: stream });
+  }
+
+  private applyAvailableToolResult(event: Extract<AgentEvent, { type: "tool.result.available" }>): void {
+    const liveLineId = this.liveToolLineIds.get(event.toolUse.id);
+    if (liveLineId === undefined) return;
+    const liveLine = this.lines.find((item) => item.id === liveLineId);
+    if (!liveLine) return;
+    let replacement: Omit<UiLine, "id"> | undefined;
+    for (const message of event.messages) {
+      renderToolResultMessage(message, (line, toolUseId) => {
+        if (toolUseId === event.toolUse.id) replacement = line;
+        return liveLineId;
+      }, runtimeToolResultPresenter(this.runtime));
+    }
+    const steps = (liveLine.toolStream?.steps ?? []).map((step) => step.status === "running" ? { ...step, status: event.ok ? "completed" as const : "failed" as const } : step);
+    if (replacement) {
+      this.replaceLine(liveLineId, {
+        ...replacement,
+        live: false,
+        presentationLevel: mergePresentationLevel(replacement.presentationLevel, liveLine.presentationLevel),
+        toolDisplay: mergeToolDisplays(replacement.toolDisplay, liveLine.toolDisplay),
+        toolStream: { ...liveLine.toolStream, steps, message: liveLine.toolStream?.message },
+      });
+    } else {
+      this.replaceLine(liveLineId, { live: false, titleStatus: event.ok ? "success" : "failure", toolStream: { ...liveLine.toolStream, steps } });
+    }
+  }
+
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
@@ -1478,6 +1573,18 @@ export class WebRepl {
       this.appendLineText(id, event.text);
       return;
     }
+    if (event.type === "tool.progress") {
+      this.applyToolProgress(event);
+      return;
+    }
+    if (event.type === "tool.result.available") {
+      this.applyAvailableToolResult(event);
+      return;
+    }
+    if (event.type === "tool.batch.completed") {
+      this.broadcastSync();
+      return;
+    }
     if (event.type === "message") {
       let replacedStreamingContent = false;
       if (event.message.role === "assistant" && this.assistantLineId !== undefined) {
@@ -1508,9 +1615,16 @@ export class WebRepl {
       if (event.message.role === "tool_result") {
         renderToolResultMessage(event.message, (line, toolUseId) => {
           const liveLineId = this.liveToolLineIds.get(toolUseId);
-          if (liveLineId === undefined) return this.append(line);
+          if (liveLineId === undefined) {
+            const existing = this.lines.find((item) => item.toolUseId === toolUseId);
+            if (existing) {
+              this.replaceLine(existing.id, { ...line, toolStream: existing.toolStream, presentationLevel: mergePresentationLevel(line.presentationLevel, existing.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, existing.toolDisplay) });
+              return existing.id;
+            }
+            return this.append(line);
+          }
           const liveLine = this.lines.find((item) => item.id === liveLineId);
-          this.replaceLine(liveLineId, { ...line, presentationLevel: mergePresentationLevel(line.presentationLevel, liveLine?.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
+          this.replaceLine(liveLineId, { ...line, toolStream: liveLine?.toolStream, presentationLevel: mergePresentationLevel(line.presentationLevel, liveLine?.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, liveLine?.toolDisplay) });
           this.liveToolLineIds.delete(toolUseId);
           return liveLineId;
         }, runtimeToolResultPresenter(this.runtime));
@@ -1541,10 +1655,7 @@ export class WebRepl {
     }
     if (event.type === "tool.finished") {
       const id = this.liveToolLineIds.get(event.toolUse.id);
-      if (id !== undefined) {
-        this.finalizeLiveLine(id);
-        this.liveToolLineIds.delete(event.toolUse.id);
-      }
+      if (id !== undefined) this.finalizeLiveLine(id);
       return;
     }
     if (event.type === "terminal") {
@@ -2246,6 +2357,25 @@ function pushTextBlock(blocks: MessageBlock[], text: string): void {
   else blocks.push({ type: "text", text });
 }
 
+function inferToolStreamChannel(data: unknown): UiToolStream["channel"] {
+  if (data && typeof data === "object" && !Array.isArray(data) && (data as { type?: unknown }).type === "terminal.output.delta") {
+    return (data as { stream?: unknown }).stream === "stderr" ? "stderr" : "stdout";
+  }
+  return "state";
+}
+
+function terminalOutputDelta(data: unknown): { stream: "stdout" | "stderr"; text: string } | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const record = data as { type?: unknown; stream?: unknown; text?: unknown };
+  if (record.type !== "terminal.output.delta" || typeof record.text !== "string") return undefined;
+  return { stream: record.stream === "stderr" ? "stderr" : "stdout", text: record.text };
+}
+
+function appendToolStreamText(current: string | undefined, delta: string, maxChars: number): string {
+  const combined = `${current ?? ""}${delta}`;
+  return combined.length <= maxChars ? combined : combined.slice(combined.length - maxChars);
+}
+
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
   if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
@@ -2256,7 +2386,8 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "retrying") return { ...status, phase: "calling_model", detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
   if (event.type === "tool.started") return { ...status, phase: "running_tools", currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
-  if (event.type === "tool.finished") return { ...status, currentTool: status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };
+  if (event.type === "tool.progress") return { ...status, phase: "running_tools", detail: event.progress.message || status.detail, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: status.currentTool?.id === event.toolUse.id ? status.currentTool.startedAt : Date.now() }, activityTick: status.activityTick + 1 };
+  if (event.type === "tool.result.available" || event.type === "tool.finished" || event.type === "tool.batch.completed") return { ...status, currentTool: "toolUse" in event && status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };
   if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined, activityTick: status.activityTick + 1 };
   if (event.type === "message" || event.type === "error") return { ...status, activityTick: status.activityTick + 1 };
   return status;
@@ -2999,11 +3130,8 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
   } else if (isExecOutput(data)) {
     subject = undefined;
     purpose = stringValue(data.description);
-    pushToolPreview(previews, "命令", "code", data.command);
-    const outputText = [stringValue(data.stdout), stringValue(data.stderr)].filter(Boolean).join("\n");
-    if (outputText) pushToolPreview(previews, data.stderr ? "输出 / 错误" : "输出", "code", outputText);
-    if (data.timed_out && !outputText) pushToolPreview(previews, undefined, "text", "命令执行超时");
-    else if ((!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) && !outputText) pushToolPreview(previews, undefined, "text", `命令退出码：${data.exit_code ?? "未知"}`);
+    if (data.timed_out) pushToolFact(facts, "状态", "命令执行超时", false, "warning");
+    else if (!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) pushToolFact(facts, "状态", `退出码 ${data.exit_code ?? "未知"}`, false, "danger");
   } else if (toolName === "grep") {
     subject = stringValue(data.query) || stringValue(data.grepPath) || stringValue(data.path);
     pushToolPreview(previews, undefined, "list", grepPreview(data));

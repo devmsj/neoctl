@@ -5,7 +5,7 @@ import { createTextMessage, type Message } from "../types/messages.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
-import { createLocalAgentTask, updateProgressFromMessage } from "./local-agent-task.js";
+import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage } from "./local-agent-task.js";
 import {
   EXPLORE_AGENT,
   FORK_AGENT,
@@ -138,7 +138,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         return launchAsyncAgent({ input, context, options, runtime, agent, fork, agentId, description });
       }
 
-      return runSyncAgent({ input, context, runtime, agent, fork, agentId, description });
+      return runSyncAgent({ input, context, options, runtime, agent, fork, agentId, description });
     },
   };
 }
@@ -146,6 +146,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
 async function runSyncAgent(input: {
   input: AgentToolInput;
   context: ToolUseContext;
+  options: { onProgress?: (event: { toolName: string; message: string; data?: unknown; channel?: "state" | "item" | "stdout" | "stderr" | "patch" | "artifact" | "metric"; operation?: "replace" | "append" | "upsert" | "remove"; key?: string; phase?: string }) => void };
   runtime: AgentToolRuntime;
   agent: AgentDefinition;
   fork: boolean;
@@ -179,9 +180,11 @@ async function runSyncAgent(input: {
       workspaceCwd,
     });
 
+    input.options.onProgress?.({ toolName: "agent", message: input.description, channel: "state", operation: "replace", phase: "running", data: { agent_id: input.agentId, agent_type: input.agent.agentType } });
     let completed = await stream.next();
     while (!completed.done) {
       activityStore.recordEvent(input.agentId, completed.value);
+      emitSyncAgentEvent(input.options.onProgress, input.agentId, completed.value);
       if (completed.value.type === "message") agentMessages.push(completed.value.message);
       completed = await stream.next();
     }
@@ -206,6 +209,42 @@ async function runSyncAgent(input: {
   } finally {
     wall?.dispose();
   }
+}
+
+function emitSyncAgentEvent(
+  emit: ((event: { toolName: string; message: string; data?: unknown; channel?: "state" | "item" | "stdout" | "stderr" | "patch" | "artifact" | "metric"; operation?: "replace" | "append" | "upsert" | "remove"; key?: string; phase?: string }) => void) | undefined,
+  agentId: string,
+  event: import("../types/events.js").AgentEvent,
+): void {
+  if (!emit) return;
+  if (event.type === "tool.started") {
+    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: event.toolUse.id, phase: "tool_running", data: { agent_id: agentId, child_event: event } });
+    return;
+  }
+  if (event.type === "tool.progress") {
+    emit({ toolName: "agent", message: event.progress.message || childToolPurpose(event.toolUse), channel: "state", operation: "replace", key: event.toolUse.id, phase: event.progress.phase ?? "tool_progress", data: { agent_id: agentId, child_event: event } });
+    return;
+  }
+  if (event.type === "tool.result.available") {
+    emit({ toolName: "agent", message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: event.toolUse.id, phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
+    return;
+  }
+  if (event.type === "state" && event.phase !== "running_tools") {
+    emit({ toolName: "agent", message: event.detail || event.phase, channel: "state", operation: "replace", phase: event.phase, data: { agent_id: agentId } });
+  }
+}
+
+function childToolPurpose(toolUse: { name: string; input: unknown }): string {
+  if (toolUse.input && typeof toolUse.input === "object" && !Array.isArray(toolUse.input)) {
+    const input = toolUse.input as Record<string, unknown>;
+    const description = typeof input.description === "string" ? input.description.trim() : "";
+    if (description) return description;
+    if (toolUse.name === "read" && typeof input.path === "string") return `读取 ${path.basename(input.path)}`;
+    if (toolUse.name === "list" && typeof input.path === "string") return `查看 ${input.path}`;
+    if (toolUse.name === "grep" && typeof input.query === "string") return `搜索 ${input.query}`;
+    if (toolUse.name === "exec_command" && typeof input.cmd === "string") return input.cmd;
+  }
+  return toolUse.name;
 }
 
 function launchAsyncAgent(input: {
@@ -303,6 +342,10 @@ async function runAsyncAgentLifecycle(input: {
       if (!current || current.status === "killed") {
         activityStore.fail(input.agentId, "Task killed", "killed");
         return;
+      }
+      if (event.type !== "message") {
+        updateProgressFromEvent(current, event);
+        input.taskStore.upsert(current);
       }
       if (event.type === "message") {
         current.messages.push(event.message);

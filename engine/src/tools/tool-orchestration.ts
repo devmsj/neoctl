@@ -1,10 +1,18 @@
 import type { Message, ToolUseRequest } from "../types/messages.js";
 import { runToolUse, type RunToolUseOptions, type ToolMessageUpdate } from "./run-tool-use.js";
-import type { Tool, ToolUseContext } from "./tool.js";
+import type { Tool, ToolProgressEvent, ToolUseContext } from "./tool.js";
 
 export interface RunToolsResult {
   messages: Message[];
   context: ToolUseContext;
+}
+
+export type RunToolsEvent =
+  | { type: "progress"; index: number; total: number; request: ToolUseRequest; progress: ToolProgressEvent }
+  | { type: "settled"; index: number; total: number; request: ToolUseRequest; updates: ToolMessageUpdate[]; ok: boolean };
+
+export interface RunToolsOptions extends RunToolUseOptions {
+  onEvent?: (event: RunToolsEvent) => void;
 }
 
 interface ParsedToolCall {
@@ -16,21 +24,24 @@ interface ParsedToolCall {
 export async function runTools(
   requests: readonly ToolUseRequest[],
   context: ToolUseContext,
-  options: RunToolUseOptions = {},
+  options: RunToolsOptions = {},
 ): Promise<RunToolsResult> {
   let currentContext = context;
   const messages: Message[] = [];
+  const indexes = new Map(requests.map((request, index) => [request.id, index]));
 
   for (const batch of partitionToolCalls(requests, currentContext)) {
     if (batch.length === 1 && !batch[0].concurrencySafe) {
-      const updates = await runToolUse(batch[0].request, currentContext, options);
+      const item = batch[0];
+      const updates = await runToolUseWithEvents(item, currentContext, options, indexes.get(item.request.id) ?? 0, requests.length);
+      options.onEvent?.({ type: "settled", index: indexes.get(item.request.id) ?? 0, total: requests.length, request: item.request, updates, ok: updatesOk(updates) });
       const applied = applyUpdates(updates, currentContext);
       currentContext = applied.context;
       messages.push(...applied.messages);
       continue;
     }
 
-    const batchResults = await runToolsConcurrently(batch, currentContext, options);
+    const batchResults = await runToolsConcurrently(batch, currentContext, options, indexes, requests.length);
     for (const item of batch) {
       const updates = batchResults.get(item.request.id) ?? [];
       const applied = applyUpdates(updates, currentContext);
@@ -76,7 +87,9 @@ export function partitionToolCalls(
 async function runToolsConcurrently(
   batch: readonly ParsedToolCall[],
   context: ToolUseContext,
-  options: RunToolUseOptions,
+  options: RunToolsOptions,
+  indexes: ReadonlyMap<string, number>,
+  total: number,
 ): Promise<Map<string, ToolMessageUpdate[]>> {
   const maxConcurrency = maxToolConcurrency();
   const results = new Map<string, ToolMessageUpdate[]>();
@@ -86,12 +99,38 @@ async function runToolsConcurrently(
     while (cursor < batch.length) {
       const item = batch[cursor];
       cursor += 1;
-      results.set(item.request.id, await runToolUse(item.request, context, options));
+      const index = indexes.get(item.request.id) ?? 0;
+      const updates = await runToolUseWithEvents(item, context, options, index, total);
+      results.set(item.request.id, updates);
+      options.onEvent?.({ type: "settled", index, total, request: item.request, updates, ok: updatesOk(updates) });
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(maxConcurrency, batch.length) }, () => worker()));
   return results;
+}
+
+async function runToolUseWithEvents(
+  item: ParsedToolCall,
+  context: ToolUseContext,
+  options: RunToolsOptions,
+  index: number,
+  total: number,
+): Promise<ToolMessageUpdate[]> {
+  let sequence = 0;
+  const contextWithEvents: ToolUseContext = {
+    ...context,
+    emit(progress) {
+      const normalized = { ...progress, toolUseId: progress.toolUseId ?? item.request.id, sequence: progress.sequence ?? ++sequence };
+      options.onEvent?.({ type: "progress", index, total, request: item.request, progress: normalized });
+      context.emit(normalized);
+    },
+  };
+  return runToolUse(item.request, contextWithEvents, options);
+}
+
+function updatesOk(updates: readonly ToolMessageUpdate[]): boolean {
+  return updates.every((update) => update.message.blocks.every((block) => block.type !== "tool_result" || block.ok));
 }
 
 function applyUpdates(updates: readonly ToolMessageUpdate[], context: ToolUseContext): RunToolsResult {

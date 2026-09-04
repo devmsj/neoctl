@@ -8,7 +8,7 @@ import { ModelAPIError } from "../model/errors.js";
 import { AGENT_REPORT_TOOL_NAME } from "../agents/agent-report-tool.js";
 import { supportsImageInput } from "../model/context-window.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import { runTools } from "../tools/tool-orchestration.js";
+import { runTools, type RunToolsEvent } from "../tools/tool-orchestration.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, createThinkingMessage, withoutThinkingBlocks, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
@@ -594,11 +594,36 @@ async function* executeToolsForTurn(
   context: ToolUseContext,
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; messages: Message[]; context: ToolUseContext }, void> {
   yield { type: "state", phase: "running_tools", detail: `${toolUses.length} tool call(s)` };
-  for (const toolUse of toolUses) yield { type: "tool.started", toolUse };
+  for (const [index, toolUse] of toolUses.entries()) yield { type: "tool.started", toolUse, index, total: toolUses.length };
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
-  const result = await abortable(runTools(toolUses, context, { canUseTool: dependencies.canUseTool }), options.abortSignal);
+  const events = new AsyncEventQueue<RunToolsEvent>();
+  const closeOnAbort = () => events.close();
+  options.abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
+  const running = abortable(
+    runTools(toolUses, context, {
+      canUseTool: dependencies.canUseTool,
+      onEvent: (event) => events.push(event),
+    }).finally(() => events.close()),
+    options.abortSignal,
+  );
+
+  try {
+    for await (const event of events) {
+      if (event.type === "progress") {
+        yield { type: "tool.progress", toolUse: event.request, progress: event.progress, index: event.index, total: event.total };
+        continue;
+      }
+      const messages = event.updates.map((update) => update.message);
+      yield { type: "tool.result.available", toolUse: event.request, ok: event.ok, messages, index: event.index, total: event.total };
+      yield { type: "tool.finished", toolUse: event.request, ok: event.ok, index: event.index, total: event.total };
+    }
+  } finally {
+    options.abortSignal?.removeEventListener("abort", closeOnAbort);
+  }
+
+  const result = await running;
   if (!result.completed) return { terminal: "aborted_tools", messages: [], context };
 
   for (const message of result.value.messages) {
@@ -606,12 +631,13 @@ async function* executeToolsForTurn(
     yield { type: "message", message };
   }
 
-  for (const toolUse of toolUses) {
+  const succeeded = toolUses.filter((toolUse) => {
     const resultMessage = result.value.messages.find((message) =>
       message.blocks.some((block) => block.type === "tool_result" && block.toolUseId === toolUse.id),
     );
-    yield { type: "tool.finished", toolUse, ok: resultMessage ? toolResultOk(resultMessage) : false };
-  }
+    return resultMessage ? toolResultOk(resultMessage) : false;
+  }).length;
+  yield { type: "tool.batch.completed", total: toolUses.length, succeeded, failed: toolUses.length - succeeded };
 
   return { messages: result.value.messages, context: result.value.context };
 }
@@ -636,6 +662,36 @@ function maybeRecoverWithoutTools(
     };
   }
   return undefined;
+}
+
+class AsyncEventQueue<T> implements AsyncIterable<T> {
+  private readonly values: T[] = [];
+  private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false });
+    else this.values.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined as T, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        const value = this.values.shift();
+        if (value !== undefined) return Promise.resolve({ value, done: false });
+        if (this.closed) return Promise.resolve({ value: undefined as T, done: true });
+        return new Promise<IteratorResult<T>>((resolve) => this.waiters.push(resolve));
+      },
+    };
+  }
 }
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<{ completed: true; value: T } | { completed: false }> {

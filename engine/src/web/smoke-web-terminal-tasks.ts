@@ -18,6 +18,7 @@ async function main(): Promise<void> {
       isTerminal: () => false,
     },
     engine: {
+      getDisplayEntries: () => [],
       getHistoryMessages: () => [],
       snapshot: () => ({ messages: 0, session: { sessionId: "web-smoke" } }),
       isFastMode: () => false,

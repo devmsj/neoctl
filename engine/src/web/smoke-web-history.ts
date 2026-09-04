@@ -94,7 +94,6 @@ assert.equal(commandLines[0]?.toolDisplay?.purpose, "运行测试");
 assert.deepEqual(commandLines[0]?.toolDisplay?.facts, []);
 assert.deepEqual(commandLines[0]?.toolDisplay?.previews?.map((preview: Record<string, unknown>) => [preview.label, preview.kind, preview.content]), [
   ["命令", "code", "npm test"],
-  ["输出", "code", "ok"],
 ]);
 
 const runtime = {

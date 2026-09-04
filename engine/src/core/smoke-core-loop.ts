@@ -22,6 +22,20 @@ const neverSettlingTool: Tool<Record<string, never>> = {
   },
 };
 
+function makeOrderedDelayTool(name: string): Tool<{ delayMs: number; value: string }> {
+  return {
+    name,
+    description: `Delay for streaming order smoke: ${name}`,
+    inputSchema: { type: "object", properties: { delayMs: { type: "integer" }, value: { type: "string" } }, required: ["delayMs", "value"], additionalProperties: false },
+    metadata: { readOnly: true, concurrent: true, visible: true },
+    validate(input) { return input as { delayMs: number; value: string }; },
+    async call(input) {
+      await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+      return { ok: true, output: input.value };
+    },
+  };
+}
+
 const smokePassthroughTool: Tool<{ text: string }> = {
   name: "smoke_passthrough",
   description: "Smoke test passthrough tool.",
@@ -58,6 +72,25 @@ class FakeToolCallingGateway implements ModelGateway {
     yield { type: "assistant_delta", text: "done" };
     yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
     yield { type: "response_completed", responseId: "resp_2", stopReason: "completed" };
+  }
+}
+
+class ParallelToolCallingGateway implements ModelGateway {
+  readonly requests: ModelRequest[] = [];
+  secondRequestStartedAt?: number;
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.requests.push(request);
+    const hasToolResult = request.messages.some((message) => message.blocks.some((block) => block.type === "tool_result"));
+    if (!hasToolResult) {
+      yield { type: "tool_use", toolUse: { id: "parallel_slow", name: "parallel_slow", input: { delayMs: 70, value: "slow" } } };
+      yield { type: "tool_use", toolUse: { id: "parallel_fast", name: "parallel_fast", input: { delayMs: 10, value: "fast" } } };
+      yield { type: "response_completed", responseId: "parallel_1", stopReason: "tool_calls" };
+      return;
+    }
+    this.secondRequestStartedAt = Date.now();
+    yield { type: "assistant_message", message: createTextMessage("assistant", "parallel done") };
+    yield { type: "response_completed", responseId: "parallel_2", stopReason: "completed" };
   }
 }
 
@@ -115,6 +148,27 @@ async function main(): Promise<void> {
   }
 
   const snapshot = engine.snapshot();
+
+  const parallelTools = new ToolRegistry();
+  parallelTools.register(makeOrderedDelayTool("parallel_slow"));
+  parallelTools.register(makeOrderedDelayTool("parallel_fast"));
+  const parallelGateway = new ParallelToolCallingGateway();
+  const parallelEngine = new QueryEngine({ modelGateway: parallelGateway, tools: parallelTools, maxTurns: 3 });
+  const availableOrder: string[] = [];
+  let lastAvailableAt = 0;
+  for await (const event of parallelEngine.sendUserText("run parallel tools")) {
+    if (event.type === "tool.result.available") {
+      availableOrder.push(event.toolUse.id);
+      lastAvailableAt = Date.now();
+    }
+  }
+  const secondRequestToolResults = parallelGateway.requests[1]?.messages
+    .flatMap((message) => message.blocks)
+    .filter((block) => block.type === "tool_result")
+    .map((block) => block.toolUseId) ?? [];
+  const parallelResultsStreamByCompletion = availableOrder.join(",") === "parallel_fast,parallel_slow";
+  const parallelHistoryKeepsCallOrder = secondRequestToolResults.join(",") === "parallel_slow,parallel_fast";
+  const nextTurnWaitsForAllTools = Boolean(parallelGateway.secondRequestStartedAt && parallelGateway.secondRequestStartedAt >= lastAvailableAt);
 
   const narratedEngine = new QueryEngine({ modelGateway: new NarratedToolCallingGateway(), tools, maxTurns: 1 });
   let narratedText = "";
@@ -267,8 +321,11 @@ async function main(): Promise<void> {
     stoppedAfterOneToolTurn &&
     thinkingPersisted &&
     thinkingExcludedFromContext &&
-    cwdTransitionOneShot;
-  console.log(JSON.stringify({ ok, events, snapshot, narratedToolTextFlushed, sanitized, ordinaryTextStreamsImmediately, splitLeakRedacted, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext, cwdTransitionOneShot }, null, 2));
+    cwdTransitionOneShot &&
+    parallelResultsStreamByCompletion &&
+    parallelHistoryKeepsCallOrder &&
+    nextTurnWaitsForAllTools;
+  console.log(JSON.stringify({ ok, events, snapshot, parallelResultsStreamByCompletion, parallelHistoryKeepsCallOrder, nextTurnWaitsForAllTools, availableOrder, secondRequestToolResults, narratedToolTextFlushed, sanitized, ordinaryTextStreamsImmediately, splitLeakRedacted, abortEvents, abortElapsedMs, abortDuringToolsOk, userImagePinned, storedImageCompacted, downgradeEvents, historyImageDowngraded, yieldedEvents, stoppedAfterOneToolTurn, thinkingPersisted, thinkingExcludedFromContext, cwdTransitionOneShot }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

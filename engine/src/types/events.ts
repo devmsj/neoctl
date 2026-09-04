@@ -1,6 +1,7 @@
 import type { CompactionReport } from "../context/compaction.js";
 import type { TerminalReason } from "../core/state.js";
 import type { ModelUsage } from "../model/model-gateway.js";
+import type { ToolProgressEvent } from "../tools/tool.js";
 import type { Message, ToolUseRequest } from "./messages.js";
 
 export interface PromptCacheSectionMetric {
@@ -58,8 +59,11 @@ export type AgentEvent =
   | { type: "thinking.delta"; text: string }
   | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "message"; message: Message }
-  | { type: "tool.started"; toolUse: ToolUseRequest }
-  | { type: "tool.finished"; toolUse: ToolUseRequest; ok: boolean }
+  | { type: "tool.started"; toolUse: ToolUseRequest; index?: number; total?: number }
+  | { type: "tool.progress"; toolUse: ToolUseRequest; progress: ToolProgressEvent; index?: number; total?: number }
+  | { type: "tool.result.available"; toolUse: ToolUseRequest; ok: boolean; messages: Message[]; index?: number; total?: number }
+  | { type: "tool.finished"; toolUse: ToolUseRequest; ok: boolean; index?: number; total?: number }
+  | { type: "tool.batch.completed"; total: number; succeeded: number; failed: number }
   | { type: "usage"; usage: ModelUsage }
   | { type: "retrying"; attempt: number; delayMs: number; error: Error }
   | { type: "terminal"; reason: TerminalReason; detail?: string }

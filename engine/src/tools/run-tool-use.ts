@@ -39,8 +39,9 @@ export async function runToolUse(
   const updates: ToolMessageUpdate[] = [];
   const contextWithToolUseId = { ...context, toolUseId: request.id };
   const onProgress = (event: ToolProgressEvent) => {
-    const progress = { ...event, toolUseId: event.toolUseId ?? request.id };
+    const progress = { ...event, toolUseId: event.toolUseId ?? request.id, transient: event.transient ?? true };
     context.emit(progress);
+    if (progress.transient !== false) return;
     const rendered = tool.renderToolProgressMessage?.(progress) ?? createTextMessage("progress", progress.message);
     updates.push({ message: rendered, progress });
   };
@@ -61,7 +62,6 @@ export async function runToolUse(
       return [{ message: createToolResultMessage(request, false, { error: decision.reason ?? "Tool use denied" }) }];
     }
 
-    onProgress({ toolName: tool.name, message: `Running ${tool.name}` });
     const sanitizedInput = stripToolRuntimeInput(customValidation.value);
     const result = await callTool(tool, sanitizedInput, contextWithToolUseId, {
       canUseTool: options.canUseTool,

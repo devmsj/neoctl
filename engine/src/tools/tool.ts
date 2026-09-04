@@ -37,11 +37,25 @@ export interface ToolMetadata {
   ignoreUnknownInputProperties?: boolean;
 }
 
+export type ToolStreamChannel = "state" | "item" | "stdout" | "stderr" | "patch" | "artifact" | "metric";
+export type ToolStreamOperation = "replace" | "append" | "upsert" | "remove";
+
 export interface ToolProgressEvent {
   toolName: string;
   toolUseId?: string;
   message: string;
   data?: unknown;
+  channel?: ToolStreamChannel;
+  operation?: ToolStreamOperation;
+  key?: string;
+  phase?: string;
+  sequence?: number;
+  progress?: {
+    current?: number;
+    total?: number;
+    unit?: string;
+  };
+  transient?: boolean;
 }
 
 export type ValidationResult<TInput> =

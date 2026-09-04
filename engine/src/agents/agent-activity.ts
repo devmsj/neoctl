@@ -120,8 +120,12 @@ export class AgentActivityStore {
       this.recordMessageBlocks(activity, event.message);
     } else if (event.type === "tool.started") {
       this.recordToolStarted(activity, event.toolUse);
-    } else if (event.type === "tool.finished") {
+    } else if (event.type === "tool.progress") {
+      if (activity.currentTool?.id === event.toolUse.id) activity.currentTool.inputPreview = previewText(event.progress.message);
+    } else if (event.type === "tool.result.available") {
       this.recordToolFinished(activity, event.toolUse, event.ok);
+    } else if (event.type === "tool.finished") {
+      if (activity.currentTool?.id === event.toolUse.id) activity.currentTool = undefined;
     } else if (event.type === "usage") {
       this.recordUsage(activity, event.usage);
     } else if (event.type === "retrying") {

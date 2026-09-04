@@ -516,7 +516,7 @@ async function main(): Promise<void> {
       writeOutput.operation === "create" &&
       writeOutput.bytesAfter === Buffer.byteLength("full\ncontent\n") &&
       (await fs.readFile(path.join(tempDir, "nested", "write.txt"), "utf8")) === "full\ncontent\n",
-    batchMessages: batch.messages.length === 4,
+    batchMessages: batch.messages.length === 2,
     batchConcurrent: elapsedMs < 110,
   };
   const ok = Object.values(checks).every(Boolean);
