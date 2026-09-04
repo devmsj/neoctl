@@ -1866,6 +1866,199 @@ body.tool-detail-open {
 .tool-result-modal-footer .primary {
   min-width: 72px;
 }
+.background-task-modal {
+  width: min(980px, calc(100vw - 48px));
+  height: min(760px, calc(100dvh - 48px));
+}
+.background-task-modal .tool-result-modal-head {
+  align-items: center;
+  padding: 14px 16px;
+}
+.background-task-modal .tool-result-modal-head > .tool-result-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.background-task-modal-count {
+  display: inline-grid;
+  min-width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 2px solid var(--line);
+  background: var(--purple-soft);
+  color: var(--purple);
+  font: 800 12px/1 var(--mono);
+}
+.background-task-page {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+}
+.background-task-page.single { grid-template-columns: minmax(0, 1fr); }
+.background-task-index {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding: 14px;
+  border-right: 2px solid var(--line);
+  background: var(--panel-soft);
+}
+.background-task-index-item {
+  width: 100%;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+.background-task-index-item strong {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.background-task-index-item.active {
+  background: var(--purple-soft);
+  color: var(--text);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--line) 35%, transparent);
+}
+.background-task-dot {
+  width: 9px;
+  height: 9px;
+  border: 1px solid color-mix(in srgb, currentColor 70%, transparent);
+  background: var(--faint);
+  transform: rotate(45deg);
+}
+.background-task-dot.status-running { background: var(--purple); animation: background-task-pulse 1.4s ease-in-out infinite; }
+.background-task-dot.status-completed,
+.background-task-dot.status-succeeded { background: var(--green); }
+.background-task-dot.status-failed,
+.background-task-dot.status-killed,
+.background-task-dot.status-stopped { background: var(--red); }
+.background-task-detail {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+}
+.background-task-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 2px solid var(--line);
+}
+.background-task-detail-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.background-task-detail-title strong {
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.background-task-detail .tool-result-modal-status {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+.background-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 13px 20px;
+  border-bottom: 2px solid var(--line);
+  background: var(--panel-soft);
+}
+.background-task-meta > div {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.background-task-meta > div.wide {
+  max-width: 100%;
+  flex: 1 1 100%;
+}
+.background-task-meta dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.background-task-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font: 700 12px/1.3 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.background-task-command-section,
+.background-task-output-section {
+  margin: 18px 20px 0;
+  border: 2px solid var(--line);
+  background: var(--surface);
+}
+.background-task-output-section { margin-bottom: 20px; }
+.background-task-command-section > header,
+.background-task-output-head {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--line);
+  background: var(--panel-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+.background-task-output-head i {
+  width: 9px;
+  height: 9px;
+  background: var(--purple);
+  animation: background-task-pulse 1.4s ease-in-out infinite;
+}
+.background-task-command,
+.background-task-live-output,
+.background-task-activity {
+  max-height: 270px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #172033;
+  color: #eef4ff;
+  font: 13px/1.55 var(--mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.background-task-live-output,
+.background-task-activity { max-height: 310px; }
+@keyframes background-task-pulse {
+  0%, 100% { opacity: .45; transform: rotate(45deg) scale(.82); }
+  50% { opacity: 1; transform: rotate(45deg) scale(1); }
+}
 .image2-detail-view {
   display: grid;
   gap: 14px;

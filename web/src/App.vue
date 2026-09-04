@@ -2165,12 +2165,6 @@ function backgroundTaskDisplayTitle(task) {
   return value.length > 72 ? `${value.slice(0, 72)}…` : value
 }
 
-function backgroundTaskKindText(task) {
-  if (task?.kind === 'terminal') return '终端'
-  if (task?.kind === 'session') return '会话'
-  return task?.agentType || task?.type || '任务'
-}
-
 function backgroundTaskElapsed(task) {
   const raw = task?.createdAt
   const numeric = Number(raw)
@@ -4546,8 +4540,8 @@ function createMobileSession() {
           </div>
           <button type="button" class="tool-result-modal-close" aria-label="关闭" @click="closeBackgroundTaskDetail">×</button>
         </header>
-        <div class="tool-result-modal-content background-task-page">
-          <nav class="background-task-index" aria-label="后台任务列表">
+        <div :class="['tool-result-modal-content', 'background-task-page', { single: backgroundTaskCount <= 1 }]">
+          <nav v-if="backgroundTaskCount > 1" class="background-task-index" aria-label="后台任务列表">
             <button
               v-for="task in state.backgroundTasks"
               :key="backgroundTaskKey(task)"
@@ -4558,36 +4552,43 @@ function createMobileSession() {
             >
               <span :class="['background-task-dot', `status-${task.status}`]"></span>
               <strong>{{ backgroundTaskDisplayTitle(task) }}</strong>
-              <small>{{ taskStatusText(task.status) }}</small>
             </button>
           </nav>
           <article class="background-task-detail">
-            <header>
-              <strong>{{ backgroundTaskDisplayTitle(state.backgroundTaskDetail) }}</strong>
+            <header class="background-task-detail-head">
+              <div class="background-task-detail-title">
+                <span :class="['background-task-dot', `status-${state.backgroundTaskDetail.status}`]"></span>
+                <strong>{{ backgroundTaskDisplayTitle(state.backgroundTaskDetail) }}</strong>
+              </div>
               <span :class="['tool-result-modal-status', `status-${state.backgroundTaskDetail.status}`]">{{ taskStatusText(state.backgroundTaskDetail.status) }}</span>
             </header>
-            <dl>
-              <div><dt>类型</dt><dd>{{ backgroundTaskKindText(state.backgroundTaskDetail) }}</dd></div>
-              <div><dt>运行</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) || '—' }}</dd></div>
+            <dl class="background-task-meta">
+              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>时长</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
               <div><dt>开始</dt><dd>{{ formatSessionTime(state.backgroundTaskDetail.createdAt) }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.processId"><dt>进程</dt><dd>{{ state.backgroundTaskDetail.processId }}</dd></div>
+              <div v-if="state.backgroundTaskDetail.processId"><dt>PID</dt><dd>{{ state.backgroundTaskDetail.processId }}</dd></div>
+              <div v-if="state.backgroundTaskDetail.shell"><dt>Shell</dt><dd>{{ state.backgroundTaskDetail.shell }}{{ state.backgroundTaskDetail.tty ? ' · TTY' : '' }}</dd></div>
               <div v-if="state.backgroundTaskDetail.sessionId"><dt>会话</dt><dd>{{ state.backgroundTaskDetail.sessionId }}</dd></div>
               <div v-if="state.backgroundTaskDetail.agentId"><dt>代理</dt><dd>{{ state.backgroundTaskDetail.agentId }}</dd></div>
               <div v-if="state.backgroundTaskDetail.taskId && state.backgroundTaskDetail.kind === 'agent'"><dt>任务</dt><dd>{{ state.backgroundTaskDetail.taskId }}</dd></div>
               <div v-if="state.backgroundTaskDetail.progress"><dt>工具</dt><dd>{{ state.backgroundTaskDetail.progress.totalToolUseCount || 0 }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.shell"><dt>Shell</dt><dd>{{ state.backgroundTaskDetail.shell }}{{ state.backgroundTaskDetail.tty ? ' · TTY' : '' }}</dd></div>
               <div v-if="state.backgroundTaskDetail.cwd" class="wide"><dt>目录</dt><dd>{{ state.backgroundTaskDetail.cwd }}</dd></div>
               <div v-if="state.backgroundTaskDetail.outputFile" class="wide"><dt>输出</dt><dd>{{ state.backgroundTaskDetail.outputFile }}</dd></div>
             </dl>
-            <pre v-if="backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
+            <section v-if="backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command-section">
+              <header>命令</header>
+              <pre class="background-task-command">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
+            </section>
             <section v-if="state.backgroundTaskDetail.kind === 'terminal'" class="background-task-output-section">
               <div class="background-task-output-head">
-                <strong>实时输出</strong>
-                <span v-if="state.backgroundTaskDetail.status === 'running'"><i aria-hidden="true"></i>持续更新</span>
+                <strong>输出</strong>
+                <i v-if="state.backgroundTaskDetail.status === 'running'" aria-label="实时更新"></i>
               </div>
-              <pre ref="backgroundTaskOutput" class="background-task-live-output">{{ backgroundTaskLiveOutput(state.backgroundTaskDetail) || '等待终端输出…' }}</pre>
+              <pre ref="backgroundTaskOutput" class="background-task-live-output">{{ backgroundTaskLiveOutput(state.backgroundTaskDetail) || '等待输出…' }}</pre>
             </section>
-            <pre v-else-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-activity">{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</pre>
+            <section v-else-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-output-section">
+              <div class="background-task-output-head"><strong>进度</strong></div>
+              <pre class="background-task-activity">{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</pre>
+            </section>
           </article>
         </div>
       </section>
