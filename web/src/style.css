@@ -823,6 +823,16 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   padding: 20px;
   overflow-anchor: auto;
 }
+.virtual-message-list,
+.virtual-message-row {
+  width: 100%;
+  min-width: 0;
+}
+.virtual-message-spacer {
+  width: 100%;
+  contain: strict;
+  pointer-events: none;
+}
 .runtime-context-kicker {
   color: var(--purple);
   font-family: var(--mono);

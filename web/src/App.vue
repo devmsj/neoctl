@@ -156,6 +156,9 @@ const THEME_STORAGE_KEY = 'neoctl-web.theme'
 const CLIENT_REVISION_STORAGE_KEY = 'neoctl-web.clientRevision'
 const CLIENT_RELOAD_STORAGE_KEY = 'neoctl-web.clientReloadRequest'
 const CLIENT_RELOAD_QUERY_KEY = '__neo_reload'
+const MESSAGE_VIRTUALIZATION_THRESHOLD = 40
+const MESSAGE_VIRTUAL_ESTIMATED_HEIGHT = 112
+const MESSAGE_VIRTUAL_OVERSCAN_PX = 900
 let runtimeTabId = getOrCreateRuntimeTabId()
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_ID_KEY) || ''
 let allowRuntimeSessionChange = !runtimeSessionId
@@ -328,6 +331,7 @@ const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
 const transcript = ref(null)
+const messageList = ref(null)
 const backgroundTaskOutput = ref(null)
 const mobileMenu = ref(null)
 const loginProvider = ref('')
@@ -355,10 +359,24 @@ let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 let clientReloading = false
 let coreEasterEggTimer
+let transcriptResizeObserver
+let messageResizeObserver
+let virtualScrollRaf = 0
+let observedTranscript
+let observedMessageList
 
 removeClientReloadQuery()
 const renderedLineCache = new Map()
 const pendingLineText = new Map()
+const virtualMessageHeights = new Map()
+const virtualMessageElements = new Map()
+const virtualViewport = reactive({ scrollTop: 0, height: 0, listTop: 0 })
+const virtualHeightRevision = ref(0)
+const vVirtualMessage = {
+  mounted: registerVirtualMessageElement,
+  updated: registerVirtualMessageElement,
+  unmounted: unregisterVirtualMessageElement,
+}
 const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
 const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
@@ -462,6 +480,49 @@ const visibleLines = computed(() => {
   if (state.sessionResumeLoading) return []
   return groupVisibleToolLines((state.lines || []).filter((line) => !shouldHideLine(line)))
 })
+const virtualMessageEntries = computed(() => {
+  virtualHeightRevision.value
+  const lines = visibleLines.value
+  if (lines.length <= MESSAGE_VIRTUALIZATION_THRESHOLD || !virtualViewport.height) {
+    return lines.map((line, index) => ({ type: 'line', key: virtualMessageKey(line), line, index }))
+  }
+
+  const heights = lines.map((line) => virtualMessageHeights.get(virtualMessageKey(line)) || MESSAGE_VIRTUAL_ESTIMATED_HEIGHT)
+  const offsets = new Array(lines.length + 1)
+  offsets[0] = 0
+  for (let index = 0; index < heights.length; index += 1) offsets[index + 1] = offsets[index] + heights[index]
+
+  const viewportTop = Math.max(0, virtualViewport.scrollTop - virtualViewport.listTop)
+  const renderTop = Math.max(0, viewportTop - MESSAGE_VIRTUAL_OVERSCAN_PX)
+  const renderBottom = viewportTop + virtualViewport.height + MESSAGE_VIRTUAL_OVERSCAN_PX
+  let start = 0
+  while (start < lines.length && offsets[start + 1] < renderTop) start += 1
+  let end = start
+  while (end < lines.length && offsets[end] <= renderBottom) end += 1
+
+  const entries = []
+  let spacerStart = -1
+  let spacerHeight = 0
+  const flushSpacer = (endIndex) => {
+    if (spacerStart < 0 || spacerHeight <= 0) return
+    entries.push({ type: 'spacer', key: `spacer:${spacerStart}:${endIndex}`, height: spacerHeight })
+    spacerStart = -1
+    spacerHeight = 0
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const shouldRender = (index >= start && index < end) || line?.live === true
+    if (!shouldRender) {
+      if (spacerStart < 0) spacerStart = index
+      spacerHeight += heights[index]
+      continue
+    }
+    flushSpacer(index - 1)
+    entries.push({ type: 'line', key: virtualMessageKey(line), line, index })
+  }
+  flushSpacer(lines.length - 1)
+  return entries
+})
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
 const runtimeTools = computed(() => Array.isArray(state.runtimeContext?.tools) ? state.runtimeContext.tools : [])
 const effectiveSessionPluginCount = computed(() => state.sessionPlugins.items.filter((item) => item.effectiveEnabled).length)
@@ -525,7 +586,29 @@ watch(() => state.backgroundTaskDetail?.output, async () => {
   if (output) output.scrollTop = output.scrollHeight
 })
 
+watch(() => visibleLines.value.length, async () => {
+  await nextTick()
+  observeVirtualViewportElements()
+  updateVirtualViewport()
+})
+
+watch(() => state.activePanel, async (panel) => {
+  if (panel !== 'chat') return
+  await nextTick()
+  observeVirtualViewportElements()
+  updateVirtualViewport()
+})
+
 onMounted(async () => {
+  if (typeof ResizeObserver !== 'undefined') {
+    messageResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) measureVirtualMessage(entry.target)
+    })
+    for (const element of virtualMessageElements.values()) messageResizeObserver.observe(element)
+    transcriptResizeObserver = new ResizeObserver(updateVirtualViewport)
+    observeVirtualViewportElements()
+  }
+  updateVirtualViewport()
   await Promise.all([fetchState(), fetchClientInfo(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
@@ -545,6 +628,7 @@ onBeforeUnmount(() => {
   if (es) es.close()
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (syncRaf) cancelAnimationFrame(syncRaf)
+  if (virtualScrollRaf) cancelAnimationFrame(virtualScrollRaf)
   resetLineTextScheduler()
   pendingSyncPayload = undefined
   if (metricsRaf) cancelAnimationFrame(metricsRaf)
@@ -553,6 +637,9 @@ onBeforeUnmount(() => {
   if (memoryStateTimer) clearInterval(memoryStateTimer)
   if (coreEasterEggTimer) clearTimeout(coreEasterEggTimer)
   if (sessionTitleResizeObserver) sessionTitleResizeObserver.disconnect()
+  if (transcriptResizeObserver) transcriptResizeObserver.disconnect()
+  if (messageResizeObserver) messageResizeObserver.disconnect()
+  virtualMessageElements.clear()
   document.body.classList.remove('tool-detail-open', 'image-preview-open', 'runtime-context-open', 'context-window-open')
   if (confirmDialogResolver) resolveConfirmation(false)
   window.removeEventListener('keydown', handleGlobalKeydown)
@@ -1021,6 +1108,7 @@ function applySync(payload) {
   }
   const shouldFollow = isTranscriptNearBottom()
   if (incomingSessionId !== previousSessionId) {
+    resetVirtualMessages()
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
     state.attachmentCounter = 0
   }
@@ -3476,6 +3564,75 @@ function isTranscriptNearBottom(threshold = 96) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
 }
 
+function virtualMessageKey(line) {
+  return String(line?.id ?? '')
+}
+
+function updateVirtualViewport() {
+  const scroller = transcript.value
+  if (!scroller) return
+  virtualViewport.scrollTop = scroller.scrollTop
+  virtualViewport.height = scroller.clientHeight
+  const list = messageList.value
+  virtualViewport.listTop = list
+    ? list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    : 0
+}
+
+function observeVirtualViewportElements() {
+  if (!transcriptResizeObserver) return
+  if (observedTranscript && observedTranscript !== transcript.value) transcriptResizeObserver.unobserve(observedTranscript)
+  if (observedMessageList && observedMessageList !== messageList.value) transcriptResizeObserver.unobserve(observedMessageList)
+  observedTranscript = transcript.value
+  observedMessageList = messageList.value
+  if (observedTranscript) transcriptResizeObserver.observe(observedTranscript)
+  if (observedMessageList) transcriptResizeObserver.observe(observedMessageList)
+}
+
+function handleTranscriptScroll() {
+  if (virtualScrollRaf) return
+  virtualScrollRaf = requestAnimationFrame(() => {
+    virtualScrollRaf = 0
+    updateVirtualViewport()
+  })
+}
+
+function registerVirtualMessageElement(element, binding) {
+  const key = virtualMessageKey(binding?.value)
+  const previousKey = element.dataset.virtualMessageKey
+  if (previousKey && previousKey !== key) unregisterVirtualMessageElement(element)
+  const previous = virtualMessageElements.get(key)
+  if (previous === element) return
+  if (previous && messageResizeObserver) messageResizeObserver.unobserve(previous)
+  element.dataset.virtualMessageKey = key
+  virtualMessageElements.set(key, element)
+  messageResizeObserver?.observe(element)
+}
+
+function unregisterVirtualMessageElement(element) {
+  const key = element?.dataset?.virtualMessageKey
+  if (!key) return
+  messageResizeObserver?.unobserve(element)
+  if (virtualMessageElements.get(key) === element) virtualMessageElements.delete(key)
+  delete element.dataset.virtualMessageKey
+}
+
+function measureVirtualMessage(element) {
+  const key = element?.dataset?.virtualMessageKey
+  if (!key) return
+  const height = Math.max(1, Math.ceil(element.getBoundingClientRect().height))
+  if (virtualMessageHeights.get(key) === height) return
+  const shouldFollow = isTranscriptNearBottom()
+  virtualMessageHeights.set(key, height)
+  virtualHeightRevision.value += 1
+  if (shouldFollow) scheduleTranscriptScrollBottom()
+}
+
+function resetVirtualMessages() {
+  virtualMessageHeights.clear()
+  virtualHeightRevision.value += 1
+}
+
 function scheduleTranscriptScrollBottom() {
   if (scrollRaf) return
   scrollRaf = requestAnimationFrame(() => {
@@ -3488,6 +3645,7 @@ function scrollTranscriptBottom() {
   const el = transcript.value
   if (!el) return
   el.scrollTop = el.scrollHeight
+  updateVirtualViewport()
 }
 
 function pruneRenderedLineCache() {
@@ -3722,7 +3880,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" class="transcript">
+          <div ref="transcript" class="transcript" @scroll.passive="handleTranscriptScroll">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <strong>运行上下文</strong>
@@ -3736,7 +3894,11 @@ function createMobileSession() {
               <span v-else class="runtime-context-syncing">同步中</span>
             </section>
 
-            <template v-for="line in visibleLines" :key="line.id">
+            <div ref="messageList" class="virtual-message-list">
+            <template v-for="entry in virtualMessageEntries" :key="entry.key">
+              <div v-if="entry.type === 'spacer'" class="virtual-message-spacer" :style="{ height: `${entry.height}px` }" aria-hidden="true"></div>
+              <div v-else v-virtual-message="entry.line" class="virtual-message-row">
+              <template v-for="line in [entry.line]" :key="line.id">
               <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
                   <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line)">
@@ -3929,7 +4091,10 @@ function createMobileSession() {
                 </template>
               </div>
               </article>
+              </template>
+              </div>
             </template>
+            </div>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
                 <span class="message-loading-label">{{ transcriptLoadingLabel }}</span>
