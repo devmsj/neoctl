@@ -1,6 +1,6 @@
 {
   "name": "neoctl-web",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Neo browser workspace with an embedded agent runtime.",
   "type": "module",
   "engines": {
@@ -30,7 +30,7 @@
     "@tanstack/vue-virtual": "^3.13.36",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.3",
-    "neoctl": "^0.2.33",
+    "neoctl": "^0.2.34",
     "streaming-markdown": "^0.2.15",
     "vue": "^3.5.13"
   },

@@ -795,17 +795,6 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   text-overflow: clip;
   white-space: normal;
 }
-.cwd-card {
-  width: 100%;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-.cwd-card:hover,
-.cwd-card:focus-visible {
-  border-color: var(--purple);
-  outline: 0;
-}
 .cwd-picker-backdrop {
   position: fixed;
   z-index: 170;
@@ -3074,6 +3063,24 @@ body.tool-detail-open {
   line-height: 1.45;
 }
 .composer textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 3px var(--purple-soft); }
+.composer-cwd {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-soft);
+  color: var(--muted);
+  text-align: left;
+}
+.composer-cwd strong { flex: 0 0 auto; color: var(--text); font: 700 11px var(--mono); }
+.composer-cwd span { min-width: 0; overflow: hidden; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.composer-cwd:hover, .composer-cwd:focus-visible { border-color: var(--purple); color: var(--text); outline: none; }
+.mobile-runtime-info { display: none; }
 .composer-footer {
   display: flex;
   justify-content: space-between;
@@ -4191,6 +4198,16 @@ button.metric-chip {
     flex-wrap: wrap;
     gap: 7px;
   }
+  .mobile-session-actions > button { min-height: 38px; flex: 1 1 120px; }
+  .mobile-runtime-info { display: block; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+  .mobile-runtime-info > summary { display: flex; justify-content: space-between; gap: 10px; min-height: 36px; align-items: center; cursor: pointer; list-style: none; font-weight: 650; }
+  .mobile-runtime-info > summary::-webkit-details-marker { display: none; }
+  .mobile-runtime-info > summary span { min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding-top: 7px; }
+  .mobile-runtime-card { min-width: 0; min-height: 72px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--text); text-align: left; }
+  button.mobile-runtime-card { cursor: pointer; }
+  .mobile-runtime-card > span, .mobile-runtime-card > small { color: var(--muted); font-size: 10px; }
+  .mobile-runtime-card > strong { max-width: 100%; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .composer-footer {
     justify-content: flex-end;
     margin-top: 7px;
@@ -4207,6 +4224,8 @@ button.metric-chip {
   .attachments { max-height: 120px; overflow: auto; }
   .file-attachment { width: min(100%, 240px); }
   .image-attachment { width: 72px; }
+  .composer-cwd { min-height: 34px; }
+  .composer-cwd span { font-size: 10px; }
   .image-attachment img { height: 54px; }
   .message-image-attachments,
   .message-image-attachments.image2-output-images {

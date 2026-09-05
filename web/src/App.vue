@@ -1406,16 +1406,19 @@ async function submit() {
   if (!text.trim() && state.attachments.length === 0) return
   if (text.trim() === '/sessions') {
     input.value = ''
+    resetComposerHeight()
     await openSessions()
     return
   }
   if (text.trim() === '/login') {
     input.value = ''
+    resetComposerHeight()
     await openLogin()
     return
   }
   if (text.trim() === '/new') {
     input.value = ''
+    resetComposerHeight()
     await newSession()
     return
   }
@@ -1426,7 +1429,7 @@ async function submit() {
   cacheMessageImagePreviews(imageAttachments, submitText)
   input.value = ''
   state.attachments = []
-  autosize()
+  resetComposerHeight()
   try {
     const res = await fetch(runtimeUrl('/api/submit'), {
       method: 'POST',
@@ -1454,7 +1457,7 @@ async function interruptAndSubmit() {
   cacheMessageImagePreviews(imageAttachments, submitText)
   input.value = ''
   state.attachments = []
-  autosize()
+  resetComposerHeight()
   try {
     await postJson('/api/submit-now', { text: submitText, attachments: [...imageAttachments, ...fileAttachments] })
   } catch (error) {
@@ -1491,7 +1494,7 @@ async function sendQueuedNow() {
 async function compressSession() {
   try {
     await postJson('/api/submit', { text: '/compact', attachments: [] })
-    notify('已请求压缩上下文')
+    notify('压缩会话将在下一轮生效')
   } catch (error) {
     notifyActionError(error, '压缩上下文失败')
   }
@@ -3762,11 +3765,23 @@ async function encodeImageWithCanvas(image, width, height, mimeType, quality) {
   return { mimeType: parsed.mimeType, base64: parsed.base64, bytes: blob.size }
 }
 
+function composerMinimumHeight() {
+  return window.matchMedia('(max-width: 820px)').matches ? 50 : 64
+}
+
+function resetComposerHeight() {
+  const el = composer.value
+  if (!el) return
+  el.style.height = `${composerMinimumHeight()}px`
+  el.scrollTop = 0
+}
+
 function autosize() {
   const el = composer.value
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.34)}px`
+  const maxHeight = window.innerHeight * (window.matchMedia('(max-width: 820px)').matches ? 0.28 : 0.34)
+  el.style.height = `${Math.max(composerMinimumHeight(), Math.min(el.scrollHeight, maxHeight))}px`
 }
 
 function isTranscriptNearBottom(threshold = 96) {
@@ -4390,6 +4405,9 @@ function createMobileSession() {
             </div>
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
             <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
+            <button type="button" class="composer-cwd" title="切换工作目录" @click="openCwdPicker">
+              <strong>CWD</strong><span :title="currentCwd">{{ currentCwd }}</span>
+            </button>
             <details class="mobile-session-options">
               <summary>
                 <span>会话选项</span>
@@ -4410,9 +4428,18 @@ function createMobileSession() {
                     :class="['fast-mode-button', { active: state.fastMode, syncing: state.fastModeMutating }]"
                     :aria-pressed="state.fastMode"
                     @click="toggleFastMode"
-                  ><span>{{ state.fastMode ? '快速模式' : '启用快速模式' }}</span></button>
+                  ><span>快速模式</span></button>
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
                 </div>
+                <details class="mobile-runtime-info">
+                  <summary>运行信息 <span>{{ backgroundTaskCount ? `${backgroundTaskCount} 个后台任务` : '无后台任务' }}</span></summary>
+                  <div class="mobile-runtime-grid">
+                    <button v-if="backgroundTaskCount" type="button" class="mobile-runtime-card" @click="openBackgroundTaskDetail(primaryBackgroundTask)"><span>后台任务</span><strong>{{ backgroundTaskDisplayTitle(primaryBackgroundTask) }}</strong></button>
+                    <div v-else class="mobile-runtime-card"><span>后台任务</span><strong>暂无</strong></div>
+                    <div v-if="currentCpaQuota" class="mobile-runtime-card"><span>周额度</span><strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong><small>续期 {{ formatQuotaReset(currentCpaQuota.resetAt) }}</small></div>
+                    <div class="mobile-runtime-card"><span>服务端内存</span><strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong><small>堆 {{ formatMemoryBytes(memoryCurrent?.heapUsed) }} · 外部 {{ formatMemoryBytes(memoryCurrent?.external) }}</small></div>
+                  </div>
+                </details>
               </div>
             </details>
             <div class="composer-footer">
@@ -4428,7 +4455,7 @@ function createMobileSession() {
                   :title="state.fastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
                   @click="toggleFastMode"
                 >
-                  <span>{{ state.fastMode ? '快速模式' : '快速模式（未启用）' }}</span>
+                  <span>快速模式</span>
                 </button>
                 <span class="compress-wrap">
                   <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
@@ -4449,10 +4476,6 @@ function createMobileSession() {
         </div>
 
         <aside class="right-panel">
-          <button type="button" class="status-card compact-status cwd-card" title="切换工作目录" @click="openCwdPicker">
-            <strong class="cwd-card-label">CWD</strong>
-            <div class="cwd-card-path" :title="currentCwd">{{ currentCwd }}</div>
-          </button>
           <section class="background-task-section">
             <div class="background-task-head">
               <div class="panel-title">后台任务</div>

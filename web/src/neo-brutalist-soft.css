@@ -1283,29 +1283,16 @@ select:focus,
 .status-card,
 .quota-card { padding: 18px; }
 
-.cwd-card {
-  align-self: start;
-  min-height: 0;
-  display: grid;
-  gap: 7px;
-  padding: 12px 14px;
+.composer-cwd {
+  border: 1px solid var(--line) !important;
+  background: #f3f4f6 !important;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, .14) !important;
 }
-
-.cwd-card-label {
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.cwd-card-path {
-  overflow-wrap: anywhere;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.55;
-}
+.composer-cwd:hover,
+.composer-cwd:focus-visible { background: #e0f2fe !important; }
+.mobile-runtime-card { box-shadow: 2px 2px 0 rgba(0, 0, 0, .14); }
+.fast-mode-button:not(.active) { background: #f3f4f6 !important; color: var(--muted) !important; box-shadow: 2px 2px 0 rgba(0, 0, 0, .14) !important; }
+.fast-mode-button.active { transform: translate(2px, 2px); box-shadow: none !important; }
 
 .quota-card { background: #fef3c7 !important; }
 
