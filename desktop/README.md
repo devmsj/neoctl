@@ -94,6 +94,17 @@ npm run payload
 npm run runtime
 ```
 
+## 本地桌面调试（无需发布）
+
+首次调试先确保 `desktop/resources/node` 已准备好（没有时执行一次 `npm run runtime`），然后运行：
+
+```powershell
+cd desktop
+npm run dev:local
+```
+
+该命令会构建当前仓库的 `engine/`，分别对本地 Engine 与 Web 源码执行 `npm pack`，安装到 `desktop/.cache/dev-runtime` 的隔离运行时，再启动 Tauri 调试窗口。整个过程不发布 npm 包、不覆盖正式桌面的安装配置，也不复用正式数据目录；关闭调试窗口或按 `Ctrl+C` 会结束本次调试实例。源码修改后重新执行命令即可看到最新效果。
+
 ## 注意
 
 - `resources/node` 与生成的 tgz 被 `.gitignore` 排除，避免把大型构建资源提交进源码。

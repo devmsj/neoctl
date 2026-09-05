@@ -1,6 +1,6 @@
 {
   "name": "neoctl-desktop",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "private": true,
   "description": "Independent Tauri 2 Windows shell for neoctl-web.",
   "scripts": {
@@ -10,6 +10,7 @@
     "check": "node scripts/check-layout.mjs",
     "smoke:runtime": "node scripts/smoke-runtime-install.mjs && node scripts/smoke-runtime-launch.mjs",
     "dev": "tauri dev",
+    "dev:local": "node scripts/dev-local.mjs",
     "build": "npm run bundle:prepare && tauri build"
   },
   "devDependencies": {

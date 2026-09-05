@@ -112,13 +112,22 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         let state = app.state::<crate::DesktopState>();
         state.manual_start.store(true, Ordering::Release);
         let url = state.start_url.lock().ok().and_then(|u| u.clone());
-        if let (Some(window), Some(url)) = (app.get_webview_window("main"), url) {
-            if let Err(error) = window.navigate(url) {
+        match (app.get_webview_window("main"), url) {
+            (Some(window), Some(url)) => {
+                if let Err(error) = window.navigate(url) {
+                    rfd::MessageDialog::new()
+                        .set_title("无法返回启动页")
+                        .set_description(error.to_string())
+                        .show();
+                }
+            }
+            (Some(_), None) => {
                 rfd::MessageDialog::new()
-                    .set_title("无法返回启动页")
-                    .set_description(error.to_string())
+                    .set_title("启动页尚未准备完成")
+                    .set_description("未能取得启动页地址，请稍后重试。当前工作台不会被关闭。")
                     .show();
             }
+            _ => {}
         }
     }
     if event.id().as_ref() == "check-package-updates" {

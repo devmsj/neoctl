@@ -1987,9 +1987,11 @@ function toolGroupExpanded(group) {
   return state.expandedToolGroups[group?.id] === true
 }
 
-function toggleToolGroup(group) {
+async function toggleToolGroup(group) {
   if (!isToolGroup(group)) return
   state.expandedToolGroups[group.id] = !toolGroupExpanded(group)
+  await nextTick()
+  resetVirtualMessages()
 }
 
 function toolGroupLabels(group) {
@@ -2125,16 +2127,20 @@ function toolStreamStepsText(line) {
 }
 
 function agentToolSummary(line) {
-  const counts = new Map()
+  const summaries = new Map()
   for (const step of toolStreamSteps(line)) {
     const name = String(step?.toolName || '').trim()
     if (!name) continue
-    counts.set(name, (counts.get(name) || 0) + 1)
+    const current = summaries.get(name)
+    summaries.set(name, {
+      label: current?.label || String(step?.toolLabel || name),
+      count: (current?.count || 0) + 1,
+    })
   }
-  return [...counts.entries()].map(([name, count]) => ({
+  return [...summaries.entries()].map(([name, summary]) => ({
     name,
-    label: String(step?.toolLabel || name),
-    count,
+    label: summary.label,
+    count: summary.count,
   }))
 }
 
@@ -2149,9 +2155,11 @@ function agentToolExpanded(line) {
   return state.expandedToolGroups[`agent:${line?.id}`] === true
 }
 
-function toggleAgentTool(line) {
+async function toggleAgentTool(line) {
   const key = `agent:${line?.id}`
   state.expandedToolGroups[key] = !state.expandedToolGroups[key]
+  await nextTick()
+  resetVirtualMessages()
 }
 
 function hasToolStream(line) {
@@ -3263,6 +3271,7 @@ function applyTheme(value) {
   document.documentElement.dataset.theme = value
   document.documentElement.style.colorScheme = value
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0c0c0f' : '#ffffff')
+  window.__TAURI__?.core?.invoke?.('sync_window_theme', { theme: value }).catch(() => {})
   try {
     localStorage.setItem(THEME_STORAGE_KEY, value)
   } catch {

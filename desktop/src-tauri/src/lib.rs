@@ -74,6 +74,16 @@ struct InstallReceipt {
 }
 
 #[tauri::command]
+fn sync_window_theme(window: WebviewWindow, theme: String) -> Result<(), String> {
+    let theme = match theme.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    window.set_theme(theme).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
     let default_dir = default_install_dir()?;
     let configured = read_desktop_config(&app)
@@ -377,11 +387,16 @@ fn launch_runtime_blocking(
         .join("server.mjs");
     let data_dir = install_dir.join("data");
     let workspace_dir = data_dir.join("workspaces");
-    let agent_vendor = runtime
+    let nested_agent_vendor = runtime
         .join("node_modules")
         .join("neoctl-web")
         .join("node_modules")
         .join("neoctl");
+    let agent_vendor = if nested_agent_vendor.exists() {
+        nested_agent_vendor
+    } else {
+        runtime.join("node_modules").join("neoctl")
+    };
     let log_dir = install_dir.join("logs");
     fs::create_dir_all(&log_dir).map_err(display_io("无法创建日志目录"))?;
 
@@ -545,12 +560,26 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("desktop.json"))
 }
 
+fn development_runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("NEO_DESKTOP_DEV_RUNTIME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
+    if let Some(install_dir) = development_runtime_dir() {
+        return Ok(DesktopConfig {
+            install_dir: install_dir.to_string_lossy().into_owned(),
+        });
+    }
     let content = fs::read(desktop_config_path(app)?).map_err(display_io("无法读取桌面壳配置"))?;
     serde_json::from_slice(&content).map_err(|error| format!("桌面壳配置格式错误：{error}"))
 }
 
 fn write_desktop_config(app: &AppHandle, install_dir: &Path) -> Result<(), String> {
+    if development_runtime_dir().is_some() {
+        return Ok(());
+    }
     let value = DesktopConfig {
         install_dir: install_dir.to_string_lossy().into_owned(),
     };
@@ -639,6 +668,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
+            sync_window_theme,
             bootstrap_state,
             choose_install_directory,
             install_runtime,
@@ -652,9 +682,6 @@ pub fn run() {
         ])
         .setup(|app| {
             downloads::setup(app)?;
-            if let Some(window) = app.get_webview_window("main") {
-                *app.state::<DesktopState>().start_url.lock().unwrap() = Some(window.url()?);
-            }
             uninstall::setup_menu(app)?;
             tray::setup(app)?;
             Ok(())

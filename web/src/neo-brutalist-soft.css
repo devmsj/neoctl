@@ -1290,6 +1290,17 @@ select:focus,
 }
 .composer-cwd:hover,
 .composer-cwd:focus-visible { background: #e0f2fe !important; }
+:root[data-theme='dark'] .composer-cwd {
+  border-color: var(--line) !important;
+  background: var(--surface-raised) !important;
+  color: var(--muted) !important;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, .42) !important;
+}
+:root[data-theme='dark'] .composer-cwd:hover,
+:root[data-theme='dark'] .composer-cwd:focus-visible {
+  background: #25202f !important;
+  color: var(--text) !important;
+}
 .mobile-runtime-card { box-shadow: 2px 2px 0 rgba(0, 0, 0, .14); }
 .fast-mode-button:not(.active) { background: #f3f4f6 !important; color: var(--muted) !important; box-shadow: 2px 2px 0 rgba(0, 0, 0, .14) !important; }
 .fast-mode-button.active { transform: translate(2px, 2px); box-shadow: none !important; }
