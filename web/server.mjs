@@ -3,15 +3,29 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } from './core-runtime.mjs';
-import { createWebPluginHost } from './plugins.mjs';
-import { createWebPluginSettings } from './plugin-settings.mjs';
-import { createWebToolSettings } from './tool-settings.mjs';
-import { createWorkspaceRuntimeManager } from './runtime-workspaces.mjs';
-import { installRuntimeRouterIdleCleanup } from './runtime-router-cleanup.mjs';
-import { createCpaQuotaMonitor } from './cpa-quota.mjs';
-import { createMemoryMonitor } from './memory-monitor.mjs';
-import { resolveWebStorage } from './platform-paths.mjs';
+// Consume the private launcher secret before importing application/runtime modules.
+// Imports can initialize plugins or spawn children; none may inherit this value.
+let desktopControlConfig;
+{
+  const raw = process.env.NEO_DESKTOP_CONTROL_CONFIG;
+  delete process.env.NEO_DESKTOP_CONTROL_CONFIG;
+  try { desktopControlConfig = raw ? JSON.parse(raw) : undefined; } catch {}
+}
+
+const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } = await import('./core-runtime.mjs');
+const { createWebPluginHost } = await import('./plugins.mjs');
+const { createWebPluginSettings } = await import('./plugin-settings.mjs');
+const { createWebToolSettings } = await import('./tool-settings.mjs');
+const { createWorkspaceRuntimeManager } = await import('./runtime-workspaces.mjs');
+const { installRuntimeRouterIdleCleanup } = await import('./runtime-router-cleanup.mjs');
+const { createCpaQuotaMonitor } = await import('./cpa-quota.mjs');
+const { createMemoryMonitor } = await import('./memory-monitor.mjs');
+const { resolveWebStorage } = await import('./platform-paths.mjs');
+const { createControlSync, createLoginApplier, validateControlConfig } = await import('./control-sync.mjs');
+
+const controlConfig = validateControlConfig(desktopControlConfig);
+desktopControlConfig = undefined;
+const controlEnabled = Boolean(controlConfig);
 
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
@@ -53,6 +67,17 @@ const memoryMonitor = createMemoryMonitor({
   maxPersistedSamples: process.env.NEO_MEMORY_MAX_PERSISTED_SAMPLES,
   maxPersistedBytes: process.env.NEO_MEMORY_MAX_PERSISTED_BYTES,
 });
+// Weak references do not defeat the existing router's idle-session cleanup.
+const controlRepls = new Set();
+function activeControlRepls() {
+  const active = [];
+  for (const reference of controlRepls) {
+    const repl = reference.deref();
+    if (repl) active.push(repl);
+    else controlRepls.delete(reference);
+  }
+  return active;
+}
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
   workspaceRoot,
@@ -106,12 +131,26 @@ await new Promise((resolve, reject) => {
   });
 });
 
+// Optional Desktop-only background work starts after HTTP listen and never delays UI.
+if (controlEnabled) {
+  const controlSync = createControlSync({
+    config: controlConfig,
+    dataDir: dataRoot,
+    applyProfile: embedRuntime ? createLoginApplier({ runtimeUrl: runtimeTarget, getActiveRepls: activeControlRepls }) : undefined,
+  }).start();
+  server.once('close', () => { void controlSync.stop(); });
+}
+
 async function startEmbeddedRuntime() {
   const runtimeHost = runtimeTarget.hostname || '127.0.0.1';
   const runtimePort = runtimeTarget.port || '3101';
   await runWebServer(['--host', runtimeHost, '--port', runtimePort], {
     createRuntime: workspaceRuntime.createRuntime,
-    createRepl: workspaceRuntime.createRepl,
+    createRepl(runtime) {
+      const repl = workspaceRuntime.createRepl(runtime);
+      if (controlEnabled) controlRepls.add(new WeakRef(repl));
+      return repl;
+    },
   });
 }
 

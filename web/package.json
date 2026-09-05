@@ -1,6 +1,6 @@
 {
   "name": "neoctl-web",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Neo browser workspace with an embedded agent runtime.",
   "type": "module",
   "engines": {
@@ -15,6 +15,7 @@
     "test:runtime": "node --test runtime-router-cleanup.test.mjs runtime-workspaces.test.mjs",
     "test:plugins": "npm --prefix ../engine run build && node --test plugins.test.mjs plugin-settings.test.mjs tool-settings.test.mjs",
     "test:monitoring": "node --test cpa-quota.test.mjs memory-monitor.test.mjs",
+    "test:control": "node --test control-sync.test.mjs control-transcript.test.mjs",
     "build": "vite build",
     "test:cli": "node --test neow.test.mjs",
     "prestart": "npm run build",
@@ -46,6 +47,8 @@
     "dist",
     "plugins",
     "server.mjs",
+    "control-sync.mjs",
+    "control-protocol.mjs",
     "core-runtime.mjs",
     "plugins.mjs",
     "plugin-settings.mjs",

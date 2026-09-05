@@ -1,0 +1,8 @@
+{
+  "name": "neoctl-control",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "build:viewer": "node scripts/build-viewer.mjs", "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" }
+}

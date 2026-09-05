@@ -16,6 +16,8 @@ neoctl 是一个使用 TypeScript 构建的本地 AI 工程代理，提供流式
 neoctl/
 ├── engine/   # Agent 运行时、neo CLI、模型适配器、工具与会话系统
 ├── web/      # Vue 3 + Vite 浏览器工作台及 Node.js 服务端
+├── desktop/  # Windows 桌面端及可选自动注册的后台同步
+├── control/  # 设备心跳管理、模型配置下发与加密会话增量收集
 └── LICENSE   # Apache License 2.0
 ```
 
@@ -23,6 +25,8 @@ neoctl/
 | --- | --- | --- |
 | [`engine`](engine/) | 可独立运行和作为 npm 模块使用的 AI Agent 核心，提供 `neo` 命令行与原生 Web API | TypeScript、Node.js、React Ink |
 | [`web`](web/) | 面向设计和工作流用户的单页应用，复用 neoctl 的会话、工具和流式协议 | Vue 3、Vite、Node.js |
+
+Control 部署与自动注册说明见 `control/README.md`，Desktop 私有构建说明见 `desktop/README.md`。定制 EXE 内置控制地址和应用级共享设备密钥，启动后先加密注册再同步，无需外部配对文件；每台安装持久保存随机 UUID。普通 Web 和未配置的通用客户端默认关闭，仅向已知情授权管理的设备分发启用构建。共享密钥可从 EXE 提取，ID 撤销不是硬件封禁，详细安全边界见 Control 文档。
 
 ## 主要能力
 

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <title>Neo Control · 设备管理</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#devices" aria-label="Neo Control 首页"><span class="brand-mark">N<span></span></span><span>neo<span class="brand-sub">CONTROL CENTER</span></span></a>
+      <div class="workspace-label">工作空间 <span>管理端</span></div>
+      <nav class="nav" aria-label="主导航">
+        <a class="nav-link active" href="#devices"><span class="nav-symbol" aria-hidden="true">▦</span>设备管理<span class="nav-count" id="nav-device-count">0</span></a>
+        <a class="nav-link" href="#profiles"><span class="nav-symbol" aria-hidden="true">◈</span>模型配置</a>
+        <a class="nav-link" href="#sessions"><span class="nav-symbol" aria-hidden="true">▤</span>上报会话</a>
+      </nav>
+      <div class="sidebar-note"><span class="small-dot"></span>集中配置，轻量协作<p>管理设备、分发模型配置，<br>只读查看设备上报的会话。</p></div>
+      <div class="sidebar-footer"><span class="avatar">管</span><div>管理员<span>安全的同源连接</span></div><button class="icon-button" id="sidebar-auth" type="button" aria-label="设置管理员令牌">⚙</button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> 控制台</div><div class="connection"><span class="status-dot" id="connection-dot"></span><span id="connection-text">尚未连接</span><button class="button button-quiet button-small" id="auth-button" type="button">设置令牌</button></div></header>
+      <div class="main-content">
+        <div class="page-heading"><div><div class="eyebrow">YOUR WORKSPACE, IN SYNC</div><h1>设备控制台</h1><p>让每一台设备，保持同一个节奏。</p></div><button class="button button-secondary" id="refresh-button" type="button"><span aria-hidden="true">↻</span> 立即刷新</button></div>
+        <div class="notice notice-error" id="global-error" role="alert" hidden><span id="global-error-text"></span><button class="icon-button" id="dismiss-error" type="button" aria-label="关闭错误提示">×</button></div>
+        <div class="notice notice-success" id="global-success" role="status" hidden></div>
+
+        <section class="stats" aria-label="工作空间概览">
+          <div class="stat-card"><div class="stat-icon lavender" aria-hidden="true">▦</div><div><span class="stat-label">已注册设备</span><strong id="stat-total">—</strong></div><span class="stat-hint">全部设备</span></div>
+          <div class="stat-card"><div class="stat-icon mint" aria-hidden="true">◉</div><div><span class="stat-label">当前在线</span><strong id="stat-online">—</strong></div><span class="stat-hint"><span class="small-dot"></span> 实时状态</span></div>
+          <div class="stat-card"><div class="stat-icon peach" aria-hidden="true">◈</div><div><span class="stat-label">配置存档</span><strong id="stat-profiles">—</strong></div><span class="stat-hint">随时切换</span></div>
+          <div class="stat-card"><div class="stat-icon blue" aria-hidden="true">▤</div><div><span class="stat-label">上报会话</span><strong id="stat-sessions">—</strong></div><span class="stat-hint">只读查看</span></div>
+        </section>
+
+        <section class="panel" id="devices" aria-labelledby="devices-title">
+          <div class="panel-heading"><div><h2 id="devices-title">设备管理 <span class="count-chip" id="device-count">0</span></h2><p>定制客户端自动注册；在此管理备注并分发配置。</p></div><button class="button button-primary" id="pair-button" type="button">＋ 手动创建设备</button></div>
+          <div class="toolbar device-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="device-search" type="search" placeholder="搜索名称、IP、机器码…" aria-label="搜索设备"></label><div class="toolbar-actions"><span class="selection-label" id="selected-count">已选 0 台</span><label class="sr-only" for="dispatch-profile">要分发的配置</label><select id="dispatch-profile"><option value="">选择配置存档</option></select><button class="button button-secondary" id="dispatch-button" type="button" disabled>分发配置</button><button class="button button-quiet button-small" id="clear-selection" type="button" disabled>清空</button></div></div>
+          <div class="table-scroll"><table class="device-table"><thead><tr><th class="checkbox-cell"><input type="checkbox" id="select-all" aria-label="全选当前筛选的设备"></th><th>设备 / 备注</th><th>网络 / 机器码</th><th>系统 / 型号</th><th>状态 / 最后在线</th><th class="actions-heading">操作</th></tr></thead><tbody id="device-rows"></tbody></table><div class="empty-state" id="devices-empty"><span class="empty-symbol" aria-hidden="true">▦</span><strong>还没有设备</strong><p>启动已内置控制配置的定制客户端后，设备将自动出现。</p></div></div>
+          <div class="panel-footer"><span><span class="small-dot"></span> 每 5 秒自动同步，保留当前输入与勾选</span><span id="last-refresh">等待首次同步</span></div>
+        </section>
+
+        <section class="panel" id="profiles" aria-labelledby="profiles-title">
+          <div class="panel-heading"><div><h2 id="profiles-title">模型配置</h2><p>保存多套配置，按需单独分发，或设置全局广播。</p></div><button class="button button-secondary" id="new-profile" type="button">＋ 新建配置</button></div>
+          <div class="broadcast-bar"><div class="broadcast-description"><span class="broadcast-icon" aria-hidden="true">◎</span><div><strong>全局广播</strong><span id="broadcast-status">当前未广播</span></div></div><div class="toolbar-actions"><label class="sr-only" for="broadcast-profile">广播配置</label><select id="broadcast-profile"><option value="">选择广播配置</option></select><button class="button button-primary button-small" id="broadcast-button" type="button">开启广播</button><button class="button button-secondary button-small" id="stop-broadcast" type="button" disabled>停止广播</button></div></div>
+          <div class="profile-workspace"><aside class="profile-library" aria-label="已保存的配置"><div class="list-caption">配置存档 <span id="profile-count">0</span></div><div id="profile-list"></div><p class="muted library-empty" id="profiles-empty">还没有配置存档。<br>在右侧填写并保存第一套配置。</p></aside>
+            <form id="profile-form" class="profile-editor" autocomplete="off">
+              <div class="editor-heading"><h3 id="editor-title">新建模型配置</h3><span class="badge badge-neutral" id="editor-status">未保存</span></div>
+              <div class="form-grid"><label class="field">配置名称<input id="profile-name" maxlength="120" required placeholder="例如：日常开发 · GPT" autocomplete="off"></label><label class="field">Provider<input id="profile-provider" value="openai" required pattern="[a-zA-Z0-9_-]+" placeholder="openai" spellcheck="false"><span class="field-help">与 neoctl-web 的模型 provider 保持一致</span></label></div>
+              <div class="form-grid"><label class="field">API Base URL<input id="profile-base" type="url" placeholder="https://api.openai.com/v1" spellcheck="false" autocomplete="off"></label><label class="field">模型名称<input id="profile-model" required placeholder="填写可用的模型名称" spellcheck="false" autocomplete="off"></label></div>
+              <label class="field">API Key<div class="input-with-button"><input id="profile-key" type="password" required placeholder="输入模型 API Key" autocomplete="new-password" spellcheck="false"><button class="button button-quiet button-small" id="toggle-profile-key" type="button" aria-label="显示模型 API Key" aria-pressed="false">显示</button></div><span class="field-help">使用 /api/login 表单字段 apiKey、baseUrl、model；其他模型字段请在 JSON 中编辑。密钥不会写入浏览器持久存储。</span></label>
+              <details class="json-details" id="json-details"><summary>高级配置 · 原样 JSON <span>更多模型 values</span></summary><label class="sr-only" for="profile-json">模型配置 JSON</label><textarea id="profile-json" rows="11" spellcheck="false" autocomplete="off" aria-describedby="json-help"></textarea><p class="field-help" id="json-help">仅支持 { provider, values }；values 只能包含模型相关键。不允许命令、工具、目录等运行配置。JSON 中的密钥以明文显示。</p><button class="button button-secondary button-small" id="apply-json" type="button">应用 JSON 到表单</button></details>
+              <div id="profile-error" class="inline-error" role="alert" hidden></div>
+              <div class="editor-footer"><span class="muted">广播中的配置保存后会更新广播</span><div class="toolbar-actions"><button class="button button-danger button-small" id="delete-profile" type="button" hidden>删除存档</button><button class="button button-primary" id="save-profile" type="submit">保存配置</button></div></div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel" id="sessions" aria-labelledby="sessions-title">
+          <div class="panel-heading"><div><h2 id="sessions-title">上报会话 <span class="badge badge-neutral">只读</span></h2><p>按设备浏览会话，在 neoctl-web 中查看完整记录。</p></div><label class="session-filter"><span>设备</span><select id="session-device"><option value="">全部设备</option></select></label></div>
+          <div id="session-list" class="session-list"></div><div class="empty-state" id="sessions-empty"><span class="empty-symbol" aria-hidden="true">▤</span><strong>暂无上报会话</strong><p>设备上报后，会话会自动出现在这里。</p></div>
+        </section>
+        <footer class="page-footer"><span>neo control</span><span>令牌仅保留在当前会话 · 会话内容只读</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="auth-dialog" class="modal"><form id="auth-form" autocomplete="off"><div class="modal-heading"><div><div class="eyebrow">SECURE ACCESS</div><h2>连接管理工作空间</h2></div><button class="icon-button" type="button" data-close="auth-dialog" aria-label="关闭">×</button></div><p class="muted">输入管理员 Bearer Token。令牌仅存于当前标签页的 sessionStorage，不会放入 URL。</p><label class="field">管理员令牌<input id="admin-token" type="password" autocomplete="new-password" spellcheck="false" required placeholder="输入管理员 token"></label><div class="inline-error" id="auth-error" role="alert" hidden></div><div class="modal-actions"><button class="button button-danger button-small" id="logout-button" type="button">清除令牌</button><button class="button button-primary" id="connect-button" type="submit">连接工作空间</button></div></form></dialog>
+
+  <dialog id="pair-dialog" class="modal"><div class="modal-heading"><div><div class="eyebrow">NEW DEVICE</div><h2>手动创建设备（兼容 API）</h2></div><button class="icon-button" type="button" data-close="pair-dialog" aria-label="关闭">×</button></div><form id="pair-form"><p class="muted">定制客户端无需此操作，也不读取外部配对文件。本入口仅用于兼容设备 API 的手动身份管理。</p><label class="field">设备备注（选填）<input id="pair-name" maxlength="120" placeholder="例如：工作室 Mac mini"></label><div class="inline-error" id="pair-error" role="alert" hidden></div><div class="modal-actions"><button class="button button-secondary" type="button" data-close="pair-dialog">取消</button><button class="button button-primary" id="create-pair" type="submit">生成配对密钥</button></div></form><div id="pair-result" hidden><div class="notice notice-warning">配对密钥仅显示这一次，请立即复制并妥善保管。关闭后无法再次查看。</div><label class="field">设备 ID<input id="pair-device-id" readonly spellcheck="false"></label><label class="field">配对密钥<input id="pair-key" readonly spellcheck="false" autocomplete="off"></label><p class="field-help" id="pair-copy-status" role="status">请勿分享密钥或将密钥放入链接。</p><div class="modal-actions"><button class="button button-secondary" id="copy-pair" type="button">复制配对信息</button><button class="button button-primary" type="button" data-close="pair-dialog">已妥善保存</button></div></div></dialog>
+
+  <dialog id="preview-dialog" class="modal preview-modal"><div class="modal-heading"><div><div class="eyebrow">READ-ONLY PREVIEW</div><h2 id="preview-title">会话预览</h2></div><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p class="muted" id="preview-meta"></p><div class="inline-error" id="preview-error" role="alert" hidden></div><pre id="preview-content" class="transcript" tabindex="0"></pre><div class="modal-actions"><button class="button button-secondary" type="button" data-close="preview-dialog">关闭</button><button class="button button-primary" id="preview-viewer" type="button">在 neoctl-web 中查看 ↗</button></div></dialog>
+  <noscript><div class="noscript">此管理界面需要启用 JavaScript。</div></noscript>
+</body>
+</html>
