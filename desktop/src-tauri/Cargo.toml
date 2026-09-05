@@ -1,6 +1,6 @@
 [package]
 name = "neoctl-desktop"
-version = "0.1.8"
+version = "0.1.9"
 description = "Windows desktop shell for neoctl-web"
 authors = ["neoctl contributors"]
 edition = "2021"

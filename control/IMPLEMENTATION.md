@@ -2,6 +2,14 @@
 
 Node >=20 native ESM/Web Crypto, no runtime dependencies. `npm start`; `npm test`.
 
+## Broadcast delivery and reporting controls
+
+`GET /api/state` includes `broadcastStatus`, either `null` or `{id,profileId,createdAt,counts:{total,pending,succeeded,superseded},clients:[{deviceId,name,status,acknowledgedAt,online}]}`. Status is scoped to the current broadcast ID. A matching client command acknowledgement must be durably committed before a target becomes `succeeded`; an online device or a sent response is not proof of application. New broadcasts and edits of an actively broadcast profile start a new batch; stale acknowledgements cannot confirm that batch. Directed replacement of a current broadcast target (including a previously succeeded target) marks it `superseded`. Stopping broadcasting clears the active status, without reverting client settings. Device deletion removes its current target.
+
+`PATCH /api/devices/:id` accepts `reportingBlocked:boolean` independently of `name`; the default is false. The flag persists and is exposed on public device records. A valid `/sync` response contains `reportingBlocked`; blocked devices retain heartbeat, command delivery and command acknowledgement, but their transcript deltas are not appended or acknowledged. Updated clients stop collecting transcript data after receiving the authenticated flag and continue empty-delta heartbeats. Cursor positions are preserved, and unblocking resumes missing local bytes. In-flight data before the client learns the flag may still reach the endpoint; this is an application storage/reporting control, not a network block or deletion of historical data. Older clients need not understand the flag for the server to enforce non-storage.
+
+Per-session permanent quota failures may be returned as an authenticated acknowledgement `{sessionId,file,offset,error:'QUOTA_EXCEEDED',retryable:false}` while other deltas and command acknowledgements continue. Such a result never advances the failed session cursor; clients isolate that session rather than repeatedly rejecting the entire batch.
+
 ## Startup
 
 `await createControlServer({adminToken,dataDir,sharedDeviceKey?,autoEnroll?,publicDir?,viewerDir?,publicOrigin?,limits?})` returns a native **not-yet-listening** http.Server. Caller owns listen/close. CLI environment: mandatory `CONTROL_ADMIN_TOKEN`; `CONTROL_HOST=127.0.0.1`, `CONTROL_PORT=8787`, default `CONTROL_DATA_DIR=control/.data`. Use a high-entropy random token. `CONTROL_PUBLIC_ORIGIN=https://control.example` is an exact trusted external origin (no path/trailing slash), also accepted as `options.publicOrigin`. Browser requests may use that configured origin or direct HTTP Host origin. No CORS, cross-site fetch metadata denied. X-Forwarded-* is never trusted; IP comes from socket.remoteAddress. Static assets need no Bearer, every `/api/*` does.
@@ -41,7 +49,7 @@ Success response outer JSON is only `{envelope}`. Decrypt using the same key/dev
 - New devices inherit the current broadcast as a pending command for normal `/sync` application/acknowledgement. Enrollment itself does not apply or acknowledge model settings.
 - Re-enrolling an existing active ID must not recreate it or reset creation time, notes, pending command/ID, last acknowledgement, session offsets or replay state. Enrollment does not update heartbeat/identity observations of an existing record; only sync updates them.
 - `DELETE /api/devices/:id` must durably record revocation in server state, not merely remove the device row. Both `/enroll` and `/sync` reject that ID even after server restart; re-enrollment cannot undo revocation. Keep historical sessions for admins. Revocation bookkeeping must obey storage limits without silently evicting revoked IDs to admit new ones.
-- Enforce device/state/body/concurrency quotas on registration. Rate-limit socket-IP attempts and failed enrollment/authentication as well as accepted device traffic; failures must consume a bounded abuse budget, and arbitrary new IDs must not evade the IP budget. Keep IP buckets bounded, do not trust X-Forwarded-* or weaken existing sync limits. Defaults per socket IP per minute are 60 enrollment attempts, 600 combined device-route attempts, and 30 failed device responses (all HTTP 4xx/5xx). Buckets are bounded to 2048 entries; concurrency is capped at 64. Configurable limits are `enrollPerMinute`, `deviceRequestsPerMinute`, `authFailuresPerMinute`, and `concurrentRequests`.
+- Enforce device/state/body/concurrency quotas on registration. Rate-limit socket-IP attempts and failed enrollment/authentication as well as accepted device traffic; failures must consume a bounded abuse budget, and arbitrary new IDs must not evade the IP budget. Keep IP buckets bounded, do not trust X-Forwarded-* or weaken existing sync limits. Defaults per socket IP per minute are 60 enrollment attempts, 12000 combined device-route attempts, and 30 failed device responses (all HTTP 4xx/5xx). Buckets are bounded to 2048 entries; concurrency is capped at 64. Configurable limits are `enrollPerMinute`, `deviceRequestsPerMinute`, `authFailuresPerMinute`, and `concurrentRequests`.
 - `/enroll` and `/sync` are device-protocol routes; they do not bypass or grant `/api/*` admin privileges. Keep same-origin/cross-site protections and the separate admin Bearer check. Before authenticated decryption, return generic rejection without leaking keys or device existence; authenticated errors may use encrypted responses, never echo secret config.
 
 ### Synchronization (unchanged)
@@ -57,7 +65,7 @@ POST `/sync`, application/json, body `{deviceId,envelope}`. Encrypt upload with 
 }
 ```
 
-Response outer JSON is **only `{envelope}`**, decrypted using down into `{requestId,acks:[{sessionId,file,offset,conflict?:true}],command?:{id,profile}}`. Client verifies requestId. Only meta.json/transcript.jsonl allowed. Offsets and data lengths are bytes, not characters.
+Response outer JSON is **only `{envelope}`**, decrypted using down into `{requestId,reportingBlocked,acks:[{sessionId,file,offset,conflict?:true,error?,retryable?}],command?:{id,profile}}`. Client verifies requestId. Only meta.json/transcript.jsonl allowed. Offsets and data lengths are bytes, not characters.
 
 - At EOF: append and fsync, ack absolute next byte.
 - Client offset ahead: no write, ack current server EOF (rewind).
@@ -66,9 +74,9 @@ Response outer JSON is **only `{envelope}`**, decrypted using down into `{reques
 - Empty probe: ack `min(serverEOF,sentOffset)`, so fully synced files can discover server loss, and a lost client cursor recovers by comparing chunks from zero.
 - No truncation/reset/overwrite API; client freezes local truncation conflicts rather than replacing uploaded content.
 
-`sentAt` must be an integer within +/-120 seconds of server time. Recent request IDs are consumed durably before file/ack effects and retained until sentAt+120 seconds (future clock skew can require up to four minutes of wall-clock retention). Duplicate IDs return encrypted HTTP409, do not refresh heartbeat or apply stale ack. Retries **must use a fresh requestId and sentAt**; file offsets and command IDs provide idempotency. Device limit 120 accepted requests/minute; transport limit 600 combined sync/enrollment attempts/minute per socket IP, max2048 IP buckets. Use a reverse-proxy/WAF rate limit as additional protection, especially shared NAT/proxy deployments.
+`sentAt` must be an integer within +/-120 seconds of server time. Recent request IDs are consumed durably before file/ack effects and retained until sentAt+120 seconds (future clock skew can require up to four minutes of wall-clock retention). Duplicate IDs return encrypted HTTP409, do not refresh heartbeat or apply stale ack. Retries **must use a fresh requestId and sentAt**; file offsets and command IDs provide idempotency. Device limit 240 accepted requests/minute; transport limit 12000 combined sync/enrollment attempts/minute per socket IP, max2048 IP buckets. Use a reverse-proxy/WAF rate limit as additional protection, especially shared NAT/proxy deployments.
 
-Once decrypted, input/quota/replay errors return encrypted envelopes (400/413/409/429 etc.) with `{requestId,acks:[],error}`. A failed batch may have appended earlier files; fresh-ID retry safely negotiates offsets. Unknown/revoked key, tampering, malformed outer body and pre-decryption limits produce generic plaintext `{error:'request rejected'}` only.
+Once decrypted, batch-level input/size/replay errors return encrypted envelopes (400/413/409/429 etc.) with `{requestId,acks:[],error}`. Session append quota failures instead return HTTP 200 with an independent `{sessionId,file,offset,error:'QUOTA_EXCEEDED',retryable:false}` ACK; other deltas and command acknowledgements continue. A failed batch may have appended earlier files; fresh-ID retry safely negotiates offsets. Unknown/revoked key, tampering, malformed outer body and pre-decryption limits produce generic plaintext `{error:'request rejected'}` only.
 
 ## Profiles
 
@@ -78,9 +86,9 @@ Strict schema `{provider:'openai',values:{...}}`. No other top-level fields. `ap
 
 Bearer `CONTROL_ADMIN_TOKEN` required. POST/PATCH use application/json. Shared viewer/UI sessionStorage token key: **neo-control-token** (frontend convention, not a server cookie).
 
-- GET `/api/state` => `{devices,profiles,broadcastProfileId,sessions}`. Device records contain deviceId and id alias, name, ip, createdAt, lastSeen (epoch ms/null), online (<30s), machineId alias for machineCode, machineCode/hostname/model/platform after sync, nested device, lastAckCommandId and sanitized pendingCommand metadata. No key/replay-cache contents. Profiles `{id,name,profile,updatedAt}`. Sessions `{deviceId,sessionId,files:{filename:byteLength},updatedAt}`; title may be obtained from meta, UI should fall back to sessionId.
+- GET `/api/state` => `{devices,profiles,broadcastProfileId,broadcastStatus,sessions}`. Device records contain deviceId and id alias, name, ip, createdAt, lastSeen (epoch ms/null), online (<30s), machineId alias for machineCode, machineCode/hostname/model/platform after sync, nested device, lastAckCommandId and sanitized pendingCommand metadata. No key/replay-cache contents. Profiles `{id,name,profile,updatedAt}`. Sessions `{deviceId,sessionId,files:{filename:byteLength},updatedAt}`; title may be obtained from meta, UI should fall back to sessionId.
 - POST `/api/devices` `{name?}` => 201 `{deviceId,key}`. PSK returned **once** by this compatibility admin endpoint; custom clients instead self-register through `/enroll`.
-- PATCH `/api/devices/:id` `{name}` => public device record.
+- PATCH `/api/devices/:id` `{name?,reportingBlocked?}` => public device record.
 - DELETE `/api/devices/:id` => `{ok:true}`, persists the ID in `revokedDeviceIds` and removes the active record; historical sessions retained for admins. This does not revoke knowledge of a shared key.
 - POST `/api/profiles` `{id?,name,profile}` => profile record, 201 create/200 update.
 - DELETE `/api/profiles/:id` => `{ok:true}`.

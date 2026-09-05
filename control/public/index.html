@@ -41,13 +41,19 @@
         <section class="panel" id="devices" aria-labelledby="devices-title">
           <div class="panel-heading"><div><h2 id="devices-title">设备管理 <span class="count-chip" id="device-count">0</span></h2><p>定制客户端自动注册；在此管理备注并分发配置。</p></div><button class="button button-primary" id="pair-button" type="button">＋ 手动创建设备</button></div>
           <div class="toolbar device-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="device-search" type="search" placeholder="搜索名称、IP、机器码…" aria-label="搜索设备"></label><div class="toolbar-actions"><span class="selection-label" id="selected-count">已选 0 台</span><label class="sr-only" for="dispatch-profile">要分发的配置</label><select id="dispatch-profile"><option value="">选择配置存档</option></select><button class="button button-secondary" id="dispatch-button" type="button" disabled>分发配置</button><button class="button button-quiet button-small" id="clear-selection" type="button" disabled>清空</button></div></div>
+          <p class="reporting-help" id="reporting-help">暂停仅影响会话上报，心跳 / 广播不受影响；已有历史不删除，恢复后补传。</p>
           <div class="table-scroll"><table class="device-table"><thead><tr><th class="checkbox-cell"><input type="checkbox" id="select-all" aria-label="全选当前筛选的设备"></th><th>设备 / 备注</th><th>网络 / 机器码</th><th>系统 / 型号</th><th>状态 / 最后在线</th><th class="actions-heading">操作</th></tr></thead><tbody id="device-rows"></tbody></table><div class="empty-state" id="devices-empty"><span class="empty-symbol" aria-hidden="true">▦</span><strong>还没有设备</strong><p>启动已内置控制配置的定制客户端后，设备将自动出现。</p></div></div>
-          <div class="panel-footer"><span><span class="small-dot"></span> 每 5 秒自动同步，保留当前输入与勾选</span><span id="last-refresh">等待首次同步</span></div>
+          <div class="panel-footer"><span><span class="small-dot"></span> 待确认广播约 1 秒同步，空闲 5 秒，后台 30 秒；保留输入与勾选</span><span id="last-refresh">等待首次同步</span></div>
         </section>
 
         <section class="panel" id="profiles" aria-labelledby="profiles-title">
           <div class="panel-heading"><div><h2 id="profiles-title">模型配置</h2><p>保存多套配置，按需单独分发，或设置全局广播。</p></div><button class="button button-secondary" id="new-profile" type="button">＋ 新建配置</button></div>
           <div class="broadcast-bar"><div class="broadcast-description"><span class="broadcast-icon" aria-hidden="true">◎</span><div><strong>全局广播</strong><span id="broadcast-status">当前未广播</span></div></div><div class="toolbar-actions"><label class="sr-only" for="broadcast-profile">广播配置</label><select id="broadcast-profile"><option value="">选择广播配置</option></select><button class="button button-primary button-small" id="broadcast-button" type="button">开启广播</button><button class="button button-secondary button-small" id="stop-broadcast" type="button" disabled>停止广播</button></div></div>
+          <section class="broadcast-results" aria-label="当前广播确认状态">
+            <p class="muted">成功仅表示服务端已收到客户端的「已应用 ACK」，在线或已投递不代表成功。</p>
+            <p id="broadcast-empty" class="muted">暂无当前广播，不显示成功统计。</p>
+            <div id="broadcast-details" hidden><strong id="broadcast-summary" role="status"></strong><p id="broadcast-meta" class="muted"></p><ul id="broadcast-clients" class="broadcast-clients"></ul></div>
+          </section>
           <div class="profile-workspace"><aside class="profile-library" aria-label="已保存的配置"><div class="list-caption">配置存档 <span id="profile-count">0</span></div><div id="profile-list"></div><p class="muted library-empty" id="profiles-empty">还没有配置存档。<br>在右侧填写并保存第一套配置。</p></aside>
             <form id="profile-form" class="profile-editor" autocomplete="off">
               <div class="editor-heading"><h3 id="editor-title">新建模型配置</h3><span class="badge badge-neutral" id="editor-status">未保存</span></div>

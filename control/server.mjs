@@ -13,8 +13,8 @@ const DEFAULT_LIMITS = Object.freeze({
   requestBytes: 256 * 1024, deltaBytes: 128 * 1024, deltas: 128,
   fileBytes: 16 * 1024 * 1024, diskBytes: 1024 * 1024 * 1024,
   devices: 1000, profiles: 128, sessionsPerDevice: 1000,
-  profileBytes: 64 * 1024, stateBytes: 32 * 1024 * 1024, concurrentRequests: 64, syncPerMinute: 120,
-  enrollPerMinute: 60, authFailuresPerMinute: 30, deviceRequestsPerMinute: 600,
+  profileBytes: 64 * 1024, stateBytes: 32 * 1024 * 1024, concurrentRequests: 64, syncPerMinute: 240,
+  enrollPerMinute: 60, authFailuresPerMinute: 30, deviceRequestsPerMinute: 12000,
 });
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -134,7 +134,29 @@ export async function createControlServer(options = {}) {
   if (!Array.isArray(state.revokedDeviceIds)) throw new Error('Invalid revocation state');
   for (const id of state.revokedDeviceIds) identifier(id);
   if (state.devices.some(d => state.revokedDeviceIds.includes(d.deviceId))) throw new Error('Revoked device in state');
-  let sessions = [];
+  const migrateReporting = state.devices.some(d => d.reportingBlocked === undefined);
+  for (const d of state.devices) {
+    if (d.reportingBlocked === undefined) d.reportingBlocked = false;
+    if (typeof d.reportingBlocked !== 'boolean') throw new Error('Invalid reporting state');
+  }
+  // Only the current revision is retained. Legacy ACKs cannot prove success.
+  const migrateBroadcast = state.broadcastTargets === undefined;
+  if (migrateBroadcast) state.broadcastTargets = state.broadcast ? state.devices.map(d => ({
+    deviceId: d.deviceId, commandId: d.pendingCommand?.source === 'broadcast' ? d.pendingCommand.id : null,
+    status: d.pendingCommand?.source === 'broadcast' ? 'pending' : 'superseded', acknowledgedAt: null,
+  })) : [];
+  if (migrateBroadcast && state.broadcast) {
+    for (const d of state.devices) {
+      if (d.pendingCommand?.source === 'broadcast') d.pendingCommand.broadcastId = state.broadcast.id;
+    }
+  }
+  const sessions = new Map(), sessionCounts = new Map();
+  const sessionKey = (deviceId, sessionId) => deviceId + '/' + sessionId;
+  function putSession(record) {
+    const key = sessionKey(record.deviceId, record.sessionId);
+    if (!sessions.has(key)) sessionCounts.set(record.deviceId, (sessionCounts.get(record.deviceId) ?? 0) + 1);
+    sessions.set(key, record);
+  }
   let diskBytes = 0;
   // Disk files, not cached offsets, are authoritative after crashes/restarts.
   for (const d of await fs.readdir(sessionRoot, { withFileTypes: true })) {
@@ -149,7 +171,7 @@ export async function createControlServer(options = {}) {
         const stat = await fs.lstat(path.join(sessionRoot, d.name, s.name, file.name));
         record.files[file.name] = stat.size; record.updatedAt = Math.max(record.updatedAt, stat.mtimeMs); diskBytes += stat.size;
       }
-      sessions.push(record);
+      putSession(record);
     }
   }
   async function commit(next) {
@@ -163,7 +185,7 @@ export async function createControlServer(options = {}) {
   // updating every client; removing the option does not silently rotate devices.
   const migrateSharedKey = sharedDeviceKey !== undefined && state.devices.some(d => d.key !== sharedDeviceKey);
   if (migrateSharedKey) state = { ...state, devices: state.devices.map(d => ({ ...d, key: sharedDeviceKey })) };
-  if (!stateStat || migrateSharedKey || migrateRevocations) await commit(state);
+  if (!stateStat || migrateSharedKey || migrateRevocations || migrateBroadcast || migrateReporting) await commit(state);
   await fs.chmod(dataDir, 0o700).catch(() => {});
   await fs.chmod(statePath, 0o600).catch(() => {});
   let queue = Promise.resolve();
@@ -179,14 +201,37 @@ export async function createControlServer(options = {}) {
   }
   function newDevice(target, deviceId, key, name, device = null) {
     if (target.devices.length >= limits.devices) reject('Device quota exceeded', 413);
-    const d = { deviceId, key, name, createdAt: Date.now(), lastSeen: null, ip: null, device, pendingCommand: null, lastAckCommandId: null };
-    if (target.broadcast) d.pendingCommand = { ...clone(target.broadcast), id: randomUUID(), createdAt: Date.now() };
+    const d = { deviceId, key, name, reportingBlocked: false, createdAt: Date.now(), lastSeen: null, ip: null, device, pendingCommand: null, lastAckCommandId: null };
+    if (target.broadcast) addBroadcastTarget(target, d);
     target.devices.push(d);
     return d;
   }
+  function addBroadcastTarget(target, d) {
+    d.pendingCommand = { ...target.broadcast, id: randomUUID(), broadcastId: target.broadcast.id };
+    target.broadcastTargets.push({ deviceId: d.deviceId, commandId: d.pendingCommand.id, status: 'pending', acknowledgedAt: null });
+  }
+  function startBroadcast(target, profile) {
+    target.broadcastProfileId = profile.id;
+    target.broadcast = makeCommand(profile, 'broadcast', ++target.sequence);
+    target.broadcastTargets = [];
+    for (const d of target.devices) addBroadcastTarget(target, d);
+  }
+  function broadcastStatus(snapshot) {
+    if (!snapshot.broadcast) return null;
+    const devices = new Map(snapshot.devices.map(d => [d.deviceId, d]));
+    const counts = { total: 0, pending: 0, succeeded: 0, superseded: 0 };
+    const clients = snapshot.broadcastTargets.flatMap(t => {
+      const d = devices.get(t.deviceId);
+      if (!d) return [];
+      counts.total++; counts[t.status]++;
+      return [{ deviceId: d.deviceId, name: d.name, status: t.status, acknowledgedAt: t.acknowledgedAt,
+        online: d.lastSeen !== null && Date.now() - d.lastSeen < 30_000 }];
+    });
+    return { id: snapshot.broadcast.id, profileId: snapshot.broadcast.profileId, createdAt: snapshot.broadcast.createdAt, counts, clients };
+  }
   function publicDevice(d) {
     const { key, pendingCommand, recentRequests, ...safe } = d;
-    return { ...safe, id: d.deviceId, machineId: d.device?.machineCode ?? null, ...(d.device || {}), online: d.lastSeen !== null && Date.now() - d.lastSeen < 30_000,
+    return { ...safe, reportingBlocked: d.reportingBlocked, id: d.deviceId, machineId: d.device?.machineCode ?? null, ...(d.device || {}), online: d.lastSeen !== null && Date.now() - d.lastSeen < 30_000,
       pendingCommand: pendingCommand ? { id: pendingCommand.id, profileId: pendingCommand.profileId, source: pendingCommand.source, createdAt: pendingCommand.createdAt } : null };
   }
   async function sessionFile(deviceId, sessionId, file, create = false) {
@@ -206,7 +251,7 @@ export async function createControlServer(options = {}) {
     return { target, stat };
   }
   async function appendDelta(deviceId, delta) {
-    let record = sessions.find(s => s.deviceId === deviceId && s.sessionId === delta.sessionId);
+    let record = sessions.get(sessionKey(deviceId, delta.sessionId));
     const { target, stat } = await sessionFile(deviceId, delta.sessionId, delta.file);
     const length = stat?.size ?? 0;
     const result = { sessionId: delta.sessionId, file: delta.file, offset: length };
@@ -226,7 +271,7 @@ export async function createControlServer(options = {}) {
       return { ...result, offset: delta.offset + overlap };
     }
     if (length + bytes.length > limits.fileBytes || diskBytes + bytes.length > limits.diskBytes) reject('Session quota exceeded', 413);
-    if (!record && sessions.filter(s => s.deviceId === deviceId).length >= limits.sessionsPerDevice) reject('Session quota exceeded', 413);
+    if (!record && (sessionCounts.get(deviceId) ?? 0) >= limits.sessionsPerDevice) reject('Session quota exceeded', 413);
     await sessionFile(deviceId, delta.sessionId, delta.file, true);
     const handle = await fs.open(target, 'a', 0o600);
     try { await handle.writeFile(bytes); await handle.sync(); }
@@ -235,8 +280,9 @@ export async function createControlServer(options = {}) {
       // Account for partial writes even if a disk-full error interrupts this request.
       const after = await fs.stat(target);
       diskBytes += after.size - length;
-      if (!record) { record = { deviceId, sessionId: delta.sessionId, files: {}, updatedAt: 0 }; sessions.push(record); }
-      record.files[delta.file] = after.size; record.updatedAt = after.mtimeMs;
+      if (!record) { record = { deviceId, sessionId: delta.sessionId, files: {}, updatedAt: 0 }; putSession(record); }
+      record = { ...record, files: { ...record.files, [delta.file]: after.size }, updatedAt: after.mtimeMs };
+      putSession(record);
       result.offset = after.size;
     }
     return result;
@@ -309,19 +355,36 @@ export async function createControlServer(options = {}) {
       if (recent.some(item => item.id === payload.requestId)) reject('Replay rejected', 409);
       if (recent.filter(item => item.receivedAt > now - 60_000).length >= limits.syncPerMinute) reject('Rate limit exceeded', 429);
       // Persist replay consumption before appending or applying any ack, including failed batches.
-      const consumed = clone(state);
-      getDevice(d.deviceId, consumed).recentRequests = [...recent, { id: payload.requestId, receivedAt: now, expiresAt: payload.sentAt + 120_000 }];
+      // Copy only changed records; published snapshots are never mutated.
+      const consumed = { ...state, devices: state.devices.map(item => item.deviceId === d.deviceId
+        ? { ...item, recentRequests: [...recent, { id: payload.requestId, receivedAt: now, expiresAt: payload.sentAt + 120_000 }] } : item) };
       await commit(consumed);
-      const next = clone(state), updated = getDevice(d.deviceId, next);
+      const updated = { ...getDevice(d.deviceId) };
+      const next = { ...state, devices: state.devices.map(item => item.deviceId === d.deviceId ? updated : item),
+        broadcastTargets: state.broadcastTargets.map(t => ({ ...t })) };
       updated.device = device; updated.lastSeen = Date.now(); updated.ip = request.socket.remoteAddress ?? null;
       if (payload.ackCommandId && updated.pendingCommand?.id === payload.ackCommandId) {
+        const target = next.broadcastTargets.find(t => t.deviceId === d.deviceId);
+        if (next.broadcast && target?.status === 'pending' && target.commandId === payload.ackCommandId
+          && updated.pendingCommand.source === 'broadcast'
+          && updated.pendingCommand.broadcastId === next.broadcast.id) {
+          target.status = 'succeeded'; target.acknowledgedAt = now;
+        }
         updated.lastAckCommandId = payload.ackCommandId; updated.pendingCommand = null;
       }
       const acks = [];
-      for (const delta of deltas) acks.push(await appendDelta(d.deviceId, delta));
+      // Pause only body ingestion, not identity, heartbeat or command ACKs.
+      // Empty ACKs leave legacy clients' upload cursors unchanged.
+      for (const delta of updated.reportingBlocked ? [] : deltas) {
+        try { acks.push(await appendDelta(d.deviceId, delta)); }
+        catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 413) throw error;
+          acks.push({ sessionId: delta.sessionId, file: delta.file, offset: delta.offset, error: 'QUOTA_EXCEEDED', retryable: false });
+        }
+      }
       // Persist ack before ever emitting a response without the command.
       await commit(next);
-      result = { requestId: payload.requestId, acks };
+      result = { requestId: payload.requestId, acks, reportingBlocked: updated.reportingBlocked };
       if (updated.pendingCommand) result.command = { id: updated.pendingCommand.id, profile: updated.pendingCommand.profile };
     } catch (error) {
       status = error.status ?? 500;
@@ -331,11 +394,11 @@ export async function createControlServer(options = {}) {
   }
   async function admin(method, parts, body, response) {
     if (method === 'GET' && parts.length === 2 && parts[1] === 'state') {
-      json(response, 200, { devices: state.devices.map(publicDevice), profiles: state.profiles, broadcastProfileId: state.broadcastProfileId, sessions }); return;
+      json(response, 200, { devices: state.devices.map(publicDevice), profiles: state.profiles, broadcastProfileId: state.broadcastProfileId, broadcastStatus: broadcastStatus(state), sessions: [...sessions.values()] }); return;
     }
     if (method === 'GET' && parts.length === 4 && parts[1] === 'sessions') {
       const deviceId = identifier(parts[2]), sessionId = identifier(parts[3]);
-      if (!sessions.some(s => s.deviceId === deviceId && s.sessionId === sessionId)) reject('Session not found', 404);
+      if (!sessions.has(sessionKey(deviceId, sessionId))) reject('Session not found', 404);
       async function read(file) {
         const { target, stat } = await sessionFile(deviceId, sessionId, file);
         if (!stat) return '';
@@ -357,10 +420,17 @@ export async function createControlServer(options = {}) {
       result = { deviceId, key }; status = 201;
     } else if (parts.length === 3 && parts[1] === 'devices' && ['PATCH', 'DELETE'].includes(method)) {
       const d = getDevice(identifier(parts[2]), next);
-      if (method === 'PATCH') { if (!object(body)) reject(); d.name = text(body.name); result = publicDevice(d); }
+      if (method === 'PATCH') {
+        if (!object(body) || !Object.keys(body).length || Object.keys(body).some(k => !['name', 'reportingBlocked'].includes(k))) reject('Invalid device patch');
+        if (Object.hasOwn(body, 'reportingBlocked') && typeof body.reportingBlocked !== 'boolean') reject('Invalid reportingBlocked');
+        if (Object.hasOwn(body, 'name')) d.name = text(body.name);
+        if (Object.hasOwn(body, 'reportingBlocked')) d.reportingBlocked = body.reportingBlocked;
+        result = publicDevice(d);
+      }
       else {
         next.revokedDeviceIds.push(d.deviceId);
         next.devices = next.devices.filter(item => item.deviceId !== d.deviceId);
+        next.broadcastTargets = next.broadcastTargets.filter(t => t.deviceId !== d.deviceId);
       }
     } else if (method === 'POST' && parts.length === 2 && parts[1] === 'profiles') {
       if (!object(body)) reject();
@@ -374,33 +444,35 @@ export async function createControlServer(options = {}) {
       result = profile;
       // Editing the selected broadcast creates a newer target, including for offline devices.
       if (next.broadcastProfileId === id) {
-        next.broadcast = makeCommand(profile, 'broadcast', ++next.sequence);
-        for (const d of next.devices) d.pendingCommand = { ...clone(next.broadcast), id: randomUUID() };
+        startBroadcast(next, profile);
       }
     } else if (method === 'DELETE' && parts.length === 3 && parts[1] === 'profiles') {
       const p = getProfile(parts[2], next);
       next.profiles = next.profiles.filter(item => item.id !== p.id);
       if (next.broadcastProfileId === p.id) {
-        next.broadcastProfileId = null; next.broadcast = null;
+        next.broadcastProfileId = null; next.broadcast = null; next.broadcastTargets = [];
         for (const d of next.devices) if (d.pendingCommand?.source === 'broadcast' && d.pendingCommand.profileId === p.id) d.pendingCommand = null;
       }
       // Directed commands keep their immutable snapshot even if the source profile is deleted.
     } else if (method === 'POST' && parts.length === 2 && parts[1] === 'broadcast') {
       if (!object(body)) reject();
       if (body.profileId === null) {
-        next.broadcastProfileId = null; next.broadcast = null;
+        next.broadcastProfileId = null; next.broadcast = null; next.broadcastTargets = [];
         for (const d of next.devices) if (d.pendingCommand?.source === 'broadcast') d.pendingCommand = null;
       } else {
         const p = getProfile(body.profileId, next);
-        next.broadcastProfileId = p.id; next.broadcast = makeCommand(p, 'broadcast', ++next.sequence);
-        for (const d of next.devices) d.pendingCommand = { ...clone(next.broadcast), id: randomUUID() };
+        startBroadcast(next, p);
       }
     } else if (method === 'POST' && parts.length === 2 && parts[1] === 'dispatch') {
       if (!object(body) || !Array.isArray(body.deviceIds) || !body.deviceIds.length || body.deviceIds.length > limits.devices) reject('Invalid device selection');
       const p = getProfile(body.profileId, next), ids = [...new Set(body.deviceIds)];
       const targets = ids.map(id => getDevice(identifier(id), next));
       const sequence = ++next.sequence;
-      for (const d of targets) d.pendingCommand = makeCommand(p, 'direct', sequence);
+      for (const d of targets) {
+        d.pendingCommand = makeCommand(p, 'direct', sequence);
+        const target = next.broadcastTargets.find(t => t.deviceId === d.deviceId);
+        if (target) { target.status = 'superseded'; target.acknowledgedAt = null; }
+      }
       result = { ok: true, commands: targets.map(d => ({ deviceId: d.deviceId, id: d.pendingCommand.id })) };
     } else reject('Not found', 404);
     await commit(next); json(response, status, result);
@@ -471,7 +543,10 @@ export async function createControlServer(options = {}) {
       } else if (isApi) {
         const parts = url.pathname.split('/').filter(Boolean).map(part => { try { return decodeURIComponent(part); } catch { reject('Invalid path'); } });
         const body = ['POST', 'PATCH'].includes(request.method) ? await readBody(request, limits.requestBytes) : undefined;
-        await serial(() => admin(request.method, parts, body, response));
+        // Synchronous /state sees committed snapshots without waiting on disk I/O.
+        // Session file reads remain serialized against in-flight appends.
+        if (request.method === 'GET' && parts.length === 2 && parts[1] === 'state') await admin(request.method, parts, body, response);
+        else await serial(() => admin(request.method, parts, body, response));
       } else await serveStatic(request, response, url.pathname);
     } catch (error) {
       if (!response.headersSent && !response.destroyed) json(response, error.status ?? 500, { error: isDevice ? 'request rejected' : error.status ? error.message : 'Internal error' });

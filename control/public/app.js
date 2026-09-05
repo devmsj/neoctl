@@ -64,19 +64,33 @@
     catch (error) { showError(error.message, errorTarget); }
     finally { el.disabled = false; updateSelection(); }
   }
-  async function refresh(force = false) {
-    if (refreshing || !token || (!force && document.hidden)) return;
+  const reportingRequests = new Set();
+  let refreshTimer, stateRevision = 0, refreshPromise;
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    if (token) refreshTimer = setTimeout(() => refresh(), document.hidden ? 30000 : state.broadcastStatus?.counts?.pending > 0 ? 1000 : 5000);
+  }
+  function refresh(force = false) {
+    clearTimeout(refreshTimer);
+    if (!token) return Promise.resolve(false);
+    if (refreshing) return force ? refreshPromise.then(() => refresh(true)) : refreshPromise;
     refreshing = true;
+    refreshPromise = fetchState();
+    return refreshPromise;
+  }
+  async function fetchState() {
+    const revision = stateRevision;
     try {
       const data = await api('/api/state');
       if (!Array.isArray(data.devices) || !Array.isArray(data.profiles) || !Array.isArray(data.sessions)) throw new Error('服务器返回了无效的工作空间数据。');
+      if (revision !== stateRevision) return false;
       state = data;
       const ids = new Set(state.devices.map(d => d.deviceId));
       for (const id of selected) if (!ids.has(id)) selected.delete(id);
       render(); connection(true, '已连接'); text('last-refresh', `最近同步 ${new Date().toLocaleTimeString('zh-CN')}`);
       return true;
     } catch (error) { connection(false, '同步失败'); showError(error.message); return false; }
-    finally { refreshing = false; }
+    finally { refreshing = false; scheduleRefresh(); }
   }
   function options(id, entries, placeholder) {
     const select = $(id), value = select.value;
@@ -103,7 +117,7 @@
   function renderDevices() {
     // Keep focused controls in place when polling has not changed device data.
     const devices = visibleDevices();
-    const signature = JSON.stringify([devices, [...selected]]);
+    const signature = JSON.stringify([devices, [...selected], [...reportingRequests]]);
     const rows = $('device-rows');
     if (rows.dataset.signature !== signature) {
       rows.dataset.signature = signature; rows.replaceChildren();
@@ -118,7 +132,12 @@
         const system = node('td'); system.append(node('span', '', d.platform || '—'), node('span', 'cell-secondary', d.model || d.hostname || '—'));
         const status = node('td'); status.append(node('span', `badge ${d.online ? 'badge-online' : 'badge-neutral'}`, d.online ? '● 在线' : '○ 离线'), node('span', 'cell-secondary', date(d.lastSeen)));
         if (d.pendingCommand) status.append(node('span', 'cell-secondary pending-label', '配置待确认'));
-        const controls = node('td', 'row-actions'); controls.append(button('备注', () => renameDevice(d)), button('移除', () => removeDevice(d), 'button button-danger button-small'));
+        const blocked = d.reportingBlocked === true;
+        status.append(node('span', 'cell-secondary', blocked ? '会话上报已暂停' : '会话上报正常'));
+        const reporting = button(blocked ? '恢复上报' : '暂停上报', () => toggleReporting(d));
+        reporting.disabled = reportingRequests.has(d.deviceId);
+        reporting.setAttribute('aria-describedby', 'reporting-help');
+        const controls = node('td', 'row-actions'); controls.append(reporting); controls.append(button('备注', () => renameDevice(d)), button('移除', () => removeDevice(d), 'button button-danger button-small'));
         tr.append(nameCell, network, system, status, controls); rows.append(tr);
       }
     }
@@ -126,6 +145,37 @@
     const empty = $('devices-empty'); empty.querySelector('strong').textContent = state.devices.length ? '没有匹配的设备' : '还没有设备';
     empty.querySelector('p').textContent = state.devices.length ? '试试其他名称、IP 或机器码。' : '启动已内置控制配置的定制客户端后，设备将自动注册。';
     updateSelection();
+  }
+  async function toggleReporting(d) {
+    if (reportingRequests.has(d.deviceId)) return;
+    reportingRequests.add(d.deviceId); renderDevices(); showError('');
+    try {
+      await api('/api/devices/' + encodeURIComponent(d.deviceId), 'PATCH', { reportingBlocked: d.reportingBlocked !== true });
+      stateRevision++;
+      if (!await refresh(true)) showError('设置请求已提交，但同步失败，请刷新确认；当前显示最后一次确认的状态。');
+      else if (state.devices.find(device => device.deviceId === d.deviceId)?.reportingBlocked !== (d.reportingBlocked !== true)) showError('服务端尚未确认请求的上报状态，请刷新确认或检查服务版本。');
+      else success('上报设置已同步。仅影响会话上报，心跳 / 广播不受影响；已有历史不删除，恢复后补传。');
+    } catch { showError('上报设置失败，未确认状态变更，请刷新确认或重试。'); }
+    finally { reportingRequests.delete(d.deviceId); renderDevices(); }
+  }
+  function renderBroadcast() {
+    const broadcast = state.broadcastStatus, list = $('broadcast-clients');
+    list.replaceChildren(); text('broadcast-summary', ''); text('broadcast-meta', '');
+    $('broadcast-details').hidden = !broadcast;
+    text('broadcast-empty', broadcast ? '' : state.broadcastProfileId ? '当前服务未提供广播确认状态，无法确认成功数量。' : '暂无当前广播，不显示成功统计。');
+    if (!broadcast) return;
+    const c = broadcast.counts;
+    text('broadcast-summary', '共 ' + c.total + ' 台 · 成功 ' + c.succeeded + ' · 待确认 ' + c.pending + ' · 被定向覆盖 ' + c.superseded);
+    text('broadcast-meta', '广播 ' + broadcast.id + ' · 创建于 ' + date(broadcast.createdAt));
+    const labels = { pending: '待确认', succeeded: '成功（已应用 ACK）', superseded: '被定向覆盖' };
+    for (const client of broadcast.clients) {
+      const row = node('li', 'broadcast-client');
+      row.append(node('strong', '', client.name || client.deviceId), node('span', 'mono', client.deviceId),
+        node('span', 'badge ' + (client.online ? 'badge-online' : 'badge-neutral'), client.online ? '在线' : '离线'),
+        node('span', 'badge ' + (client.status === 'succeeded' ? 'badge-online' : 'badge-neutral'), labels[client.status] || '未知状态'));
+      row.append(node('span', 'broadcast-time', '成功确认：' + (client.status === 'succeeded' && typeof client.acknowledgedAt === 'number' ? new Date(client.acknowledgedAt).toLocaleString('zh-CN') : '—')));
+      list.append(row);
+    }
   }
   async function renameDevice(d) {
     const name = window.prompt('修改设备备注', d.name || '');
@@ -144,6 +194,7 @@
     options('dispatch-profile', entries, '选择配置存档'); options('broadcast-profile', entries, '选择广播配置');
     const current = state.profiles.find(p => p.id === state.broadcastProfileId);
     text('broadcast-status', current ? `正在广播：${current.name} · 包含离线及新设备` : '当前未广播');
+    renderBroadcast();
     $('stop-broadcast').disabled = !state.broadcastProfileId;
     $('broadcast-button').disabled = !$('broadcast-profile').value;
     text('profile-count', state.profiles.length); $('profiles-empty').hidden = state.profiles.length > 0;
@@ -223,7 +274,7 @@
     modelProfile = validateProfile(parsed, false); writeFields(modelProfile); jsonDirty = false; markDirty();
   }
   function openAuth() { $('admin-token').value = token; showError('', 'auth-error'); if (!$('auth-dialog').open) $('auth-dialog').showModal(); }
-  function storeToken(value) { token = value; epoch++; try { if (value) sessionStorage.setItem(TOKEN_KEY, value); else sessionStorage.removeItem(TOKEN_KEY); } catch { /* Fall back to current-page memory. Viewer can prompt independently. */ } }
+  function storeToken(value) { token = value; epoch++; stateRevision++; scheduleRefresh(); try { if (value) sessionStorage.setItem(TOKEN_KEY, value); else sessionStorage.removeItem(TOKEN_KEY); } catch { /* Fall back to current-page memory. Viewer can prompt independently. */ } }
   function openViewer(session) {
     if (!discardAllowed()) return;
     // Same-tab navigation retains sessionStorage without opener/token URL leakage.
@@ -245,8 +296,9 @@
   $('auth-button').addEventListener('click', openAuth); $('sidebar-auth').addEventListener('click', openAuth);
   $('auth-form').addEventListener('submit', event => { event.preventDefault(); action($('connect-button'), async () => {
     storeToken($('admin-token').value.trim());
-    // Validate immediately, independently of an in-flight poll from the previous identity.
-    const data = await api('/api/state'); state = data; render(); connection(true, '已连接'); showError(''); $('auth-dialog').close(); $('admin-token').value = ''; success('已连接管理工作空间。');
+    // Serialize identity validation with polling to avoid overlapping state requests.
+    if (!await refresh(true)) throw new Error('连接验证失败，请检查令牌及服务连接。');
+    showError(''); $('auth-dialog').close(); $('admin-token').value = ''; success('已连接管理工作空间。');
   }, 'auth-error'); });
   $('logout-button').addEventListener('click', () => {
     if (!discardAllowed()) return;
@@ -310,18 +362,18 @@
   $('broadcast-button').addEventListener('click', () => action($('broadcast-button'), async () => {
     const profileId = $('broadcast-profile').value; if (!profileId) throw new Error('请选择广播配置。');
     if (!window.confirm('向全部设备广播此配置？离线设备及之后新注册的设备也会接收。')) return;
-    await api('/api/broadcast', 'POST', { profileId }); success('全局广播已开启。'); await refresh(true);
+    await api('/api/broadcast', 'POST', { profileId }); stateRevision++; state.broadcastStatus = null; state.broadcastProfileId = profileId; renderProfiles(); success('全局广播已开启。'); await refresh(true);
   }));
   $('stop-broadcast').addEventListener('click', () => action($('stop-broadcast'), async () => {
     if (!window.confirm('停止全局广播？已应用的模型配置不会自动撤回。')) return;
-    await api('/api/broadcast', 'POST', { profileId: null }); success('广播已停止；已应用的配置保持不变。'); await refresh(true);
+    await api('/api/broadcast', 'POST', { profileId: null }); stateRevision++; state.broadcastStatus = null; state.broadcastProfileId = null; renderProfiles(); success('广播已停止；已应用的配置保持不变。'); await refresh(true);
   }));
   $('session-device').addEventListener('change', renderSessions);
   $('preview-viewer').addEventListener('click', () => { if (previewSession) openViewer(previewSession); });
   $('preview-dialog').addEventListener('close', () => { previewGeneration++; text('preview-content', ''); previewSession = null; });
   window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); else scheduleRefresh(); });
   loadProfile(null); render();
   if (token) refresh(true); else openAuth();
-  setInterval(() => refresh(), 5000);
+
 })();

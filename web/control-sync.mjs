@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setTimeout as wait } from 'node:timers/promises';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { seal, open } from './control-protocol.mjs';
@@ -131,7 +132,14 @@ export function createControlSync(options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const pollMs = Math.min(30_000, Math.max(1, Number(options.pollMs) || 1000));
   const timeoutMs = Math.min(30_000, Math.max(1, Number(options.timeoutMs) || 8000));
+  const fastPollMs = Math.min(30_000, Math.max(500, Number(options.fastPollMs) || 500));
+  const scanLimit = Math.min(1024, Math.max(2, Math.floor(Number(options.scanLimit) || 64)));
+  const indexTtlMs = Math.min(60_000, Math.max(1, Number(options.indexTtlMs) || 30_000));
   let state, pairing, identity, inFlight, controller, timer;
+  let registryCache, registryStamp, indexAt = 0, lastSyncAt = 0, backlog = false;
+  const active = new Map();
+  const activeTtlMs = Math.min(60_000, Math.max(1, Number(options.activeTtlMs) || 30_000));
+  let serverReportingBlocked = false, reportingProbed = false;
   let enrolled = false;
   let stopped = false, started = false, failures = 0, rotation = 0, lastDiagnostic = '';
 
@@ -170,29 +178,62 @@ export function createControlSync(options = {}) {
     await atomicJson(stateFile, state);
     await diagnose('TRANSCRIPT_CONFLICT');
   }
+  async function sessionIndex() {
+    // Stat every cycle, parse/sort on change or TTL. Index registered IDs directly;
+    // unrelated Engine/CLI history never adds filesystem scan work.
+    try {
+      const stat = await fs.stat(registryFile, { bigint: true });
+      const stamp = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      if (!registryCache || stamp !== registryStamp || Date.now() - indexAt >= indexTtlMs) {
+        const registry = JSON.parse(await fs.readFile(registryFile, 'utf8'));
+        if (!registry || typeof registry !== 'object' || Array.isArray(registry)) throw new Error('REGISTRY_INVALID');
+        const ids = Object.keys(registry).filter(validId).sort();
+        registryCache = { ids, members: new Set(ids) };
+        registryStamp = stamp;
+        indexAt = Date.now();
+        for (const id of active.keys()) if (!registryCache.members.has(id)) active.delete(id);
+      }
+      return registryCache.ids;
+    } catch {
+      registryCache = undefined;
+      registryStamp = undefined;
+      active.clear();
+      return [];
+    }
+  }
   async function collect() {
-    let entries;
-    try { entries = await fs.readdir(sessionsRoot, { withFileTypes: true }); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    // Fail closed: shared Engine storage may contain unrelated CLI history.
-    let registry;
-    try { registry = JSON.parse(await fs.readFile(registryFile, 'utf8')); } catch { return []; }
-    if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return [];
-    const ids = entries.filter((entry) => entry.isDirectory() && validId(entry.name) && Object.hasOwn(registry, entry.name)).map((entry) => entry.name).sort();
+    const ids = await sessionIndex();
+    backlog = false;
     if (!ids.length) return [];
     const deltas = [];
     let remaining = RAW_BUDGET;
-    const start = rotation % ids.length;
-    for (let index = 0; index < ids.length && deltas.length < 16 && remaining > 0; index++) {
-      const position = (start + index) % ids.length;
-      rotation = position + 1;
-      const sessionId = ids[position];
+    // Interleave a rotating active queue and cold sweep, with bounded disk work.
+    const visited = new Set();
+    let cold = 0;
+    const hot = [];
+    for (const id of active.keys()) { hot.push(id); if (hot.length >= Math.ceil(scanLimit / 2)) break; }
+    let hotIndex = 0;
+    for (let index = 0; index < scanLimit && deltas.length < 16 && remaining > 0 && stillEnabled(); index++) {
+      let sessionId = ids.length > scanLimit && index % 2 === 0 ? hot[hotIndex++] : undefined;
+      if (!sessionId) {
+        if (cold >= ids.length) break;
+        sessionId = ids[rotation % ids.length];
+        rotation = (rotation + 1) % ids.length;
+        cold++;
+      }
+      if (visited.has(sessionId)) continue;
+      visited.add(sessionId);
+      const activeUntil = active.get(sessionId);
+      active.delete(sessionId);
+      if (activeUntil > Date.now()) active.set(sessionId, activeUntil);
       const cursor = state.cursors[sessionId] || { offset: 0 };
-      if (cursor.blocked) continue;
+      if (cursor.blocked) { active.delete(sessionId); continue; }
       if (!Number.isSafeInteger(cursor.offset) || cursor.offset < 0) { await conflict(sessionId); continue; }
       const filename = path.join(sessionsRoot, sessionId, FILE);
       let handle;
       try {
+        const parent = await fs.lstat(path.dirname(filename));
+        if (!parent.isDirectory() || parent.isSymbolicLink()) continue;
         const link = await fs.lstat(filename);
         if (!link.isFile() || link.isSymbolicLink()) continue;
         handle = await fs.open(filename, 'r');
@@ -206,16 +247,21 @@ export function createControlSync(options = {}) {
         const newline = data.lastIndexOf(10);
         if (newline >= 0) data = data.subarray(0, newline + 1);
         else if (data.length < CHUNK) data = Buffer.alloc(0);
+        if (!data.length) continue; // Empty/unfinished tails consume no delta slots.
+        active.set(sessionId, Date.now() + activeTtlMs);
+        if (stat.size > cursor.offset + data.length) backlog = true;
         remaining -= data.length;
         deltas.push({ sessionId, file: FILE, offset: cursor.offset, data: data.toString('base64') });
       } catch (error) {
         if (error.code !== 'ENOENT') await diagnose('TRANSCRIPT_READ_FAILED');
       } finally { await handle?.close().catch(() => {}); }
     }
+    if (remaining === 0 || deltas.length === 16) backlog = true;
     return deltas;
   }
   async function acceptAcks(acks, deltas) {
     if (!Array.isArray(acks)) throw new Error('ACK_INVALID');
+    if (!acks.length) return;
     const next = structuredClone(state);
     const sent = new Map(deltas.map((delta) => [delta.sessionId, delta]));
     const seen = new Set();
@@ -224,6 +270,13 @@ export function createControlSync(options = {}) {
       if (!delta || ack.file !== FILE || seen.has(ack.sessionId) || !Number.isSafeInteger(ack.offset) || ack.offset < 0 || ack.offset > delta.offset + Buffer.from(delta.data, 'base64').length) throw new Error('ACK_INVALID');
       seen.add(ack.sessionId);
       if (state.cursors[ack.sessionId]?.blocked) continue;
+      if (ack.error === 'QUOTA_EXCEEDED' && ack.retryable === false) {
+        next.cursors[ack.sessionId] = { ...state.cursors[ack.sessionId], offset: state.cursors[ack.sessionId]?.offset ?? delta.offset, blocked: true };
+        active.delete(ack.sessionId);
+        await diagnose('SESSION_QUOTA_EXCEEDED');
+        continue;
+      }
+      if (ack.error) throw new Error('ACK_INVALID');
       if (ack.conflict === true) {
         await conflict(ack.sessionId);
         next.cursors[ack.sessionId] = state.cursors[ack.sessionId];
@@ -240,7 +293,7 @@ export function createControlSync(options = {}) {
         next.cursors[ack.sessionId] = { offset: ack.offset, anchor: await anchorAt(handle, ack.offset) };
       } finally { await handle?.close().catch(() => {}); }
     }
-    await atomicJson(stateFile, next);
+    if (JSON.stringify(next) !== JSON.stringify(state)) await atomicJson(stateFile, next);
     state = next;
   }
   async function exchange(endpoint, payload) {
@@ -249,11 +302,18 @@ export function createControlSync(options = {}) {
     if (Buffer.byteLength(body) > MAX_PACKET) throw new Error('PACKET_LIMIT');
     if (!stillEnabled()) throw new Error('STOPPED');
     controller = new AbortController();
+    // All sync requests (including manual ticks and immediate ACK) share spacing.
+    if (endpoint === 'sync') {
+      const delay = Math.max(0, 500 - (Date.now() - lastSyncAt));
+      if (delay) await wait(delay, undefined, { signal: controller.signal });
+      if (!stillEnabled()) throw new Error('STOPPED');
+      lastSyncAt = Date.now();
+    }
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]);
     const response = await fetchImpl(`${pairing.url}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal, redirect: 'error' });
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
-      if (endpoint === 'sync' && [401, 403, 404].includes(response.status)) enrolled = false;
+      if (endpoint === 'sync' && [401, 403, 404].includes(response.status)) { enrolled = false; reportingProbed = false; }
       throw new Error('CONTROL_HTTP_FAILED');
     }
     // Bounded response reading also covers chunked responses.
@@ -277,28 +337,62 @@ export function createControlSync(options = {}) {
       if (!stillEnabled()) return false;
       enrolled = true;
     }
-    const deltas = await collect();
-    if (!stillEnabled()) return false;
+    // First sync after launch/re-enrollment is control-only. Never inspect local
+    // transcripts until an authenticated response establishes reporting policy.
+    // A cycle is bounded to probe + regular sync + one immediate ACK (at most 3).
+    if (!reportingProbed) {
+      const hadPendingAck = state.ackCommandId && state.ackCommandPending !== false;
+      const applied = await syncOnce([]);
+      if (!stillEnabled()) return false;
+      if (applied) { await syncOnce([]); return stillEnabled(); }
+      if (serverReportingBlocked || hadPendingAck) return true;
+    }
+    // Persisted pending ACK has priority over transcript scans after restart.
+    if (state.ackCommandId && state.ackCommandPending !== false) {
+      const applied = await syncOnce([]);
+      if (applied && stillEnabled()) await syncOnce([]);
+    } else {
+      const deltas = serverReportingBlocked ? [] : await collect();
+      if (!stillEnabled()) return false;
+      const applied = await syncOnce(deltas);
+      // One extra request only; never recurse on commands returned by the ACK.
+      if (applied && stillEnabled()) await syncOnce([]);
+    }
+    return stillEnabled();
+  }
+  async function syncOnce(deltas) {
     const payload = { requestId: randomUUID(), sentAt: Date.now(), device: identity, deltas };
-    if (state.ackCommandId) payload.ackCommandId = state.ackCommandId;
+    if (state.ackCommandId && state.ackCommandPending !== false) payload.ackCommandId = state.ackCommandId;
     const { reply, signal } = await exchange('sync', payload);
-    if (!await stillEnabled()) return false;
-    await acceptAcks(reply.acks, deltas);
+    if (!stillEnabled()) return false;
+    if (reply.reportingBlocked !== undefined && typeof reply.reportingBlocked !== 'boolean') throw new Error('REPORTING_POLICY_INVALID');
+    serverReportingBlocked = reply.reportingBlocked === true; // Legacy servers default false.
+    reportingProbed = true;
+    if (serverReportingBlocked) backlog = false;
+    // In-flight bytes may have been sent before learning the policy. The server
+    // discards them; never advance or freeze a cursor using a blocked response.
+    if (!serverReportingBlocked) await acceptAcks(reply.acks, deltas);
+    if (payload.ackCommandId) {
+      const next = { ...state, ackCommandPending: false };
+      await atomicJson(stateFile, next);
+      state = next;
+    }
     if (reply.command) {
       const command = reply.command;
       if (!validId(command.id)) throw new Error('COMMAND_INVALID');
       if (command.id !== state.ackCommandId) {
         loginProfile(command.profile);
         if (!options.applyProfile) throw new Error('LOGIN_UNAVAILABLE');
-        if (!await stillEnabled()) return false;
+        if (!stillEnabled()) return false;
         await options.applyProfile(command.profile, { signal });
-        if (!await stillEnabled()) return false;
-        const next = { ...state, ackCommandId: command.id };
+        if (!stillEnabled()) return false;
+        const next = { ...state, ackCommandId: command.id, ackCommandPending: true };
         await atomicJson(stateFile, next);
         state = next;
+        return true;
       }
     }
-    return true;
+    return false;
   }
   function tick() {
     if (inFlight) return inFlight;
@@ -314,7 +408,7 @@ export function createControlSync(options = {}) {
     if (stopped || !started || !enabled) return;
     timer = setTimeout(async () => {
       await tick();
-      schedule(Math.min(30_000, pollMs * 2 ** failures));
+      schedule(failures ? Math.min(30_000, Math.max(500, pollMs) * 2 ** failures) : backlog ? fastPollMs : pollMs);
     }, delay);
     timer.unref?.();
   }

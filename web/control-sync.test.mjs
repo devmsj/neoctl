@@ -21,7 +21,8 @@ async function fixture(t, options = {}) {
   const key = randomBytes(32).toString('base64');
   let deviceId;
   const requests = [], enrollments = [], paths = [], wire = [], stored = new Map(), clients = [];
-  let handler, enrollHandler;
+  let handler, enrollHandler, probeExpected = false;
+  const probes = [];
   const server = http.createServer(async (req, res) => {
     try {
       const chunks = [];
@@ -45,10 +46,16 @@ async function fixture(t, options = {}) {
         assert.equal(typeof payload.sentAt, 'number');
         assert.deepEqual(Object.keys(payload).sort(), ['device', 'kind', 'requestId', 'sentAt']);
         enrollments.push(payload);
+        probeExpected = true;
         if (enrollHandler) return await enrollHandler(payload, res);
         return await replyEnroll(res, payload);
       }
       assert.ok(enrollments.length > 0);
+      if (probeExpected) {
+        probeExpected = false;
+        probes.push(payload);
+        if (!options.inspectProbes && !payload.ackCommandId) return await reply(res, payload);
+      }
       requests.push(payload);
       if (handler) return await handler(payload, res);
       await reply(res, payload);
@@ -88,7 +95,7 @@ async function fixture(t, options = {}) {
     await fs.rm(directory, { recursive: true, force: true });
   });
   return {
-    directory, sessionsRoot, config, requests, enrollments, paths, wire, stored, client, reply, replyEnroll,
+    directory, sessionsRoot, config, requests, probes, enrollments, paths, wire, stored, client, reply, replyEnroll,
     get deviceId() { return deviceId; },
     setEnrollHandler(value) { enrollHandler = value; },
     setHandler(value) { handler = value; },
@@ -118,7 +125,7 @@ test('encrypted wire, byte deltas, incomplete UTF-8 tail and restart cursor reco
   assert.ok(!f.wire[0].includes('requestId'));
   await f.transcript('session1', '{"text":"新增"}', true);
   await client.tick();
-  assert.equal(f.requests[1].deltas[0].data, '');
+  assert.deepEqual(f.requests[1].deltas, []);
   await f.transcript('session1', '\n', true);
   await client.tick();
   assert.equal(f.requests[2].deltas[0].offset, Buffer.byteLength(initial));
@@ -126,8 +133,7 @@ test('encrypted wire, byte deltas, incomplete UTF-8 tail and restart cursor reco
   await client.stop();
   const restarted = f.client();
   await restarted.tick();
-  assert.equal(f.requests[3].deltas[0].data, '');
-  assert.equal(f.requests[3].deltas[0].offset, f.stored.get('session1').length);
+  assert.deepEqual(f.requests[3].deltas, []);
 });
 
 test('response requestId replay cannot advance cursor or apply command', async (t) => {
@@ -145,7 +151,7 @@ test('response requestId replay cannot advance cursor or apply command', async (
   assert.equal((await f.state()).cursors.s1.offset, 8);
 });
 
-test('lost ack is idempotent and server-lost offsets rewind even on empty heartbeat probes', async (t) => {
+test('lost ack is idempotent and server-lost offsets rewind on the next nonempty delta', async (t) => {
   const f = await fixture(t);
   await f.transcript('s1', 'first\nsecond\n');
   const client = f.client();
@@ -156,12 +162,13 @@ test('lost ack is idempotent and server-lost offsets rewind even on empty heartb
   assert.equal(f.stored.get('s1').toString(), 'first\nsecond\n');
   assert.equal(f.requests[1].deltas[0].offset, 0);
   f.stored.set('s1', Buffer.from('first\n'));
+  await f.transcript('s1', 'third\n', true);
   await client.tick();
   assert.equal((await f.state()).cursors.s1.offset, 6);
   await client.tick();
   assert.equal(f.requests.at(-1).deltas[0].offset, 6);
-  assert.equal(Buffer.from(f.requests.at(-1).deltas[0].data, 'base64').toString(), 'second\n');
-  assert.equal(f.stored.get('s1').toString(), 'first\nsecond\n');
+  assert.equal(Buffer.from(f.requests.at(-1).deltas[0].data, 'base64').toString(), 'second\nthird\n');
+  assert.equal(f.stored.get('s1').toString(), 'first\nsecond\nthird\n');
 });
 
 test('configuration failures never ack; successful command id persists and is not reapplied on restart', async (t) => {
@@ -170,7 +177,7 @@ test('configuration failures never ack; successful command id persists and is no
   f.setHandler((payload, res) => f.reply(res, payload, { command: { id: 'command1', profile } }));
   const client = f.client();
   assert.equal(await client.tick(), false);
-  assert.equal((await f.state()).ackCommandId, null);
+  await assert.rejects(f.state(), { code: 'ENOENT' });
   assert.equal(f.requests[0].ackCommandId, undefined);
   fails = false;
   assert.equal(await client.tick(), true);
@@ -179,6 +186,9 @@ test('configuration failures never ack; successful command id persists and is no
   await client.stop();
   await f.client().tick();
   assert.equal(f.requests[2].ackCommandId, 'command1');
+  assert.deepEqual(f.requests[2].deltas, []);
+  assert.equal(f.requests[3].ackCommandId, undefined);
+  assert.equal((await f.state()).ackCommandPending, false);
   assert.equal(applications, 2);
 });
 
@@ -199,7 +209,7 @@ test('absent/disabled/invalid in-memory config sends nothing even with legacy fi
   assert.equal(f.paths.length, 0);
   await assert.rejects(fs.stat(path.join(f.directory, 'control-device.json')), { code: 'ENOENT' });
   assert.equal(await f.client({ pairingFile }).tick(), true);
-  assert.deepEqual(f.paths, ['/enroll', '/sync']);
+  assert.deepEqual(f.paths, ['/enroll', '/sync', '/sync']);
 });
 
 test('stop during in-flight exchange prevents command and cursor acceptance', async (t) => {
@@ -353,7 +363,7 @@ test('automatic enrollment persists only random UUID, reuses ID on restart and i
   assert.equal(await f.client().tick(), true);
   assert.equal(f.enrollments.length, 2);
   assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), saved);
-  assert.deepEqual(f.paths, ['/enroll', '/sync', '/sync', '/enroll', '/sync']);
+  assert.deepEqual(f.paths, ['/enroll', '/sync', '/sync', '/sync', '/enroll', '/sync', '/sync']);
   for (const name of await fs.readdir(f.directory)) {
     if (name.endsWith('.json')) assert.ok(!(await fs.readFile(path.join(f.directory, name), 'utf8')).includes(f.config.key));
   }
@@ -402,7 +412,7 @@ test('unknown device sync response causes re-enrollment with same persisted UUID
   assert.equal(await client.tick(), false);
   f.setHandler(undefined);
   assert.equal(await client.tick(), true);
-  assert.deepEqual(f.paths, ['/enroll', '/sync', '/enroll', '/sync']);
+  assert.deepEqual(f.paths, ['/enroll', '/sync', '/sync', '/enroll', '/sync', '/sync']);
 });
 
 test('config snapshot cannot be retargeted by caller mutation', async (t) => {
@@ -533,4 +543,248 @@ test('server consumes private config before core imports/children, defaults off 
       }
     });
   }
+});
+
+test('bounded cold sweep, empty slots, hot fairness and cached registry invalidation', async (t) => {
+  const f = await fixture(t);
+  const registry = {};
+  for (let i = 0; i < 200; i++) registry[`idle${String(i).padStart(3, '0')}`] = {};
+  await fs.mkdir(f.sessionsRoot, { recursive: true });
+  for (const id of Object.keys(registry)) {
+    await fs.mkdir(path.join(f.sessionsRoot, id));
+    await fs.writeFile(path.join(f.sessionsRoot, id, 'transcript.jsonl'), '');
+  }
+  const registryFile = path.join(f.directory, 'session-workspaces.json');
+  await fs.writeFile(registryFile, JSON.stringify(registry));
+  await f.transcript('aaa-hot', 'row\n'.repeat(30000));
+  let reads = 0, opens = 0, enumerations = 0;
+  const read = fs.readFile, openFile = fs.open, readdir = fs.readdir;
+  t.mock.method(fs, 'readFile', async (...args) => { if (args[0] === registryFile) reads++; return read(...args); });
+  t.mock.method(fs, 'open', async (...args) => { if (String(args[0]).endsWith('transcript.jsonl')) opens++; return openFile(...args); });
+  t.mock.method(fs, 'readdir', async (...args) => { enumerations++; return readdir(...args); });
+  const client = f.client({ scanLimit: 32 });
+  for (let i = 0; i < 3; i++) {
+    opens = 0;
+    assert.equal(await client.tick(), true);
+    assert.ok(opens <= 33, `bounded collect + ACK opens: ${opens}`);
+    assert.ok(f.requests.at(-1).deltas.some(d => d.sessionId === 'aaa-hot'));
+    assert.ok(f.requests.at(-1).deltas.every(d => d.data.length > 0));
+  }
+  assert.equal(reads, 1);
+  assert.equal(enumerations, 0);
+  // Membership replacement must invalidate immediately.
+  registry['zzz-new'] = {};
+  await fs.writeFile(registryFile, JSON.stringify(registry));
+  await client.tick();
+  assert.ok(!f.requests.at(-1).deltas.some(d => d.sessionId === 'aaa-hot'));
+  assert.equal(reads, 2);
+  await fs.writeFile(registryFile, '{broken');
+  await client.tick();
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+});
+
+test('idle sync does not rewrite state and empty sessions do not consume 16 delta slots', async (t) => {
+  const f = await fixture(t);
+  for (let i = 0; i < 20; i++) await f.transcript(`empty${i}`, '');
+  await f.transcript('zzz-live', 'live\n');
+  const client = f.client();
+  await client.tick();
+  assert.deepEqual(f.requests[0].deltas.map(d => d.sessionId), ['zzz-live']);
+  let writes = 0;
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (...args) => { if (args[1] === path.join(f.directory, 'control-sync-state.json')) writes++; return rename(...args); });
+  await client.tick();
+  await client.tick();
+  assert.equal(writes, 0);
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+});
+
+test('quota rejection freezes only that session, persists and diagnoses without identifiers', async (t) => {
+  const f = await fixture(t);
+  await f.transcript('private-session', 'secret\n');
+  await f.transcript('healthy', 'ok\n');
+  f.setHandler((p, r) => f.reply(r, p, { acks: p.deltas.map(d => ({ sessionId: d.sessionId, file: d.file,
+    offset: d.sessionId === 'healthy' ? Buffer.from(d.data, 'base64').length : d.offset,
+    ...(d.sessionId === 'private-session' ? { error: 'QUOTA_EXCEEDED', retryable: false } : {}) })) }));
+  const client = f.client();
+  assert.equal(await client.tick(), true);
+  assert.equal((await f.state()).cursors['private-session'].blocked, true);
+  assert.equal((await f.state()).cursors.healthy.offset, 3);
+  const diagnostic = await fs.readFile(path.join(f.directory, 'control-sync-diagnostic.json'), 'utf8');
+  assert.equal(JSON.parse(diagnostic).code, 'SESSION_QUOTA_EXCEEDED');
+  assert.ok(!diagnostic.includes('private-session') && !diagnostic.includes('secret'));
+  await client.stop();
+  f.setHandler(undefined);
+  await f.transcript('healthy', 'next\n', true);
+  await f.client().tick();
+  assert.deepEqual(f.requests.at(-1).deltas.map(d => d.sessionId), ['healthy']);
+});
+
+test('immediate empty ACK is spaced, retries after restart, and never loops on repeated command', async (t) => {
+  let applications = 0, failAck = true;
+  const times = [];
+  const f = await fixture(t, { applyProfile: async () => { applications++; } });
+  f.setHandler((p, r) => {
+    times.push(Date.now());
+    if (p.ackCommandId && failAck) return r.writeHead(503).end();
+    return f.reply(r, p, { command: { id: 'c1', profile } });
+  });
+  const client = f.client();
+  assert.equal(await client.tick(), false);
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(f.requests[1].deltas, []);
+  assert.equal(f.requests[1].ackCommandId, 'c1');
+  assert.ok(times[1] - times[0] >= 480);
+  assert.equal((await f.state()).ackCommandPending, true);
+  await client.stop();
+  failAck = false;
+  const restarted = f.client();
+  assert.equal(await restarted.tick(), true);
+  assert.equal(f.requests.at(-1).ackCommandId, 'c1');
+  assert.equal((await f.state()).ackCommandPending, false);
+  await restarted.tick();
+  assert.equal(f.requests.length, 4);
+  assert.equal(f.requests.at(-1).ackCommandId, undefined);
+  assert.equal(applications, 1);
+});
+
+test('backlog scheduler clamps configurable fast polling to 500ms and keeps default idle 1000ms', async (t) => {
+  const f = await fixture(t);
+  await f.transcript('s1', 'line\n'.repeat(10000));
+  const scheduled = [];
+  t.mock.method(globalThis, 'setTimeout', (callback, delay) => {
+    const timer = { callback, delay, unref() {} }; scheduled.push(timer); return timer;
+  });
+  t.mock.method(globalThis, 'clearTimeout', () => {});
+  const client = f.client({ fastPollMs: 1 }).start();
+  await scheduled[0].callback();
+  assert.equal(scheduled.at(-1).delay, 500);
+  await scheduled.at(-1).callback();
+  assert.equal(scheduled.at(-1).delay, 1000);
+  await client.stop();
+});
+
+test('registry TTL refreshes unchanged metadata and stop aborts ACK spacing wait', async (t) => {
+  const f = await fixture(t, { applyProfile: async () => {} });
+  const registryFile = path.join(f.directory, 'session-workspaces.json');
+  let reads = 0;
+  const read = fs.readFile;
+  t.mock.method(fs, 'readFile', async (...args) => { if (args[0] === registryFile) reads++; return read(...args); });
+  const client = f.client({ indexTtlMs: 1 });
+  await client.tick();
+  await sleep(5);
+  await client.tick();
+  assert.equal(reads, 2);
+  f.setHandler((p, r) => f.reply(r, p, { command: { id: 'stop-command', profile } }));
+  const pending = client.tick();
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try { if ((await f.state()).ackCommandPending === true) break; } catch {}
+    await sleep(5);
+  }
+  const before = f.requests.length;
+  await client.stop();
+  assert.equal(await pending, false);
+  assert.equal(f.requests.length, before);
+  assert.equal((await f.state()).ackCommandPending, true);
+});
+
+test('reporting pause skips scans, ignores in-flight ACKs, applies commands and resumes exact cursor', async (t) => {
+  let applied = 0;
+  const f = await fixture(t, { inspectProbes: true, applyProfile: async () => { applied++; } });
+  await f.transcript('s1', 'first\n');
+  const client = f.client();
+  await client.tick();
+  assert.deepEqual(f.requests[0].deltas, []);
+  assert.equal((await f.state()).cursors.s1.offset, 6);
+  await f.transcript('s1', 'second\n', true);
+  let paused = true, command = true;
+  f.setHandler((p, r) => {
+    if (!paused) return f.reply(r, p, { reportingBlocked: false });
+    // Deliberately return a hostile cursor ACK with true: client must ignore it.
+    return f.reply(r, { ...p, deltas: [] }, { reportingBlocked: true,
+      acks: p.deltas.map(d => ({ sessionId: d.sessionId, file: d.file, offset: 999999, conflict: true })),
+      ...(command ? { command: { id: 'paused-command', profile } } : {}) });
+  });
+  await client.tick();
+  assert.equal(applied, 1);
+  assert.equal(f.requests.at(-1).ackCommandId, 'paused-command');
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+  assert.equal((await f.state()).cursors.s1.offset, 6);
+  assert.equal((await f.state()).cursors.s1.blocked, undefined);
+  const lstat = fs.lstat, stat = fs.stat;
+  let scans = 0;
+  t.mock.method(fs, 'lstat', async (...args) => { scans++; return lstat(...args); });
+  t.mock.method(fs, 'stat', async (...args) => { scans++; return stat(...args); });
+  command = false;
+  await client.tick();
+  assert.equal(scans, 0);
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+  await client.stop();
+  const restarted = f.client();
+  await restarted.tick();
+  assert.equal(scans, 0);
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+  paused = false;
+  await restarted.tick(); // Empty heartbeat learns false; still no scan this turn.
+  assert.equal(scans, 0);
+  await restarted.tick();
+  assert.equal(f.requests.at(-1).deltas[0].offset, 6);
+  assert.equal(f.stored.get('s1').toString(), 'first\nsecond\n');
+  assert.equal((await f.state()).cursors.s1.offset, 13);
+});
+
+test('startup policy probe is authenticated before any transcript scan', async (t) => {
+  const f = await fixture(t, { inspectProbes: true });
+  await f.transcript('s1', 'private\n');
+  let scans = 0;
+  const lstat = fs.lstat;
+  t.mock.method(fs, 'lstat', async (...args) => { scans++; return lstat(...args); });
+  f.setHandler((p, r) => f.reply(r, p, { requestId: 'replay', reportingBlocked: false }));
+  const client = f.client();
+  assert.equal(await client.tick(), false);
+  assert.equal(scans, 0);
+  assert.deepEqual(f.requests[0].deltas, []);
+  f.setHandler((p, r) => f.reply(r, p, { reportingBlocked: true }));
+  assert.equal(await client.tick(), true);
+  assert.equal(scans, 0);
+  assert.deepEqual(f.requests[1].deltas, []);
+});
+
+test('recently active session stays hot after catch-up, without starving the cold sweep', async (t) => {
+  const f = await fixture(t);
+  const registry = {};
+  for (let i = 0; i < 1000; i++) registry[`cold${String(i).padStart(4, '0')}`] = {};
+  await fs.writeFile(path.join(f.directory, 'session-workspaces.json'), JSON.stringify(registry));
+  await f.transcript('aaa-hot', 'first\n');
+  const client = f.client({ scanLimit: 4 });
+  await client.tick();
+  await client.tick(); // Caught up, empty read must retain recent-active priority.
+  await f.transcript('aaa-hot', 'second\n', true);
+  const coldPaths = [];
+  const lstat = fs.lstat;
+  t.mock.method(fs, 'lstat', async (...args) => { if (String(args[0]).includes('cold')) coldPaths.push(String(args[0])); return lstat(...args); });
+  await client.tick();
+  assert.equal(f.requests.at(-1).deltas[0].sessionId, 'aaa-hot');
+  assert.equal(f.stored.get('aaa-hot').toString(), 'first\nsecond\n');
+  assert.ok(coldPaths.length >= 1);
+  const previous = new Set(coldPaths);
+  await client.tick();
+  assert.ok(coldPaths.some(p => !previous.has(p)), 'cold rotation advances despite hot work');
+});
+
+test('recent-active TTL expires instead of being extended by idle reads', async (t) => {
+  const f = await fixture(t);
+  const registry = {};
+  for (let i = 0; i < 1000; i++) registry[`cold${i}`] = {};
+  await fs.writeFile(path.join(f.directory, 'session-workspaces.json'), JSON.stringify(registry));
+  await f.transcript('aaa-hot', 'first\n');
+  const client = f.client({ scanLimit: 4, activeTtlMs: 1 });
+  await client.tick();
+  await sleep(5);
+  await client.tick();
+  await f.transcript('aaa-hot', 'second\n', true);
+  await client.tick();
+  assert.deepEqual(f.requests.at(-1).deltas, []);
+  assert.equal(f.stored.get('aaa-hot').toString(), 'first\n');
 });

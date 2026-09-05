@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server } from 'node:http';
@@ -73,7 +73,7 @@ async function fixture(t, limits = {}, options = {}) {
     return decrypted;
   }
   await start();
-  return { request, admin, addDevice, sync, get base() { return base; }, async restart() { await close(server); await start(); } };
+  return { request, admin, addDevice, sync, dataDir, get base() { return base; }, async restart() { await close(server); await start(); } };
 }
 
 function delta(sessionId, file, offset, text) {
@@ -299,9 +299,9 @@ for (const quota of ['diskBytes', 'fileBytes', 'sessionsPerDevice']) {
       : quota === 'diskBytes'
         ? delta('quota-session', 'meta.json', 0, '{}')
         : delta('quota-session', 'transcript.jsonl', 4, 'x');
-    await rejectedSync(f, device, [bad], 413);
+    assert.deepEqual((await f.sync(device, [bad])).acks, [{ sessionId: bad.sessionId, file: bad.file, offset: bad.offset, error: 'QUOTA_EXCEEDED', retryable: false }]);
     await f.restart();
-    await rejectedSync(f, device, [bad], 413);
+    assert.deepEqual((await f.sync(device, [bad])).acks, [{ sessionId: bad.sessionId, file: bad.file, offset: bad.offset, error: 'QUOTA_EXCEEDED', retryable: false }]);
     ack(await f.sync(device, [delta('quota-session', 'transcript.jsonl', 0, '1234')]), 'quota-session', 'transcript.jsonl', 4);
     const saved = await f.admin(`/api/sessions/${device.deviceId}/quota-session`);
     assert.equal(saved.transcript, '1234');
@@ -427,4 +427,159 @@ test('default HTTP body ceiling is 256 KiB including envelope encoding', async t
   const res = await f.request('/sync', { method: 'POST', auth: false, body: { deviceId: d.deviceId, envelope: 'x'.repeat(256 * 1024) } });
   assert.equal(res.status, 413);
   assert.deepEqual(res.json, { error: 'request rejected' });
+});
+
+
+test('broadcast status tracks durable current revisions, overrides and lifecycle', async t => {
+  const f = await fixture(t);
+  const post = (url, body) => f.admin(url, { method: 'POST', body });
+  const status = async () => (await f.admin('/api/state')).broadcastStatus;
+  const profile = { id: 'tracked', name: 'Tracked', profile: { provider: 'openai', values: { apiKey: 'secret-profile-key', model: 'gpt-test' } } };
+  assert.equal(await status(), null);
+  const a = await f.addDevice('A'), b = await f.addDevice('B');
+  await post('/api/profiles', profile);
+  await post('/api/broadcast', { profileId: profile.id });
+  let first = await status();
+  assert.deepEqual(first.counts, { total: 2, pending: 2, succeeded: 0, superseded: 0 });
+  assert.deepEqual(Object.keys(first).sort(), ['clients', 'counts', 'createdAt', 'id', 'profileId']);
+  assert.deepEqual(Object.keys(first.clients[0]).sort(), ['acknowledgedAt', 'deviceId', 'name', 'online', 'status']);
+  assert.ok(!JSON.stringify(first).includes(a.key));
+  assert.ok(!JSON.stringify(first).includes('secret-profile-key'));
+  const old = (await f.sync(a)).command.id;
+  assert.equal((await status()).counts.succeeded, 0, 'delivery alone is not success');
+  await f.sync(a, [], { ackCommandId: old });
+  first = await status();
+  assert.equal(first.counts.succeeded, 1);
+  assert.equal(typeof first.clients.find(c => c.deviceId === a.deviceId).acknowledgedAt, 'number');
+  await f.restart();
+  assert.deepEqual(await status(), first);
+  await post('/api/broadcast', { profileId: profile.id });
+  const second = await status();
+  assert.notEqual(second.id, first.id);
+  await f.sync(a, [], { ackCommandId: old });
+  assert.equal((await status()).counts.succeeded, 0);
+  const beforeEdit = (await f.sync(a)).command.id;
+  profile.profile.values.model = 'edited-model';
+  await post('/api/profiles', profile);
+  const edited = await status();
+  assert.notEqual(edited.id, second.id);
+  const editReply = await f.sync(a, [], { ackCommandId: beforeEdit });
+  assert.equal(editReply.command.profile.values.model, 'edited-model');
+  assert.equal((await status()).counts.succeeded, 0);
+  await f.sync(a, [], { ackCommandId: editReply.command.id });
+  await post('/api/dispatch', { profileId: profile.id, deviceIds: [a.deviceId, b.deviceId] });
+  assert.deepEqual((await status()).counts, { total: 2, pending: 0, succeeded: 0, superseded: 2 });
+  await f.sync(a, [], { ackCommandId: editReply.command.id });
+  const direct = (await f.sync(a)).command.id;
+  await f.sync(a, [], { ackCommandId: direct });
+  assert.equal((await status()).counts.superseded, 2);
+  const c = await f.addDevice('C');
+  assert.equal((await status()).id, edited.id);
+  assert.equal((await status()).counts.pending, 1);
+  const inherited = (await f.sync(c)).command;
+  assert.equal(inherited.profile.values.model, 'edited-model');
+  await f.sync(c, [], { ackCommandId: inherited.id });
+  await f.admin('/api/devices/' + b.deviceId, { method: 'DELETE' });
+  assert.deepEqual((await status()).counts, { total: 2, pending: 0, succeeded: 1, superseded: 1 });
+  const beforeRestart = await status();
+  await f.restart();
+  assert.deepEqual(await status(), beforeRestart);
+  await post('/api/broadcast', { profileId: null });
+  assert.equal(await status(), null);
+  await f.sync(c, [], { ackCommandId: inherited.id });
+  assert.equal(await status(), null);
+  const d = await f.addDevice('D');
+  assert.equal((await f.sync(d)).command, undefined);
+  await f.restart();
+  assert.equal(await status(), null);
+});
+
+test('per-delta quota ACK isolates full sessions and survives restart', async t => {
+  const f = await fixture(t, { fileBytes: 4, diskBytes: 20, sessionsPerDevice: 2 });
+  const d = await f.addDevice();
+  await f.sync(d, [delta('full', 'transcript.jsonl', 0, '1234')]);
+  const reply = await f.sync(d, [delta('full', 'transcript.jsonl', 4, '5'), delta('good', 'transcript.jsonl', 0, 'ok')]);
+  assert.deepEqual(reply.acks, [
+    { sessionId: 'full', file: 'transcript.jsonl', offset: 4, error: 'QUOTA_EXCEEDED', retryable: false },
+    { sessionId: 'good', file: 'transcript.jsonl', offset: 2 },
+  ]);
+  await f.restart();
+  const again = await f.sync(d, [delta('third', 'meta.json', 0, '{}'), delta('good', 'transcript.jsonl', 2, '!')]);
+  assert.deepEqual(again.acks, [
+    { sessionId: 'third', file: 'meta.json', offset: 0, error: 'QUOTA_EXCEEDED', retryable: false },
+    { sessionId: 'good', file: 'transcript.jsonl', offset: 3 },
+  ]);
+  assert.equal((await f.admin('/api/sessions/' + d.deviceId + '/good')).transcript, 'ok!');
+});
+
+
+test('reporting pause persists, preserves history and permits heartbeat and broadcast ACK', async t => {
+  const key = randomBytes(32).toString('base64');
+  const f = await fixture(t, {}, { sharedDeviceKey: key, autoEnroll: true });
+  const d = await f.addDevice();
+  const devicePath = '/api/devices/' + d.deviceId;
+  const patch = body => f.admin(devicePath, { method: 'PATCH', body });
+  const state = () => f.admin('/api/state');
+  assert.equal((await state()).devices[0].reportingBlocked, false);
+  assert.equal((await f.sync(d, [delta('history', 'transcript.jsonl', 0, 'old')])).reportingBlocked, false);
+  assert.equal((await patch({ reportingBlocked: true })).reportingBlocked, true);
+  for (const body of [{}, { reportingBlocked: 'true' }, { reportingBlocked: null }, { reportingBlocked: 1 },
+    { reportingBlocked: false, extra: true }, { name: 'invalid', reportingBlocked: [] }]) {
+    assert.equal((await f.request(devicePath, { method: 'PATCH', body })).status, 400);
+    assert.equal((await state()).devices[0].reportingBlocked, true);
+  }
+  assert.equal((await patch({ name: 'Paused' })).reportingBlocked, true);
+  await f.admin('/api/profiles', { method: 'POST', body: { id: 'pause-test', name: 'Profile', profile: {
+    provider: 'openai', values: { apiKey: 'secret', model: 'model' },
+  } } });
+  await f.admin('/api/broadcast', { method: 'POST', body: { profileId: 'pause-test' } });
+  const deltas = [delta('new-session', 'transcript.jsonl', 0, 'private'), delta('history', 'transcript.jsonl', 3, 'tail')];
+  const reply = await f.sync(d, deltas);
+  assert.equal(reply.reportingBlocked, true);
+  assert.deepEqual(reply.acks, []);
+  assert.ok(reply.command);
+  const acknowledged = await f.sync(d, [], { ackCommandId: reply.command.id });
+  assert.deepEqual(acknowledged.acks, []);
+  assert.equal(acknowledged.reportingBlocked, true);
+  assert.equal(acknowledged.command, undefined);
+  assert.equal((await state()).broadcastStatus.counts.succeeded, 1);
+  assert.equal((await state()).devices[0].online, true);
+  assert.equal((await state()).devices[0].device.hostname, deviceInfo.hostname);
+  assert.deepEqual(await readdir(join(f.dataDir, 'sessions', d.deviceId)), ['history']);
+  assert.equal((await f.admin('/api/sessions/' + d.deviceId + '/history')).transcript, 'old');
+  const enrollment = { requestId: randomUUID(), sentAt: Date.now(), kind: 'enroll', device: deviceInfo };
+  const enrolled = await f.request('/enroll', { method: 'POST', auth: false, body: {
+    deviceId: d.deviceId, envelope: await seal(key, d.deviceId, 'up', enrollment),
+  } });
+  assert.equal(enrolled.status, 200);
+  assert.equal((await state()).devices[0].reportingBlocked, true);
+  await f.restart();
+  assert.equal((await state()).devices[0].reportingBlocked, true);
+  assert.equal((await f.sync(d, deltas)).reportingBlocked, true);
+  assert.deepEqual(await readdir(join(f.dataDir, 'sessions', d.deviceId)), ['history']);
+  const unauthenticated = await f.request('/sync', { method: 'POST', auth: false,
+    body: { deviceId: d.deviceId, envelope: {} } });
+  assert.deepEqual(unauthenticated.json, { error: 'request rejected' });
+  assert.equal((await patch({ name: 'Resumed', reportingBlocked: false })).reportingBlocked, false);
+  const resumed = await f.sync(d, deltas);
+  assert.equal(resumed.reportingBlocked, false);
+  assert.deepEqual(resumed.acks, [
+    { sessionId: 'new-session', file: 'transcript.jsonl', offset: 7 },
+    { sessionId: 'history', file: 'transcript.jsonl', offset: 7 },
+  ]);
+  assert.equal((await f.admin('/api/sessions/' + d.deviceId + '/history')).transcript, 'oldtail');
+  await f.restart();
+  assert.equal((await f.sync(d)).reportingBlocked, false);
+});
+
+test('legacy device reporting flag migrates to persistent false', async t => {
+  const f = await fixture(t);
+  await f.addDevice();
+  const statePath = join(f.dataDir, 'state.json');
+  const old = JSON.parse(await readFile(statePath, 'utf8'));
+  delete old.devices[0].reportingBlocked;
+  await writeFile(statePath, JSON.stringify(old));
+  await f.restart();
+  assert.equal((await f.admin('/api/state')).devices[0].reportingBlocked, false);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).devices[0].reportingBlocked, false);
 });
