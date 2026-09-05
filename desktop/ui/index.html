@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>Neo Desktop</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="brand-row">
+        <div class="brand-mark"><span></span><span></span></div>
+        <div>
+          <div class="eyebrow">NEO DESKTOP</div>
+          <h1>把智能工作台<br />装进你的 Windows</h1>
+        </div>
+      </div>
+      <p class="intro">本地运行、双击即开。安装程序将释放内置应用包，并通过国内镜像补齐运行依赖。</p>
+      <div class="feature-list">
+        <div><b>01</b><span>数据与工作区保存在你选择的位置</span></div>
+        <div><b>02</b><span>Node 与 npm 随应用提供，无需配置开发环境</span></div>
+        <div><b>03</b><span>安装完成后直接进入 Neo 工作台</span></div>
+      </div>
+    </section>
+
+    <section class="installer-card">
+      <div id="readyView" class="view active">
+        <div class="step-label">准备安装</div>
+        <h2>选择运行数据位置</h2>
+        <p>应用依赖、日志和默认工作区将保存在这里，之后可在设置中迁移。</p>
+        <label for="installPath">安装位置</label>
+        <div class="path-control">
+          <input id="installPath" spellcheck="false" />
+          <button id="browseButton" class="icon-button" title="浏览目录">•••</button>
+        </div>
+        <div class="source-line"><span class="status-dot"></span>软件源：registry.npmmirror.com</div>
+        <button id="installButton" class="primary-button">安装并启动 <span>→</span></button>
+        <button id="enterButton" class="secondary-button hidden">直接进入已安装版本</button>
+      </div>
+
+      <div id="progressView" class="view">
+        <div class="step-label">正在安装</div>
+        <h2 id="progressTitle">准备运行环境</h2>
+        <p id="progressMessage">正在检查内置资源…</p>
+        <div class="progress-meta"><span id="progressStage">初始化</span><strong id="progressPercent">0%</strong></div>
+        <div class="progress-track"><div id="progressBar"></div></div>
+        <pre id="installLog" aria-live="polite"></pre>
+        <button id="retryButton" class="secondary-button hidden">返回并重试</button>
+      </div>
+
+      <div id="launchView" class="view">
+        <div class="success-mark">✓</div>
+        <div class="step-label">安装完成</div>
+        <h2>Neo 已准备就绪</h2>
+        <p>正在启动本地服务，首次进入可能需要几秒钟。</p>
+        <div class="launching"><span></span><span></span><span></span></div>
+      </div>
+    </section>
+  </main>
+  <footer><span>Neo Desktop 0.1.0</span><span>本地服务仅监听 127.0.0.1</span></footer>
+  <script src="./app.js"></script>
+</body>
+</html>

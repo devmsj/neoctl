@@ -1,0 +1,10 @@
+node_modules/
+.cache/
+artifacts/
+src-tauri/gen/
+src-tauri/target/
+resources/node/
+resources/payload/*.tgz
+resources/payload/payload-manifest.json
+*.log
+.smoke-runtime-path
