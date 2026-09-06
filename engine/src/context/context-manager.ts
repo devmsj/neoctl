@@ -28,6 +28,7 @@ export interface UserContext {
 export interface SystemContext {
   cwd: string;
   platform: NodeJS.Platform;
+  sessionDir?: string;
 }
 
 export interface ProjectMemoryDocument {
@@ -92,7 +93,7 @@ function normalizeAdditionalPromptSections(sections: readonly PromptSection[]): 
 
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
-  private systemContextCache?: SystemContext;
+  private systemContextCache?: { cwd: string; sessionDir?: string; value: SystemContext };
 
   constructor(private readonly options: DefaultContextManagerOptions = {}) {
     this.cwd = resolve(options.cwd ?? process.cwd());
@@ -111,7 +112,8 @@ export class DefaultContextManager implements ContextManager {
 
     const systemPrompt = buildEffectiveSystemPrompt(promptSections, input);
     const userContext = input.omitProjectMemory ? stripProjectMemory(this.getUserContext(cwd)) : this.getUserContext(cwd);
-    const systemContext = this.getSystemContext(cwd);
+    const sessionDir = input.toolUseContext?.session?.sessionDir;
+    const systemContext = this.getSystemContext(cwd, sessionDir ? resolve(sessionDir) : undefined);
 
     return { systemPrompt, promptSections, userContext, systemContext };
   }
@@ -124,13 +126,16 @@ export class DefaultContextManager implements ContextManager {
     };
   }
 
-  private getSystemContext(cwd: string): SystemContext {
-    if (this.systemContextCache) return this.systemContextCache;
-    this.systemContextCache = {
+  private getSystemContext(cwd: string, sessionDir?: string): SystemContext {
+    const cached = this.systemContextCache;
+    if (cached?.cwd === cwd && cached.sessionDir === sessionDir) return cached.value;
+    const value: SystemContext = {
       cwd,
       platform: process.platform,
+      ...(sessionDir ? { sessionDir } : {}),
     };
-    return this.systemContextCache;
+    this.systemContextCache = { cwd, sessionDir, value };
+    return value;
   }
 }
 

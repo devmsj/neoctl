@@ -1,7 +1,9 @@
+import { resolve } from "node:path";
 import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { QueryEngine } from "../core/query-engine.js";
 import { buildContextMetrics, estimateTextTokens } from "../core/context-metrics.js";
+import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import { resolveContextWindowTokens } from "../model/context-window.js";
 import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary, hasValidToolResultPairing, insertUserContextBeforeLatestUser } from "../core/message-pipeline.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -9,6 +11,16 @@ import { createTextMessage, createThinkingMessage, createToolResultMessage } fro
 import { CLEARED_TOOL_RESULT_CONTENT, DeterministicCompactor, ManualOnlyCompactor, microCompactIfNeeded, ModelDrivenCompactor, withCompactionReport } from "./compaction.js";
 import { AdditionalPromptContextManager, DefaultContextManager } from "./context-manager.js";
 import { buildEffectiveSystemPrompt, splitSystemPromptPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./prompts.js";
+
+class CapturingGateway implements ModelGateway {
+  requests: ModelRequest[] = [];
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    this.requests.push(request);
+    yield { type: "assistant_message", message: createTextMessage("assistant", "ok") };
+    yield { type: "response_completed", responseId: `capture_${this.requests.length}`, stopReason: "completed" };
+  }
+}
 
 class ContextOverflowThenSuccessGateway implements ModelGateway {
   calls = 0;
@@ -98,7 +110,9 @@ async function main(): Promise<void> {
     split.dynamicSuffix.includes("session only");
 
   const contextManager = new DefaultContextManager({ currentDate: () => "2026-05-05" });
-  const runtime = await contextManager.build({ agentId: "main", messages: [createTextMessage("user", "hello")] });
+  const sessionDir = resolve(".neo-session-stable");
+  const toolUseContext = { session: { sessionId: "stable", sessionDir }, agentId: "main" } as never;
+  const runtime = await contextManager.build({ agentId: "main", messages: [createTextMessage("user", "hello")], toolUseContext });
   const extendedRuntime = await new AdditionalPromptContextManager(contextManager, [{
     name: "Web Plugin",
     content: "stable plugin contract",
@@ -112,12 +126,17 @@ async function main(): Promise<void> {
   const runtimeContextMessages = applyRuntimeContextForPromptCache(firstHistory, runtime.userContext, runtime.systemContext);
   const nextRuntimeContextMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, runtime.systemContext);
   const changedCwdMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, { ...runtime.systemContext, cwd: `${runtime.systemContext.cwd}-next` });
+  const changedSessionMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, { ...runtime.systemContext, sessionDir: `${sessionDir}-next` });
   const cwdTransitionMessages = insertUserContextBeforeLatestUser(changedCwdMessages, { cwdTransition: { paths: ["A", "B", "C"], current: "C" } });
   const lastRuntimeBlock = runtimeContextMessages.at(-1)?.blocks[0];
   const firstRuntimeBlock = runtimeContextMessages[0]?.blocks[0];
   const nextFirstRuntimeBlock = nextRuntimeContextMessages[0]?.blocks[0];
   const changedFirstRuntimeBlock = changedCwdMessages[0]?.blocks[0];
+  const changedSessionRuntimeBlock = changedSessionMessages[0]?.blocks[0];
   const cwdTransitionBlock = cwdTransitionMessages.at(-2)?.blocks[0];
+  const cacheIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", runtimeContextMessages);
+  const changedCwdIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", changedCwdMessages);
+  const changedSessionIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", changedSessionMessages);
   const toolBudgetPromptOccurrences = runtime.systemPrompt.split("Tool results use a default context budget").length - 1;
   const contextOk =
     toolBudgetPromptOccurrences === 1 &&
@@ -125,19 +144,47 @@ async function main(): Promise<void> {
     runtime.systemPrompt.includes("within 1-200000") &&
     runtime.userContext.currentDate === "2026-05-05" &&
     Boolean(runtime.systemContext.cwd) &&
+    runtime.systemContext.sessionDir === sessionDir &&
     !runtime.systemPrompt.includes("## System Context") &&
     runtimeContextMessages[0]?.metadata?.userContext === true &&
     runtimeContextMessages[0]?.metadata?.systemContext === true &&
     firstRuntimeBlock?.type === "text" &&
     nextFirstRuntimeBlock?.type === "text" &&
     changedFirstRuntimeBlock?.type === "text" &&
+    changedSessionRuntimeBlock?.type === "text" &&
     firstRuntimeBlock.text === nextFirstRuntimeBlock.text &&
     firstRuntimeBlock.text === changedFirstRuntimeBlock.text &&
+    firstRuntimeBlock.text !== changedSessionRuntimeBlock.text &&
+    firstRuntimeBlock.text.split(`sessionDir: ${sessionDir}`).length - 1 === 1 &&
+    cacheIdentity.key === changedCwdIdentity.key &&
+    cacheIdentity.key !== changedSessionIdentity.key &&
     changedCwdMessages.at(-2)?.metadata?.cacheStableRuntimeContext === false &&
     cwdTransitionBlock?.type === "text" &&
     cwdTransitionBlock.text.includes('"paths":["A","B","C"]') === true &&
     lastRuntimeBlock?.type === "text" &&
     lastRuntimeBlock.text === "first";
+
+  const recoveryGateway = new CapturingGateway();
+  const recoveryEngine = new QueryEngine({
+    modelGateway: recoveryGateway,
+    tools: new ToolRegistry(),
+    session: { enabled: false },
+  });
+  let recoveryConsumed = 0;
+  recoveryEngine.noteRecoverableSubagents(() => { recoveryConsumed += 1; });
+  const preAborted = new AbortController();
+  preAborted.abort();
+  for await (const _event of recoveryEngine.sendUserText("aborted before model", { abortSignal: preAborted.signal })) { /* consume */ }
+  for await (const _event of recoveryEngine.sendUserText("first recovery turn")) { /* consume */ }
+  for await (const _event of recoveryEngine.sendUserText("second turn")) { /* consume */ }
+  const recoveryFirstText = JSON.stringify(recoveryGateway.requests[0]?.messages ?? []);
+  const recoverySecondText = JSON.stringify(recoveryGateway.requests[1]?.messages ?? []);
+  const recoveryHintOk =
+    recoveryGateway.requests.length === 2 &&
+    recoveryConsumed === 1 &&
+    recoveryFirstText.split("Interrupted subagents can be resumed.").length - 1 === 1 &&
+    !recoverySecondText.includes("Interrupted subagents can be resumed.") &&
+    !JSON.stringify(recoveryGateway.requests[0]?.messages[0]).includes("Interrupted subagents can be resumed.");
 
   const toolResult = createToolResultMessage({ id: "call_big", name: "big", input: {} }, true, "x".repeat(120));
   const budgeted = applyToolResultBudget([toolResult], { maxSerializedLength: 20 });
@@ -506,8 +553,8 @@ async function main(): Promise<void> {
     thresholdEvents.includes("terminal:completed") &&
     thresholdEngine.getHistoryMessages().some((message) => message.metadata?.compactBoundary === true);
 
-  const ok = promptOk && contextOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && gpt56WindowOk && sessionWindowOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticEnabledOk && thresholdAutomaticOk && telemetryOk;
-  console.log(JSON.stringify( { ok, promptOk, contextOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, gpt56WindowOk, sessionWindowOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticEnabledOk, thresholdAutomaticOk, telemetryOk, events, defaultEvents, thresholdEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls, thresholdCompactCalls: thresholdGateway.compactCalls }, null, 2));
+  const ok = promptOk && contextOk && recoveryHintOk && extensionOk && budgetOk && compactOk && compactReportOk && budgetWindowOk && defaultBudgetOk && fallbackQualityOk && consecutiveCompactOk && microOk && pairingOk && grepRegressionOk && modelCompactOk && consecutiveModelCompactOk && gpt56WindowOk && sessionWindowOk && automaticDisabledOk && reactiveOk && reactiveCompactionReportOk && defaultAutomaticEnabledOk && thresholdAutomaticOk && telemetryOk;
+  console.log(JSON.stringify( { ok, promptOk, contextOk, recoveryHintOk, extensionOk, budgetOk, compactOk, compactReportOk, budgetWindowOk, defaultBudgetOk, fallbackQualityOk, consecutiveCompactOk, microOk, pairingOk, grepRegressionOk, modelCompactOk, consecutiveModelCompactOk, gpt56WindowOk, sessionWindowOk, automaticDisabledOk, reactiveOk, reactiveCompactionReportOk, defaultAutomaticEnabledOk, thresholdAutomaticOk, telemetryOk, events, defaultEvents, thresholdEvents, calls: gateway.calls, defaultCalls: defaultGateway.calls, thresholdCompactCalls: thresholdGateway.compactCalls }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 

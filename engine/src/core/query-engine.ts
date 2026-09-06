@@ -82,6 +82,8 @@ export class QueryEngine {
   private readonly contextManager: ContextManager;
   private readonly additionalPromptContextManager: AdditionalPromptContextManager;
   private pendingCwdTransitionPaths?: string[];
+  private pendingRequestContext?: Record<string, unknown>;
+  private pendingRequestContextConsumed?: () => void;
 
   constructor(private readonly options: QueryEngineOptions) {
     this.agentId = options.agentId ?? "main";
@@ -114,6 +116,14 @@ export class QueryEngine {
   onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
     this.sessionTitleListeners.add(listener);
     return () => this.sessionTitleListeners.delete(listener);
+  }
+
+  noteRecoverableSubagents(onConsumed?: () => void): void {
+    this.pendingRequestContext = {
+      ...this.pendingRequestContext,
+      recoveryHint: "Interrupted subagents can be resumed.",
+    };
+    if (onConsumed) this.pendingRequestContextConsumed = onConsumed;
   }
 
   async initialize(): Promise<void> {
@@ -161,6 +171,8 @@ export class QueryEngine {
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
     await this.initialize();
     const cwdTransitionPaths = this.pendingCwdTransitionPaths;
+    const pendingRequestContext = this.pendingRequestContext;
+    const pendingRequestContextConsumed = this.pendingRequestContextConsumed;
     this.pendingCwdTransitionPaths = undefined;
     this.options.cwdTransitionPaths = undefined;
     if (cwdTransitionPaths?.length) void this.options.onCwdTransitionConsumed?.();
@@ -203,9 +215,21 @@ export class QueryEngine {
       contextWindowTokensOverride: this.currentContextWindowTokens,
       maxTurns: this.options.maxTurns,
       workspaceCwd: this.options.cwd,
-      requestContext: cwdTransitionPaths?.length
-        ? { cwdTransition: { paths: cwdTransitionPaths, current: cwdTransitionPaths.at(-1) } }
+      requestContext: pendingRequestContext || cwdTransitionPaths?.length
+        ? {
+            ...pendingRequestContext,
+            ...(cwdTransitionPaths?.length
+              ? { cwdTransition: { paths: cwdTransitionPaths, current: cwdTransitionPaths.at(-1) } }
+              : {}),
+          }
         : undefined,
+      onRequestContextConsumed: pendingRequestContext ? () => {
+        pendingRequestContextConsumed?.();
+        if (this.pendingRequestContext === pendingRequestContext) {
+          this.pendingRequestContext = undefined;
+          this.pendingRequestContextConsumed = undefined;
+        }
+      } : undefined,
       abortSignal: options.abortSignal,
       stopAfterTurn: options.stopAfterTurn,
     };
@@ -408,6 +432,11 @@ export class QueryEngine {
       tools: this.options.tools,
       appState: new InMemoryAppState(this.agentId, this.options.cwd),
       toolResultMemory: this.sessionStore?.toolResultMemory,
+      session: this.sessionStore ? {
+        sessionId: this.sessionStore.sessionId,
+        sessionDir: this.sessionStore.sessionDir,
+        rootDir: this.options.session?.rootDir,
+      } : undefined,
       secrets: this.options.secrets,
       secretRedactions: this.options.secretRedactions,
       recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),

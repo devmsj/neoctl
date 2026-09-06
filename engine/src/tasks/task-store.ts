@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { loadTasks, persistTask, type TaskLoadSummary, type RecoverableTask } from "./task-persistence.js";
+import { INTERRUPTED_TASK_ERROR, loadTasks, persistTask, type TaskLoadSummary, type RecoverableTask } from "./task-persistence.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import { writeLocalAgentTaskOutput, type AgentMessageReceipt, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
 
@@ -103,6 +103,10 @@ export class TaskStore {
   }
 
   list(): LocalAgentTask[] { return this.listInSession(this.sessionDir); }
+
+  recoverableInterruptedTasks(sessionDir?: string): LocalAgentTask[] {
+    return this.listInSession(sessionDir ?? this.sessionDir).filter((task) => !task.notified && isRecoverableInterruptedTask(task));
+  }
 
   /** Explicit query scope; undefined means unowned, never the foreground view. */
   listInSession(sessionDir?: string): LocalAgentTask[] {
@@ -293,7 +297,7 @@ export class TaskStore {
   collectUnnotifiedCompletions(...scope: [sessionDir?: string]): LocalAgentTask[] {
     const owner = scope.length ? (scope[0] ? resolve(scope[0]) : undefined) : this.sessionDir;
     return [...this.tasks.values()].filter(
-      (task) => task.ownerSessionDir === owner && this.isTerminal(task) && !task.notified,
+      (task) => task.ownerSessionDir === owner && this.isTerminal(task) && !task.notified && !isRecoverableInterruptedTask(task),
     );
   }
 
@@ -396,6 +400,10 @@ export class TaskStore {
 
 export function isTerminalStatus(status: LocalAgentTaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "killed";
+}
+
+export function isRecoverableInterruptedTask(task: LocalAgentTask): boolean {
+  return task.type === "agent" && task.status === "killed" && task.error === INTERRUPTED_TASK_ERROR;
 }
 
 export const globalTaskStore = new TaskStore();

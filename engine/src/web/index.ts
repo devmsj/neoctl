@@ -620,7 +620,14 @@ function applyToolOverrides(
 
 /** Bind only the foreground view; never stop work owned by another session. */
 export function activateSession(runtime: Pick<WebRuntime, "engine" | "taskStore">): void {
-  runtime.taskStore.bindSession?.(runtime.engine.snapshot().session?.sessionDir || undefined);
+  const sessionDir = runtime.engine.snapshot().session?.sessionDir || undefined;
+  const summary = runtime.taskStore.bindSession?.(sessionDir);
+  const interruptedTasks = summary?.loaded ? runtime.taskStore.recoverableInterruptedTasks?.(sessionDir) ?? [] : [];
+  if (interruptedTasks.length) {
+    runtime.engine.noteRecoverableSubagents(() => {
+      for (const task of interruptedTasks) runtime.taskStore.markNotified(task.taskId);
+    });
+  }
 }
 
 export function sessionAgentTasks(runtime: Pick<WebRuntime, "engine" | "taskStore">) {

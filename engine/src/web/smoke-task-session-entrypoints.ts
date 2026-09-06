@@ -13,9 +13,13 @@ const root = await mkdtemp(path.join(os.tmpdir(), "neo-entrypoint-tasks-"));
 try {
   const a = path.join(root, "session-a");
   const b = path.join(root, "session-b");
-  await Promise.all([mkdir(a), mkdir(b)]);
+  const c = path.join(root, "session-c");
+  await Promise.all([mkdir(a), mkdir(b), mkdir(c)]);
+  let recoveryHints = 0;
+  let consumeRecoveryHint: (() => void) | undefined;
   const fakeEngine = (sessionId: string, sessionDir?: string) => ({
     snapshot: () => ({ agentId: "parent", messages: 0, model: "fake-model", session: sessionDir === undefined ? undefined : { sessionId, sessionDir } }),
+    noteRecoverableSubagents: (onConsumed?: () => void) => { recoveryHints += 1; consumeRecoveryHint = onConsumed; },
   }) as unknown as QueryEngine;
   const runtime = { engine: fakeEngine("a", a), taskStore: new TaskStore() };
   activateSession(runtime);
@@ -25,6 +29,23 @@ try {
   runtime.engine = fakeEngine("b", b);
   activateSession(runtime);
   assert.equal(runtime.taskStore.get(task.taskId)?.status, "running", "switch must not stop another session's background work");
+  const interrupted = createLocalAgentTask({ taskId: "task-c", agentId: "child-c", prompt: "resume", description: "resume", outputFile: path.join(c, "task-output.txt") });
+  const persistedInterruptedStore = new TaskStore();
+  persistedInterruptedStore.bindSession(c);
+  persistedInterruptedStore.upsert(interrupted);
+  persistedInterruptedStore.markRunning(interrupted.taskId);
+  const recoveryRuntime = { engine: fakeEngine("c", c), taskStore: new TaskStore() };
+  activateSession(recoveryRuntime);
+  assert.equal(recoveryRuntime.taskStore.recoverableInterruptedTasks(c)[0]?.taskId, interrupted.taskId);
+  assert.equal(recoveryHints, 1, "restart interruption emits one short recovery hint");
+  assert.equal(createTaskNotificationSource(recoveryRuntime.taskStore).collectUnnotifiedCompletions(c).length, 0, "recoverable interruption is not a failure completion");
+  activateSession(recoveryRuntime);
+  assert.equal(recoveryHints, 1, "already loaded session does not repeat the recovery hint");
+  consumeRecoveryHint?.();
+  assert.equal(recoveryRuntime.taskStore.get(interrupted.taskId)?.notified, true, "model-request consumption persists the recovery acknowledgement");
+  const restartedRecoveryRuntime = { engine: fakeEngine("c", c), taskStore: new TaskStore() };
+  activateSession(restartedRecoveryRuntime);
+  assert.equal(recoveryHints, 1, "persisted acknowledgement prevents another-process repeat");
   assert.equal(sessionAgentTasks(runtime).length, 0);
   runtime.taskStore.fail(task.taskId, "fake terminal result");
   const source = createTaskNotificationSource(runtime.taskStore);

@@ -18,7 +18,7 @@ function fixture() {
   return { dir, store, make, reload, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("ack persists, collection is read-only, interrupted runs notify again, legacy defaults unacknowledged", () => {
+test("ack persists, collection is read-only, interrupted runs remain recoverable, legacy defaults unacknowledged", () => {
   const f = fixture();
   try {
     const done = f.make("done"), pending = f.make("pending"), running = f.make("running");
@@ -32,11 +32,12 @@ test("ack persists, collection is read-only, interrupted runs notify again, lega
     for (const task of [pending, running]) { task.notified = true; persistTask(task); }
     const fresh = f.reload();
     assert.equal(fresh.get(done.id)?.notified, true);
-    assert.deepEqual(fresh.collectUnnotifiedCompletions().map(t => t.id).sort(), [pending.id, running.id].sort());
-    for (const task of fresh.collectUnnotifiedCompletions()) fresh.markNotified(task.id);
-    assert.deepEqual(f.reload().collectUnnotifiedCompletions(), []);
+    assert.deepEqual(fresh.collectUnnotifiedCompletions(), []);
+    assert.deepEqual(fresh.recoverableInterruptedTasks().map(t => t.id).sort(), [pending.id, running.id].sort());
+    for (const task of fresh.recoverableInterruptedTasks()) fresh.markNotified(task.id);
+    assert.deepEqual(f.reload().recoverableInterruptedTasks(), []);
     fresh.prepareResume(done.id, new AbortController());
-    assert.deepEqual(f.reload().collectUnnotifiedCompletions().map(t => t.id), [done.id]);
+    assert.deepEqual(f.reload().recoverableInterruptedTasks().map(t => t.id), [done.id]);
     const legacy = JSON.parse(readFileSync(file, "utf8")); delete legacy.notified;
     writeFileSync(file, JSON.stringify(legacy));
     assert.equal(f.reload().get(done.id)?.notified, false);

@@ -54,6 +54,8 @@ export interface QueryOptions {
   workspaceCwd?: string;
   /** Ephemeral request-scoped context inserted beside the latest user message. */
   requestContext?: Record<string, unknown>;
+  /** Called immediately before the model gateway receives this request context. */
+  onRequestContextConsumed?: () => void;
   /**
    * Native cooperative yield point checked after a complete model turn and its
    * tool results have been appended. Returning true stops before the next model
@@ -373,6 +375,7 @@ async function* callModelForTurn(
       state.messages = [...state.messages, ...pending];
       if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, ...pending];
     }
+    if (options.requestContext) options.onRequestContextConsumed?.();
     for await (const event of dependencies.modelGateway.stream({
       model: activeModel,
       messages: modelMessages,

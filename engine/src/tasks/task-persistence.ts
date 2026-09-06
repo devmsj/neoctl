@@ -9,6 +9,7 @@ export type RecoverableTask = LocalAgentTask & {
 };
 
 export interface TaskLoadSummary { loaded: number; interrupted: number; errors: string[] }
+export const INTERRUPTED_TASK_ERROR = "Interrupted: previous process ended before task completion";
 export const MAX_TASK_RECORD_BYTES = 64 * 1024 * 1024;
 const statuses = ["pending", "running", "completed", "failed", "killed"];
 export function validTaskId(value: unknown): value is string {
@@ -142,7 +143,7 @@ export function loadTasks(sessionDir: string): { tasks: LocalAgentTask[]; summar
       const task = { ...serializeTask(raw as LocalAgentTask), ownerSessionDir: owner, outputFile: join(dir, "output.txt"), notified: raw.notified === true, retain: raw.retain !== false } as LocalAgentTask;
       if (task.status === "pending" || task.status === "running") {
         task.notified = false;
-        task.status = "killed"; task.error = "Interrupted: previous process ended before task completion";
+        task.status = "killed"; task.error = INTERRUPTED_TASK_ERROR;
         task.completedAt = new Date().toISOString(); summary.interrupted++;
       }
       if (tasks.some((other) => other.id === task.id)) throw new Error("Duplicate identifier");
