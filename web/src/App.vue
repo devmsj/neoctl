@@ -357,15 +357,15 @@ const pendingLineText = new Map()
 const virtualScrollMargin = ref(0)
 const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
-const liveImage2Line = computed(() => [...(state.lines || [])].reverse().find((line) => isImage2LiveLine(line)) || null)
+const liveImageCreateLine = computed(() => [...(state.lines || [])].reverse().find((line) => isImageCreateLiveLine(line)) || null)
 const phaseLabel = computed(() => phaseText(state.status?.phase))
 const exactPhaseLabel = computed(() => {
-  if (liveImage2Line.value) {
-    return isImage2PendingReplacementLine(liveImage2Line.value) ? '整理图片结果' : '图片生成中'
+  if (liveImageCreateLine.value) {
+    return isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '整理图片结果' : '图片生成中'
   }
   if (state.status?.phase === 'running_tools') {
     const tool = state.status?.currentTool
-    if (String(tool?.name || '').toLowerCase() === 'image2') return '图片生成中'
+    if (String(tool?.name || '').toLowerCase() === 'image_create') return '图片生成中'
     if (tool?.name) return `调用 ${tool.name}${tool.kind ? ` · ${tool.kind}` : ''}`
   }
   return phaseLabel.value
@@ -375,9 +375,9 @@ const active = computed(() => isActivePhase(state.status?.phase))
 const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading)
 const transcriptLoadingLabel = computed(() => {
   if (state.sessionResumeLoading) return '正在加载会话'
-  if (liveImage2Line.value) {
-    const elapsed = lineElapsedText(liveImage2Line.value)
-    const title = isImage2PendingReplacementLine(liveImage2Line.value) ? '正在载入图片结果' : '图片模型正在生成'
+  if (liveImageCreateLine.value) {
+    const elapsed = lineElapsedText(liveImageCreateLine.value)
+    const title = isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '正在载入图片结果' : '图片模型正在生成'
     return elapsed ? `${title} · 已用时 ${elapsed}` : title
   }
   return `正在${exactPhaseLabel.value}`
@@ -1916,7 +1916,7 @@ function isPlanToolLine(line) {
 }
 
 function isInlineRichToolLine(line) {
-  return isPlanToolLine(line) || isImage2Line(line) || lineResources(line).length > 0
+  return isPlanToolLine(line) || isImageCreateLine(line) || lineResources(line).length > 0
 }
 
 function isPromptUsageLine(line) {
@@ -1955,7 +1955,7 @@ function isPrimaryPresentationLine(line) {
   if (!line) return true
   if (line.presentationLevel === 'primary') return true
   if (line.kind === 'user' || line.kind === 'assistant') return true
-  return isImage2Line(line)
+  return isImageCreateLine(line)
 }
 
 function isGroupableProcessLine(line) {
@@ -2203,20 +2203,20 @@ function truncateSummary(value, maxLength) {
   return compact.length > maxLength ? `${compact.slice(0, maxLength)}…` : compact
 }
 
-function isImage2Line(line) {
-  return line?.kind === 'tool' && String(line?.toolName || '').toLowerCase() === 'image2'
+function isImageCreateLine(line) {
+  return line?.kind === 'tool' && String(line?.toolName || '').toLowerCase() === 'image_create'
 }
 
-function isImage2LiveLine(line) {
-  return line?.live && isImage2Line(line)
+function isImageCreateLiveLine(line) {
+  return line?.live && isImageCreateLine(line)
 }
 
-function isImage2PendingReplacementLine(line) {
-  return isImage2Line(line) && line?.pendingReplacement === true
+function isImageCreatePendingReplacementLine(line) {
+  return isImageCreateLine(line) && line?.pendingReplacement === true
 }
 
 function shouldHideLine(line) {
-  if (isGeneratedImageLine(line) && !isImage2Line(line)) return true
+  if (isGeneratedImageLine(line) && !isImageCreateLine(line)) return true
   if (line?.toolPresentation?.visibility === 'hidden' && line?.kind !== 'error') return true
   if (line?.kind !== 'user') return false
   const group = userMessageGroup(line)
@@ -2230,7 +2230,7 @@ function syncLiveToolTimers(lines) {
   const activeIds = new Set()
   const now = Date.now()
   for (const line of lines || []) {
-    if (!isImage2LiveLine(line)) continue
+    if (!isImageCreateLiveLine(line)) continue
     const id = String(line.id)
     activeIds.add(id)
     if (!state.liveToolStartedAt[id]) state.liveToolStartedAt[id] = now
@@ -2241,7 +2241,7 @@ function syncLiveToolTimers(lines) {
 }
 
 function lineElapsedText(line) {
-  if (!isImage2LiveLine(line)) return ''
+  if (!isImageCreateLiveLine(line)) return ''
   const startedAt = state.liveToolStartedAt[String(line.id)]
   if (!startedAt) return ''
   return formatDuration(state.clockTick - startedAt)
@@ -2608,7 +2608,7 @@ function openRuntimeToolDetail(tool) {
 
 function renderLine(line) {
   if (isPlanToolLine(line)) return renderPlanResult(line)
-  if (isImage2ResultLine(line)) return renderImage2Result(line)
+  if (isImageCreateResultLine(line)) return renderImageCreateResult(line)
   if (lineResources(line).length) return renderLineResources(line)
   if (isImageNoteLine(line)) return renderImageNoteResult(line)
   if (isSkillReadLine(line)) return renderSkillReadResult(line)
@@ -2628,7 +2628,7 @@ function renderLine(line) {
 
 function renderToolDetail(line) {
   if (!line) return ''
-  if (isImage2Line(line)) return renderImage2Detail(line)
+  if (isImageCreateLine(line)) return renderImageCreateDetail(line)
   const text = lineText(line)
   if (line.format === 'diff' || /(?:^|\n)---\s+.+\n\+\+\+\s+/.test(text)) return renderDiff(text)
   if (line.format === 'ansi') return `<pre class="tool-detail-pre">${escapeHtml(stripAnsi(text))}</pre>`
@@ -2739,8 +2739,8 @@ function renderDiff(text) {
   return `<pre class="diff-block">${escapeHtml(text)}</pre>`
 }
 
-function isImage2ResultLine(line) {
-  return isImage2Line(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
+function isImageCreateResultLine(line) {
+  return isImageCreateLine(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
 }
 
 function isImageNoteLine(line) {
@@ -2997,15 +2997,15 @@ function formatDownloadExpiry(value) {
   return `${formatDuration(remaining)} 后过期`
 }
 
-function renderImage2Stage(line) {
+function renderImageCreateStage(line) {
   const images = lineImagePreviews(line)
-  if (images.length) return renderImage2Result(line)
-  if (isImage2ResultLine(line)) return renderImage2Result(line)
-  return renderImage2Skeleton(line)
+  if (images.length) return renderImageCreateResult(line)
+  if (isImageCreateResultLine(line)) return renderImageCreateResult(line)
+  return renderImageCreateSkeleton(line)
 }
 
-function renderImage2Skeleton(line) {
-  const metadata = image2InvocationMetadata(line)
+function renderImageCreateSkeleton(line) {
+  const metadata = imageCreateInvocationMetadata(line)
   const prompt = metadata.prompt
     ? `<div class="image2-stage-prompt"><p>${escapeHtml(truncateSummary(metadata.prompt, 240))}</p></div>`
     : ''
@@ -3013,7 +3013,7 @@ function renderImage2Skeleton(line) {
   return `<div class="image2-stage"><div class="image2-diamond-field" aria-hidden="true">${diamonds}<b></b></div>${prompt}</div>`
 }
 
-function image2InvocationMetadata(line) {
+function imageCreateInvocationMetadata(line) {
   const parsed = parseFirstJsonObject(line?.text || '') || {}
   const input = parsed.input || parsed.arguments || parsed.args || parsed
   return {
@@ -3038,16 +3038,16 @@ function renderImageGrid(images) {
   return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
 
-function renderImage2Result(line) {
-  const parsed = parseImage2Result(line.text || '')
+function renderImageCreateResult(line) {
+  const parsed = parseImageCreateResult(line.text || '')
   const text = String(line.text || '')
   const status = /\bfail(?:ed)?\b|failed/i.test(text) ? '生成失败' : /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
   const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, parsed.size, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
   return `<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div></div>`
 }
 
-function renderImage2Detail(line) {
-  const parsed = parseImage2Result(line?.text || '')
+function renderImageCreateDetail(line) {
+  const parsed = parseImageCreateResult(line?.text || '')
   const fields = [
     ['模型', parsed.model],
     ['模式', parsed.mode],
@@ -3067,14 +3067,14 @@ function renderImage2Detail(line) {
     : ''
   const prompt = parsed.prompt
     ? `<section class="image2-detail-prompt"><span>调用提示词</span><p>${escapeHtml(parsed.prompt)}</p></section>`
-    : `<section class="image2-detail-prompt empty"><span>调用提示词</span><p>当前历史记录未保存提示词；新执行的 image2 调用会在这里显示。</p></section>`
+    : `<section class="image2-detail-prompt empty"><span>调用提示词</span><p>当前历史记录未保存提示词；新执行的 image_create 调用会在这里显示。</p></section>`
   const revisedPrompt = parsed.revisedPrompt && parsed.revisedPrompt !== parsed.prompt
     ? `<section class="image2-detail-prompt"><span>修订提示词</span><p>${escapeHtml(parsed.revisedPrompt)}</p></section>`
     : ''
   return `<div class="image2-detail-view">${metadata}${prompt}${revisedPrompt}</div>`
 }
 
-function parseImage2Result(text) {
+function parseImageCreateResult(text) {
   const raw = String(text || '')
   const compact = raw.replace(/\s+/g, ' ').trim()
   const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -3083,26 +3083,26 @@ function parseImage2Result(text) {
   const detailParts = detailsLine.split(' · ').map((part) => part.trim()).filter(Boolean)
   const durationMs = numberField(compact, ['duration', 'durationMs', 'elapsed', 'elapsedMs'])
   return {
-    provider: matchImage2Field(compact, 'provider', ['model', 'prompt']) || detailParts[0] || '',
-    model: matchImage2Field(compact, 'model', ['prompt']) || detailParts[1] || '',
-    prompt: matchImage2Field(compact, 'prompt', ['revisedPrompt', 'mode', 'semanticName', 'size', 'quality', 'outputFormat', 'background', 'returnedImages', 'startedAt', 'finishedAt', 'duration']),
-    mode: matchImage2Field(compact, 'mode', ['semanticName', 'prompt', 'size', 'quality']),
-    semanticName: matchImage2Field(compact, 'semanticName', ['prompt', 'size', 'quality', 'outputFormat']),
-    size: matchImage2Field(compact, 'size', ['quality', 'outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => /^\d+x\d+$/i.test(part)) || '',
-    quality: matchImage2Field(compact, 'quality', ['outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => ['low', 'medium', 'high'].includes(part.toLowerCase())) || '',
-    outputFormat: matchImage2Field(compact, 'outputFormat', ['background', 'returnedImages', 'images', 'duration']) || detailParts.find((part) => ['png', 'jpeg', 'jpg', 'webp'].includes(part.toLowerCase())) || '',
-    background: matchImage2Field(compact, 'background', ['returnedImages', 'images', 'startedAt', 'finishedAt', 'duration']),
-    sourceImages: matchImage2Field(compact, 'source images', ['prompt', 'mode', 'semanticName', 'duration']),
-    count: matchImage2Field(compact, 'returnedImages', ['images', 'index', 'duration']) || generated?.[2] || '',
-    revisedPrompt: matchImage2Field(compact, 'revisedPrompt', ['mode', 'semanticName', 'raw', 'created', 'data', 'b64_json', 'background', 'output_format', 'quality', 'size', 'usage', 'startedAt', 'finishedAt', 'duration']),
-    usage: matchImage2Field(compact, 'usage', ['duration']),
-    startedAt: matchImage2Field(compact, 'startedAt', ['finishedAt', 'duration']),
-    finishedAt: matchImage2Field(compact, 'finishedAt', ['duration']),
+    provider: matchImageCreateField(compact, 'provider', ['model', 'prompt']) || detailParts[0] || '',
+    model: matchImageCreateField(compact, 'model', ['prompt']) || detailParts[1] || '',
+    prompt: matchImageCreateField(compact, 'prompt', ['revisedPrompt', 'mode', 'semanticName', 'size', 'quality', 'outputFormat', 'background', 'returnedImages', 'startedAt', 'finishedAt', 'duration']),
+    mode: matchImageCreateField(compact, 'mode', ['semanticName', 'prompt', 'size', 'quality']),
+    semanticName: matchImageCreateField(compact, 'semanticName', ['prompt', 'size', 'quality', 'outputFormat']),
+    size: matchImageCreateField(compact, 'size', ['quality', 'outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => /^\d+x\d+$/i.test(part)) || '',
+    quality: matchImageCreateField(compact, 'quality', ['outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => ['low', 'medium', 'high'].includes(part.toLowerCase())) || '',
+    outputFormat: matchImageCreateField(compact, 'outputFormat', ['background', 'returnedImages', 'images', 'duration']) || detailParts.find((part) => ['png', 'jpeg', 'jpg', 'webp'].includes(part.toLowerCase())) || '',
+    background: matchImageCreateField(compact, 'background', ['returnedImages', 'images', 'startedAt', 'finishedAt', 'duration']),
+    sourceImages: matchImageCreateField(compact, 'source images', ['prompt', 'mode', 'semanticName', 'duration']),
+    count: matchImageCreateField(compact, 'returnedImages', ['images', 'index', 'duration']) || generated?.[2] || '',
+    revisedPrompt: matchImageCreateField(compact, 'revisedPrompt', ['mode', 'semanticName', 'raw', 'created', 'data', 'b64_json', 'background', 'output_format', 'quality', 'size', 'usage', 'startedAt', 'finishedAt', 'duration']),
+    usage: matchImageCreateField(compact, 'usage', ['duration']),
+    startedAt: matchImageCreateField(compact, 'startedAt', ['finishedAt', 'duration']),
+    finishedAt: matchImageCreateField(compact, 'finishedAt', ['duration']),
     duration: durationMs === undefined ? '' : formatDuration(durationMs),
   }
 }
 
-function matchImage2Field(text, field, nextFields) {
+function matchImageCreateField(text, field, nextFields) {
   const next = nextFields.length ? `(?=\\s(?:${nextFields.map(escapeRegExp).join('|')}):)` : '$'
   const pattern = new RegExp(`(?:^|\\s)${escapeRegExp(field)}:\\s*([\\s\\S]*?)${next}`, 'i')
   const match = pattern.exec(text)
@@ -3455,7 +3455,7 @@ function mergeMessageImagePreviews(previews) {
 }
 
 function lineImagePreviews(line) {
-  if (isImage2Line(line)) return image2LineImages(line)
+  if (isImageCreateLine(line)) return imageCreateLineImages(line)
   const group = line?.kind === 'user' ? userMessageGroup(line) : [line]
   const images = []
   for (const item of group) {
@@ -3472,7 +3472,7 @@ function lineImagePreviews(line) {
   return dedupeImages(images)
 }
 
-function image2LineImages(line) {
+function imageCreateLineImages(line) {
   const images = []
   collectLineImageItems(line, images)
   for (const generatedLine of generatedImageLinesAfter(line)) collectLineImageItems(generatedLine, images)
@@ -3514,7 +3514,7 @@ function generatedImageLinesAfter(line) {
   const result = []
   for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
     const next = lines[cursor]
-    if (isGeneratedImageLine(next) && !isImage2Line(next)) {
+    if (isGeneratedImageLine(next) && !isImageCreateLine(next)) {
       result.push(next)
       continue
     }
@@ -3609,7 +3609,7 @@ function mimeExtension(mimeType) {
 }
 
 function isGeneratedImageLine(line) {
-  return line?.kind === 'tool' && String(line?.parentToolName || '').toLowerCase() === 'image2'
+  return line?.kind === 'tool' && String(line?.parentToolName || '').toLowerCase() === 'image_create'
 }
 
 function removeOmittedImageDetails(line) {
@@ -3829,7 +3829,7 @@ function estimateVirtualMessageSize(index) {
   if (shouldCollapseToolLine(line)) return 88
   const embeds = embeddedLineResources(line)
   if (embeds.length) return 64 + embeds.reduce((height, item) => height + pluginResourceHeight(item), 0)
-  if (isImage2Line(line) || lineHasInlineImages(line)) return Math.max(560, estimateLineTextHeight(line))
+  if (isImageCreateLine(line) || lineHasInlineImages(line)) return Math.max(560, estimateLineTextHeight(line))
   return estimateLineTextHeight(line)
 }
 
@@ -4275,8 +4275,8 @@ function createMobileSession() {
                   <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
-                <div v-if="isImage2Line(line)" class="image2-result-shell">
-                  <div class="message-text markdown image2-stage-wrap" v-html="renderImage2Stage(line)"></div>
+                <div v-if="isImageCreateLine(line)" class="image2-result-shell">
+                  <div class="message-text markdown image2-stage-wrap" v-html="renderImageCreateStage(line)"></div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-image2-images`">
                     <div v-if="images.length" class="message-image-attachments image2-output-images">
                       <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
@@ -4287,11 +4287,11 @@ function createMobileSession() {
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <div class="image-card-actions">
                           <a v-if="item.available && item.previewUrl" class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
-                          <button v-if="index === 0 && isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
+                          <button v-if="index === 0 && isImageCreateResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                         </div>
                       </figure>
                     </div>
-                    <button v-else-if="isImage2ResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
+                    <button v-else-if="isImageCreateResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                   </template>
                 </div>
                 <div v-else-if="shouldCollapseToolLine(line)" :class="['tool-result-summary', `status-${toolResultStatus(line).key}`]">

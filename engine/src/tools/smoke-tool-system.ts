@@ -456,15 +456,15 @@ async function main(): Promise<void> {
     webSearchResponsesUrlPreservesV1: openAIResponsesUrl("https://api.openai.com/v1/") === "https://api.openai.com/v1/responses",
     webSearchPromptUsesOpenAIDefault: searchToolPrompt.includes("OpenAI Responses web search is the default provider"),
     webSearchPromptFallsBackToExa: searchToolPrompt.includes("Exa") && searchToolPrompt.includes("unavailable") && searchToolPrompt.includes("partially unavailable"),
-    image2OnlyToolName: imageTool.name === "image_create" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image"),
-    image2DefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
-    image2DefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
-    image2RejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
-    image2EditAcceptsStableImageId:
+    imageCreateOnlyToolName: imageTool.name === "image_create" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image") && !imageToolPrompt.includes("image2"),
+    imageCreateDefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
+    imageCreateDefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
+    imageCreateRejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
+    imageCreateEditAcceptsStableImageId:
       imageEditRefOutput?.sourceImages === 1 &&
       imageEditRefOutput.imageRefs?.[0] === "image_00000000-0000-4000-a000-000000000002" &&
       seenImageFilenames[0] === "image-2.png",
-    image2EditNumericFallbackUsesStablePosition:
+    imageCreateEditNumericFallbackUsesStablePosition:
       imageEditNumberOutput?.sourceImages === 1 &&
       imageEditNumberOutput.imageRefs?.[0] === "image_00000000-0000-4000-a000-000000000002",
     planOk:

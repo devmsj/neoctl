@@ -211,7 +211,7 @@ function normalizeImageRefText(value: string | undefined): string {
 
 function inferImageOrigin(message: Message, _block: MessageBlock): ImageEntry["origin"] {
   if (message.role === "user") return "user";
-  if (message.metadata?.generatedImages || message.metadata?.tool === "image2") return "generated";
+  if (message.metadata?.generatedImages || message.metadata?.tool === "image_create") return "generated";
   if (message.role === "tool_result") return "tool";
   if (message.role === "assistant") return "generated";
   return "unknown";

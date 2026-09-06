@@ -16,6 +16,7 @@
     "test:plugins": "npm --prefix ../engine run build && node --test plugins.test.mjs plugin-settings.test.mjs tool-settings.test.mjs",
     "test:monitoring": "node --test cpa-quota.test.mjs memory-monitor.test.mjs",
     "test:control": "node --test control-sync.test.mjs control-transcript.test.mjs",
+    "test:image-create-browser": "npm run build && node image-create-browser.test.mjs",
     "build": "vite build",
     "test:cli": "node --test neow.test.mjs",
     "prestart": "npm run build",

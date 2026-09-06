@@ -461,7 +461,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
 }
 
 function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderName | undefined): void {
-  runtime.tools.unregister("image2");
+  runtime.tools.unregister("image_create");
   if (provider === "openai") runtime.tools.register(createOpenAIImageGenerationTool());
 }
 
@@ -4181,7 +4181,7 @@ function toolTitle(toolName: string): string {
     agent: "subagent",
     load_image: "image load",
     image_note: "image note",
-    image2: "image generation",
+    image_create: "image generation",
     secret_list: "secret list",
     secret_info: "secret info",
     secret_request: "secret request",

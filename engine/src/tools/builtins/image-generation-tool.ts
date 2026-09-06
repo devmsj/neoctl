@@ -131,7 +131,7 @@ const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
 export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenerationToolOptions = {}): Tool<ImageGenerationToolInput> {
   return {
     name: "image_create",
-    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image2. Defaults to model ${DEFAULT_IMAGE_MODEL}. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.`,
+    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image_create. Defaults to model ${DEFAULT_IMAGE_MODEL}. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -184,23 +184,23 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
     },
     validateInput(input) {
       const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
-      if (!isImageToolMode(input.mode)) return { ok: false, message: image2ValidationError(model, "mode", "must be generate or edit") };
+      if (!isImageToolMode(input.mode)) return { ok: false, message: imageCreateValidationError(model, "mode", "must be generate or edit") };
       const semanticSlug = semanticNameSlug(input.semanticName);
-      if (!semanticSlug) return { ok: false, message: image2ValidationError(model, "semanticName", "is required and must be a meaningful non-generic Chinese or English image name, e.g. 下班后30分钟重启仪式 or realistic-blue-kitten") };
-      if (!input.prompt.trim()) return { ok: false, message: image2ValidationError(model, "prompt", "cannot be empty") };
-      if (!isSupportedImageModel(model)) return { ok: false, message: image2ValidationError(model, "model", `is not supported by image2. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
-      if (!isImageSize(input.size)) return { ok: false, message: image2ValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
-      if (!isImageQuality(input.quality)) return { ok: false, message: image2ValidationError(model, "quality", "must be auto, low, medium, or high") };
-      if (!isImageFormat(input.outputFormat)) return { ok: false, message: image2ValidationError(model, "outputFormat", "must be png, jpeg, or webp") };
-      if (!isImageBackground(input.background)) return { ok: false, message: image2ValidationError(model, "background", "must be auto, transparent, or opaque") };
-      if (!isImageModeration(input.moderation)) return { ok: false, message: image2ValidationError(model, "moderation", "must be auto or low") };
+      if (!semanticSlug) return { ok: false, message: imageCreateValidationError(model, "semanticName", "is required and must be a meaningful non-generic Chinese or English image name, e.g. 下班后30分钟重启仪式 or realistic-blue-kitten") };
+      if (!input.prompt.trim()) return { ok: false, message: imageCreateValidationError(model, "prompt", "cannot be empty") };
+      if (!isSupportedImageModel(model)) return { ok: false, message: imageCreateValidationError(model, "model", `is not supported by image_create. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
+      if (!isImageSize(input.size)) return { ok: false, message: imageCreateValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
+      if (!isImageQuality(input.quality)) return { ok: false, message: imageCreateValidationError(model, "quality", "must be auto, low, medium, or high") };
+      if (!isImageFormat(input.outputFormat)) return { ok: false, message: imageCreateValidationError(model, "outputFormat", "must be png, jpeg, or webp") };
+      if (!isImageBackground(input.background)) return { ok: false, message: imageCreateValidationError(model, "background", "must be auto, transparent, or opaque") };
+      if (!isImageModeration(input.moderation)) return { ok: false, message: imageCreateValidationError(model, "moderation", "must be auto or low") };
       const count = input.n ?? 1;
-      if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: image2ValidationError(model, "n", `must be between 1 and ${MAX_IMAGES}`) };
-      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: image2ValidationError(model, "images", "must be a non-empty array when provided") };
-      if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: image2ValidationError(model, "imageRefs", "must contain non-empty strings") };
-      if (input.outputDir !== undefined && !input.outputDir.trim()) return { ok: false, message: image2ValidationError(model, "outputDir", "must be a non-empty string when provided") };
-      if (input.outputPath !== undefined && !input.outputPath.trim()) return { ok: false, message: image2ValidationError(model, "outputPath", "must be a non-empty string when provided") };
-      if (input.outputPath !== undefined && count > 1) return { ok: false, message: image2ValidationError(model, "outputPath", "can only be used when n is 1; use outputDir for multiple images") };
+      if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: imageCreateValidationError(model, "n", `must be between 1 and ${MAX_IMAGES}`) };
+      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: imageCreateValidationError(model, "images", "must be a non-empty array when provided") };
+      if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: imageCreateValidationError(model, "imageRefs", "must contain non-empty strings") };
+      if (input.outputDir !== undefined && !input.outputDir.trim()) return { ok: false, message: imageCreateValidationError(model, "outputDir", "must be a non-empty string when provided") };
+      if (input.outputPath !== undefined && !input.outputPath.trim()) return { ok: false, message: imageCreateValidationError(model, "outputPath", "must be a non-empty string when provided") };
+      if (input.outputPath !== undefined && count > 1) return { ok: false, message: imageCreateValidationError(model, "outputPath", "can only be used when n is 1; use outputDir for multiple images") };
       return { ok: true, value: { ...input, model, n: count, semanticName: semanticSlug } };
     },
     isConcurrencySafe() {
@@ -228,7 +228,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       try {
         const editSources = mode === "edit" ? resolveImageEditSources(input, context.messages) : [];
         if (mode === "edit" && editSources.length === 0) {
-          throw new Error("image2 mode=edit requires a source image. Provide image/images/imageRefs, attach an image, or keep useLatestImage enabled with a prior image in the conversation.");
+          throw new Error("image_create mode=edit requires a source image. Provide image/images/imageRefs, attach an image, or keep useLatestImage enabled with a prior image in the conversation.");
         }
         const response = mode === "edit"
           ? await callOpenAIImageEdit({
@@ -428,8 +428,8 @@ function resolveImageEditSources(input: ImageGenerationToolInput, messages: read
 function resolveInputImage(image: ImageEditInputImage, index: number): ResolvedEditImage {
   const parsed = parseImageData(image.dataUrl ?? image.base64 ?? image.data);
   const mimeType = image.mimeType?.trim() || parsed.mimeType;
-  if (!parsed.base64) throw new Error(`image2 edit source image ${index + 1} is missing base64/data/dataUrl`);
-  if (!mimeType) throw new Error(`image2 edit source image ${index + 1} is missing mimeType`);
+  if (!parsed.base64) throw new Error(`image_create edit source image ${index + 1} is missing base64/data/dataUrl`);
+  if (!mimeType) throw new Error(`image_create edit source image ${index + 1} is missing mimeType`);
   return {
     index,
     base64: normalizeBase64ImageData(parsed.base64),
@@ -444,7 +444,7 @@ function resolveReferencedImages(messages: readonly Message[] | undefined, refs:
   const imageBlocks = collectConversationImages(messages);
   return refs.map((ref, index) => {
     const found = findReferencedImage(imageBlocks, ref);
-    if (!found) throw new Error(`image2 could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(imageBlocks)}`);
+    if (!found) throw new Error(`image_create could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(imageBlocks)}`);
     return { ...found, filename: found.filename || imageFilename(found.mimeType, index) };
   });
 }
@@ -453,13 +453,13 @@ function findReferencedImage(images: readonly ResolvedEditImage[], ref: string):
   const rawRef = ref.trim().toLowerCase();
   const exactIdentity = images.filter((image) => image.imageId?.toLowerCase() === rawRef);
   if (exactIdentity.length === 1) return exactIdentity[0];
-  if (exactIdentity.length > 1) throw new Error(`image2 image reference is ambiguous: ${ref}`);
+  if (exactIdentity.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}`);
 
   const normalizedRef = canonicalizeImageRef(ref);
   if (!normalizedRef) return undefined;
   const labelMatches = images.filter((image) => canonicalizeImageRef(image.label ?? "") === normalizedRef || canonicalizeImageRef(image.filename) === normalizedRef);
   if (labelMatches.length === 1) return labelMatches[0];
-  if (labelMatches.length > 1) throw new Error(`image2 image reference is ambiguous: ${ref}. Use an imageId instead.`);
+  if (labelMatches.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}. Use an imageId instead.`);
 
   const numericRef = parseImageRefNumber(normalizedRef);
   if (numericRef !== undefined) return images[numericRef - 1];
@@ -800,8 +800,8 @@ function isSupportedImageModel(value: string): value is OpenAIImageModel {
   return (SUPPORTED_IMAGE_MODELS as readonly string[]).includes(value);
 }
 
-function image2ValidationError(model: string, field: string, reason: string): string {
-  return `image2 validation failed for model ${model}: ${field} ${reason}.`;
+function imageCreateValidationError(model: string, field: string, reason: string): string {
+  return `image_create validation failed for model ${model}: ${field} ${reason}.`;
 }
 
 function isImageSize(value: unknown): value is ImageGenerationSize {
