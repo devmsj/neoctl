@@ -834,6 +834,7 @@ export class WebRepl {
 
   snapshot(includeCatalog = false) {
     const backgroundTasks = this.backgroundTasks();
+    const engineSnapshot = this.runtime.engine.snapshot();
     return {
       lines: this.lines,
       status: this.status,
@@ -844,7 +845,8 @@ export class WebRepl {
       agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 20).map((task) => this.agentTaskSnapshot(task)),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
-      session: this.runtime.engine.snapshot().session,
+      session: engineSnapshot.session,
+      modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning },
       fastMode: this.runtime.engine.isFastMode(),
       appPrompt: this.runtime.engine.getAppPrompt(),
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
