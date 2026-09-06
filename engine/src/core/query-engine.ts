@@ -367,9 +367,9 @@ export class QueryEngine {
 
   private applyCompactionResult(result: CompactionResult): void {
     if (!result.changed) return;
+    this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason, result.report);
     this.history.length = 0;
     this.history.push(...result.messages.map(cloneMessage));
-    this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason, result.report);
   }
 
   async contextMetrics(): Promise<ContextMetrics> {

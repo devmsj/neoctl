@@ -33,7 +33,6 @@ import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agen
 import { AgentActivityStore, type AgentActivity } from "../agents/agent-activity.js";
 import { createSubagentTools, type SubagentResumeHandler } from "../tasks/subagent-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
-import type { TaskNotificationSource } from "../core/query.js";
 import { cliHelpText, isModelReasoningArgument, isValidReplCommandLine, parseCliReplCommandArgs, parseReplCommand, helpText, replCommandDefinitions, type ModelReasoningArgument, type ReplCommandArgumentSpec } from "./commands.js";
 import { markdownRenderKey, MarkdownText } from "./markdown-renderer.js";
 import type { CompactionResult } from "../context/compaction.js";
@@ -44,7 +43,7 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import { readClipboard, type ClipboardImagePayload } from "./clipboard.js";
 import { openDirectory } from "../open-directory.js";
-import { runWebServer } from "../web/index.js";
+import { runWebServer, activateSession, sessionAgentTasks, createResumeParentContext, createTaskNotificationSource } from "../web/index.js";
 import { getNeoctlHome } from "../paths.js";
 import { FileSystemSkillCatalog } from "../skills/skill-filesystem.js";
 import { createSkillAwareCanUseTool, createSkillTool, requireSkillName, type SkillCatalog, type SkillDescriptor } from "../skills/skill-tool.js";
@@ -364,23 +363,6 @@ async function buildSkillCatalogPromptSection(catalog: SkillCatalog): Promise<{ 
   };
 }
 
-function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
-  return {
-    collectUnnotifiedCompletions() {
-      return taskStore.collectUnnotifiedCompletions().map((task) => ({
-        taskId: task.taskId,
-        agentId: task.agentId,
-        status: task.status,
-        type: task.type,
-        content: task.result?.content ?? task.error ?? "",
-      }));
-    },
-    markNotified(taskId: string) {
-      taskStore.markNotified(taskId);
-    },
-  };
-}
-
 async function createRuntime(options: { queryOrigin?: string } = {}): Promise<ReplRuntime> {
   const envLoad = loadDefaultDotEnvFiles({ override: true });
   const modelConfig = readModelProviderConfig(process.env);
@@ -418,16 +400,14 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore, agentActivityStore };
   tools.register(createAgentTool(agentRuntime));
 
+  let runtime: ReplRuntime;
   const resumeHandler: SubagentResumeHandler = async (taskId, directive) => {
-    const dummyContext = {
-      agentId: "main",
-      tools,
-      appState: new (await import("../app/app-state.js")).InMemoryAppState("main"),
+    const parentContext = {
+      ...createResumeParentContext(runtime.engine, tools, process.cwd()),
       secrets: secretStore,
       secretRedactions,
-      emit: () => undefined,
     };
-    return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
+    return resumeAgentTask(taskId, directive, agentRuntime, taskStore, parentContext);
   };
 
   for (const tool of createSubagentTools(taskStore, resumeHandler)) tools.register(tool);
@@ -458,8 +438,9 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
     },
   });
   await engine.initialize();
+  activateSession({ engine, taskStore });
   const initialMetrics = await engine.contextMetrics();
-  return {
+  runtime = {
     engine,
     communicationLogger,
     modelGateway,
@@ -476,6 +457,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
   };
+  return runtime;
 }
 
 function syncImageGenerationTool(runtime: ReplRuntime, provider: ModelProviderName | undefined): void {
@@ -494,7 +476,7 @@ function parseResumeFlag(value: string | undefined): boolean {
 }
 
 function activeBackgroundTasks(runtime: ReplRuntime) {
-  return runtime.taskStore.list().filter((task) => !runtime.taskStore.isTerminal(task));
+  return sessionAgentTasks(runtime).filter((task) => !runtime.taskStore.isTerminal(task));
 }
 
 function debounceVoid(callback: () => void, delayMs: number): { run: () => void; cancel: () => void } {
@@ -517,7 +499,9 @@ function debounceVoid(callback: () => void, delayMs: number): { run: () => void;
 
 function activeAgentActivities(runtime: ReplRuntime): AgentActivity[] {
   const now = Date.now();
+  const visibleTaskIds = new Set(sessionAgentTasks(runtime).map((task) => task.taskId));
   return runtime.agentActivityStore.list().filter((activity) => {
+    if (activity.taskId && !visibleTaskIds.has(activity.taskId)) return false;
     if (activity.status === "running" || activity.status === "pending") return true;
     const completedAt = activity.completedAt ? new Date(activity.completedAt).getTime() : new Date(activity.updatedAt).getTime();
     return Number.isFinite(completedAt) && now - completedAt < SUBAGENT_COMPLETED_LINGER_MS;
@@ -745,7 +729,10 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   }, [busy, backgroundTaskCount, backgroundSessionRuns.length, agentActivities.length, runtime]);
 
   useEffect(() => {
-    const updateBackgroundTasks = () => setBackgroundTasks(activeBackgroundTasks(runtime));
+    const updateBackgroundTasks = () => {
+      setBackgroundTasks(activeBackgroundTasks(runtime));
+      setAgentActivities(activeAgentActivities(runtime));
+    };
     updateBackgroundTasks();
     return runtime.taskStore.subscribe(updateBackgroundTasks);
   }, [runtime]);
@@ -1017,6 +1004,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     syncBackgroundSessionRuns();
     setSessionsBrowser((current) => current ? { ...current, runningSessionIds: runningSessionIds(backgroundSessionRunsRef.current) } : current);
     runtime.engine = run.engine;
+    activateSession(runtime);
     activeAbortController.current = run.abortController;
     interruptArmed.current = false;
     activePromptRunRef.current = run.promise;
@@ -1230,6 +1218,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
     }
     if (command.type === "reset") {
       runtime.engine.reset();
+      activateSession(runtime);
       runtime.usage.reset();
       setStatus(await resetStatus(runtime));
       append(systemLine("transcript reset"));
@@ -1269,6 +1258,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
       detachRunningForeground("new session");
       runtime.engine = runtime.engine.forkForSession(undefined, false);
       await runtime.engine.initialize();
+      activateSession(runtime);
       const snapshot = runtime.engine.snapshot().session;
       const metrics = await runtime.engine.contextMetrics();
       runtime.usage.reset();
@@ -3374,6 +3364,7 @@ async function handleResumeCommand(
   try {
     runtime.engine = runtime.engine.forkForSession(sessionId, true);
     await runtime.engine.initialize();
+    activateSession(runtime);
     const snapshot = runtime.engine.snapshot().session;
     if (!snapshot) throw new Error("session transcripts are disabled");
     const metrics = await runtime.engine.contextMetrics();

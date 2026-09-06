@@ -95,6 +95,9 @@ export interface ToolRuntimeOptions {
   tools?: ToolRegistryLike;
   thinkingConfig?: unknown;
   reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
+  contextWindowTokensOverride?: number;
+  maxOutputTokensOverride?: number;
+  serviceTier?: import("../model/model-gateway.js").ModelRequest["serviceTier"];
   activeSkill?: ActiveSkillRuntimeState;
   loadedSkillStructures?: Set<string>;
   isNonInteractiveSession?: boolean;
@@ -110,6 +113,8 @@ export interface ToolUseContextSession {
 export interface ToolUseContext {
   agentId: string;
   agentType?: string;
+  /** Runtime-owned marker: child agents may not delegate or resume other agents. */
+  isSubagent?: boolean;
   toolUseId?: string;
   abortSignal?: AbortSignal;
   tools: ToolRegistryLike;

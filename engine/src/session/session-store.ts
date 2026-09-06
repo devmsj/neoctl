@@ -102,6 +102,7 @@ export class SessionStore {
   readonly sessionDir: string;
   readonly transcriptPath: string;
   readonly toolResultMemory: ToolResultMemory;
+  private writeFailed = false;
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
   private readonly displayEntries: SessionDisplayEntry[];
@@ -155,23 +156,27 @@ export class SessionStore {
         ? (await findLatestSessionId(options)) ?? createSessionId()
         : requestedSessionId ?? createSessionId();
     const sessionDir = path.join(resolveSessionRoot(options), sessionId);
+    checkSessionPaths(sessionDir);
     const transcriptPath = path.join(sessionDir, "transcript.jsonl");
     const loaded = options.resume
       ? await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true })
       : createEmptyLoadedTranscript();
     await fsp.mkdir(sessionDir, { recursive: true });
+    checkSessionPaths(sessionDir);
     return new SessionStore(options, sessionId, loaded);
   }
 
   static async list(options: SessionListOptions = {}): Promise<SessionSummary[]> {
     const root = resolveSessionRoot(options);
+    checkSessionDirectory(root);
     const entries = await fsp.readdir(root, { withFileTypes: true }).catch(() => []);
     const summaries = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => {
-          const sessionId = entry.name;
+          const sessionId = normalizeRequestedSessionId(entry.name)!;
           const sessionDir = path.join(root, sessionId);
+          checkSessionPaths(sessionDir);
           const transcriptPath = path.join(sessionDir, "transcript.jsonl");
           const stat = await fsp.stat(transcriptPath).catch(() => undefined);
           if (!stat) return undefined;
@@ -206,6 +211,7 @@ export class SessionStore {
       throw new Error(`invalid session id: ${options.sessionId}`);
     }
     const sessionDir = path.join(resolveSessionRoot(options), sessionId);
+    checkSessionPaths(sessionDir);
     const stat = await fsp.stat(sessionDir).catch(() => undefined);
     if (!stat) return false;
     if (!stat.isDirectory()) throw new Error(`session path is not a directory: ${sessionDir}`);
@@ -402,13 +408,27 @@ export class SessionStore {
   }
 
   private appendEntry(entry: SessionTranscriptEntry): void {
+    if (this.writeFailed) throw new Error("Session transcript writes disabled after write failure; reopen the session");
+    const text = JSON.stringify(entry) + "\n";
+    checkSessionPaths(this.sessionDir);
     fs.mkdirSync(this.sessionDir, { recursive: true });
-    const descriptor = fs.openSync(this.transcriptPath, "a");
+    checkSessionPaths(this.sessionDir);
+    let descriptor: number | undefined;
     try {
-      fs.writeFileSync(descriptor, `${JSON.stringify(entry)}\n`, "utf8");
+      descriptor = fs.openSync(this.transcriptPath, "a");
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session transcript");
+      fs.writeFileSync(descriptor, text, "utf8");
       fs.fsyncSync(descriptor);
+    } catch (error) {
+      // Reopen to repair a partial tail; never turn it into a corrupt complete line.
+      this.writeFailed = true;
+      throw error;
     } finally {
-      fs.closeSync(descriptor);
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); }
+        catch (error) { this.writeFailed = true; throw error; }
+      }
     }
   }
 }
@@ -657,9 +677,35 @@ function normalizeTitle(title: string | undefined): string | undefined {
 
 function normalizeRequestedSessionId(sessionId: string | undefined): string | undefined {
   const normalized = sessionId?.trim();
-  return normalized ? normalized : undefined;
+  if (!normalized) return undefined;
+  if (normalized === "." || normalized === ".." || /[\\/:*?"<>|\x00-\x1f]/u.test(normalized)
+      || /[. ]$/u.test(normalized) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(normalized)) {
+    throw new Error("invalid session id: " + sessionId);
+  }
+  return normalized;
 }
 
 function cloneAppPrompt(appPrompt: AppPromptValue): AppPromptValue {
   return { ...appPrompt };
+}
+
+/** Caller-selected roots remain supported; check root/session boundaries, not ancestor aliases. */
+function checkSessionPaths(sessionDir: string): void {
+  checkSessionDirectory(path.dirname(sessionDir));
+  checkSessionDirectory(sessionDir);
+  try {
+    const stat = fs.lstatSync(path.join(sessionDir, "transcript.jsonl"));
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error("Unsafe session transcript");
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+  }
+}
+
+function checkSessionDirectory(directory: string): void {
+  try {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe session directory");
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+  }
 }

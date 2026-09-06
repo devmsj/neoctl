@@ -36,6 +36,8 @@ export interface PersistedToolResult {
 }
 
 export interface ToolResultMemory {
+  /** Effective per-result threshold, when provided by the implementation. */
+  readonly thresholdChars?: number;
   state: ContentReplacementState;
   processToolResult(toolUseId: string, output: unknown, thresholdChars?: number): Promise<{ output: unknown; record?: ContentReplacementRecord }>;
   applyBudget(messages: readonly Message[], options?: { maxSerializedLength?: number; skipToolNames?: ReadonlySet<string> }): Promise<{ messages: Message[]; records: ContentReplacementRecord[] }>;
@@ -43,7 +45,7 @@ export interface ToolResultMemory {
 
 export class FileToolResultMemory implements ToolResultMemory {
   readonly state: ContentReplacementState;
-  private readonly thresholdChars: number;
+  readonly thresholdChars: number;
   private readonly previewChars: number;
   private readonly toolResultsDir: string;
 

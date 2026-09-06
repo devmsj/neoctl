@@ -25,6 +25,24 @@ export interface AgentProgressSnapshot {
   steps?: AgentProgressStep[];
 }
 
+/** Delivered means included in a model request, not understood or completed. */
+export interface AgentMessageReceipt {
+  id: string;
+  messageId: string;
+  status: "queued" | "delivered";
+  queuedAt: string;
+  deliveredAt?: string;
+  runGeneration: number;
+}
+export interface AgentRunArchive {
+  runGeneration: number;
+  status: LocalAgentTaskStatus;
+  result?: AgentToolResult;
+  error?: string;
+  progress: AgentProgressSnapshot;
+  completedAt?: string;
+  archivedAt: string;
+}
 export interface LocalAgentTask {
   id: string;
   taskId: string;
@@ -44,6 +62,22 @@ export interface LocalAgentTask {
   abortController?: AbortController;
   pendingMessages: Message[];
   runGeneration: number;
+  /** Internal launch settings only; no credentials or parent runtime state. */
+  executionOptions?: {
+    cwd?: string; model?: string;
+    reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
+    contextWindowTokensOverride?: number;
+    maxOutputTokensOverride?: number;
+    serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
+    maxTurns?: number; maxTokens?: number; temperature?: number;
+    query?: { maxTurns?: number; maxTokens?: number; temperature?: number };
+  };
+  /** Owning parent session. Never inferred again after initial insertion. */
+  ownerSessionDir?: string;
+  /** Session-scoped aliases, persisted with the task. */
+  names?: string[];
+  messageReceipts?: AgentMessageReceipt[];
+  runHistory?: AgentRunArchive[];
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -89,6 +123,8 @@ export function createLocalAgentTask(input: {
     abortController: input.abortController,
     pendingMessages: [],
     runGeneration: 1,
+    messageReceipts: [],
+    runHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -149,6 +185,7 @@ export function renderLocalAgentTaskOutput(task: LocalAgentTask): string {
     `agent_id: ${task.agentId}`,
     task.agentType ? `agent_type: ${task.agentType}` : undefined,
     `status: ${task.status}`,
+    `run_generation: ${task.runGeneration}`,
     `description: ${task.description}`,
     `created_at: ${task.createdAt}`,
     `updated_at: ${task.updatedAt}`,

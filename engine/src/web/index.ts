@@ -15,7 +15,7 @@ import { CommunicationLogger, LoggingModelGateway } from "../model/communication
 import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
-import type { Tool } from "../tools/tool.js";
+import type { Tool, ToolUseContext } from "../tools/tool.js";
 import { builtinToolPresentation, toolPresentationForSource, type ToolPresentation } from "../tools/tool-catalog.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
 import { createExecTool, createWriteStdinTool } from "../tools/builtins/exec-tool.js";
@@ -504,14 +504,10 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const agentRuntime: AgentToolRuntime = { modelGateway, tools, taskStore };
   registerTool(createAgentTool(agentRuntime), { source: "builtin" });
 
+  let runtime: WebRuntime;
   const resumeHandler: SubagentResumeHandler = async (taskId, directive) => {
-    const dummyContext = {
-      agentId: "main",
-      tools,
-      appState: new InMemoryAppState("main", options.cwd),
-      emit: () => undefined,
-    };
-    return resumeAgentTask(taskId, directive, agentRuntime, taskStore, dummyContext);
+    const parentContext = createResumeParentContext(runtime.engine, tools, options.cwd);
+    return resumeAgentTask(taskId, directive, agentRuntime, taskStore, parentContext);
   };
   for (const tool of createSubagentTools(taskStore, resumeHandler)) registerTool(tool, { source: "builtin" });
 
@@ -548,8 +544,9 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     },
   });
   await engine.initialize();
+  activateSession({ engine, taskStore });
   const initialMetrics = await engine.contextMetrics();
-  return {
+  runtime = {
     engine,
     appPromptStore,
     communicationLogger,
@@ -580,6 +577,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
       resolveSession: options.resolveSessionToolOverrides,
     },
   };
+  return runtime;
 }
 
 function normalizeWebRuntimePlugins(value: readonly WebRuntimePluginDefinition[] | undefined): WebRuntimePluginDefinition[] {
@@ -620,10 +618,43 @@ function applyToolOverrides(
   for (const tool of catalog) registry.setEnabled(tool.name, sessionOverrides[tool.name] ?? globalOverrides[tool.name] ?? true);
 }
 
-function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
+/** Bind only the foreground view; never stop work owned by another session. */
+export function activateSession(runtime: Pick<WebRuntime, "engine" | "taskStore">): void {
+  runtime.taskStore.bindSession?.(runtime.engine.snapshot().session?.sessionDir || undefined);
+}
+
+export function sessionAgentTasks(runtime: Pick<WebRuntime, "engine" | "taskStore">) {
+  const dir = runtime.engine.snapshot().session?.sessionDir || undefined;
+  // Older embedders provide minimal TaskStore mocks with no persistence API.
+  return runtime.taskStore.list().filter((task) => !runtime.taskStore.bindSession
+    || task.ownerSessionDir === (dir ? path.resolve(dir) : undefined));
+}
+
+export function createResumeParentContext(
+  engine: QueryEngine, tools: ToolUseContext["tools"], cwd?: string,
+): ToolUseContext {
+  const snapshot = engine.snapshot();
+  const session = snapshot.session;
   return {
-    collectUnnotifiedCompletions() {
-      return taskStore.collectUnnotifiedCompletions().map((task) => ({
+    agentId: snapshot.agentId ?? "main",
+    tools,
+    appState: new InMemoryAppState(snapshot.agentId ?? "main", cwd),
+    session: session?.sessionDir ? {
+      sessionId: session.sessionId,
+      sessionDir: session.sessionDir,
+      rootDir: path.dirname(session.sessionDir),
+    } : undefined,
+    options: { mainLoopModel: snapshot.model, reasoning: snapshot.reasoning,
+      contextWindowTokensOverride: snapshot.contextWindowTokensOverride },
+    emit: () => undefined,
+  };
+}
+
+export function createTaskNotificationSource(taskStore: TaskStore): TaskNotificationSource {
+  return {
+    collectUnnotifiedCompletions(sessionDir?: string) {
+      return taskStore.collectUnnotifiedCompletions(sessionDir).filter((task) => !taskStore.bindSession
+        || task.ownerSessionDir === (sessionDir ? path.resolve(sessionDir) : undefined)).map((task) => ({
         taskId: task.taskId,
         agentId: task.agentId,
         status: task.status,
@@ -810,6 +841,7 @@ export class WebRepl {
       queuedInput: this.queuedInput,
       backgroundTaskCount: backgroundTasks.length,
       backgroundTasks,
+      agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 20).map((task) => this.agentTaskSnapshot(task)),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: this.runtime.engine.snapshot().session,
@@ -1096,6 +1128,7 @@ export class WebRepl {
       await this.detachRunningForeground("session switch");
       this.runtime.engine = this.runtime.engine.forkForSession(sessionId, true);
       await this.runtime.engine.initialize();
+      activateSession(this.runtime);
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
       await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
@@ -1112,6 +1145,7 @@ export class WebRepl {
       await this.detachRunningForeground("new session");
       this.runtime.engine = this.runtime.engine.forkForSession(undefined, false);
       await this.runtime.engine.initialize();
+      activateSession(this.runtime);
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error("session transcripts are disabled");
       await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
@@ -1354,23 +1388,29 @@ export class WebRepl {
     return runWasActive;
   }
 
+  private agentTaskSnapshot(task: ReturnType<WebRuntime["taskStore"]["list"]>[number]) {
+    const terminal = this.runtime.taskStore.isTerminal(task);
+    const result = (value: typeof task.result, limit = 1500) => value ? { content: value.content.slice(0, limit), truncated: value.content.length > limit, status: value.status } : undefined;
+    return {
+      kind: "agent" as const, taskId: task.taskId, agentId: task.agentId,
+      agentType: task.agentType, type: task.type, status: task.status,
+      description: task.description, runGeneration: task.runGeneration ?? 1,
+      progress: { lastActivity: task.progress.lastActivity, currentAction: task.progress.currentAction, totalToolUseCount: task.progress.totalToolUseCount, steps: task.progress.steps?.slice(-8).map((step) => ({ id: step.id, title: step.title, status: step.status })) },
+      pendingMessageCount: task.pendingMessages.length,
+      deliveredRetainedThisRun: task.messageReceipts?.filter((receipt) => receipt.status === "delivered" && receipt.runGeneration === task.runGeneration).length,
+      messageReceipts: (task.messageReceipts ?? []).slice(-20).map(({ id, status, queuedAt, deliveredAt, runGeneration }) => ({ id, status, queuedAt, deliveredAt, runGeneration })),
+      result: terminal ? result(task.result) : undefined,
+      error: terminal ? task.error?.slice(0, 1500) : undefined,
+      errorTruncated: terminal && (task.error?.length ?? 0) > 1500,
+      runHistory: (task.runHistory ?? []).slice(-3).map((run) => ({ runGeneration: run.runGeneration, status: run.status, completedAt: run.completedAt, result: result(run.result, 600), error: run.error?.slice(0, 600), errorTruncated: (run.error?.length ?? 0) > 600 })),
+      createdAt: task.createdAt, updatedAt: task.updatedAt, completedAt: task.completedAt,
+    };
+  }
+
   private backgroundTasks() {
-    const agentTasks = this.runtime.taskStore.list()
+    const agentTasks = sessionAgentTasks(this.runtime)
       .filter((task) => !this.runtime.taskStore.isTerminal(task))
-      .map((task) => ({
-        kind: "agent" as const,
-        taskId: task.taskId,
-        agentId: task.agentId,
-        agentType: task.agentType,
-        type: task.type,
-        status: task.status,
-        description: task.description,
-        prompt: task.prompt,
-        progress: task.progress,
-        outputFile: task.outputFile,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-      }));
+      .map((task) => this.agentTaskSnapshot(task));
     const terminalTasks = this.runtime.execProcessManager.list()
       .filter((terminal) => terminal.status === "running" && terminal.backgrounded)
       .map((terminal) => ({
@@ -1445,6 +1485,7 @@ export class WebRepl {
     await this.detachRunningForeground("session switch");
     this.backgroundSessionRuns.delete(run.sessionId);
     this.runtime.engine = run.engine;
+    activateSession(this.runtime);
     this.activeAbortController = run.abortController;
     this.interruptArmed = false;
     this.foregroundRun = run.promise;
@@ -1749,6 +1790,7 @@ export class WebRepl {
     if (command.type === "cost") return void this.append({ kind: "system", text: formatUsageTotals(this.runtime.usage.snapshot()), previewStyle: "summary" });
     if (command.type === "reset") {
       this.runtime.engine.reset();
+      activateSession(this.runtime);
       this.runtime.usage.reset();
       this.status = await resetStatus(this.runtime);
       this.append(systemLine("transcript reset"));
@@ -3245,6 +3287,11 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
     subject = toolResources(output)?.map((item) => item.label || item.downloadName).filter(Boolean).join("、");
   } else if (toolName.startsWith("subagent_") || toolName === "subagent_run") {
     subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
+    pushToolFact(facts, "任务状态", data.status);
+    pushToolFact(facts, "轮次", data.run_generation);
+    pushToolFact(facts, "待交付", data.pending_messages);
+    if (toolName === "subagent_message") pushToolFact(facts, "交付说明", "仅入队，不代表已交付或完成");
+    if (data.requires_resume === true) pushToolFact(facts, "后续", "需要显式续跑");
   } else if (toolName === "subagent_message") {
     subject = stringValue(data.target);
   } else if (toolName.startsWith("secret_")) {

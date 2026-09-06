@@ -33,6 +33,8 @@ import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-no
 import { buildImageRegistry } from "./image-registry.js";
 
 export interface QueryOptions {
+  /** Synchronous inbox handoff immediately before a model request. */
+  takePendingMessages?: () => Message[];
   agentId: string;
   model?: string;
   reasoning?: ReasoningConfig | null;
@@ -80,7 +82,7 @@ export interface QueryDependencies {
 }
 
 export interface TaskNotificationSource {
-  collectUnnotifiedCompletions(): { taskId: string; agentId: string; status: string; type: string; content: string }[];
+  collectUnnotifiedCompletions(sessionDir?: string): { taskId: string; agentId: string; status: string; type: string; content: string }[];
   markNotified(taskId: string): void;
 }
 
@@ -125,6 +127,7 @@ async function* queryLoop(
   let state = initialState;
   let toolContext: ToolUseContext = {
     agentId: options.agentId,
+    isSubagent: options.queryOrigin === "subagent",
     abortSignal: options.abortSignal,
     tools: dependencies.tools,
     appState,
@@ -132,6 +135,9 @@ async function* queryLoop(
       mainLoopModel: options.model,
       modelGateway: dependencies.modelGateway,
       reasoning: options.reasoning,
+      contextWindowTokensOverride: options.contextWindowTokensOverride,
+      maxOutputTokensOverride: options.maxOutputTokensOverride,
+      serviceTier: options.serviceTier,
     },
     toolResultMemory: dependencies.toolResultMemory,
     session: dependencies.session,
@@ -217,7 +223,7 @@ async function* queryLoop(
     if (toolResult.terminal) return toolResult.terminal;
     toolContext = toolResult.context;
 
-    const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource);
+    const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource, dependencies.session?.sessionDir);
     for (const notification of taskNotifications) {
       yield { type: "message", message: notification };
     }
@@ -360,6 +366,13 @@ async function* callModelForTurn(
   yield { type: "state", phase: "calling_model", detail: activeModel ? `model stream opened (${activeModel})` : "model stream opened" };
 
   try {
+    if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
+    const pending = options.takePendingMessages?.() ?? [];
+    if (pending.length) {
+      modelMessages.push(...pending);
+      state.messages = [...state.messages, ...pending];
+      if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, ...pending];
+    }
     for await (const event of dependencies.modelGateway.stream({
       model: activeModel,
       messages: modelMessages,
@@ -885,9 +898,9 @@ function isContextLengthError(error: unknown): boolean {
   return error instanceof ModelAPIError && error.category === "context_length";
 }
 
-function collectTaskNotifications(source?: TaskNotificationSource): Message[] {
+function collectTaskNotifications(source?: TaskNotificationSource, sessionDir?: string): Message[] {
   if (!source) return [];
-  const completed = source.collectUnnotifiedCompletions();
+  const completed = source.collectUnnotifiedCompletions(sessionDir);
   return completed.map((task) => {
     source.markNotified(task.taskId);
     return createTaskNotificationMessage({

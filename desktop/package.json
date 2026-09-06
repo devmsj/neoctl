@@ -1,6 +1,6 @@
 {
   "name": "neoctl-desktop",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Independent Tauri 2 Windows shell for neoctl-web.",
   "scripts": {

@@ -1,11 +1,11 @@
 import type { ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
 import type { ModelGateway } from "../model/model-gateway.js";
-import { createTaskNotificationMessage, createTextMessage, type Message } from "../types/messages.js";
+import { createTextMessage, type Message } from "../types/messages.js";
 import type { Tool, ToolProgressEvent, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
-import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage } from "./local-agent-task.js";
+import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type LocalAgentTask } from "./local-agent-task.js";
 import {
   EXPLORE_AGENT,
   FORK_AGENT,
@@ -66,7 +66,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
     name: AGENT_TOOL_NAME,
     searchHint: "delegate work to a subagent",
     description: [
-      "Delegate a scoped task to a subagent.",
+      "Delegate a scoped task with a clear goal, file boundaries and acceptance checks. Subagents cannot delegate further; coordinate through the main agent.",
       "Use parallel=true when issuing multiple agent calls in one turn so they run concurrently; otherwise they execute sequentially.",
       AGENT_TOOL_PROMPT_RULES,
     ].join("\n"),
@@ -108,8 +108,8 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       if (!runtime) {
         return { ok: false, output: { error: "AgentTool runtime is not configured" } };
       }
-      if ((input.mode === "fork" || input.mode === "explore" || input.subagent_type === EXPLORE_AGENT.agentType || (!input.subagent_type && input.run_in_background)) && isForkChildContext(context)) {
-        return { ok: false, output: { error: "Fork child agents cannot spawn additional subagents" } };
+      if (context.isSubagent || isForkChildContext(context)) {
+        return { ok: false, output: { error: "Subagents cannot delegate additional agents; ask the main agent to coordinate." } };
       }
 
       const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
@@ -153,11 +153,34 @@ async function runSyncAgent(input: {
   agentId: string;
   description: string;
 }): Promise<ToolResult> {
-  const agentMessages: Message[] = [];
-  const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  const taskStore = input.runtime.taskStore ?? globalTaskStore;
+  const abortController = new AbortController();
+  const task = createLocalAgentTask({ taskId: makeTaskId(), agentId: input.agentId, agentType: input.agent.agentType, description: input.description, prompt: input.input.prompt, abortController });
+  task.executionOptions = effectiveExecutionOptions(input.input, input.agent, input.context);
+  task.notified = true; // The synchronous caller receives the result directly.
+  task.names = input.input.name ? [input.input.name] : [];
+  taskStore.attachTask(task, input.context.session?.sessionDir);
+  const runGeneration = task.runGeneration;
+  const ownsRun = () => {
+    const current = taskStore.get(task.taskId);
+    return current?.runGeneration === runGeneration && !taskStore.isTerminal(current);
+  };
+  const cancelled = (): ToolResult => {
+    const current = taskStore.get(task.taskId);
+    if (current?.runGeneration === runGeneration && current.status === "killed") {
+      activityStore.fail(input.agentId, current.error ?? "Task stopped", "killed");
+    }
+    return { ok: false, output: { status: "cancelled", task_id: task.taskId, agent_id: input.agentId, description: input.description, error: "Task stopped or superseded" } };
+  };
+  const onParentAbort = () => abortController.abort(input.context.abortSignal?.reason);
+  input.context.abortSignal?.addEventListener("abort", onParentAbort, { once: true });
+  if (input.context.abortSignal?.aborted) onParentAbort();
+  taskStore.markRunning(task.taskId);
+  const workspaceCwd = task.executionOptions.cwd;
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
   activityStore.start({
     agentId: input.agentId,
+    taskId: task.taskId,
     agentType: input.agent.agentType,
     description: input.description,
     prompt: input.input.prompt,
@@ -165,52 +188,82 @@ async function runSyncAgent(input: {
     cwd: workspaceCwd,
     model: input.input.model,
   });
-  const wall = mergeAbortWithWallClock(input.context.abortSignal, resolveSubagentWallTimeoutMs());
+  const wall = mergeAbortWithWallClock(abortController.signal, resolveSubagentWallTimeoutMs());
+  let stream: ReturnType<typeof runAgent> | undefined;
   try {
-    const stream = runAgent({
+    stream = runAgent({
       agentId: input.agentId,
       agent: input.agent,
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime),
-      model: input.input.model,
-      abortSignal: wall?.signal ?? input.context.abortSignal,
+      ...task.executionOptions,
+      onInitialMessages: (messages) => {
+        if (ownsRun()) taskStore.reconcileMessages(task.taskId, messages);
+      },
+      onContextMessagesChanged: (messages) => {
+        if (!ownsRun()) return;
+        task.messages = [...messages];
+        taskStore.confirmDelivery(task.taskId, messages.map((message) => message.id), runGeneration);
+        taskStore.upsert(task);
+      },
+      takePendingMessages: () => ownsRun() ? taskStore.deliverPendingMessages(task.taskId, runGeneration) : [],
+      abortSignal: wall?.signal ?? abortController.signal,
       fork: input.fork,
       workspaceCwd,
     });
 
-    input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { agent_id: input.agentId, agent_type: input.agent.agentType } });
+    input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { task_id: task.taskId, agent_id: input.agentId, agent_type: input.agent.agentType } });
     let completed = await stream.next();
     while (!completed.done) {
+      if (!ownsRun()) return cancelled();
       activityStore.recordEvent(input.agentId, completed.value);
       emitSyncAgentEvent(input.options.onProgress, input.agentId, completed.value);
-      if (completed.value.type === "message") agentMessages.push(completed.value.message);
+      if (!ownsRun()) return cancelled();
+      if (completed.value.type === "message") {
+        updateProgressFromMessage(task, completed.value.message);
+      } else updateProgressFromEvent(task, completed.value);
+      taskStore.updateProgress(task);
       completed = await stream.next();
     }
+    if (!ownsRun()) return cancelled();
     if (completed.value.status === "aborted") {
+      taskStore.kill(task.taskId, completed.value.terminalReason);
       activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
-      return { ok: false, output: { status: "cancelled", error: completed.value.terminalReason, description: input.description, ...completed.value.result } };
+      return { ok: false, output: { status: "cancelled", error: completed.value.terminalReason, description: input.description, ...completed.value.result, task_id: task.taskId } };
     }
     if (completed.value.status === "failed") {
+      taskStore.fail(task.taskId, completed.value.terminalReason);
       activityStore.fail(input.agentId, completed.value.terminalReason);
-      return { ok: false, output: { status: "failed", error: completed.value.terminalReason, description: input.description, ...completed.value.result } };
+      return { ok: false, output: { status: "failed", error: completed.value.terminalReason, description: input.description, ...completed.value.result, task_id: task.taskId } };
     }
+    taskStore.complete(task.taskId, completed.value.result);
+    if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
     activityStore.complete(input.agentId, completed.value.result);
     return {
       ok: true,
-      output: { status: "completed", description: input.description, ...completed.value.result },
+      output: { status: "completed", description: input.description, ...completed.value.result, task_id: task.taskId },
       newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
     };
   } catch (error) {
+    if (!ownsRun()) return cancelled();
     const message = error instanceof Error ? error.message : String(error);
+    if (abortController.signal.aborted || wall?.signal.aborted) {
+      taskStore.kill(task.taskId, message);
+      activityStore.fail(input.agentId, message, "killed");
+      return cancelled();
+    }
+    taskStore.fail(task.taskId, message);
     activityStore.fail(input.agentId, message);
     return {
       ok: false,
-      output: { error: message, description: input.description },
+      output: { status: "failed", task_id: task.taskId, agent_id: input.agentId, error: message, description: input.description },
     };
   } finally {
+    input.context.abortSignal?.removeEventListener("abort", onParentAbort);
     wall?.dispose();
+    await stream?.return(undefined as never);
   }
 }
 
@@ -285,11 +338,14 @@ function launchAsyncAgent(input: {
     prompt: input.input.prompt,
     abortController,
   });
-  taskStore.upsert(task);
-  if (input.input.name) taskStore.registerName(input.input.name, input.agentId);
+  task.executionOptions = effectiveExecutionOptions(input.input, input.agent, input.context);
+  task.names = input.input.name ? [input.input.name] : [];
+  taskStore.attachTask(task, input.context.session?.sessionDir);
 
-  void runAsyncAgentLifecycle({ ...input, taskId, taskStore, abortController }).catch((error) => {
-    taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+  const runGeneration = task.runGeneration;
+  void runAsyncAgentLifecycle({ ...input, taskId, taskStore, abortController, runGeneration }).catch((error) => {
+    const current = taskStore.get(taskId);
+    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
   });
 
   return {
@@ -322,7 +378,10 @@ async function runAsyncAgentLifecycle(input: {
   runGeneration?: number;
 }): Promise<void> {
   const runGeneration = input.runGeneration ?? input.taskStore.get(input.taskId)?.runGeneration ?? 1;
-  const ownsRun = () => input.taskStore.get(input.taskId)?.runGeneration === runGeneration;
+  const ownsRun = () => {
+    const current = input.taskStore.get(input.taskId);
+    return current?.runGeneration === runGeneration && !input.taskStore.isTerminal(current);
+  };
   if (!ownsRun()) return;
   input.taskStore.markRunning(input.taskId);
   const task = input.taskStore.get(input.taskId);
@@ -340,18 +399,31 @@ async function runAsyncAgentLifecycle(input: {
     model: input.input.model,
   });
   const wall = mergeAbortWithWallClock(input.abortController.signal, resolveSubagentWallTimeoutMs());
+  let stream: ReturnType<typeof runAgent> | undefined;
   try {
-    const stream = runAgent({
+    stream = runAgent({
       agentId: input.agentId,
       agent: input.agent,
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime),
-      model: input.input.model,
+      ...(task?.executionOptions ?? effectiveExecutionOptions(input.input, input.agent, input.context)),
       abortSignal: wall?.signal ?? input.abortController.signal,
       fork: input.fork,
       existingMessages: input.existingMessages,
+      resumeDirective: input.isResume ? input.input.prompt : undefined,
+      takePendingMessages: () => ownsRun() ? input.taskStore.deliverPendingMessages(input.taskId, runGeneration) : [],
+      onInitialMessages: (messages) => {
+        if (ownsRun()) input.taskStore.reconcileMessages(input.taskId, messages);
+      },
+      onContextMessagesChanged: (messages) => {
+        if (!ownsRun()) return;
+        const current = input.taskStore.get(input.taskId)!;
+        current.messages = [...messages];
+        input.taskStore.confirmDelivery(input.taskId, messages.map((message) => message.id), runGeneration);
+        input.taskStore.upsert(current);
+      },
       workspaceCwd,
     });
 
@@ -365,26 +437,14 @@ async function runAsyncAgentLifecycle(input: {
       activityStore.recordEvent(input.agentId, event);
       if (event.type !== "message") {
         updateProgressFromEvent(current, event);
-        input.taskStore.upsert(current);
+        input.taskStore.updateProgress(current);
       }
       if (event.type === "message") {
-        current.messages.push(event.message);
         updateProgressFromMessage(current, event.message);
-        input.taskStore.upsert(current);
+        input.taskStore.updateProgress(current);
       }
 
       if (event.type === "terminal" || completed.done) break;
-
-      const pending = input.taskStore.drainPendingMessages(input.taskId);
-      if (pending.length > 0) {
-        const currentTask = input.taskStore.get(input.taskId);
-        if (currentTask) {
-          for (const msg of pending) {
-            currentTask.messages.push(msg);
-          }
-          input.taskStore.upsert(currentTask);
-        }
-      }
 
       completed = await stream.next();
     }
@@ -397,9 +457,8 @@ async function runAsyncAgentLifecycle(input: {
         if (!ownsRun() || !current || current.status === "killed") return;
         activityStore.recordEvent(input.agentId, event);
         if (event.type === "message") {
-          current.messages.push(event.message);
           updateProgressFromMessage(current, event.message);
-          input.taskStore.upsert(current);
+          input.taskStore.updateProgress(current);
         }
         remaining = await stream.next();
       }
@@ -418,19 +477,15 @@ async function runAsyncAgentLifecycle(input: {
       return;
     }
     input.taskStore.complete(input.taskId, completed.value.result);
+    if (input.taskStore.get(input.taskId)?.runGeneration !== runGeneration) return;
     activityStore.complete(input.agentId, completed.value.result);
-    const finished = input.taskStore.get(input.taskId);
-    if (finished) {
-      finished.messages.push(createTaskNotification(finished.agentId, finished.taskId, finished.status, completed.value.result.content));
-      input.taskStore.upsert(finished);
-    }
-    if (task) task.notified = false;
   } catch (error) {
     if (!ownsRun()) return;
     const message = error instanceof Error ? error.message : String(error);
     input.taskStore.fail(input.taskId, message);
     activityStore.fail(input.agentId, message);
   } finally {
+    await stream?.return(undefined as never);
     wall?.dispose();
   }
 }
@@ -442,25 +497,22 @@ export function resumeAgentTask(
   taskStore: TaskStore,
   parentContext: ToolUseContext,
 ): Promise<{ ok: boolean; error?: string }> {
-  const task = taskStore.get(taskId);
+  if (parentContext.isSubagent || isForkChildContext(parentContext)) return Promise.resolve({ ok: false, error: "Only the main agent may resume subagents." });
+  const task = taskStore.getActive(taskId);
   if (!task) return Promise.resolve({ ok: false, error: `Unknown task: ${taskId}` });
   if (task.type !== "agent") return Promise.resolve({ ok: false, error: `Only agent tasks can be resumed` });
+  if (task.ownerSessionDir && path.resolve(parentContext.session?.sessionDir ?? "") !== task.ownerSessionDir) return Promise.resolve({ ok: false, error: "Resume the owning main session before resuming this agent." });
 
   const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
   const agent = catalog.resolve(task.agentType);
   const abortController = new AbortController();
 
-  task.status = "pending";
-  task.runGeneration = (task.runGeneration ?? 0) + 1;
+  if (!taskStore.isTerminal(task)) return Promise.resolve({ ok: false, error: "Only terminal agent tasks can be resumed" });
+  taskStore.prepareResume(taskId, abortController);
   const runGeneration = task.runGeneration;
-  task.abortController = abortController;
-  task.error = undefined;
-  task.completedAt = undefined;
-  task.notified = false;
-  taskStore.upsert(task);
 
   void runAsyncAgentLifecycle({
-    input: { prompt: directive ?? "Continue where you left off." },
+    input: { ...task.executionOptions, prompt: directive ?? "Continue where you left off." },
     context: parentContext,
     runtime,
     agent,
@@ -474,10 +526,22 @@ export function resumeAgentTask(
     existingMessages: [...task.messages],
     runGeneration,
   }).catch((error) => {
-    if (taskStore.get(taskId)?.runGeneration === runGeneration) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+    const current = taskStore.get(taskId);
+    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
   });
 
   return Promise.resolve({ ok: true });
+}
+
+function effectiveExecutionOptions(input: AgentToolInput, agent: AgentDefinition, context: ToolUseContext): NonNullable<LocalAgentTask["executionOptions"]> {
+  return {
+    cwd: resolveAgentWorkspaceCwd(input.cwd, context) ?? context.appState.snapshot().cwd,
+    model: input.model ?? (agent.model && agent.model !== "inherit" ? agent.model : context.options?.mainLoopModel),
+    reasoning: context.options?.reasoning == null ? context.options?.reasoning : { effort: context.options.reasoning.effort, summary: context.options.reasoning.summary },
+    contextWindowTokensOverride: context.options?.contextWindowTokensOverride,
+    maxOutputTokensOverride: context.options?.maxOutputTokensOverride,
+    serviceTier: context.options?.serviceTier,
+  };
 }
 
 function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependencies {
@@ -488,10 +552,6 @@ function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependenc
     compactor: runtime.compactor,
     contextBudget: runtime.contextBudget,
   };
-}
-
-function createTaskNotification(agentId: string, taskId: string, status: string, content: string): Message {
-  return createTaskNotificationMessage({ agentId, taskId, status, type: "agent", content });
 }
 
 function resolveAgentActivityMode(input: AgentToolInput, fork: boolean, fallback: "sync" | "background") {
@@ -538,6 +598,7 @@ function mergeAbortWithWallClock(
     if (!controller.signal.aborted) controller.abort(parent?.reason ?? new Error("Aborted"));
   };
   parent?.addEventListener("abort", onParentAbort, { once: true });
+  if (parent?.aborted) onParentAbort();
   return {
     signal: controller.signal,
     dispose: () => {

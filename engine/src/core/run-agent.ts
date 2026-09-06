@@ -1,6 +1,6 @@
 import path from "node:path";
 import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
-import type { Compactor, ContextBudgetOptions } from "../context/compaction.js";
+import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import type { ModelGateway, ModelUsage } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
@@ -11,7 +11,8 @@ import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent
 import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { SessionStore } from "../session/session-store.js";
-import { query } from "./query.js";
+import { query, type QueryOptions } from "./query.js";
+import { ensureToolResultPairing } from "./message-pipeline.js";
 
 export interface RunAgentDependencies {
   modelGateway: ModelGateway;
@@ -33,10 +34,20 @@ export interface RunAgentOptions {
   parentMessages?: readonly Message[];
   dependencies: RunAgentDependencies;
   model?: string;
+  reasoning?: QueryOptions["reasoning"];
+  contextWindowTokensOverride?: QueryOptions["contextWindowTokensOverride"];
+  serviceTier?: QueryOptions["serviceTier"];
+  maxOutputTokensOverride?: QueryOptions["maxOutputTokensOverride"];
+  /** Only a new explicit directive; never repeat the original prompt on restore. */
+  resumeDirective?: string;
+  /** Complete current context, not an append-only transcript. */
+  onContextMessagesChanged?: (messages: Message[]) => void;
   maxTurns?: number;
   abortSignal?: AbortSignal;
   fork?: boolean;
   existingMessages?: Message[];
+  takePendingMessages?: () => Message[];
+  onInitialMessages?: (messages: Message[]) => void;
   /** Resolved absolute cwd for file/exec tools in this subagent session. */
   workspaceCwd?: string;
 }
@@ -48,13 +59,33 @@ export type RunAgentCompleted =
 
 export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentEvent, RunAgentCompleted, void> {
   const startedAt = Date.now();
-  const initialMessages = options.existingMessages?.length
-    ? [...options.existingMessages, ...buildResumeMessages(options)]
-    : buildInitialAgentMessages(options);
   const childSession = await createChildAgentSession(options);
-  if (childSession && !options.existingMessages?.length) {
-    for (const message of initialMessages) childSession.recordMessage(message);
+  const restored = childSession?.getInitialMessages() ?? [];
+  // An empty checkpoint is authoritative too: never revive the task's old snapshot.
+  const hasDurableContext = restored.length > 0 || (childSession?.snapshot().windowNumber ?? 1) > 1;
+  const priorMessages = hasDurableContext ? restored : options.existingMessages ?? [];
+  const continuing = hasDurableContext || priorMessages.length > 0;
+  const additions = continuing ? buildResumeMessages(options) : buildInitialAgentMessages(options);
+  if (!hasDurableContext) {
+    for (const message of priorMessages) childSession?.recordMessage(message);
   }
+  // Repair historical calls with synthetic failures, never execute them on restore.
+  const repaired = ensureToolResultPairing(priorMessages);
+  const priorIds = new Set(priorMessages.map((message) => message.id));
+  for (const message of repaired) {
+    if (!priorIds.has(message.id)) childSession?.recordMessage(message);
+  }
+  for (const message of additions) childSession?.recordMessage(message);
+  const initialMessages = [...repaired, ...additions];
+  let contextMessages = initialMessages.map(cloneMessage);
+  const notifyContext = () => options.onContextMessagesChanged?.(contextMessages.map(cloneMessage));
+  const appendContext = (messages: Message[]) => {
+    contextMessages.push(...messages.map(cloneMessage));
+    for (const message of messages) childSession?.recordMessage(message);
+    notifyContext();
+  };
+  options.onInitialMessages?.(initialMessages.map(cloneMessage));
+  notifyContext();
   const agentMessages: Message[] = [];
   let terminalReason: string | undefined;
   let lastUsage: ModelUsage | undefined;
@@ -65,6 +96,12 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     tools: resolveAgentTools(options.dependencies.tools, options.agent),
     contextManager: createAgentContextManager(options),
     compactor: options.dependencies.compactor,
+    applyCompaction: (result: CompactionResult) => {
+      const messages = ensureToolResultPairing(result.messages);
+      childSession?.recordCompactCheckpoint(messages, result.reason, result.report);
+      contextMessages = messages.map(cloneMessage);
+      notifyContext();
+    },
     contextBudget: options.dependencies.contextBudget,
     canUseTool: options.dependencies.canUseTool,
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,
@@ -85,6 +122,10 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     for await (const event of query(messages, dependencies, {
       agentId: options.agentId,
       model: resolveAgentModel(options.agent, options.model),
+      reasoning: options.reasoning,
+      contextWindowTokensOverride: options.contextWindowTokensOverride,
+      serviceTier: options.serviceTier,
+      maxOutputTokensOverride: options.maxOutputTokensOverride,
       maxTurns,
       queryOrigin: "subagent",
       abortSignal: options.abortSignal,
@@ -92,10 +133,16 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       stopOnAgentReport: options.agent.requiresReport === true,
       agentReportToolName: options.agent.reportToolName,
       toolChoice,
+      takePendingMessages: () => {
+        const pending = options.takePendingMessages?.() ?? [];
+        agentMessages.push(...pending);
+        if (pending.length) appendContext(pending);
+        return pending;
+      },
     })) {
       if (event.type === "message") {
         agentMessages.push(event.message);
-        childSession?.recordMessage(event.message);
+        appendContext([event.message]);
       }
       if (event.type === "tool.started") totalToolUseCount += 1;
       if (event.type === "usage") lastUsage = event.usage;
@@ -109,7 +156,9 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   if (options.agent.requiresReport === true && !extractFinalAgentReport(agentMessages, options.agent.reportToolName)) {
     const retryTurns = options.agent.reportRetryTurns ?? 1;
     if (retryTurns > 0 && !options.abortSignal?.aborted) {
-      const recoveryMessages = [...initialMessages, ...agentMessages, createTextMessage("user", buildReportRequiredReminder())];
+      const reminder = createTextMessage("user", buildReportRequiredReminder());
+      appendContext([reminder]);
+      const recoveryMessages = contextMessages.map(cloneMessage);
       yield* runQuery(recoveryMessages, Math.max(2, retryTurns + 1), { type: "function", name: options.agent.reportToolName ?? AGENT_REPORT_TOOL_NAME });
     }
   }
@@ -135,7 +184,8 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
 export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition): ToolRegistry {
   const registry = new ToolRegistry();
   const allowed = agent.tools;
-  const disallowed = new Set(agent.disallowedTools ?? []);
+  // Scheduling is reserved to the main agent, including custom/wildcard agents.
+  const disallowed = new Set([...(agent.disallowedTools ?? []), "subagent_run", "subagent_resume"]);
 
   for (const tool of parentTools.list(undefined, { includeDeferred: true }) as Tool[]) {
     if (disallowed.has(tool.name)) continue;
@@ -201,7 +251,7 @@ function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
 }
 
 function buildResumeMessages(options: RunAgentOptions): Message[] {
-  return [createTextMessage("user", `[Resumed] ${options.prompt}`)];
+  return options.resumeDirective?.trim() ? [createTextMessage("user", `[Resumed] ${options.resumeDirective}`)] : [];
 }
 
 async function createChildAgentSession(options: RunAgentOptions): Promise<SessionStore | undefined> {
@@ -211,7 +261,8 @@ async function createChildAgentSession(options: RunAgentOptions): Promise<Sessio
     agentId: options.agentId,
     sessionId: options.agentId,
     rootDir: path.join(parentSession.sessionDir, "subagents"),
-    resume: false,
+    toolResultThresholdChars: (options.dependencies.toolResultMemory ?? options.parentContext?.toolResultMemory)?.thresholdChars,
+    resume: true,
   });
 }
 
