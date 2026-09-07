@@ -537,7 +537,6 @@ export class ExecProcessManager {
     if (!session.cleanup) {
       session.cleanup = setTimeout(() => {
         this.sessions.delete(session.id);
-        this.sweepOutput();
         this.notify();
       }, this.options.completedRetentionMs ?? TERMINAL_OUTPUT_RETENTION_MS);
       session.cleanup.unref();

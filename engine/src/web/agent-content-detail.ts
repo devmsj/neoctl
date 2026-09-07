@@ -60,6 +60,7 @@ export interface AgentContentPage {
   items?: AgentTimelineItem[];
   /** Delegation uses task.prompt/description, NOT inherited context or resume directives. */
   delegation?: { scope: 'task'; prompt: AgentContentFragment; description: DetailPart };
+  messages?: { content: AgentContentFragment };
   report?: { source: 'task.result' | 'runHistory'; taskStatus: string; reportStatus?: 'completed' | 'incomplete'; content: AgentContentFragment; error: DetailPart };
 }
 const MAX_LINE = 16 * 1024 * 1024;
@@ -153,8 +154,8 @@ function truncated(v: unknown, depth = 0): boolean {
   return Array.isArray(v) ? v.some(x => truncated(x, depth + 1)) : !!r && Object.entries(r).some(([k, x]) => (/truncated|hasMore|has_more/.test(k) && x === true) || (k === 'omitted_chars' && !!record(x) && Object.values(x as object).some(n => typeof n === 'number' && n > 0)) || (typeof x === 'object' && truncated(x, depth + 1)));
 }
 function sanitize(owner: AgentContentOwner, v: unknown): unknown {
-  // Structural OBS01 redaction first, owner's runtime secrets next, OBS01 again on output.
-  return redactToolDetail(owner.redact(redactToolDetail(v)));
+  // Preserve the original value; ownership and source selection are checked separately.
+  return v;
 }
 function part(owner: AgentContentOwner, v: unknown): DetailPart {
   if (v === undefined) return absent();
@@ -170,7 +171,7 @@ function fragment(p: DetailPart, offset: number, chars: number): AgentContentFra
   return { ...p, text: p.text.slice(offset, end), offset, totalChars: p.text.length, hasMore: end < p.text.length };
 }
 interface Cursor {
-  kind: 'timeline' | 'delegation' | 'report'; binding: string; expires: number; snapshotId: string;
+  kind: 'timeline' | 'delegation' | 'report' | 'messages'; binding: string; expires: number; snapshotId: string;
   pos: number; block: number; offset: number; done: boolean;
   upper: number; file: string; anchor: string; mtime: number; ctime: number;
   digest?: string;
@@ -335,12 +336,50 @@ export function createAgentContentDetailResolver() {
       } finally { await source.handle.close(); }
     });
   }
-  async function scalar(kind: 'delegation' | 'report', owner: AgentContentOwner, req: AgentContentRequest): Promise<AgentContentPage> {
+  async function messageContent(owner: AgentContentOwner, task: LocalAgentTask, req: AgentContentRequest): Promise<DetailPart> {
+    const receipts = (task.messageReceipts ?? []).filter(r => r.runGeneration === req.runGeneration);
+    const byId = new Map<string, { id: string; text: string; status: string; createdAt?: string }>();
+    const receiptById = new Map(receipts.map(r => [r.messageId, r]));
+    const accept = (value: unknown, fromTranscript = false) => {
+      const m = record(value);
+      if (!m || m.role !== 'user' || m.isMeta === true || typeof m.id !== 'string' || !Array.isArray(m.blocks)) return;
+      const receipt = receiptById.get(m.id);
+      const resume = fromTranscript && record(m.metadata)?.agentMessageKind === 'resume';
+      if (!receipt && !resume) return;
+      const body = m.blocks.map(record).filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b!.text).join('\n');
+      byId.set(m.id, { id: m.id, text: text(sanitize(owner, body)), status: receipt?.status ?? 'delivered', createdAt: receipt?.queuedAt ?? (typeof m.createdAt === 'string' ? m.createdAt : undefined) });
+    };
+    for (const message of [...task.messages, ...task.pendingMessages]) accept(message);
+    // Receipt IDs identify parent messages; never return inherited user context.
+    // Read the durable log too: delivered messages may have left the live context.
+    let source: Awaited<ReturnType<typeof openChecked>> | undefined;
+    try {
+      source = await openChecked(owner, task.agentId, ['transcript.jsonl']);
+      if (source.stat.size > REF_SCAN) fail('消息记录过大');
+      for (let pos = 0; pos < source.stat.size;) {
+        const line = await lineAt(source.handle, pos, source.stat.size);
+        if (line.tail) break;
+        pos = line.end;
+        const entry = record(line.value);
+        if (entry?.type === 'message' && entry.runGeneration === req.runGeneration && entry.agentId === task.agentId && entry.sessionId === task.agentId) accept(entry.message, true);
+      }
+      const end = await source.check();
+      if (end.size < source.stat.size || (end.size === source.stat.size && (end.mtimeMs !== source.stat.mtimeMs || end.ctimeMs !== source.stat.ctimeMs))) fail('消息记录已改变');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    } finally { await source?.handle.close(); }
+    for (const receipt of receipts) if (!byId.has(receipt.messageId)) byId.set(receipt.messageId, { id: receipt.messageId, text: '', status: receipt.status, createdAt: receipt.queuedAt });
+    return part(owner, [...byId.values()].sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '')));
+  }
+  async function scalar(kind: 'delegation' | 'report' | 'messages', owner: AgentContentOwner, req: AgentContentRequest): Promise<AgentContentPage> {
     return guarded(owner, req, async (base, { task, binding, chars }) => {
       if (req.refresh) fail('委派/报告刷新请不带游标重新读取');
       const c = req.cursor ? decode(req.cursor, binding, kind) : fresh(kind, binding);
       let content: DetailPart; let metadata: AgentContentPage;
-      if (kind === 'delegation') {
+      if (kind === 'messages') {
+        content = await messageContent(owner, task, req);
+        metadata = { ...base, messages: { content: fragment(content, 0, 0) } };
+      } else if (kind === 'delegation') {
         content = part(owner, task.prompt);
         metadata = { ...base, delegation: { scope: 'task', prompt: fragment(content, 0, 0), description: preview(part(owner, task.description)) } };
       } else {
@@ -363,8 +402,9 @@ export function createAgentContentDetailResolver() {
       const piece = fragment(content, c.offset, chars); c.offset += piece.text.length;
       if (metadata.delegation) metadata.delegation.prompt = piece;
       if (metadata.report) metadata.report.content = piece;
+      if (metadata.messages) metadata.messages.content = piece;
       return { ...metadata, state: content.state === 'unavailable' ? 'unavailable' : content.state === 'missing' ? 'missing' : piece.hasMore ? 'partial' : 'complete', reason: content.reason, snapshotId: c.snapshotId, ...(piece.hasMore ? { nextCursor: encode(c) } : {}) };
     });
   }
-  return { timeline, delegation: (owner: AgentContentOwner, req: AgentContentRequest) => scalar('delegation', owner, req), report: (owner: AgentContentOwner, req: AgentContentRequest) => scalar('report', owner, req) };
+  return { timeline, messages: (owner: AgentContentOwner, req: AgentContentRequest) => scalar('messages', owner, req), delegation: (owner: AgentContentOwner, req: AgentContentRequest) => scalar('delegation', owner, req), report: (owner: AgentContentOwner, req: AgentContentRequest) => scalar('report', owner, req) };
 }

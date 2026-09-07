@@ -258,7 +258,10 @@ function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
 }
 
 function buildResumeMessages(options: RunAgentOptions): Message[] {
-  return options.resumeDirective?.trim() ? [createTextMessage("user", `[Resumed] ${options.resumeDirective}`)] : [];
+  if (!options.resumeDirective?.trim()) return [];
+  const message = createTextMessage("user", `[Resumed] ${options.resumeDirective}`);
+  message.metadata = { ...message.metadata, agentMessageKind: "resume" };
+  return [message];
 }
 
 async function createChildAgentSession(options: RunAgentOptions): Promise<SessionStore | undefined> {

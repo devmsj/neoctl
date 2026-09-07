@@ -5,21 +5,8 @@ import type { Message, MessageBlock } from '../types/messages.js';
 
 export interface DetailPart { state: 'complete' | 'truncated' | 'missing' | 'unavailable'; text: string; reason: string }
 export interface ToolCallDetail { sessionId: string; toolUseId: string; messageId?: string; toolName: string; ok?: boolean; input: DetailPart; result: DetailPart; error: DetailPart }
-const privateKey = /api[_-]?key|token|password|secret|authorization|cookie|credential|private[_-]?key|env|config|system[_-]?(prompt|message)|reasoning|thinking|last[_-]?text|hidden|analysis|context|messages|transcript/i;
-/** Boundary for user-facing tool data, never entire model messages. */
-export function redactToolDetail(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactToolDetail);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, privateKey.test(key) ? '[已脱敏]' : redactToolDetail(item)]));
-  if (typeof value !== 'string') return value;
-  try { const parsed = JSON.parse(value); if (parsed && typeof parsed === 'object') return JSON.stringify(redactToolDetail(parsed), null, 2); } catch { /* plain output */ }
-  let text = value.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[已脱敏]')
-    .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [已脱敏]')
-    .replace(/\bsk-[\w-]+/g, '[已脱敏]')
-    .replace(/((?:[\w-]*(?:token|password|secret|api[_-]?key|authorization|cookie)[\w-]*)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi, '$1[已脱敏]')
-    .replace(/(<(?:thinking|analysis|system)>)[\s\S]*?<\/(?:thinking|analysis|system)>/gi, '[已脱敏]');
-  for (const [key, secret] of Object.entries(process.env)) if (privateKey.test(key) && secret && secret.length >= 4) text = text.split(secret).join('[已脱敏]');
-  return text;
-}
+/** Compatibility entry point: display user-owned tool data without text rewriting. */
+export function redactToolDetail(value: unknown): unknown { return value; }
 // Exact registered agent tools only: unrelated tools may legitimately return arbitrary text.
 const agentPayloadTools = new Set(['subagent_run', 'subagent_get', 'subagent_output', 'subagent_list', 'subagent_resume', 'subagent_stop', 'subagent_message']);
 const agentControlTools = new Set(['subagent_message', 'subagent_stop', 'subagent_resume']);

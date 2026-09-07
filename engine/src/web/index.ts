@@ -854,10 +854,10 @@ export class WebRepl {
 
   async agentContent(sessionId: string, view: string, request: AgentContentRequest) {
     const session = this.runtime.engine.snapshot().session;
-    if (!session?.sessionDir || sessionId !== session.sessionId || !["timeline", "delegation", "report"].includes(view)) return undefined;
+    if (!session?.sessionDir || sessionId !== session.sessionId || !["timeline", "delegation", "report", "messages"].includes(view)) return undefined;
     // Loading/recovery belongs to activateSession, never this read-only route.
     if (!this.runtime.taskStore.getInSession(request.taskId, session.sessionDir)) return undefined;
-    return this.agentContentReader[view as "timeline" | "delegation" | "report"]({
+    return this.agentContentReader[view as "timeline" | "delegation" | "report" | "messages"]({
       ownerSessionId: sessionId, ownerSessionDir: session.sessionDir, taskStore: this.runtime.taskStore,
       redact: value => this.runtime.engine.redactDisplayValue(value),
     }, request);
@@ -3328,8 +3328,8 @@ function normalizeToolDisplay(display: UiToolDisplay): UiToolDisplay {
     return true;
   });
   const previews = display.previews.filter((preview) => {
-    // Separate terminal streams remain separate even when empty or byte-identical.
-    if (/^(stdout|stderr)(?:$|[（ ·])/.test(preview.label ?? "")) return true;
+    // Keep identical nonempty streams, but never render empty output panels.
+    if (/^(stdout|stderr)(?:$|[（ ·])/.test(preview.label ?? "")) return !!preview.content.trim();
     const normalized = normalizeDisplayText(preview.content);
     if (!normalized || visibleText.has(normalized)) return false;
     visibleText.add(normalized);
@@ -3358,7 +3358,9 @@ function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
     pushToolFact(facts, "模式", data.mode === "edit" ? "编辑" : "生成");
     pushToolFact(facts, "名称", data.semanticName);
   } else if (toolName === "expose_downloads") pushToolFact(facts, "文件", arrayLabel(data.paths), true);
-  else if (toolName === "subagent_message") pushToolFact(facts, "接收方", data.target);
+  else if (toolName === "subagent_message") {
+    if (typeof data.message === "string" && data.message.trim()) previews.push({ kind: "text", content: data.message });
+  }
   else if (toolName.startsWith("subagent_")) pushToolFact(facts, "任务", data.task_id, true);
   else if (toolName.startsWith("secret_")) {
     pushToolFact(facts, "密钥", data.key, true);

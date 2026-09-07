@@ -1,6 +1,6 @@
 // AgentContentPage wire contract: engine/src/web/agent-content-detail.ts.
 // Pure reader helpers. No runtime/model/state-changing API dependencies.
-export const contentViews = ['delegation', 'timeline', 'report']
+export const contentViews = ['report', 'timeline', 'messages', 'delegation']
 export const isRunning = status => status === 'running' || status === 'pending'
 export const defaultContentView = status => isRunning(status) ? 'timeline' : 'report'
 export const sameIdentity = (a, b) => a.ownerSessionId === b.ownerSessionId && a.taskId === b.taskId && a.runGeneration === b.runGeneration
@@ -52,7 +52,7 @@ export function mergeContent(previous, page, identity, view, mode = 'next') {
     return { page, items, fragment: null }
   }
   if (view === 'delegation' && page.delegation && page.delegation.scope !== 'task') throw new Error('未知委派 scope；不展示上下文或续跑指令')
-  const fragment = view === 'delegation' ? page.delegation?.prompt : page.report?.content
+  const fragment = view === 'delegation' ? page.delegation?.prompt : view === 'messages' ? page.messages?.content : page.report?.content
   if (!fragment && page.state !== 'missing') throw new Error('读取页未提供正文')
   return { page, items: [], fragment: fragment ? mergeFragment(prior.fragment, fragment) : null }
 }
@@ -63,6 +63,7 @@ export function exportScope(content, view) {
   if (!page || page.nextCursor || page.state !== 'complete' || page.pendingTail) return '已加载预览（非全文）'
   if (view === 'timeline') return content.items.every(item => fragmentComplete(item.content)) ? '当前已保存过程快照全文（不代表任务完成）' : '已保留过程预览（含截断或不可获取内容，非全文）'
   if (!fragmentComplete(content.fragment)) return '已保留内容预览（非全文）'
+  if (view === 'messages') return '消息全文'
   if (view === 'delegation') return '任务级脱敏委派正文全文（不是本轮续跑指令）'
   return page.report?.reportStatus === 'completed' ? '已保存报告全文（报告标记：completed）' : page.report?.reportStatus === 'incomplete' ? '已保存报告全文（报告未完成：incomplete）' : '已保存报告全文（报告完成状态未提供）'
 }

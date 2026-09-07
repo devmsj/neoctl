@@ -43,7 +43,7 @@ export function agentToolStatus(line) {
 
 // Call identity is local UI state; downstream facts are already labelled by the service.
 export function callStatus(line) {
-  if (line?.live) return { key: 'running', label: '调用中' }
-  if (line?.titleStatus === 'failure' || line?.kind === 'error') return { key: 'failed', label: '调用失败' }
-  return line?.titleStatus === 'success' ? { key: 'completed', label: '调用成功' } : { key: 'unknown', label: '未提供' }
+  if (line?.live) return { key: 'running', label: '执行中' }
+  if (line?.titleStatus === 'failure' || line?.titleStatus === 'failed' || line?.kind === 'error' || !!line?.toolError) return { key: 'failed', label: '失败' }
+  return line?.titleStatus === 'success' ? { key: 'completed', label: '完成' } : { key: 'unknown', label: '未提供' }
 }

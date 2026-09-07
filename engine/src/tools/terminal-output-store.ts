@@ -142,7 +142,7 @@ function prefixLength(bytes: Buffer, limit: number): number {
 /**
  * Independent, synchronous, single-writer store; no manager/UI/session imports or timers.
  * One instance per sessionsRoot/process. Call restoreSession for authorized sessions at startup,
- * sweep periodically, and evict when the existing manager evicts a global slot. Never owns slots.
+ * saved output survives process-slot release and has no time-based expiry.
  * Uses the project's lstat/realpath + wx/fsync/rename pattern. Like existing stores, it assumes
  * no hostile concurrent directory mutation by another process with the same OS permissions.
  */
@@ -264,7 +264,7 @@ export class TerminalOutputStore {
 
   finalize(ownerSessionId: string, runId: string, facts: TerminalExitFacts): StoreResult<RunView> {
     return this.guard(() => {
-      if (!validExit(facts) || !integer(facts.finishedAt + TERMINAL_OUTPUT_RETENTION_MS)) fail("invalid-input");
+      if (!validExit(facts)) fail("invalid-input");
       const [owner, entry] = this.entry(ownerSessionId, runId);
       const r = entry.record;
       if (facts.finishedAt < r.metadata.startedAt || r.lifecycle === "lost") fail("conflict");
@@ -272,7 +272,7 @@ export class TerminalOutputStore {
       if (r.exit && JSON.stringify(r.exit) !== JSON.stringify(exit)) fail("conflict");
       r.lifecycle = "terminal";
       r.exit = exit;
-      r.expiresAt = facts.finishedAt + TERMINAL_OUTPUT_RETENTION_MS;
+      r.expiresAt = null;
       if (r.availability === "available") {
         try {
           for (const stream of ["stdout", "stderr"] as const) {
@@ -289,12 +289,11 @@ export class TerminalOutputStore {
     });
   }
 
-  /** Existing manager is the sole eviction-policy owner. Facts remain, even for a running eviction. */
+  /** Release a manager slot without removing durable output. */
   evict(ownerSessionId: string, runId: string): StoreResult<RunView> {
     return this.guard(() => {
       const [owner, entry] = this.entry(ownerSessionId, runId);
-      entry.record.availability = "evicted";
-      this.save(owner, entry);
+      // Releasing a process slot does not delete its saved output.
       this.maintain(owner, entry);
       return this.view(entry);
     });
@@ -458,18 +457,22 @@ export class TerminalOutputStore {
   }
   private maintain(owner: Owner, entry: Entry): void {
     const r = entry.record;
-    if (r.expiresAt !== null && this.clock() >= r.expiresAt && r.availability === "available") {
-      r.availability = "expired";
-      this.save(owner, entry);
+    let changed = false;
+    if (r.expiresAt !== null) { r.expiresAt = null; changed = true; }
+    // Migrate old metadata only when both original streams still exist intact.
+    // Deleted output is not recreated or confused with an empty command result.
+    if (r.availability === "expired" || r.availability === "evicted") {
+      try {
+        for (const stream of ["stdout", "stderr"] as const) {
+          this.withFile(path.join(this.runDir(owner, r), `${stream}.txt`), "read", fd => {
+            if (fs.fstatSync(fd).size !== r.streams[stream].storedBytes) fail("io-error");
+          });
+        }
+        r.availability = "available";
+        changed = true;
+      } catch { /* Previously deleted output cannot be recovered by changing metadata. */ }
     }
-    if (r.availability === "available") return;
-    // Do not follow links, delete metadata, or remove unknown files/directories.
-    try {
-      for (const stream of ["stdout", "stderr"] as const) {
-        const file = path.join(this.runDir(owner, r), `${stream}.txt`);
-        try { fileStat(file); fs.unlinkSync(file); } catch (error) { if (!missing(error)) throw error; }
-      }
-    } catch { /* Read remains revoked even if cleanup fails. Later sweep retries. */ }
+    if (changed) this.save(owner, entry);
   }
   private view(entry: Entry): RunView { return { record: structuredClone(entry.record), persistence: entry.persisted ? "stored" : "memory-only" }; }
   private guard<T>(action: () => T): StoreResult<T> {
@@ -486,7 +489,7 @@ export class TerminalOutputStore {
           return t && integer(t.observedBytes) && integer(t.storedBytes) && t.storedBytes <= t.observedBytes;
         }) || raw.streams.stdout.storedBytes + raw.streams.stderr.storedBytes > raw.byteLimit
         || (raw.lifecycle === "terminal" ? !validExit(raw.exit!) || raw.exit!.finishedAt < raw.metadata.startedAt
-          || raw.expiresAt !== raw.exit!.finishedAt + TERMINAL_OUTPUT_RETENTION_MS || raw.lostAt !== null
+          || (raw.expiresAt !== null && raw.expiresAt !== raw.exit!.finishedAt + TERMINAL_OUTPUT_RETENTION_MS) || raw.lostAt !== null
           : raw.exit !== null || raw.expiresAt !== null || (raw.lifecycle === "lost" ? !integer(raw.lostAt) : raw.lostAt !== null))) fail("invalid-input");
     // Explicit DTO: persisted input never becomes arbitrary paths/output fields or runtime state.
     return { version: 1, ownerSessionId: owner, runId: raw.runId,

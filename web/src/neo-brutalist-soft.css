@@ -2139,3 +2139,43 @@ input[type='radio'] {
     transform: scale(1);
   }
 }
+
+/* Compact task readers: content first, no protocol annotations. */
+.agent-content-reader, .agent-reader-body, .agent-reader-body > section { min-width: 0; width: 100%; }
+.agent-reader-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); margin-bottom: 18px; }
+.agent-reader-tabs, .reader-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.agent-reader-tabs button, .reader-actions button, .agent-run-tabs button {
+  border: 0; border-radius: 0; background: transparent; box-shadow: none; padding: 8px 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer;
+}
+.agent-reader-tabs button { padding: 10px 0; font-size: 15px; font-weight: 600; border-bottom: 2px solid transparent; }
+.agent-reader-tabs button[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--purple); }
+.reader-actions button:hover, .agent-run-tabs button:hover { color: var(--text); }
+.reader-actions button:disabled { opacity: .4; cursor: default; }
+.agent-reader-body { display: block; overflow-wrap: anywhere; font-size: 14px; line-height: 1.75; }
+.agent-reader-body .markdown { font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.agent-reader-body .markdown > :first-child { margin-top: 0; }
+.agent-reader-body pre { max-width: 100%; overflow: auto; }
+.agent-plain-content { margin: 0; font: inherit; white-space: pre-wrap; }
+.reader-empty { margin: 28px 0; color: var(--muted); font-size: 14px; }
+.reader-state { color: var(--muted); font-size: 13px; margin: 8px 0; }
+.reader-error, .tool-error-content h3 { color: #dc2626; }
+.agent-parent-message + .agent-parent-message { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line-soft); }
+.agent-parent-message > header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 14px; }
+.agent-parent-message > header span { color: var(--muted); font-size: 13px; }
+.agent-tool-record { border-bottom: 1px solid var(--line-soft); padding: 8px 0; }
+.agent-tool-record summary { cursor: pointer; }
+.agent-timeline-item + .agent-timeline-item, .agent-live-content { margin-top: 16px; }
+.reader-footer { margin-top: 16px; }
+.agent-run-tabs { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; }
+.agent-run-tabs button[aria-pressed="true"] { color: var(--text); font-weight: 600; }
+.background-task-detail .background-task-meta { background: none; border: 0; padding-top: 8px; padding-bottom: 0; }
+.background-task-detail .background-task-meta dt, .background-task-detail .background-task-meta dd { font-size: 13px; line-height: 1.5; font-family: inherit; }
+.terminal-exit-facts, .terminal-exit-facts > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.terminal-exit-facts { gap: 18px; font-size: 13px; }
+.terminal-exit-facts dt { color: var(--muted); }
+.terminal-exit-facts dd { margin: 0; }
+.terminal-stream h4 { font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+.terminal-stream pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.plan-card .plan-card-head { align-items: center; margin-bottom: 8px; }
+.plan-card .plan-item-row { grid-template-columns: 24px minmax(0, 1fr); }

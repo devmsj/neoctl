@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
 import TerminalOutputReader from './TerminalOutputReader.vue'
-import AgentContentReader from './AgentContentReader.vue'
+import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -18,7 +18,7 @@ import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import CwdTreeNode from './components/CwdTreeNode.vue'
-import { agentTaskResult, agentTaskDelivery, agentTaskArchives, agentTaskNeedsResume, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
+import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
 
@@ -275,13 +275,9 @@ const state = reactive({
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
-  toolDetailData: null,
-  toolDetailLoading: false,
-  toolDetailError: "",
   expandedToolGroups: {},
   compactionDetailLineId: undefined,
   backgroundTaskDetail: undefined,
-  agentReaderRun: null,
   imagePreview: undefined,
   confirmDialog: {
     open: false,
@@ -2037,84 +2033,19 @@ function toolGroupPurposes(group) {
   })
 }
 
-let toolDetailEpoch = 0
-let toolDetailAbort
 let toolDetailTrigger
 function openToolDetail(line, event) {
-  if (!line) return
+  if (!isImageCreateResultLine(line)) return
   toolDetailTrigger = event?.currentTarget || document.activeElement
   state.toolDetailLineId = line.id
   document.body.classList.add('tool-detail-open')
-  void loadToolDetail()
   nextTick(() => document.querySelector('.tool-result-modal-close')?.focus())
-}
-async function loadToolDetail() {
-  const line = toolDetailLine.value
-  const epoch = ++toolDetailEpoch
-  toolDetailAbort?.abort()
-  toolDetailAbort = new AbortController()
-  state.toolDetailData = null
-  state.toolDetailError = ''
-  if (!line || isImageCreateResultLine(line)) { state.toolDetailLoading = false; return }
-  if (!line.toolUseId || !state.session?.sessionId) {
-    state.toolDetailLoading = false
-    state.toolDetailError = '不可获取：旧记录未提供调用身份，不能将摘要冒充完整输入或结果'
-    return
-  }
-  const sessionId = state.session.sessionId
-  state.toolDetailLoading = true
-  try {
-    const url = new URL(runtimeUrl('/api/tool-call-detail'), location.origin)
-    url.searchParams.set('toolUseId', line.toolUseId)
-    if (line.messageId) url.searchParams.set('messageId', line.messageId)
-    const response = await fetch(url, { signal: toolDetailAbort.signal, cache: 'no-store' })
-    if (!response.ok) throw new Error(response.status === 404 ? '调用详情不可获取或无权访问' : `详情读取失败 (${response.status})`)
-    const detail = await response.json()
-    if (epoch !== toolDetailEpoch || state.session?.sessionId !== sessionId) return
-    if (detail.sessionId !== sessionId || detail.toolUseId !== line.toolUseId || (line.messageId && detail.messageId !== line.messageId)) throw new Error('详情身份不匹配')
-    state.toolDetailData = detail
-  } catch (error) {
-    if (epoch === toolDetailEpoch && error.name !== 'AbortError') state.toolDetailError = error.message || '详情加载失败'
-  } finally { if (epoch === toolDetailEpoch) state.toolDetailLoading = false }
 }
 function renderAgentMarkdown(text) {
   return sanitizeMarkdown(marked.parse(String(text ?? '')))
 }
-function selectedAgentRun() {
-  const task = state.backgroundTaskDetail
-  if (!task || task.kind !== 'agent') return undefined
-  return state.agentReaderRun === null || state.agentReaderRun === task.runGeneration ? task : task.runHistory?.find(run => run.runGeneration === state.agentReaderRun)
-}
-function agentDetailTarget() {
-  const detail = state.toolDetailData
-  if (!String(detail?.toolName || '').startsWith('subagent_')) return undefined
-  let taskId, runGeneration
-  for (const part of [detail.result, detail.input]) {
-    try { const data = JSON.parse(part?.text || 'null'); taskId ??= data?.task_id; runGeneration ??= data?.run_generation ?? data?.runGeneration } catch {}
-  }
-  if (typeof taskId !== 'string') return undefined
-  const task = allBackgroundTasks.value.find(task => task.kind === 'agent' && task.taskId === taskId)
-  // Never reinterpret an unrecorded old invocation as the current round.
-  if (!Number.isSafeInteger(runGeneration) || runGeneration < 1) return undefined
-  const run = task?.runGeneration === runGeneration ? task : task?.runHistory?.find(run => run.runGeneration === runGeneration)
-  return { taskId, runGeneration, status: run?.status || 'unknown', visiblePreview: task?.runGeneration === runGeneration ? task.progress?.visibleText : undefined }
-}
-
-function terminalDetailRunId() {
-  const detail = state.toolDetailData
-  if (!['terminal_run', 'terminal_control'].includes(detail?.toolName)) return ''
-  for (const part of [detail.result, detail.input]) {
-    try { const data = JSON.parse(part?.text || 'null'); if (typeof data?.session_id === 'string') return data.session_id } catch {}
-  }
-  return ''
-}
-
 function closeToolDetail() {
-  ++toolDetailEpoch
-  toolDetailAbort?.abort()
   state.toolDetailLineId = undefined
-  state.toolDetailData = null
-  state.toolDetailLoading = false
   document.body.classList.remove('tool-detail-open')
   const trigger = toolDetailTrigger
   nextTick(() => { if (trigger?.isConnected) trigger.focus() })
@@ -2126,37 +2057,6 @@ function toolDetailKeydown(event) {
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
 }
-// Presentation only; classification comes from the authorized detail response.
-function toolDetailFieldText(field) {
-  if (field.state !== 'provided') return { 'not-provided': '未提供', unspecified: '未指定', 'not-applicable': '不适用' }[field.state] || '未提供'
-  return typeof field.value === 'string' ? (field.value === '' ? '（空字符串）' : field.value) : JSON.stringify(field.value, null, 2)
-}
-function toolDetailFieldSource(field) {
-  if (field.source === 'display') return '展示摘要（不是完整输入）'
-  if (!field.source) return ''
-  return `${field.source === 'input' ? '脱敏输入' : '实际返回'}.${field.sourceKey} · ${field.completeness === 'complete' ? '完整来源' : '已截断来源，仅预览'}`
-}
-const toolDetailFieldRows = computed(() => {
-  const fields = state.toolDetailData?.fields
-  if (!fields) return []
-  const display = toolDetailLine.value?.toolDisplay || {}
-  const metadata = key => fields[key]?.state === 'provided' || display[key] === undefined ? fields[key] : { key, state: 'provided', value: display[key], source: 'display', completeness: 'summary' }
-  return [metadata('purpose'), metadata('subject'), fields.object, fields.actualPath, fields.actualProvider, ...fields.keyParameters].filter(Boolean)
-})
-function toolDetailFieldLabel(key) {
-  return { purpose: '目的', subject: '展示对象 / subject', object: '对象', actualPath: '实际路径 / 输入路径', actualProvider: '实际 provider' }[key] || key
-}
-async function copyToolDetailPart(part) {
-  try { await navigator.clipboard.writeText(part.text); state.toolDetailError = '' }
-  catch { state.toolDetailError = '复制失败，可重试复制或下载' }
-}
-function downloadToolDetailPart(part, key) {
-  const url = URL.createObjectURL(new Blob([part.text], { type: 'text/plain;charset=utf-8' }))
-  const anchor = document.createElement('a')
-  anchor.href = url; anchor.download = `tool-${key}-${part.state === 'complete' ? 'full' : 'preview'}.txt`; anchor.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
 function handleDocumentImageClick(event) {
   const image = event.target instanceof HTMLImageElement ? event.target : null
   if (!image || image.closest('.image-preview-modal')) return
@@ -2214,9 +2114,8 @@ function toolResultSummary(line) {
   return toolResultPresentation(line).summary
 }
 
-function visibleToolFacts(line) {
-  const facts = Array.isArray(line?.toolDisplay?.facts) ? line.toolDisplay.facts : []
-  return facts.filter((fact) => String(fact?.label || '').trim() !== '状态')
+function visibleToolPreviews(line) {
+  return (line?.toolDisplay?.previews || []).filter(preview => preview.content !== undefined && preview.content !== null && String(preview.content).trim() !== '')
 }
 
 function toolStreamSteps(line) {
@@ -2227,6 +2126,10 @@ function isAgentToolLine(line) {
   return exactToolName(line) === 'subagent_run'
 }
 
+function isFileMutationLine(line) {
+  return ['file_write', 'file_edit', 'write_file', 'edit_file'].includes(exactToolName(line).toLowerCase())
+}
+
 function isTerminalToolLine(line) {
   const name = exactToolName(line).toLowerCase()
   return name === 'terminal_run' || name === 'terminal_control'
@@ -2235,7 +2138,7 @@ function isTerminalToolLine(line) {
 function showToolResultPreviews(line) {
   return Array.isArray(line?.toolDisplay?.previews)
     && line.toolDisplay.previews.length > 0
-    && !exactToolName(line).startsWith('subagent_')
+    && (!exactToolName(line).startsWith('subagent_') || exactToolName(line) === 'subagent_message')
     && !(isTerminalToolLine(line) && line?.live === true && hasToolStream(line))
 }
 
@@ -2438,12 +2341,12 @@ function backgroundTaskDisplayTitle(task) {
 
 function backgroundTaskElapsed(task) {
   if (task?.kind === 'terminal') {
-    if (task.status !== 'running') return Number.isFinite(task.durationMs) && task.durationMs >= 0 ? formatDuration(task.durationMs) : '未提供'
-    return Number.isFinite(task.createdAt) && task.createdAt <= state.clockTick ? formatDuration(state.clockTick - task.createdAt) : '未提供'
+    if (task.status !== 'running') return Number.isFinite(task.durationMs) && task.durationMs >= 0 ? formatDuration(task.durationMs) : ''
+    return Number.isFinite(task.createdAt) && task.createdAt <= state.clockTick ? formatDuration(state.clockTick - task.createdAt) : ''
   }
   if (task?.kind === 'agent') {
     const duration = agentRunElapsedMs(task, state.clockTick)
-    return duration === undefined ? '未提供' : formatDuration(duration)
+    return duration === undefined ? '' : formatDuration(duration)
   }
   const raw = task?.createdAt
   const numeric = Number(raw)
@@ -2469,7 +2372,6 @@ function backgroundTaskLiveOutput(task) {
 }
 
 function openBackgroundTaskDetail(task) {
-  state.agentReaderRun = null
   state.backgroundTaskDetail = { ...task }
   document.body.classList.add('tool-detail-open')
 }
@@ -2784,11 +2686,9 @@ function renderPlanResult(line) {
     ? Number(plan.completed)
     : counts.completed
   const total = Number.isFinite(Number(plan.total)) ? Number(plan.total) : counts.total
-  const progress = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0
   const title = escapeHtml(plan.title || '任务计划')
   const rows = renderPlanItems(items)
-  const note = plan.note ? `<div class="plan-note"><span>说明</span><p>${escapeHtml(plan.note)}</p></div>` : ''
-  return `<section class="plan-card"><div class="plan-card-head"><div><span class="plan-kicker">执行计划</span><strong>${title}</strong></div><span class="plan-progress-label">${completed} / ${total}</span></div><div class="plan-progress-track" aria-label="计划进度 ${Math.round(progress)}%"><span style="width:${progress.toFixed(2)}%"></span></div><ol class="plan-items">${rows}</ol>${note}</section>`
+  return `<section class="plan-card"><div class="plan-card-head"><strong>${title}</strong><span class="plan-progress-label">${completed} / ${total}</span></div><ol class="plan-items">${rows}</ol></section>`
 }
 
 function renderPlanItems(items, depth = 0) {
@@ -2799,7 +2699,7 @@ function renderPlanItems(items, depth = 0) {
     const nested = children.length
       ? `<ol class="plan-subitems" aria-label="${escapeHtml(item?.description || `步骤 ${index + 1}`)}的子步骤">${renderPlanItems(children, depth + 1)}</ol>`
       : ''
-    return `<li class="plan-item status-${status}" data-plan-depth="${depth}"><div class="plan-item-row"><span class="plan-item-marker" aria-hidden="true">${icon}</span><span class="plan-item-text">${escapeHtml(item?.description || `步骤 ${index + 1}`)}</span><span class="plan-item-status">${planStatusLabel(status)}</span></div>${nested}</li>`
+    return `<li class="plan-item status-${status}" data-plan-depth="${depth}"><div class="plan-item-row"><span class="plan-item-marker" role="img" aria-label="${planStatusLabel(status)}">${icon}</span><span class="plan-item-text">${escapeHtml(item?.description || `步骤 ${index + 1}`)}</span></div>${nested}</li>`
   }).join('')
 }
 
@@ -4358,7 +4258,7 @@ function createMobileSession() {
                         <div class="compaction-context-actions">
                           <span><span>摘要</span><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
                           <span v-if="item.compaction.imageCount"><span>图片</span><strong>{{ item.compaction.imageCount }}</strong></span>
-                          <button type="button" @click="openCompactionDetail(item)"><span>详情</span><strong>›</strong></button>
+
                         </div>
                       </section>
                       <div v-else-if="shouldCollapseToolLine(item)" :class="['tool-result-summary', `status-${toolResultStatus(item).key}`]">
@@ -4368,7 +4268,7 @@ function createMobileSession() {
                           </svg>
                           <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
                           <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
-                          <button type="button" class="image2-detail-button" @click="openToolDetail(item, $event)">详情</button>
+
                         </div>
                         <div class="tool-result-detail-row">
                           <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
@@ -4386,29 +4286,23 @@ function createMobileSession() {
                               <div v-for="(purpose, purposeIndex) in agentToolPurposes(item)" :key="purpose.key" class="tool-group-purpose" :style="{ '--purpose-index': purposeIndex }"><span>{{ purpose.purpose }}</span></div>
                             </div>
                           </div>
-                          <p v-else-if="toolStreamCurrentText(item)" class="tool-result-primary">{{ toolStreamCurrentText(item) }}<span v-if="toolStreamProgressText(item)"> {{ toolStreamProgressText(item) }}</span></p>
-                          <div v-if="!isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-result-previews">
+                          <p v-else-if="!isFileMutationLine(item) && toolStreamCurrentText(item)" class="tool-result-primary">{{ toolStreamCurrentText(item) }}<span v-if="toolStreamProgressText(item)"> {{ toolStreamProgressText(item) }}</span></p>
+                          <div v-if="!isFileMutationLine(item) && !isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-result-previews">
                             <section class="tool-result-preview kind-list"><pre tabindex="0">{{ toolStreamStepsText(item) }}</pre></section>
                           </div>
                           <div v-if="!isAgentToolLine(item) && toolStreamOutput(item) && (!isTerminalToolLine(item) || item.live === true)" class="tool-result-previews">
                             <section class="tool-result-preview kind-code"><pre tabindex="0">{{ toolStreamOutput(item) }}</pre></section>
                           </div>
                           <div v-if="!isAgentToolLine(item) && showToolResultPreviews(item)" class="tool-result-previews">
-                            <section v-for="(preview, previewIndex) in item.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
-                              <span v-if="preview.label">{{ preview.label }}</span>
+                            <section v-for="(preview, previewIndex) in visibleToolPreviews(item)" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
+
                               <pre tabindex="0">{{ preview.content }}</pre>
                             </section>
                           </div>
-                          <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
-                            <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
-                              <dt>{{ fact.label }}</dt>
-                              <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
-                            </div>
-                          </dl>
                         </div>
                       </div>
                       <div v-else>
-                        <div class="message-head"><strong>{{ lineTitle(item) }}</strong></div>
+                        <div v-if="!isPlanToolLine(item)" class="message-head"><strong>{{ lineTitle(item) }}</strong><span v-if="item.toolName && toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span></div>
                         <div class="message-text markdown" v-html="renderLine(item)"></div>
                       </div>
                     </div>
@@ -4429,7 +4323,7 @@ function createMobileSession() {
                   <div class="compaction-context-actions">
                     <span><span>摘要</span><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
                     <span v-if="line.compaction.imageCount"><span>图片</span><strong>{{ line.compaction.imageCount }}</strong></span>
-                    <button type="button" @click="openCompactionDetail(line)"><span>详情</span><strong>›</strong></button>
+
                   </div>
                 </section>
               </div>
@@ -4448,8 +4342,9 @@ function createMobileSession() {
                 </details>
               </div>
               <div v-else class="message-body">
-                <div v-if="(line.kind !== 'tool' || lineResources(line).length) && !shouldCollapseToolLine(line)" class="message-head">
+                <div v-if="!isPlanToolLine(line) && (line.kind !== 'tool' || lineResources(line).length) && !shouldCollapseToolLine(line)" class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
+                  <span v-if="line.toolName && toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
                   <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
                   <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                 </div>
@@ -4479,7 +4374,7 @@ function createMobileSession() {
                     </svg>
                     <strong class="tool-result-name">{{ lineTitle(line) }}</strong>
                     <span v-if="toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
-                    <button type="button" class="image2-detail-button" @click="openToolDetail(line, $event)">详情</button>
+
                   </div>
                   <div class="tool-result-detail-row">
                     <p v-if="line.toolDisplay?.purpose || line.toolDisplay?.subject" class="tool-result-primary">
@@ -4499,25 +4394,19 @@ function createMobileSession() {
                         <div v-for="(purpose, purposeIndex) in agentToolPurposes(line)" :key="purpose.key" class="tool-group-purpose" :style="{ '--purpose-index': purposeIndex }"><span>{{ purpose.purpose }}</span></div>
                       </div>
                     </div>
-                    <p v-else-if="toolStreamCurrentText(line)" class="tool-result-primary">{{ toolStreamCurrentText(line) }}<span v-if="toolStreamProgressText(line)"> {{ toolStreamProgressText(line) }}</span></p>
-                    <div v-if="!isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-result-previews">
+                    <p v-else-if="!isFileMutationLine(line) && toolStreamCurrentText(line)" class="tool-result-primary">{{ toolStreamCurrentText(line) }}<span v-if="toolStreamProgressText(line)"> {{ toolStreamProgressText(line) }}</span></p>
+                    <div v-if="!isFileMutationLine(line) && !isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-result-previews">
                       <section class="tool-result-preview kind-list"><pre tabindex="0">{{ toolStreamStepsText(line) }}</pre></section>
                     </div>
                     <div v-if="!isAgentToolLine(line) && toolStreamOutput(line) && (!isTerminalToolLine(line) || line.live === true)" class="tool-result-previews">
                       <section class="tool-result-preview kind-code"><pre tabindex="0">{{ toolStreamOutput(line) }}</pre></section>
                     </div>
                     <div v-if="!isAgentToolLine(line) && showToolResultPreviews(line)" class="tool-result-previews">
-                      <section v-for="(preview, previewIndex) in line.toolDisplay.previews" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
-                        <span v-if="preview.label">{{ preview.label }}</span>
+                      <section v-for="(preview, previewIndex) in visibleToolPreviews(line)" :key="`${preview.kind}-${previewIndex}`" :class="['tool-result-preview', `kind-${preview.kind}`]">
+
                         <pre tabindex="0">{{ preview.content }}</pre>
                       </section>
                     </div>
-                    <dl v-if="visibleToolFacts(line).length" class="tool-result-facts">
-                      <div v-for="fact in visibleToolFacts(line)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
-                        <dt>{{ fact.label }}</dt>
-                        <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
-                      </div>
-                    </dl>
                   </div>
                 </div>
                 <template v-else>
@@ -4686,9 +4575,8 @@ function createMobileSession() {
               <div class="panel-title">后台任务</div>
               <strong v-if="backgroundTaskCount" class="background-task-count">{{ backgroundTaskCount }}</strong>
             </div>
-            <div v-if="!backgroundTaskCount" class="empty-mini">暂无后台任务</div>
             <button
-              v-else
+              v-if="primaryBackgroundTask"
               type="button"
               class="background-task-summary"
               :title="backgroundTaskTitle(primaryBackgroundTask)"
@@ -5300,17 +5188,8 @@ function createMobileSession() {
               <span :class="['tool-result-modal-status', `status-${state.backgroundTaskDetail.status}`]">{{ taskStatusText(state.backgroundTaskDetail.status) }}</span>
             </header>
             <dl class="background-task-meta">
-              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>{{ state.backgroundTaskDetail.kind === 'agent' ? '本轮耗时' : '时长' }}</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
-              <div><dt>创建</dt><dd>{{ formatSessionTime(state.backgroundTaskDetail.createdAt) }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.kind === 'agent'"><dt>轮次</dt><dd>第 {{ state.backgroundTaskDetail.runGeneration || 1 }} 轮</dd></div>
-              <div v-if="state.backgroundTaskDetail.processId"><dt>PID</dt><dd>{{ state.backgroundTaskDetail.processId }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.shell"><dt>Shell</dt><dd>{{ state.backgroundTaskDetail.shell }}{{ state.backgroundTaskDetail.tty ? ' · TTY' : '' }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.sessionId"><dt>会话</dt><dd>{{ state.backgroundTaskDetail.sessionId }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.agentId"><dt>代理</dt><dd>{{ state.backgroundTaskDetail.agentId }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.taskId && state.backgroundTaskDetail.kind === 'agent'"><dt>任务</dt><dd>{{ state.backgroundTaskDetail.taskId }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.progress"><dt>工具</dt><dd>{{ state.backgroundTaskDetail.progress.totalToolUseCount || 0 }}</dd></div>
+              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>耗时</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
               <div v-if="state.backgroundTaskDetail.cwd" class="wide"><dt>目录</dt><dd>{{ state.backgroundTaskDetail.cwd }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.outputFile" class="wide"><dt>输出</dt><dd>{{ state.backgroundTaskDetail.outputFile }}</dd></div>
             </dl>
             <div class="background-task-detail-body">
               <section v-if="state.backgroundTaskDetail.kind !== 'agent' && backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command-section">
@@ -5320,34 +5199,7 @@ function createMobileSession() {
               <TerminalOutputReader v-if="state.backgroundTaskDetail.kind === 'terminal'" :owner-session-id="state.backgroundTaskDetail.ownerSessionId || state.session?.sessionId" :run-id="state.backgroundTaskDetail.sessionId" />
 
               <div v-if="state.backgroundTaskDetail.kind === 'agent'" style="min-width: 0; width: 100%">
-                <nav aria-label="代理轮次选择" class="tool-call-detail-actions">
-                  <button type="button" :aria-pressed="state.agentReaderRun === null" @click="state.agentReaderRun = null">当前第 {{ state.backgroundTaskDetail.runGeneration }} 轮</button>
-                  <button v-for="run in agentTaskArchives(state.backgroundTaskDetail)" :key="run.runGeneration" type="button" :aria-pressed="state.agentReaderRun === run.runGeneration" @click="state.agentReaderRun = run.runGeneration">第 {{ run.runGeneration }} 轮 · {{ taskStatusText(run.status) }} · 本轮耗时 {{ backgroundTaskElapsed({ ...run, kind: 'agent' }) }}</button>
-                </nav>
-                <AgentContentReader v-if="selectedAgentRun()" :owner-session-id="state.session?.sessionId" :task-id="state.backgroundTaskDetail.taskId" :run-generation="selectedAgentRun().runGeneration" :status="selectedAgentRun().status" :visible-preview="selectedAgentRun().runGeneration === state.backgroundTaskDetail.runGeneration ? state.backgroundTaskDetail.progress?.visibleText : undefined" :render-markdown="renderAgentMarkdown" />
-                <p v-else>该轮次记录已清理，不可获取；不会回退到当前轮次。</p>
-                <details class="background-task-progress-section"><summary>辅助技术日志与最近步骤</summary>
-              <section v-if="backgroundTaskActivity(state.backgroundTaskDetail) || backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-output-section background-task-progress-section">
-                <div class="background-task-output-head"><strong>进度日志</strong><i v-if="state.backgroundTaskDetail.status === 'running'" aria-label="实时更新"></i></div>
-                <div class="background-task-log-stack">
-                  <pre v-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-activity">{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</pre>
-                  <pre v-if="backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-activity background-task-step-list">{{ backgroundTaskSteps(state.backgroundTaskDetail).map((step) => `${step.status === 'completed' ? '✓' : step.status === 'failed' ? '×' : '•'} ${step.title}`).join('\n') }}</pre>
-                </div>
-              </section>
-                  <p v-if="!backgroundTaskActivity(state.backgroundTaskDetail) && !backgroundTaskSteps(state.backgroundTaskDetail).length">未提供辅助日志；可展示正文和完整过程见上方阅读区。</p>
-                </details>
-                <details class="background-task-delivery-section"><summary>消息交付与辅助信息</summary>
-                <section class="background-task-delivery-section">
-                  <div class="background-task-output-head"><strong>消息交付</strong></div>
-                  <div class="background-task-delivery-stats">
-                    <div><span>待交付</span><strong>{{ agentTaskDelivery(state.backgroundTaskDetail).queued }}</strong></div>
-                    <div><span>本轮最近已交付</span><strong>{{ agentTaskDelivery(state.backgroundTaskDetail).delivered }}</strong></div>
-                  </div>
-                  <p v-if="agentTaskNeedsResume(state.backgroundTaskDetail)" class="background-task-resume-note"><strong>待续跑 · {{ state.backgroundTaskDetail.pendingMessageCount }} 条未交付，需要显式续跑</strong></p>
-                  <p class="background-task-last-activity">最后活动：{{ state.backgroundTaskDetail.progress?.lastActivity ? formatSessionTime(state.backgroundTaskDetail.progress.lastActivity) : '未提供' }}</p>
-                  <p class="background-task-help">交付仅表示进入模型上下文，不代表采纳或完成；结束后仍有待交付消息时，需要显式续跑。</p>
-                </section>
-                </details>
+                <AgentExchangeReader :owner-session-id="state.session?.sessionId" :task="state.backgroundTaskDetail" :render-markdown="renderAgentMarkdown" />
               </div>
             </div>
           </article>
@@ -5369,34 +5221,7 @@ function createMobileSession() {
         </header>
         <div class="tool-result-modal-content">
           <div v-if="isImageCreateResultLine(toolDetailLine)" class="message-text markdown tool-detail-markdown" v-html="renderToolDetail(toolDetailLine)"></div>
-          <template v-else>
-            <p v-if="state.toolDetailLoading" role="status">详情加载中…（只读，不会重新执行工具）</p>
-            <p v-if="state.toolDetailError" role="alert">{{ state.toolDetailError }} <button type="button" @click="loadToolDetail">重试加载详情</button></p>
-            <template v-if="state.toolDetailData">
-              <p>会话 {{ state.toolDetailData.sessionId }} · 调用 {{ state.toolDetailData.toolUseId }}</p>
-              <TerminalOutputReader v-if="terminalDetailRunId()" :owner-session-id="state.toolDetailData.sessionId" :run-id="terminalDetailRunId()" />
-              <AgentContentReader v-if="agentDetailTarget()" :owner-session-id="state.toolDetailData.sessionId" :task-id="agentDetailTarget().taskId" :run-generation="agentDetailTarget().runGeneration" :status="agentDetailTarget().status" :visible-preview="agentDetailTarget().visiblePreview" :render-markdown="renderAgentMarkdown" />
-              <template v-if="state.toolDetailData.fields">
-                <h3>对象与关键参数</h3>
-                <p v-if="state.toolDetailData.fields.result.empty">空结果（有效空内容，不代表数据缺失）</p>
-                <section v-for="(field, index) in toolDetailFieldRows" :key="`${field.source}:${field.key}:${index}`" class="tool-result-preview kind-code" :data-detail-field="field.key">
-                  <h3>{{ toolDetailFieldLabel(field.key) }}</h3>
-                  <p>{{ toolDetailFieldSource(field) }}</p>
-                  <pre tabindex="0" style="white-space: pre-wrap; overflow-wrap: anywhere">{{ toolDetailFieldText(field) }}</pre>
-                  <button v-if="field.key === 'actualPath' && field.copyValue !== undefined" type="button" @click="copyToolDetailPart({ text: field.copyValue })">复制完整路径</button>
-                </section>
-              </template>
-              <section v-for="key in ['input', 'result', 'error']" :key="key" class="tool-result-preview kind-code">
-                <h3>{{ { input: '脱敏输入', result: '脱敏结果', error: '错误原因' }[key] }}</h3>
-                <p>{{ state.toolDetailData[key].reason }}</p>
-                <pre tabindex="0" style="white-space: pre-wrap; overflow-wrap: anywhere">{{ state.toolDetailData[key].text || (state.toolDetailData[key].state === 'complete' ? '（空内容）' : '') }}</pre>
-                <template v-if="state.toolDetailData[key].state !== 'missing'">
-                  <button type="button" @click="copyToolDetailPart(state.toolDetailData[key])">复制{{ state.toolDetailData[key].state === 'complete' ? '脱敏全文' : '当前预览' }}</button>
-                  <button type="button" @click="downloadToolDetailPart(state.toolDetailData[key], key)">下载{{ state.toolDetailData[key].state === 'complete' ? '脱敏全文' : '当前预览' }}</button>
-                </template>
-              </section>
-            </template>
-          </template>
+
         </div>
         <footer class="tool-result-modal-footer">
           <button type="button" class="primary" @click="closeToolDetail">关闭</button>
