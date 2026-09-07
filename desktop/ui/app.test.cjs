@@ -134,3 +134,22 @@ test('late install completion after exit cannot launch runtime', async () => {
   assert.equal(h.calls.some((call) => call.name === 'launch_runtime'), false);
   assert.equal(h.removals, 2);
 });
+test('installed startup page updates Web and Core only while backend is stopped', async () => {
+  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo', web_version: '0.1.10', core_version: '0.2.36' }, invoke(name) {
+    if (name === 'update_runtime') return { web_version: '0.1.11', core_version: '0.2.37' };
+  } }); await tick();
+  assert.equal(h.element('readyTitle').textContent, 'Neo 启动页');
+  assert.equal(h.element('installButton').hidden, true);
+  assert.match(h.element('versionStatus').textContent, /Web 0\.1\.10 \/ Core 0\.2\.36/);
+  assert.equal(h.element('updateRuntime').disabled, false);
+  await h.element('updateRuntime').emit('click');
+  assert.equal(h.calls.filter((call) => call.name === 'update_runtime').length, 1);
+  assert.equal(h.document.body.dataset.state, 'ready');
+  assert.match(h.element('versionStatus').textContent, /Web 0\.1\.11 \/ Core 0\.2\.37/);
+});
+test('running backend disables startup page update', async () => {
+  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo' }, invoke(name) { if (name === 'runtime_status') return true; } }); await tick();
+  assert.equal(h.element('updateRuntime').disabled, true);
+  await h.element('updateRuntime').emit('click');
+  assert.equal(h.calls.some((call) => call.name === 'update_runtime'), false);
+});

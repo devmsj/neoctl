@@ -47,6 +47,30 @@ struct BootstrapState {
     installed: bool,
     auto_launch: bool,
     install_dir: Option<String>,
+    web_version: Option<String>,
+    core_version: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct RuntimeVersions {
+    web_version: String,
+    core_version: String,
+    core_requirement: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeSource {
+    Bundled,
+    RegistryLatest,
+}
+
+impl RuntimeSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled",
+            Self::RegistryLatest => "registry-latest",
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -74,6 +98,14 @@ struct InstallReceipt {
     web_package: String,
     installed_at: String,
     registry: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    core_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    core_requirement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 #[tauri::command]
@@ -93,6 +125,9 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
         .ok()
         .map(|value| PathBuf::from(value.install_dir));
     let install_dir = configured.filter(|path| runtime_is_installed(path));
+    let versions = install_dir
+        .as_deref()
+        .and_then(|path| read_runtime_versions(&path.join("runtime")).ok());
     Ok(BootstrapState {
         default_install_dir: default_dir.to_string_lossy().into_owned(),
         installed: install_dir.is_some(),
@@ -101,6 +136,8 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
             .manual_start
             .load(std::sync::atomic::Ordering::Acquire),
         install_dir: install_dir.map(|path| path.to_string_lossy().into_owned()),
+        web_version: versions.as_ref().map(|value| value.web_version.clone()),
+        core_version: versions.map(|value| value.core_version),
     })
 }
 
@@ -120,10 +157,25 @@ async fn choose_install_directory(initial: String) -> Result<Option<String>, Str
 #[tauri::command]
 async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_runtime_blocking(&app, PathBuf::from(install_dir))
+        install_runtime_blocking(&app, PathBuf::from(install_dir), RuntimeSource::Bundled)
+            .map(|_| ())
     })
     .await
     .map_err(|error| format!("安装任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+async fn update_runtime(app: AppHandle) -> Result<RuntimeVersions, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = read_desktop_config(&app)?;
+        install_runtime_blocking(
+            &app,
+            PathBuf::from(config.install_dir),
+            RuntimeSource::RegistryLatest,
+        )
+    })
+    .await
+    .map_err(|error| format!("更新任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -141,14 +193,33 @@ async fn launch_runtime(
     .map_err(|error| format!("启动任务异常结束：{error}"))?
 }
 
-fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(), String> {
+fn install_runtime_blocking(
+    app: &AppHandle,
+    install_dir: PathBuf,
+    source: RuntimeSource,
+) -> Result<RuntimeVersions, String> {
     let state = app.state::<DesktopState>();
     let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
     if runtime_control::runtime_status(app.clone()) {
-        return Err("请先关闭核心和后台再安装".into());
+        return Err(match source {
+            RuntimeSource::Bundled => "请先关闭核心和后台再安装".into(),
+            RuntimeSource::RegistryLatest => "请先关闭核心和后台再更新".into(),
+        });
     }
     validate_install_dir(&install_dir)?;
-    emit_progress(app, 2, "准备运行环境", "正在创建安装目录…", "初始化", None);
+    let updating = matches!(source, RuntimeSource::RegistryLatest);
+    emit_progress(
+        app,
+        2,
+        if updating {
+            "准备更新运行环境"
+        } else {
+            "准备运行环境"
+        },
+        "正在创建临时目录…",
+        "初始化",
+        None,
+    );
     fs::create_dir_all(&install_dir).map_err(display_io("无法创建安装目录"))?;
 
     let resource_dir = app
@@ -160,7 +231,7 @@ fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(),
     if !node_source.join("node.exe").exists() {
         return Err(format!("内置 Node 运行时缺失：{}", node_source.display()));
     }
-    if !payload_source.exists() {
+    if matches!(source, RuntimeSource::Bundled) && !payload_source.exists() {
         return Err(format!("内置 npm 软件包缺失：{}", payload_source.display()));
     }
 
@@ -169,12 +240,16 @@ fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(),
     remove_dir_if_exists(&staging)?;
     fs::create_dir_all(staging.join("packages")).map_err(display_io("无法创建临时目录"))?;
 
+    let web_specifier = match source {
+        RuntimeSource::Bundled => "file:packages/neoctl-web.tgz",
+        RuntimeSource::RegistryLatest => "latest",
+    };
     let package_json = serde_json::json!({
         "name": "neoctl-desktop-runtime",
         "version": "1.0.0",
         "private": true,
         "dependencies": {
-            "neoctl-web": "file:packages/neoctl-web.tgz"
+            "neoctl-web": web_specifier
         }
     });
     fs::write(
@@ -192,17 +267,27 @@ fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(),
         None,
     );
     copy_dir_recursive(&node_source, &staging.join("node"))?;
-    fs::copy(
-        &payload_source,
-        staging.join("packages").join("neoctl-web.tgz"),
-    )
-    .map_err(display_io("无法释放 neoctl-web 软件包"))?;
+    if matches!(source, RuntimeSource::Bundled) {
+        fs::copy(
+            &payload_source,
+            staging.join("packages").join("neoctl-web.tgz"),
+        )
+        .map_err(display_io("无法释放 neoctl-web 软件包"))?;
+    }
 
     emit_progress(
         app,
         15,
-        "安装应用依赖",
-        "正在通过国内镜像获取 core 与依赖…",
+        if updating {
+            "更新 Web 与 Core"
+        } else {
+            "安装应用依赖"
+        },
+        if updating {
+            "正在获取最新 Web 与其兼容的 Core…"
+        } else {
+            "正在通过国内镜像获取 Core 与依赖…"
+        },
         "连接软件源",
         Some(format!("registry: {REGISTRY}")),
     );
@@ -223,16 +308,20 @@ fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(),
         app,
         90,
         "校验安装结果",
-        "正在检查应用文件…",
+        "正在检查 Web 与 Core 版本…",
         "完整性检查",
         None,
     );
-    let manifest = read_payload_manifest(&resource_dir).unwrap_or_else(|| "neoctl-web".to_string());
+    let versions = read_runtime_versions(&staging)?;
     let receipt = InstallReceipt {
         schema: 1,
-        web_package: manifest,
+        web_package: format!("neoctl-web@{}", versions.web_version),
         installed_at: unix_timestamp().to_string(),
         registry: REGISTRY.to_string(),
+        web_version: Some(versions.web_version.clone()),
+        core_version: Some(versions.core_version.clone()),
+        core_requirement: versions.core_requirement.clone(),
+        source: Some(source.label().to_string()),
     };
     fs::write(
         staging.join(RECEIPT_FILE),
@@ -255,8 +344,22 @@ fn install_runtime_blocking(app: &AppHandle, install_dir: PathBuf) -> Result<(),
     fs::create_dir_all(install_dir.join("data").join("workspaces"))
         .map_err(display_io("无法创建数据目录"))?;
     write_desktop_config(app, &install_dir)?;
-    emit_progress(app, 100, "安装完成", "运行环境已准备完成。", "完成", None);
-    Ok(())
+    emit_progress(
+        app,
+        100,
+        if updating {
+            "更新完成"
+        } else {
+            "安装完成"
+        },
+        &format!(
+            "Web {} / Core {} 已准备完成。",
+            versions.web_version, versions.core_version
+        ),
+        "完成",
+        None,
+    );
+    Ok(versions)
 }
 
 fn run_npm_install(app: &AppHandle, root: &Path, staging: &Path) -> Result<(), String> {
@@ -525,6 +628,55 @@ fn runtime_is_installed(root: &Path) -> bool {
             .exists()
 }
 
+fn read_runtime_versions(runtime: &Path) -> Result<RuntimeVersions, String> {
+    let web_root = runtime.join("node_modules").join("neoctl-web");
+    let web_manifest_path = web_root.join("package.json");
+    let web_manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&web_manifest_path).map_err(display_io("无法读取 Web 版本"))?,
+    )
+    .map_err(|error| format!("Web package.json 格式错误：{error}"))?;
+    let web_version = web_manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Web package.json 缺少版本")?
+        .to_string();
+    let core_requirement = web_manifest
+        .get("dependencies")
+        .and_then(|value| value.get("neoctl"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let nested_core = web_root.join("node_modules").join("neoctl");
+    let core_root = if nested_core.exists() {
+        nested_core
+    } else {
+        runtime.join("node_modules").join("neoctl")
+    };
+    let core_manifest_path = core_root.join("package.json");
+    let core_manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&core_manifest_path).map_err(display_io("无法读取 Core 版本"))?,
+    )
+    .map_err(|error| format!("Core package.json 格式错误：{error}"))?;
+    let core_version = core_manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Core package.json 缺少版本")?
+        .to_string();
+    let core_entry = core_root.join("dist").join("index.js");
+    if !core_entry.exists() {
+        return Err(format!(
+            "安装完成但未找到 Core 入口：{}",
+            core_entry.display()
+        ));
+    }
+    Ok(RuntimeVersions {
+        web_version,
+        core_version,
+        core_requirement,
+    })
+}
+
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(display_io("无法创建目标目录"))?;
     for entry in fs::read_dir(source).map_err(display_io("无法读取内置资源"))? {
@@ -592,16 +744,6 @@ fn write_desktop_config(app: &AppHandle, install_dir: &Path) -> Result<(), Strin
         serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
     )
     .map_err(display_io("无法保存桌面壳配置"))
-}
-
-fn read_payload_manifest(resource_dir: &Path) -> Option<String> {
-    let content = fs::read(resource_dir.join("payload").join("payload-manifest.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&content).ok()?;
-    Some(format!(
-        "{}@{}",
-        value.get("name")?.as_str()?,
-        value.get("version")?.as_str()?
-    ))
 }
 
 fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
@@ -676,6 +818,7 @@ pub fn run() {
             bootstrap_state,
             choose_install_directory,
             install_runtime,
+            update_runtime,
             launch_runtime,
             uninstall::uninstall_desktop,
             updates::check_package_updates,

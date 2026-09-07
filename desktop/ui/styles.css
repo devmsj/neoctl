@@ -81,6 +81,9 @@ input::placeholder { color: #626b78; }
 .browse-button { display: flex; align-items: center; gap: 9px; padding: 0 12px; font-size: 12px; box-shadow: 3px 3px 0 var(--ink); }
 .status-message { margin: 0; min-height: 24px; }
 #readyMessage { margin: 12px 0 18px; font-size: 12px; }
+.version-status { margin: 0 0 10px; color: var(--muted); font: 11px/1.7 var(--mono); overflow-wrap: anywhere; }
+#backendStatus { margin: 18px 0 0; color: var(--muted); font-size: 12px; }
+.update-button { margin-top: 0; background: var(--lime); }
 .source-line { display: flex; align-items: baseline; gap: 8px; margin: auto 0 20px; font-size: 10px; color: var(--muted); line-height: 1.8; }
 .source-square { width: 7px; height: 7px; flex-shrink: 0; background: var(--lime); border: 1px solid var(--ink); }
 .source-address { font-family: var(--mono); overflow-wrap: anywhere; }
@@ -112,10 +115,10 @@ footer > span:first-child, .local-address { font-family: var(--mono); }
 /* State changes belong to app.js; visual motion never represents measured progress. */
 body[data-state='booting'] .source-square { animation: status-pulse 1600ms ease-in-out infinite; }
 body[data-state='ready'] .step-label > span { background: var(--sky); }
-body[data-state='installing'] .brand-diamond { animation-duration: 5s; }
-body[data-state='installing'] .color-tabs i { animation: launch-step 1500ms ease-in-out infinite; }
-body[data-state='installing'] .color-tabs i:nth-child(2) { animation-delay: 150ms; }
-body[data-state='installing'] .color-tabs i:nth-child(3) { animation-delay: 300ms; }
+body[data-state='installing'] .brand-diamond, body[data-state='updating'] .brand-diamond { animation-duration: 5s; }
+body[data-state='installing'] .color-tabs i, body[data-state='updating'] .color-tabs i { animation: launch-step 1500ms ease-in-out infinite; }
+body[data-state='installing'] .color-tabs i:nth-child(2), body[data-state='updating'] .color-tabs i:nth-child(2) { animation-delay: 150ms; }
+body[data-state='installing'] .color-tabs i:nth-child(3), body[data-state='updating'] .color-tabs i:nth-child(3) { animation-delay: 300ms; }
 body[data-state='launching'] .brand-diamond { animation: diamond-arrive 900ms var(--ease) both; }
 body[data-state='launching'] .card-topline { background: var(--lime); }
 body[data-state='error'] .card-topline { background: var(--pink); }

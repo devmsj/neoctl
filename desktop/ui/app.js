@@ -8,6 +8,7 @@ const pathInput = $('#installPath');
 const installButton = $('#installButton');
 const browseButton = $('#browseButton');
 const enterButton = $('#enterButton');
+const updateButton = $('#updateRuntime');
 const retryButton = $('#retryButton');
 const installLog = $('#installLog');
 const cleanups = [];
@@ -36,11 +37,12 @@ function showView(id, state, focus = true) {
 function setBusy(value) {
   busy = value;
   installButton.disabled = value || !initialized || backendRunning;
-  browseButton.disabled = value || !initialized;
+  browseButton.disabled = value || !initialized || Boolean(installedDir);
   pathInput.disabled = value || !initialized;
   enterButton.disabled = value || !backendRunning;
   $('#startBackend').disabled = value || !installedDir || backendRunning;
   $('#stopBackend').disabled = value || !backendRunning;
+  updateButton.disabled = value || !installedDir || backendRunning;
   retryButton.disabled = value;
 }
 
@@ -53,7 +55,7 @@ function appendLog(line) {
 }
 
 function applyProgress(payload = {}) {
-  if (disposed || phase !== 'installing') return;
+  if (disposed || !['installing', 'updating'].includes(phase)) return;
   const value = Number(payload.percent);
   if (Number.isFinite(value)) estimate = Math.max(0, Math.min(100, value));
   $('#progressTitle').textContent = payload.title || '正在安装';
@@ -69,12 +71,12 @@ function applyProgress(payload = {}) {
 function fail(error, action) {
   if (disposed) return;
   retryAction = action;
-  $('#progressTitle').textContent = action === 'launch' ? '启动未完成' : action === 'install' ? '安装未完成' : '暂时无法准备';
+  $('#progressTitle').textContent = action === 'launch' ? '启动未完成' : action === 'install' ? '安装未完成' : action === 'update' ? '更新未完成' : '暂时无法准备';
   $('#progressMessage').textContent = String(error);
   $('#progressStage').textContent = '需要重试';
   $('#progressTrack').setAttribute('aria-valuetext', `操作失败，${Math.round(estimate)}%`);
   appendLog(error);
-  retryButton.textContent = action === 'launch' ? '重新启动' : action === 'install' ? '返回并重试' : '重新连接';
+  retryButton.textContent = action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
   retryButton.hidden = false;
   showView('progressView', 'error');
 }
@@ -115,9 +117,17 @@ async function initialize() {
     pathInput.value = installedDir || state.default_install_dir || '';
     initialized = true;
     enterButton.hidden = !installedDir;
+    installButton.hidden = Boolean(installedDir);
+    browseButton.disabled = Boolean(installedDir);
+    pathInput.readOnly = Boolean(installedDir);
+    $('#readyTitle').textContent = installedDir ? 'Neo 启动页' : '安装 Neo';
     $('#readyMessage').textContent = '';
+    $('#versionStatus').textContent = installedDir
+      ? `当前 Web ${state.web_version || '未知'} / Core ${state.core_version || '未知'}。点击更新将获取最新兼容版本。`
+      : '';
     $('#backendControls').hidden = !installedDir;
     await refreshBackend();
+    setBusy(false);
     showView('readyView', 'ready', false);
   } catch (error) {
     fail(error, 'initialize');
@@ -145,7 +155,7 @@ async function launch(installDir) {
 
 on($('#installForm'), 'submit', async (event) => {
   event.preventDefault();
-  if (busy || !initialized || disposed) return;
+  if (busy || !initialized || disposed || installedDir) return;
   const installDir = pathInput.value.trim();
   if (!installDir) {
     $('#readyMessage').textContent = '请选择安装位置。';
@@ -171,6 +181,27 @@ on($('#installForm'), 'submit', async (event) => {
     if (!disposed) setBusy(false);
   }
   if (completed && !disposed) await launch(installDir);
+});
+
+on(updateButton, 'click', async () => {
+  if (busy || disposed || !installedDir || backendRunning) return;
+  setBusy(true);
+  installLog.textContent = '';
+  $('#logDetails').open = false;
+  retryButton.hidden = true;
+  showView('progressView', 'updating');
+  applyProgress({ percent: 0, title: '准备更新 Web 和 Core', stage: '准备中', message: '正在连接软件源…' });
+  try {
+    const versions = await api.core.invoke('update_runtime');
+    if (disposed) return;
+    $('#versionStatus').textContent = `当前 Web ${versions.web_version} / Core ${versions.core_version}。已更新到最新兼容版本。`;
+    $('#readyMessage').textContent = '更新完成，可以启动核心和后台。';
+    showView('readyView', 'ready');
+  } catch (error) {
+    fail(error, 'update');
+  } finally {
+    if (!disposed) setBusy(false);
+  }
 });
 
 on(browseButton, 'click', async () => {
