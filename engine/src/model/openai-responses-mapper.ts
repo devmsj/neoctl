@@ -3,6 +3,7 @@ import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
+import { ModelAPIError } from "./errors.js";
 import {
   asNumber,
   asString,
@@ -40,11 +41,10 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     ...conversationInput,
   ];
   const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
-  return dropUndefined({
+  const toolChoice = constrainedResponsesToolChoice(request.toolChoice, tools);
+  const body = dropUndefined({
     model,
     input,
-    tools: tools.length ? tools : undefined,
-    tool_choice: request.toolChoice ?? (tools.length ? "auto" : undefined),
     previous_response_id: request.previousResponseId,
     max_output_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
     reasoning: reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined),
@@ -55,7 +55,12 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     prompt_cache_options: explicitCaching ? { mode: "implicit" } : undefined,
     store: shouldStoreResponse(request, tools.length),
     ...((request.providerOptions?.responses as Record<string, unknown> | undefined) ?? {}),
+    // The runtime owns tool execution. Keep provider options from replacing the
+    // function catalog or enabling provider-hosted tools such as image_generation.
+    tools: tools.length ? tools : undefined,
+    tool_choice: toolChoice,
   });
+  return body;
 }
 
 function developerInput(text: string, explicitBreakpoint = false): Record<string, unknown> {
@@ -92,6 +97,7 @@ export async function* normalizeResponsesStream(
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
+    assertNoNativeImageGenerationResponse(event, type);
     yield { type: "provider_event", event };
 
     if (type === "response.created") {
@@ -208,6 +214,7 @@ export async function* normalizeResponsesStream(
 
 export function* normalizeResponsesObject(response: HttpJsonResponse<Record<string, unknown>>): Generator<ModelStreamEvent> {
   const body = response.body;
+  assertNoNativeImageGenerationResponse(body);
   const responseId = asString(body.id);
   if (responseId) yield { type: "response_started", responseId };
   const output = Array.isArray(body.output) ? body.output : [];
@@ -249,6 +256,38 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
 
 function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean {
   return Boolean(request.previousResponseId || toolCount > 0);
+}
+
+function constrainedResponsesToolChoice(
+  requested: ModelRequest["toolChoice"],
+  tools: unknown[],
+): unknown {
+  if (!tools.length || requested === "none") return requested;
+  if (requested && typeof requested === "object") return requested;
+  return {
+    type: "allowed_tools",
+    mode: requested === "required" ? "required" : "auto",
+    tools: tools.map((tool) => ({ type: "function", name: (tool as { name: string }).name })),
+  };
+}
+
+function assertNoNativeImageGenerationResponse(value: Record<string, unknown>, eventType?: string): void {
+  const output = Array.isArray(value.output) ? value.output : [];
+  const item = value.item && typeof value.item === "object" ? value.item as Record<string, unknown> : undefined;
+  const response = value.response && typeof value.response === "object" ? value.response as Record<string, unknown> : undefined;
+  const responseOutput = Array.isArray(response?.output) ? response.output : [];
+  const hasNativeImage = eventType?.startsWith("response.image_generation_call.") === true ||
+    item?.type === "image_generation_call" ||
+    [...output, ...responseOutput].some((entry) => entry && typeof entry === "object" && (entry as Record<string, unknown>).type === "image_generation_call");
+  if (!hasNativeImage) return;
+  throw new ModelAPIError({
+    category: "provider_bug",
+    provider: "openai",
+    code: "unexpected_native_image_generation",
+    message: "The model used OpenAI native image generation instead of the required application function tool image_create.",
+    retryable: false,
+    raw: value,
+  });
 }
 
 function isReasoningDeltaEvent(type: string | undefined): boolean {

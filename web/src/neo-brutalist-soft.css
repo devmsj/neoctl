@@ -2179,3 +2179,100 @@ input[type='radio'] {
 
 .plan-card .plan-card-head { align-items: center; margin-bottom: 8px; }
 .plan-card .plan-item-row { grid-template-columns: 24px minmax(0, 1fr); }
+
+.mobile-card-close, .mobile-session-title { display: none; }
+@media (max-width: 820px) {
+  .mobile-session-title {
+    display: block;
+    position: absolute;
+    left: 64px;
+    right: 64px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+    font-size: 14px;
+    line-height: 24px;
+  }
+  .mobile-nav-menu nav { max-height: calc(100dvh - 76px); overflow-y: auto; }
+  .core-version { display: none; }
+  .core-version.mobile-core-version { display: grid; position: relative; inset: auto; z-index: auto; }
+  .right-panel.mobile-card-open {
+    display: grid;
+    position: fixed;
+    inset: 70px 14px auto;
+    z-index: 40;
+    max-height: calc(100dvh - 88px);
+    padding: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    background: var(--bg);
+    border: 2px solid var(--line);
+    box-shadow: 4px 4px 0 rgba(0, 0, 0, .2);
+  }
+  .right-panel.mobile-card-open > section { display: none; }
+  .right-panel[data-mobile-card="tasks"] > [data-card="tasks"],
+  .right-panel[data-mobile-card="quota"] > [data-card="quota"],
+  .right-panel[data-mobile-card="memory"] > [data-card="memory"] { display: block; }
+  .right-panel .mobile-card-close { display: block; justify-self: end; width: 36px; height: 36px; }
+}
+
+/* Compact composer toolbar: retain every value and action without nested frames. */
+.composer .composer-cwd {
+  width: fit-content;
+  max-width: 100%;
+  border: 0 !important;
+  box-shadow: none !important;
+  gap: 5px;
+}
+.composer-cwd-icon { width: 14px; height: 14px; flex: 0 0 14px; }
+.composer .composer-cwd span {
+  flex: 1;
+  overflow-x: auto;
+  text-overflow: clip;
+  scrollbar-width: thin;
+}
+.composer .composer-cwd:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 1px;
+}
+@media (min-width: 821px) {
+  .composer .composer-path-row { margin-top: 4px; }
+  .composer .composer-cwd { min-height: 26px; padding: 3px 6px; }
+  .composer .composer-footer { justify-content: flex-start; align-items: center; gap: 4px 8px; margin-top: 6px; }
+  .composer .composer-metrics { display: contents; }
+  .composer .metric-chip {
+    min-height: 28px;
+    padding: 2px 3px;
+    gap: 4px;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    max-width: 100%;
+  }
+  .composer .metric-chip em { color: var(--muted); letter-spacing: 0; }
+  .composer .model-chip strong { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .composer .fast-mode-button,
+  .composer .compact-button {
+    min-height: 28px;
+    padding: 3px 6px;
+    border: 1px solid var(--line-soft) !important;
+    box-shadow: none !important;
+    transform: none !important;
+  }
+  .composer .fast-mode-button:not(.active),
+  .composer .compact-button { background: transparent !important; }
+  .composer .context-window-trigger:hover,
+  .composer .compact-button:hover:not(:disabled),
+  .composer .fast-mode-button:not(.active):hover { background: var(--purple-soft) !important; }
+  .composer .composer-footer button:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+  .composer .composer-actions { gap: 6px; }
+  .composer .composer-actions button {
+    min-height: 30px;
+    padding: 0 9px;
+    border-width: 1px !important;
+    box-shadow: none !important;
+    transform: none !important;
+  }
+}

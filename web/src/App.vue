@@ -317,6 +317,23 @@ const transcript = ref(null)
 const messageList = ref(null)
 const backgroundTaskOutput = ref(null)
 const mobileMenu = ref(null)
+const mobileCard = ref('')
+const rightPanelCards = computed(() => [
+  { id: 'tasks', title: '后台任务' },
+  ...(currentCpaQuota.value ? [{ id: 'quota', title: '周额度' }] : []),
+  { id: 'memory', title: '服务端内存' },
+])
+const rightPanelTitle = id => rightPanelCards.value.find(card => card.id === id)?.title || ''
+function openMobileCard(id) {
+  closeMobileMenu()
+  state.activePanel = 'chat'
+  mobileCard.value = id
+  nextTick(() => document.querySelector('.mobile-card-close')?.focus())
+}
+function closeMobileCard() {
+  mobileCard.value = ''
+  nextTick(() => mobileMenu.value?.querySelector('summary')?.focus())
+}
 const loginProvider = ref('')
 const loginValues = reactive({})
 const promptDraft = reactive(createEmptyPromptDraft())
@@ -578,6 +595,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
   document.addEventListener('click', handleDocumentResourceClick)
+  document.addEventListener('pointerdown', handleMobileMenuOutsidePointer, true)
   if (typeof ResizeObserver !== 'undefined' && sessionTitleViewport.value) {
     sessionTitleResizeObserver = new ResizeObserver(updateSessionTitleMarquee)
     sessionTitleResizeObserver.observe(sessionTitleViewport.value)
@@ -603,6 +621,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
   document.removeEventListener('click', handleDocumentResourceClick)
+  document.removeEventListener('pointerdown', handleMobileMenuOutsidePointer, true)
 })
 
 async function fetchState(options = {}) {
@@ -4022,7 +4041,13 @@ function closeMobileMenu() {
   mobileMenu.value?.removeAttribute('open')
 }
 
+function handleMobileMenuOutsidePointer(event) {
+  const menu = mobileMenu.value
+  if (menu?.open && !event.composedPath().includes(menu)) closeMobileMenu()
+}
+
 function openMobilePanel(panel) {
+  mobileCard.value = ''
   closeMobileMenu()
   if (panel === 'sessions') return openSessions()
   if (panel === 'prompts') return openPromptManager()
@@ -4031,6 +4056,7 @@ function openMobilePanel(panel) {
 }
 
 function createMobileSession() {
+  mobileCard.value = ''
   closeMobileMenu()
   return newSession()
 }
@@ -4151,12 +4177,20 @@ function createMobileSession() {
             </summary>
             <nav>
               <button type="button" :class="{ active: state.activePanel === 'chat' }" @click="openMobilePanel('chat')">对话</button>
+              <button type="button" @click="createMobileSession">新建会话</button>
               <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
               <button type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
               <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">模型配置</button>
-              <button type="button" @click="createMobileSession">新建会话</button>
+              <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
+              <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
+                <span class="core-version-spark spark-a" aria-hidden="true"></span>
+                <span class="core-version-spark spark-b" aria-hidden="true"></span>
+                <span class="core-version-spark spark-c" aria-hidden="true"></span>
+                <span>内核版本 {{ state.coreVersion }}</span>
+              </div>
             </nav>
           </details>
+          <strong v-if="realSessionTitle" class="mobile-session-title" :title="realSessionTitle">{{ realSessionTitle }}</strong>
           <button
             class="ghost mobile-theme-toggle celestial-theme-toggle"
             type="button"
@@ -4498,8 +4532,8 @@ function createMobileSession() {
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
             <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
             <div class="composer-path-row">
-              <button type="button" class="composer-cwd" title="切换工作目录" @click="openCwdPicker">
-                <strong>CWD</strong><span :title="currentCwd">{{ currentCwd }}</span>
+              <button type="button" class="composer-cwd" title="切换工作目录" aria-label="切换工作目录" @click="openCwdPicker">
+                <svg class="composer-cwd-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h5l2 2h8v9h-15Z" /></svg><span :title="currentCwd">{{ currentCwd }}</span>
               </button>
             </div>
             <details class="mobile-session-options">
@@ -4531,7 +4565,7 @@ function createMobileSession() {
                     <button v-if="allBackgroundTasks.length" type="button" class="mobile-runtime-card" @click="openBackgroundTaskDetail(allBackgroundTasks[0])"><span>{{ backgroundTaskCount ? '后台任务' : '最近结束' }}</span><strong>{{ backgroundTaskDisplayTitle(allBackgroundTasks[0]) }}</strong></button>
                     <div v-else class="mobile-runtime-card"><span>后台任务</span><strong>暂无</strong></div>
                     <div v-if="currentCpaQuota" class="mobile-runtime-card"><span>周额度</span><strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong><small>续期 {{ formatQuotaReset(currentCpaQuota.resetAt) }}</small></div>
-                    <div class="mobile-runtime-card"><span>服务端内存</span><strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong><small>堆 {{ formatMemoryBytes(memoryCurrent?.heapUsed) }} · 外部 {{ formatMemoryBytes(memoryCurrent?.external) }}</small></div>
+                    <div class="mobile-runtime-card"><span>{{ rightPanelTitle('memory') }}</span><strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong><small>堆 {{ formatMemoryBytes(memoryCurrent?.heapUsed) }} · 外部 {{ formatMemoryBytes(memoryCurrent?.external) }}</small></div>
                   </div>
                 </details>
               </div>
@@ -4569,10 +4603,11 @@ function createMobileSession() {
           </form>
         </div>
 
-        <aside class="right-panel">
-          <section class="background-task-section">
+        <aside class="right-panel" :class="{ 'mobile-card-open': mobileCard }" :data-mobile-card="mobileCard" @keydown.esc.stop="closeMobileCard">
+          <button v-if="mobileCard" type="button" class="mobile-card-close" aria-label="关闭卡片" @click="closeMobileCard">×</button>
+          <section class="background-task-section" data-card="tasks">
             <div class="background-task-head">
-              <div class="panel-title">后台任务</div>
+              <div class="panel-title">{{ rightPanelTitle('tasks') }}</div>
               <strong v-if="backgroundTaskCount" class="background-task-count">{{ backgroundTaskCount }}</strong>
             </div>
             <button
@@ -4605,10 +4640,10 @@ function createMobileSession() {
               </div>
             </details>
           </section>
-          <section v-if="currentCpaQuota" class="quota-card">
+          <section v-if="currentCpaQuota" class="quota-card" data-card="quota">
             <div class="quota-card-head">
               <div>
-                <span>周额度 · {{ quotaAccountLabel(currentCpaQuota.account) }}</span>
+                <span>{{ rightPanelTitle('quota') }} · {{ quotaAccountLabel(currentCpaQuota.account) }}</span>
                 <strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong>
               </div>
               <div class="quota-card-controls">
@@ -4626,10 +4661,10 @@ function createMobileSession() {
             </div>
             <div class="quota-card-update">更新于 {{ formatQuotaReset(currentCpaQuota.updatedAt) }}</div>
           </section>
-          <section class="quota-card memory-card">
+          <section class="quota-card memory-card" data-card="memory">
             <div class="memory-card-head">
               <div>
-                <span>服务端内存</span>
+                <span>{{ rightPanelTitle('memory') }}</span>
                 <strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong>
               </div>
               <small>RSS</small>
