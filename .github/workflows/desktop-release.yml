@@ -64,8 +64,8 @@ jobs:
       - name: Install Desktop dependencies
         run: npm ci --prefix desktop
 
-      - name: Prepare bundled Node.js runtime
-        run: npm run runtime --prefix desktop
+      - name: Prepare bundled runtime and Web payload
+        run: npm run bundle:prepare --prefix desktop
 
       - name: Run Desktop unit tests
         working-directory: desktop
