@@ -385,6 +385,11 @@ export class QueryEngine {
     return this.history.map(cloneMessage);
   }
 
+  /** User-facing read-only detail boundaries must also redact secrets registered at runtime. */
+  redactDisplayValue<T>(value: T): T {
+    return this.options.secretRedactions?.redact(value) ?? value;
+  }
+
   getDisplayEntries(): SessionDisplayEntry[] {
     return this.sessionStore?.getDisplayEntries() ?? this.history.map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
   }

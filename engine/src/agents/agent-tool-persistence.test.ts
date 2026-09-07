@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "./agent-tool.js";
@@ -50,7 +50,7 @@ for (const background of [false, true]) test(`${background ? "async" : "sync"} l
     const gateway: ModelGateway = { async *stream(request): AsyncIterable<ModelStreamEvent> {
       requests.push(structuredClone({ ...request, cancellation: undefined }));
       yield { type: "assistant_delta", text: "working" };
-      yield { type: "assistant_message", message: createTextMessage("assistant", "FIRST_RESULT") };
+      yield { type: "assistant_message", message: { ...createTextMessage("assistant", "FIRST_RESULT"), blocks: [{ type: "text", text: "FIRST_RESULT", displayChannel: "visible" }] } };
       yield { type: "response_completed", stopReason: "completed" };
     } };
     const rt = runtime(store, gateway);
@@ -81,7 +81,7 @@ for (const background of [false, true]) test(`${background ? "async" : "sync"} l
     const resumeRequests: ModelRequest[] = [];
     const resumeRuntime = runtime(restarted, { async *stream(request): AsyncIterable<ModelStreamEvent> {
       resumeRequests.push(structuredClone({ ...request, cancellation: undefined }));
-      yield { type: "assistant_message", message: createTextMessage("assistant", "RESUMED_RESULT") };
+      yield { type: "assistant_message", message: { ...createTextMessage("assistant", "RESUMED_RESULT"), blocks: [{ type: "text", text: "RESUMED_RESULT", displayChannel: "visible" }] } };
       yield { type: "response_completed", stopReason: "completed" };
     } });
     const cwds: (string | undefined)[] = [];
@@ -94,6 +94,12 @@ for (const background of [false, true]) test(`${background ? "async" : "sync"} l
     await until(() => restored.status === "completed");
     await tick();
     assert.equal(restored.runGeneration, 2);
+    const transcript = (await readFile(child.transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const outputRows = transcript.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+    assert.deepEqual(outputRows.map((entry) => entry.runGeneration), [1, 2], "sync/async launch and prepareResume must pass captured real generation");
+    for (const entry of transcript.filter((entry) => entry.type === "message" && entry.message.role === "user")) {
+      assert.equal(entry.runGeneration, undefined, "initial/resume context is not new model output");
+    }
     assert.equal(restored.result?.content, "RESUMED_RESULT");
     assert.equal(restored.runHistory?.[0].result?.content, "FIRST_RESULT");
     assert.equal(resumeRequests.length, 1);

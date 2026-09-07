@@ -137,6 +137,7 @@ test('calling parent scope survives A to B foreground switch without granting B 
     assert.equal((await invoke(resume, { task_id: ta.id }, { ...context(a), agentType: 'fork' })).ok, false);
     assert.equal(resumed, 1);
     assert.deepEqual((await invoke(createSubagentListTool(store), {}, context())).output, { tasks: [] }, 'missing context is unowned, not active');
+    store.prepareResume(ta.id, new AbortController());
     store.markRunning(ta.id);
     store.bindSession(b);
     assert.equal((await invoke(createSubagentStopTool(store), { task_id: ta.id })).ok, true);

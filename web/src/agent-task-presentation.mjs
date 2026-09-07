@@ -2,8 +2,21 @@ export const isTerminalAgentTask = (task) => ['completed', 'failed', 'killed'].i
 
 export function agentTaskResult(task) {
   if (!isTerminalAgentTask(task)) return ''
-  const text = String(task?.result?.content || task?.error || '')
-  return text + (task?.result?.truncated || task?.errorTruncated ? '\n…（预览已截断，完整结果请用 subagent_output；历史详情用 subagent_get detail=true）' : '')
+  const text = String(task?.result?.content ?? task?.error ?? '')
+  return text + (task?.result?.truncated || task?.errorTruncated ? '\n…（预览已截断；可在报告阅读区加载指定轮次全文）' : '')
+}
+
+// Browser counterpart of the persisted per-run clock; never derives a run start from task creation.
+export function agentRunElapsedMs(run, nowMs = Date.now()) {
+  const start = typeof run?.startedAt === 'string' ? Date.parse(run.startedAt) : NaN
+  if (!Number.isSafeInteger(start) || start < 0) return undefined
+  if (run.status === 'running') {
+    const value = nowMs - start
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+  }
+  if (!['completed', 'failed', 'killed'].includes(run.status)) return undefined
+  const end = typeof run.completedAt === 'string' ? Date.parse(run.completedAt) : NaN
+  return Number.isSafeInteger(end) && end >= start && Number.isSafeInteger(run.durationMs) && run.durationMs >= 0 && run.durationMs === end - start ? run.durationMs : undefined
 }
 
 export function agentTaskDelivery(task) {
@@ -20,15 +33,17 @@ export function agentTaskNeedsResume(task) {
 export function agentTaskArchives(task) {
   return (Array.isArray(task?.runHistory) ? task.runHistory : [])
     .filter((run) => Number(run.runGeneration) < Number(task?.runGeneration || 1))
-    .slice(-3).reverse()
+    .slice(-8).reverse()
 }
 
 export function agentToolStatus(line) {
   if (!String(line?.toolName || '').startsWith('subagent_')) return undefined
+  return callStatus(line)
+}
+
+// Call identity is local UI state; downstream facts are already labelled by the service.
+export function callStatus(line) {
   if (line?.live) return { key: 'running', label: '调用中' }
   if (line?.titleStatus === 'failure' || line?.kind === 'error') return { key: 'failed', label: '调用失败' }
-  const status = (line?.toolDisplay?.facts || []).find((fact) => fact.label === '任务状态')?.value
-  const labels = { pending: '排队中', running: '运行中', completed: '已完成', failed: '失败', killed: '已停止', queued: '已入队', queued_for_resume: '待续跑', resumed: '已启动续跑', incomplete: '未完成' }
-  if (!labels[status]) return { key: 'unknown', label: '调用完成 / 状态未知' }
-  return { key: ['failed', 'incomplete'].includes(status) ? 'failed' : ['running', 'pending', 'queued', 'queued_for_resume', 'resumed'].includes(status) ? 'running' : status === 'killed' ? 'stopped' : 'completed', label: labels[status] }
+  return line?.titleStatus === 'success' ? { key: 'completed', label: '调用成功' } : { key: 'unknown', label: '未提供' }
 }

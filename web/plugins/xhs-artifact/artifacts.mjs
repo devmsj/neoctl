@@ -13,6 +13,7 @@ import {
 export class XhsArtifactRegistry {
   constructor(options = {}) {
     this.entries = new Map();
+    this.readVersions = new Map();
     this.storageDir = path.resolve(options.storageDir || path.join(process.cwd(), '.neoctl-web', 'xhs-artifacts'));
     this.sessionsDir = path.resolve(options.sessionsDir || path.join(os.homedir(), '.neoctl', 'sessions'));
   }
@@ -38,29 +39,65 @@ export class XhsArtifactRegistry {
   get(id, sessionId) {
     const artifactId = safeArtifactId(id);
     if (!artifactId) return undefined;
-    const artifact = this.entries.get(artifactId) || this.load(artifactId) || this.recoverFromTranscript(artifactId, sessionId);
+    const artifact = this.load(artifactId) || this.recoverFromTranscript(artifactId, sessionId);
     if (artifact) this.entries.set(artifact.id, artifact);
     if (!artifactBelongsToSession(artifact, sessionId)) return undefined;
     return artifact ? cloneArtifact(artifact) : undefined;
   }
 
-  update(id, patch, sessionId) {
-    const artifact = this.get(id, sessionId);
+  update(id, patch, sessionId, expectedVersion) {
+    const artifactId = safeArtifactId(id);
+    if (!artifactId || !this.get(artifactId, sessionId)) return undefined;
+    fs.mkdirSync(this.storageDir, { recursive: true });
+    const lock = `${this.artifactFile(artifactId)}.lock`;
+    let fd;
+    fd = acquireArtifactLock(lock, expectedVersion);
+    try {
+      const artifact = this.load(artifactId);
+      if (!artifactBelongsToSession(artifact, sessionId)) return undefined;
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || artifact.version !== expectedVersion) {
+        throw versionError('version_conflict', '稿件版本冲突，请读取最新版后处理草稿', artifact, expectedVersion);
+      }
+      if (patch.payload !== undefined) artifact.payload = validateEditorPayload(patch.payload);
+      artifact.title = artifact.payload.title;
+      if (typeof patch.content === 'string') artifact.content = patch.content;
+      artifact.version += 1;
+      artifact.updatedAt = Date.now();
+      this.persist(artifact);
+      this.entries.set(artifact.id, artifact);
+      return cloneArtifact(artifact);
+    } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
+  }
+
+  readKey(id, context) {
+    return JSON.stringify([context?.session?.sessionId, context?.agentId || '', id]);
+  }
+
+  readForUpdate(id, context) {
+    const artifact = this.get(id, context?.session?.sessionId);
     if (!artifact) return undefined;
-    if (typeof patch.title === 'string') artifact.title = patch.title.trim().slice(0, 160);
-    if (patch.payload !== undefined) artifact.payload = validateEditorPayload(patch.payload);
-    if (typeof patch.content === 'string') artifact.content = patch.content;
-    artifact.updatedAt = Date.now();
-    this.entries.set(artifact.id, artifact);
-    this.persist(artifact);
-    return cloneArtifact(artifact);
+    for (const [key, read] of this.readVersions) if (read.expires < Date.now()) this.readVersions.delete(key);
+    if (this.readVersions.size >= 1000) this.readVersions.delete(this.readVersions.keys().next().value);
+    this.readVersions.set(this.readKey(id, context), { version: artifact.version, expires: Date.now() + 30 * 60 * 1000 });
+    return artifact;
+  }
+
+  updateFromRead(id, patch, context) {
+    const key = this.readKey(id, context);
+    const read = this.readVersions.get(key);
+    if (!read || read.expires < Date.now()) {
+      throw versionError('read_required', 'call read_xhs_artifact first and preserve the returned user edits');
+    }
+    // Consume before CAS: conflict/replay requires a fresh read, never a blind retry.
+    this.readVersions.delete(key);
+    return this.update(id, patch, context?.session?.sessionId, read.version);
   }
 
   load(id) {
     try {
       return normalizeArtifact(JSON.parse(fs.readFileSync(this.artifactFile(id), 'utf8')));
     } catch (error) {
-      if (error?.code !== 'ENOENT') console.warn(`failed to load xhs artifact ${id}:`, error);
+      if (error?.code !== 'ENOENT') throw error;
       return undefined;
     }
   }
@@ -69,8 +106,27 @@ export class XhsArtifactRegistry {
     fs.mkdirSync(this.storageDir, { recursive: true });
     const target = this.artifactFile(artifact.id);
     const temporary = `${target}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
-    fs.renameSync(temporary, target);
+    try {
+      fs.writeFileSync(temporary, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+      // Windows may temporarily deny replacement while another registry reads the
+      // destination. Keep the caller's CAS lock throughout every retry. Never
+      // unlink the destination: it must remain either the old or the new JSON.
+      for (let attempt = 0; ; attempt += 1) {
+        try { fs.renameSync(temporary, target); break; }
+        catch (error) {
+          if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 20) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
+    } catch (cause) {
+      throw Object.assign(new Error('稿件写入失败，已保存版本未被替换；请重试', { cause }), {
+        code: 'artifact_write_failed', storage_code: cause.code,
+      });
+    } finally {
+      // Rename success consumes the temporary file. A rejected write must not
+      // leave pending content available for a later accidental publication.
+      try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') console.warn('failed to clean xhs temporary file:', error.code); }
+    }
   }
 
   recoverFromTranscript(id, sessionId) {
@@ -87,8 +143,17 @@ export class XhsArtifactRegistry {
           const recovered = parseXhsArtifactToolOutput(block.output);
           if (String(recovered?.id || '') !== id) continue;
           const artifact = normalizeArtifact({ ...recovered, sessionId: recovered.sessionId || safeSessionId });
-          this.persist(artifact);
-          return artifact;
+          if (!artifactBelongsToSession(artifact, sessionId)) continue;
+          fs.mkdirSync(this.storageDir, { recursive: true });
+          const lock = `${this.artifactFile(id)}.lock`;
+          let fd;
+          try { fd = acquireArtifactLock(lock); } catch (error) { if (error.code === 'artifact_busy') return this.load(id); throw error; }
+          try {
+            const existing = this.load(id);
+            if (existing) return existing;
+            this.persist(artifact);
+            return artifact;
+          } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
         }
       }
     } catch (error) {
@@ -126,7 +191,7 @@ export function createOpenXhsArtifactEditorTool(options) {
     async execute(input, context) {
       const sessionId = context?.session?.sessionId;
       const artifact = input.artifactId
-        ? options.registry.update(input.artifactId, { title: input.title, payload: input.payload, content: input.content }, sessionId)
+        ? options.registry.updateFromRead(input.artifactId, { title: input.title, payload: input.payload, content: input.content }, context)
         : options.registry.add({
             title: input.title,
             payload: input.payload,
@@ -188,7 +253,7 @@ export function createReadXhsArtifactTool(options) {
       return { id };
     },
     async execute(input, context) {
-      const artifact = options.registry.get(input.id, context?.session?.sessionId);
+      const artifact = options.registry.readForUpdate(input.id, context);
       if (!artifact) throw new Error(`xhs artifact not found: ${input.id}`);
       return { ok: true, output: { artifact: clientArtifact(artifact) }, summary: '已读取稿件' };
     },
@@ -202,9 +267,20 @@ export async function serveXhsArtifact(registry, req, res, id, readJsonBody, ses
   }
   if (req.method === 'PUT') {
     const body = await readJsonBody(req);
-    assertExactKeys(body, ['title', 'payload'], 'request');
+    if (!Number.isSafeInteger(body?.expected_version) || body.expected_version < 1) {
+      const current = registry.get(id, sessionId);
+      if (!current) return sendJson(res, { error: 'artifact not found' }, 404);
+      return sendJson(res, { error: 'expected_version is required; reload the latest editor before saving', code: 'version_conflict', current_version: current.version }, 409);
+    }
+    assertExactKeys(body, ['title', 'payload', 'expected_version'], 'request');
     const payload = validateEditorPayload(body?.payload);
-    const artifact = registry.update(id, { title: payload.title, payload }, sessionId);
+    let artifact;
+    try { artifact = registry.update(id, { title: payload.title, payload }, sessionId, body.expected_version); }
+    catch (error) {
+      if (error.code === 'artifact_write_failed') return sendJson(res, { error: error.message, code: error.code, storage_code: error.storage_code }, 500);
+      if (['artifact_busy', 'version_conflict'].includes(error.code)) return sendJson(res, { error: error.message, code: error.code, current_version: error.current_version, expected_version: error.expected_version }, error.code === 'artifact_busy' ? 423 : 409);
+      throw error;
+    }
     return artifact ? sendJson(res, { ok: true, artifact: clientArtifact(artifact) }) : sendJson(res, { error: 'artifact not found' }, 404);
   }
   return sendJson(res, { error: 'method not allowed' }, 405);
@@ -219,6 +295,7 @@ function normalizeArtifact(value) {
     payload,
     content: String(value.content || ''),
     sessionId: value.sessionId,
+    version: Number.isSafeInteger(value.version) && value.version > 0 ? value.version : 1,
     createdAt: Number(value.createdAt || Date.now()),
     updatedAt: Number(value.updatedAt || Date.now()),
   };
@@ -231,6 +308,7 @@ function clientArtifact(artifact) {
     title: artifact.title,
     payload: clientPayload(artifact.payload),
     sessionId: artifact.sessionId,
+    version: artifact.version,
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
   };
@@ -375,11 +453,32 @@ function safeSessionDirectoryName(value) {
 
 function artifactBelongsToSession(artifact, sessionId) {
   const expected = String(sessionId || '').trim();
-  return Boolean(artifact) && (!expected || !artifact.sessionId || artifact.sessionId === expected);
+  return Boolean(artifact) && Boolean(expected) && String(artifact.sessionId || '') === expected;
 }
 
 function cloneArtifact(artifact) {
   return JSON.parse(JSON.stringify(artifact));
+}
+
+function acquireArtifactLock(lock, expectedVersion) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return fs.openSync(lock, 'wx'); }
+    catch (cause) {
+      if (cause.code === 'EEXIST') throw versionError('artifact_busy', '稿件正在保存，请重试', undefined, expectedVersion);
+      // Windows can report EPERM instead of EEXIST for a delete-pending lock.
+      // Retry exclusive creation; never assume ownership from existsSync, and
+      // never label a persistent ACL/storage error as a version conflict.
+      if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(cause.code) && attempt < 20) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        continue;
+      }
+      throw Object.assign(new Error('稿件保存锁不可用，请重试', { cause }), { code: 'artifact_write_failed', storage_code: cause.code });
+    }
+  }
+}
+
+function versionError(code, message, artifact, expectedVersion) {
+  return Object.assign(new Error(message), { code, current_version: artifact?.version, expected_version: expectedVersion });
 }
 
 function sendJson(res, value, status = 200) {

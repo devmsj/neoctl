@@ -1,0 +1,102 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { createPlugin } from './plugins/xhs-artifact/index.mjs';
+const require = createRequire(import.meta.url);
+const { chromium } = require(path.join(process.env.TEMP || os.tmpdir(), 'neoctl-observability-tests/node_modules/playwright-core'));
+const payload = { title: 'title', body: 'initial body', interaction: '', hashtags: [], images: [{ url: '', caption: 'planned', overlay: '', note: '' }], review: '' };
+test('Edge: real plugin multi-frame conflict, draft reload/manual recovery, in-flight input, model update and isolation', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xhs-browser-'));
+  const plugin = createPlugin({ env: { NEO_XHS_ARTIFACTS_DIR: root }, pluginDir: root });
+  const context = { session: { sessionId: 'owner' } };
+  const [open, read] = plugin.tools;
+  const create = async () => (await open.execute(open.validate({ payload }), context)).output.artifact;
+  const a = await create(), b = await create();
+  let delay = 0, putStarted = 0;
+  const helpers = { sendJson(res, body, status = 200) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); }, async readJsonBody(req) { let text = ''; for await (const chunk of req) text += chunk; putStarted++; if (delay) await new Promise(r => setTimeout(r, delay)); return JSON.parse(text); } };
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    try {
+      if (await plugin.route(req, res, url, helpers)) return;
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<iframe id="a" src="/api/xhs-artifacts/${a.id}/editor?sessionId=owner"></iframe><iframe id="a2" src="/api/xhs-artifacts/${a.id}/editor?sessionId=owner"></iframe><iframe id="b" src="/api/xhs-artifacts/${b.id}/editor?sessionId=owner"></iframe>`);
+    } catch (e) { helpers.sendJson(res, { error: e.message }, 400); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await chromium.launch({ executablePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', headless: true });
+  t.after(async () => { await browser.close(); await new Promise(r => server.close(r)); fs.rmSync(root, { recursive: true, force: true }); });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  const errors = []; page.on('pageerror', e => errors.push(e.message)); page.on('dialog', d => d.accept());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await page.goto(origin);
+  const f = await (await page.$('#a')).contentFrame(), g = await (await page.$('#a2')).contentFrame(), h = await (await page.$('#b')).contentFrame();
+  for (const frame of [f, g, h]) await frame.locator('[data-mode="edit"]').click();
+  await f.locator('#body').fill('first saved body'); await f.locator('#save').click();
+  await g.waitForFunction(() => document.querySelector('#body').disabled);
+  assert.match(await g.locator('#versionState').textContent(), /只读/);
+  assert.equal(await h.locator('#body').isEnabled(), true);
+  await g.locator('#latestVersion').click();
+  await g.waitForFunction(() => !document.querySelector('#body').disabled);
+  assert.equal(await g.locator('#body').inputValue(), 'first saved body');
+  // Dirty draft is retained when a model update beats autosave.
+  await g.locator('#body').fill('unsaved local draft');
+  let latest = (await read.execute({ id: a.id }, context)).output;
+  await open.execute(open.validate({ artifact_id: a.id, payload: { ...latest.artifact.payload, review: 'model changed review' } }), context);
+  await g.waitForFunction(() => document.querySelector('#body').disabled);
+  assert.equal(await g.locator('#body').inputValue(), 'unsaved local draft');
+  assert.equal(await g.locator('#downloadDraft').isVisible(), true);
+  const downloadEvent = page.waitForEvent('download'); await g.locator('#downloadDraft').click(); const download = await downloadEvent;
+  assert.match(fs.readFileSync(await download.path(), 'utf8'), /unsaved local draft/);
+  await g.goto(g.url());
+  await g.locator('[data-mode="edit"]').click();
+  assert.equal(await g.locator('#body').inputValue(), 'unsaved local draft');
+  assert.equal(await g.locator('#body').isDisabled(), true);
+  await g.locator('#latestVersion').click();
+  await g.waitForFunction(() => !document.querySelector('#body').disabled);
+  assert.equal(await g.locator('#body').inputValue(), 'first saved body');
+  await g.locator('#restoreDraft').click();
+  assert.equal(await g.locator('#body').inputValue(), 'unsaved local draft');
+  await page.waitForTimeout(800);
+  latest = (await read.execute({ id: a.id }, context)).output;
+  assert.equal(latest.artifact.payload.body, 'first saved body');
+  // Save response must not erase edits made while request is pending.
+  delay = 700; const before = putStarted;
+  await g.locator('#save').click();
+  while (putStarted === before) await page.waitForTimeout(20);
+  await g.locator('#body').fill('input during save');
+  await page.waitForTimeout(800);
+  assert.equal(await g.locator('#body').inputValue(), 'input during save');
+  delay = 0; await page.waitForTimeout(1500);
+  latest = (await read.execute({ id: a.id }, context)).output;
+  assert.equal(latest.artifact.payload.body, 'input during save');
+  assert.equal(latest.artifact.payload.review, 'model changed review');
+  // Foreign identity/source messages do not make another artifact readonly.
+  await page.evaluate(({ id }) => {
+    const target = document.querySelector('#b').contentWindow;
+    target.postMessage({ type: 'neo-xhs-version-invalidated', artifact_id: id, sessionId: 'owner' }, location.origin);
+    target.postMessage({ type: 'neo-xhs-version-invalidated', artifact_id: id, sessionId: 'foreign' }, location.origin);
+  }, { id: a.id });
+  assert.equal(await h.locator('#body').isEnabled(), true);
+  assert.equal((await fetch(`${origin}/api/xhs-artifacts/${a.id}?sessionId=foreign`)).status, 404);
+  assert.equal((await fetch(`${origin}/api/xhs-artifacts/${a.id}`)).status, 404);
+  await g.goto(g.url()); assert.equal(await g.locator('#body').inputValue(), 'input during save');
+  // Network failure keeps a retryable draft; long/invalid input is not discarded.
+  await g.locator('[data-mode="edit"]').click();
+  await page.route('**/api/xhs-artifacts/**', route => route.request().method() === 'PUT' ? route.abort() : route.continue());
+  const longDraft = 'long draft '.repeat(2000);
+  await g.locator('#body').fill(longDraft); await g.locator('#save').click();
+  await g.waitForFunction(() => document.querySelector('#status').textContent.includes('fetch'));
+  assert.equal(await g.locator('#body').inputValue(), longDraft);
+  await page.unroute('**/api/xhs-artifacts/**');
+  await g.locator('#save').click();
+  await g.waitForFunction(() => document.querySelector('#status').textContent === '已保存');
+  await g.locator('#body').fill(''); await g.locator('#save').click();
+  await g.waitForFunction(() => document.querySelector('#status').textContent.includes('payload.body'));
+  assert.equal(await g.locator('#body').inputValue(), '');
+  assert.equal((await read.execute({ id: a.id }, context)).output.artifact.payload.body, longDraft.trim());
+  assert.deepEqual(errors, []);
+});

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { renderLocalAgentTaskOutput, type LocalAgentTask } from "../agents/local-agent-task.js";
+import { agentRunDurationMs, renderLocalAgentTaskOutput, type LocalAgentTask } from "../agents/local-agent-task.js";
 import type { Message } from "../types/messages.js";
 
 export type RecoverableTask = LocalAgentTask & {
@@ -62,11 +62,28 @@ function messages(value: unknown): Message[] {
 }
 function result(value: any): any {
   if (!object(value)) return undefined;
-  return { agent_id: value.agent_id, agent_type: value.agent_type, content: value.content, status: value.status, total_duration_ms: value.total_duration_ms, total_tokens: value.total_tokens, total_tool_use_count: value.total_tool_use_count };
+  return { agent_id: value.agent_id, agent_type: value.agent_type, content: value.content,
+    displaySource: value.displaySource === "agent_report" || value.displaySource === "visible_text" ? value.displaySource : undefined, status: value.status, total_duration_ms: value.total_duration_ms, total_tokens: value.total_tokens, total_tool_use_count: value.total_tool_use_count };
 }
-function progress(value: any): any {
+function visibleText(value: unknown, runGeneration: number): LocalAgentTask["progress"]["visibleText"] {
+  // Legacy tails may start inside a credential: whole-value re-redaction cannot
+  // reconstruct the removed prefix. Only retain previews from the safe pipeline.
+  if (!object(value) || value.redactionVersion !== 1 || value.channel !== "visible" || !Number.isSafeInteger(runGeneration) || runGeneration < 1
+      || value.runGeneration !== runGeneration || typeof value.text !== "string" || typeof value.truncated !== "boolean") return undefined;
+  return { channel: "visible", runGeneration, text: value.text.slice(-4000), truncated: value.truncated || value.text.length > 4000, redactionVersion: 1 };
+}
+function timestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value ? value : undefined;
+}
+function timing(value: Pick<LocalAgentTask, "status" | "startedAt" | "completedAt" | "durationMs">) {
+  return { startedAt: timestamp(value.startedAt), completedAt: timestamp(value.completedAt),
+    durationMs: value.status === "pending" || value.status === "running" ? undefined : agentRunDurationMs(value) };
+}
+function progress(value: any, runGeneration: number): any {
   if (!object(value) || typeof value.totalEvents !== "number" || typeof value.totalToolUseCount !== "number") throw new Error("Invalid progress");
-  return { totalEvents: value.totalEvents, totalToolUseCount: value.totalToolUseCount, lastActivity: value.lastActivity, lastText: value.lastText, currentAction: value.currentAction,
+  return { visibleText: visibleText(value.visibleText, runGeneration), totalEvents: value.totalEvents, totalToolUseCount: value.totalToolUseCount, lastActivity: value.lastActivity, lastText: value.lastText, currentAction: value.currentAction,
     steps: Array.isArray(value.steps) ? value.steps.map((s: any) => ({ id: s.id, title: s.title, status: s.status, detail: s.detail, updatedAt: s.updatedAt })) : undefined };
 }
 function execution(value: any): LocalAgentTask["executionOptions"] {
@@ -87,7 +104,7 @@ export function serializeTask(task: RecoverableTask): object {
   if (!validTaskId(task.id) || task.taskId !== task.id || !validTaskId(task.agentId)) throw new Error("Invalid task identifier");
   return { version: 1, id: task.id, taskId: task.taskId, agentId: task.agentId, agentType: task.agentType,
     type: task.type, status: task.status, description: task.description, prompt: task.prompt,
-    messages: messages(task.messages), pendingMessages: messages(task.pendingMessages), progress: progress(task.progress),
+    messages: messages(task.messages), pendingMessages: messages(task.pendingMessages), progress: progress(task.progress, task.runGeneration),
     deliveryRecoveryMessages: task.deliveryRecoveryMessages?.map((entry) => {
       if (!Number.isSafeInteger(entry.runGeneration) || entry.runGeneration < 1) throw new Error("Invalid delivery generation");
       return { message: messages([entry.message])[0], runGeneration: entry.runGeneration };
@@ -95,8 +112,8 @@ export function serializeTask(task: RecoverableTask): object {
     result: result(task.result), error: task.error, notified: task.notified === true, retain: task.retain, runGeneration: task.runGeneration,
     executionOptions: execution(task.executionOptions), names: task.names?.filter((n) => typeof n === "string"),
     messageReceipts: task.messageReceipts?.map((r) => ({ id: r.id, messageId: r.messageId, status: r.status, queuedAt: r.queuedAt, deliveredAt: r.deliveredAt, runGeneration: r.runGeneration })),
-    runHistory: task.runHistory?.slice(-8).map((r) => ({ runGeneration: r.runGeneration, status: r.status, result: result(r.result), error: r.error, progress: progress(r.progress), completedAt: r.completedAt, archivedAt: r.archivedAt })),
-    createdAt: task.createdAt, updatedAt: task.updatedAt, completedAt: task.completedAt };
+    runHistory: task.runHistory?.slice(-8).map((r) => ({ runGeneration: r.runGeneration, status: r.status, result: result(r.result), error: r.error, progress: progress(r.progress, r.runGeneration), ...timing(r), archivedAt: r.archivedAt })),
+    createdAt: task.createdAt, updatedAt: task.updatedAt, ...timing(task) };
 }
 export function persistTask(task: LocalAgentTask): void {
   if (!task.ownerSessionDir) return;
@@ -144,7 +161,8 @@ export function loadTasks(sessionDir: string): { tasks: LocalAgentTask[]; summar
       if (task.status === "pending" || task.status === "running") {
         task.notified = false;
         task.status = "killed"; task.error = INTERRUPTED_TASK_ERROR;
-        task.completedAt = new Date().toISOString(); summary.interrupted++;
+        // Recovery observes an interruption, not its actual time. Never freeze at reload time.
+        task.completedAt = undefined; task.durationMs = undefined; summary.interrupted++;
       }
       if (tasks.some((other) => other.id === task.id)) throw new Error("Duplicate identifier");
       // Output is derived, never trust a persisted arbitrary filesystem path.

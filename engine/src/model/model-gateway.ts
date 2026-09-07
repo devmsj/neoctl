@@ -46,7 +46,7 @@ export interface ModelRequest {
 }
 
 export type ModelStreamEvent =
-  | { type: "assistant_delta"; text: string }
+  | { type: "assistant_delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking_delta"; text: string }
   | { type: "assistant_message"; message: Message }
   | { type: "tool_use"; toolUse: ToolUseRequest }

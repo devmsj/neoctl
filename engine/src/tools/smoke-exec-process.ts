@@ -99,7 +99,8 @@ async function main(): Promise<void> {
       completed.termination_reason === "completed" && completed.duration_ms === completedAgain.duration_ms,
     timeoutTerminalIsStable:
       timedOut.status === "timed_out" &&
-      timedOut.exit_code === null &&
+      // Preserve the backend's actual exit code (Windows taskkill reports 1), not a synthetic null.
+      (timedOut.exit_code === null || Number.isInteger(timedOut.exit_code)) &&
       timedOut.termination_reason === "timeout" &&
       timedOut.status === timedOutAgain.status &&
       timedOut.exit_code === timedOutAgain.exit_code &&

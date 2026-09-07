@@ -356,7 +356,7 @@ async function* callModelForTurn(
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput; reactiveCompact?: QueryState }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
-  const outputFilter = new AssistantOutputFilter();
+  const outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
   const thinkingParts: string[] = [];
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
@@ -393,6 +393,7 @@ async function* callModelForTurn(
       if (options.abortSignal?.aborted) {
         const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
         if (thinkingMessage) yield { type: "message", message: thinkingMessage };
+        yield* outputFilter.finishVisibleMessage(assistantMessages);
         return { terminal: "aborted_streaming" };
       }
       const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
@@ -428,6 +429,7 @@ async function* callModelForTurn(
         state.messages.length,
       );
       if (!compacted.changed) {
+        yield* outputFilter.finishVisibleMessage(assistantMessages);
         yield { type: "error", error: normalized };
         return { terminal: terminalForModelError(normalized) };
       }
@@ -454,12 +456,14 @@ async function* callModelForTurn(
 
     const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
     if (thinkingMessage) yield { type: "message", message: thinkingMessage };
+    yield* outputFilter.finishVisibleMessage(assistantMessages);
     const terminal = terminalForModelError(error);
     yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
     return { terminal };
   }
 
   if (options.abortSignal?.aborted) {
+    yield* outputFilter.finishVisibleMessage(assistantMessages);
     const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
     if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     return { terminal: "aborted_streaming" };
@@ -468,8 +472,7 @@ async function* callModelForTurn(
   // Some providers end a tool-calling turn without a finalized text message.
   // Release the filter's safety hold-back before the tool boundary so the UI
   // does not defer the last part of the assistant's pre-tool narration.
-  const heldBackText = outputFilter.flush();
-  if (heldBackText) yield { type: "assistant.delta", text: heldBackText };
+  yield* outputFilter.finishVisibleMessage(assistantMessages);
 
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   const syntheticToolUseMessage = appendSyntheticToolUseMessage(assistantMessages, toolUses);
@@ -516,12 +519,11 @@ async function* handleModelEvent(
   event: ModelStreamEvent,
   assistantMessages: Message[],
   toolUses: ToolUseRequest[],
-  outputFilter: AssistantOutputFilter,
+  outputFilter: DisplayOutputFilter,
   thinkingParts: string[],
 ): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
   if (event.type === "assistant_delta") {
-    const text = outputFilter.push(event.text);
-    if (text) yield { type: "assistant.delta", text };
+    yield* outputFilter.pushEvent(event);
     return {};
   }
 
@@ -533,8 +535,7 @@ async function* handleModelEvent(
 
   if (event.type === "assistant_message") {
     const message = outputFilter.sanitizeMessage(event.message);
-    const heldBackText = outputFilter.flush();
-    if (heldBackText) yield { type: "assistant.delta", text: heldBackText };
+    yield* outputFilter.flushEvents();
     assistantMessages.push(message);
     for (const toolUse of extractToolUses(message)) toolUses.push(toolUse);
     yield { type: "message", message };
@@ -581,10 +582,8 @@ async function* handleModelEvent(
   }
 
   if (event.type === "error") {
-    const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
-    if (thinkingMessage) yield { type: "message", message: thinkingMessage };
-    yield { type: "error", error: event.error };
-    return {};
+    // Provider error events are terminal failures, not successful empty turns.
+    throw event.error;
   }
 
   return {};
@@ -914,4 +913,96 @@ function collectTaskNotifications(source?: TaskNotificationSource, sessionDir?: 
       content: task.content,
     });
   });
+}
+
+// Preserve provenance across the existing safety filter's hold-back without
+// changing filtering semantics or relabelling buffered text from another channel.
+class DisplayOutputFilter extends AssistantOutputFilter {
+  private visibleParts: string[] = [];
+  private secretStream?: ReturnType<NonNullable<NonNullable<QueryDependencies["secretRedactions"]>["createStreamingRedactor"]>>;
+
+  constructor(private readonly secrets?: QueryDependencies["secretRedactions"]) {
+    super();
+    this.secretStream = secrets?.createStreamingRedactor?.({ incompleteSecret: "redact" });
+  }
+
+  *finishVisibleMessage(messages: Message[]): Generator<AgentEvent> {
+    yield* this.flushEvents();
+    // The registry's streaming flush masks ambiguous credential prefixes; never
+    // release raw held text at an interrupted provider boundary.
+    const tail = this.secretStream?.flush() ?? "";
+    if (tail) {
+      this.visibleParts.push(tail);
+      yield { type: "assistant.delta", text: tail, displayChannel: "visible" };
+    }
+    const text = this.visibleParts.join("");
+    this.visibleParts = [];
+    if (!text) return;
+    const message: Message = { ...createTextMessage("assistant", text),
+      blocks: [{ type: "text", text, displayChannel: "visible" }],
+      metadata: { streamedPartial: true } };
+    messages.push(message);
+    yield { type: "message", message };
+  }
+
+  private pending: { length: number; displayChannel?: "visible" }[] = [];
+
+  pushEvent(event: Extract<ModelStreamEvent, { type: "assistant_delta" }>): AgentEvent[] {
+    this.pending.push({ length: event.text.length, displayChannel: event.displayChannel });
+    return this.events(super.push(event.text));
+  }
+
+  flushEvents(): AgentEvent[] {
+    return this.events(super.flush());
+  }
+
+  override sanitizeMessage(message: Message): Message {
+    const hasVisibleFinal = message.role === "assistant" && message.isMeta !== true &&
+      message.blocks.some(block => block.type === "text" && block.displayChannel === "visible");
+    // The base filter consumes its hold-back on ANY final text. An unmarked or
+    // analysis-only final must not consume the visible draft (including its tail).
+    // Sanitize such messages with a separate filter so provenance is not reset.
+    const sanitized = hasVisibleFinal ? super.sanitizeMessage(message) : new AssistantOutputFilter().sanitizeMessage(message);
+    if (hasVisibleFinal) {
+      this.pending = [];
+      this.visibleParts = []; // Final text replaces the streamed draft.
+      this.secretStream = this.secrets?.createStreamingRedactor?.({ incompleteSecret: "redact" });
+    }
+    if (!this.secrets) return sanitized;
+    // Provider-finalized visible blocks must pass the same prefix-safe boundary.
+    // Other channels retain model provenance, but can never become public text.
+    const redactor = this.secrets.createStreamingRedactor?.({ incompleteSecret: "redact" });
+    const blocks = sanitized.blocks.map(block => block.type === "text" && block.displayChannel === "visible"
+      ? { ...block, text: redactor?.push(block.text) ?? "" } : block);
+    const tail = redactor?.flush() ?? "";
+    if (tail) {
+      const last = [...blocks].reverse().find(block => block.type === "text" && block.displayChannel === "visible");
+      if (last?.type === "text") last.text += tail;
+    }
+    return { ...sanitized, blocks };
+  }
+
+  private events(text: string): AgentEvent[] {
+    const events: AgentEvent[] = [];
+    while (text && this.pending.length) {
+      const part = this.pending[0];
+      const length = Math.min(text.length, part.length);
+      if (length) {
+        const piece = text.slice(0, length);
+        if (part.displayChannel === "visible") {
+          // If a custom registry lacks streaming support, fail closed rather
+          // than expose half a credential using whole-value redact(piece).
+          const safe = this.secrets ? this.secretStream?.push(piece) ?? "" : piece;
+          if (safe) {
+            this.visibleParts.push(safe);
+            events.push({ type: "assistant.delta", text: safe, displayChannel: "visible" });
+          }
+        } else events.push({ type: "assistant.delta", text: piece });
+      }
+      text = text.slice(length);
+      part.length -= length;
+      if (!part.length) this.pending.shift();
+    }
+    return events;
+  }
 }

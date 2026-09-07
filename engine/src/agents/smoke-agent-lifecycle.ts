@@ -12,6 +12,11 @@ import type { ToolUseContext } from "../tools/tool.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent } from "../model/model-gateway.js";
 import { createTextMessage } from "../types/messages.js";
 
+// Synthetic public gateway output must carry the same provenance as mapped model output.
+function createVisibleSmokeMessage(text: string) {
+  return { ...createTextMessage("assistant", text), blocks: [{ type: "text" as const, text, displayChannel: "visible" as const }] };
+}
+
 const root = mkdtempSync(path.join(tmpdir(), "neo-lifecycle-"));
 const context = { agentId: "parent", messages: [], appState: new InMemoryAppState("parent", root) } as unknown as ToolUseContext;
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
@@ -33,7 +38,7 @@ try {
     } else {
       if (requests.length === 3) await resumeGate;
       if (requests.length === 2) store.queueMessage(store.list()[0].agentId, "terminal-boundary-message");
-      yield { type: "assistant_message", message: createTextMessage("assistant", requests.length === 2 ? "old-result" : "new-result") };
+      yield { type: "assistant_message", message: createVisibleSmokeMessage(requests.length === 2 ? "old-result" : "new-result") };
       yield { type: "response_completed", stopReason: "completed" };
     }
   } };
@@ -88,8 +93,8 @@ try {
   const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
   const racing: ModelGateway = { async *stream(): AsyncIterable<ModelStreamEvent> {
     calls++;
-    if (calls === 1) { try { await oldGate; yield { type: "assistant_message", message: createTextMessage("assistant", "stale-result") }; } finally { oldClosed = true; } }
-    else yield { type: "assistant_message", message: createTextMessage("assistant", "winning-generation") };
+    if (calls === 1) { try { await oldGate; yield { type: "assistant_message", message: createVisibleSmokeMessage("stale-result") }; } finally { oldClosed = true; } }
+    else yield { type: "assistant_message", message: createVisibleSmokeMessage("winning-generation") };
     yield { type: "response_completed", stopReason: "completed" };
   } };
   const raceStore = new TaskStore();
@@ -142,7 +147,7 @@ try {
     if (reportCalls === 2) {
       assert(text(request).includes("old-authoritative-report"));
       assert(text(request).includes("new-report-directive"));
-      yield { type: "assistant_message", message: createTextMessage("assistant", "No new report yet") };
+      yield { type: "assistant_message", message: createVisibleSmokeMessage("No new report yet") };
     } else {
       if (reportCalls === 3) assert(request.toolChoice);
       yield { type: "tool_use", toolUse: { id: `report-${reportCalls}`, name: "subagent_report", input: { status: "completed", content: reportCalls === 1 ? "old-authoritative-report" : "new-authoritative-report" } } };

@@ -50,6 +50,11 @@ const smokePassthroughTool: Tool<{ text: string }> = {
   },
 };
 
+// Synthetic public gateway output must carry the same provenance as mapped model output.
+function createVisibleSmokeMessage(text: string) {
+  return { ...createTextMessage("assistant", text), blocks: [{ type: "text" as const, text, displayChannel: "visible" as const }] };
+}
+
 class ParentAndSubagentGateway implements ModelGateway {
   parentCalls = 0;
   subagentCalls = 0;
@@ -143,7 +148,7 @@ class ParentAndSubagentGateway implements ModelGateway {
         return;
       }
       if (isExploreSmoke && hasAgentReportResult && !hasFinalAgentReportResult) {
-        yield { type: "assistant_message", message: createTextMessage("assistant", "我将继续做只读检查，重新获取关键文件内容以避免依赖已清理的上下文。") };
+        yield { type: "assistant_message", message: createVisibleSmokeMessage("我将继续做只读检查，重新获取关键文件内容以避免依赖已清理的上下文。") };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
         return;
       }
@@ -171,7 +176,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           : isExploreSmoke
             ? "我将继续做只读检查，重新获取关键文件内容以避免依赖已清理的上下文。"
             : `worker result: ${lastPrompt.slice(0, 24)}`;
-      yield { type: "assistant_message", message: createTextMessage("assistant", content) };
+      yield { type: "assistant_message", message: createVisibleSmokeMessage(content) };
       yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "completed" };
       return;
     }
@@ -191,7 +196,7 @@ class ParentAndSubagentGateway implements ModelGateway {
       return;
     }
 
-    yield { type: "assistant_message", message: createTextMessage("assistant", "parent done") };
+    yield { type: "assistant_message", message: createVisibleSmokeMessage("parent done") };
     yield { type: "response_completed", responseId: "parent_2", stopReason: "completed" };
   }
 }

@@ -12,7 +12,7 @@ import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMem
 export type SessionTitleKind = "initial" | "refinement";
 
 export type SessionTranscriptEntry =
-  | { type: "message"; sessionId: string; agentId: string; message: Message }
+  | { type: "message"; sessionId: string; agentId: string; message: Message; runGeneration?: number }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
@@ -227,10 +227,13 @@ export class SessionStore {
     return this.displayEntries.map(cloneDisplayEntry);
   }
 
-  recordMessage(message: Message): void {
+  recordMessage(message: Message, provenance?: { runGeneration?: number }): void {
     if (!shouldPersistMessage(message)) return;
     const stored = cloneMessage(message);
-    this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message: stored });
+    // Only explicit run output receives provenance; legacy/initial context stays untagged.
+    const generation = provenance?.runGeneration;
+    const run = Number.isSafeInteger(generation) && generation! > 0 ? { runGeneration: generation } : {};
+    this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message: stored, ...run });
     this.resumedMessages.push(stored);
     this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
   }

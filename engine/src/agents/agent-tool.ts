@@ -4,8 +4,8 @@ import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { Tool, ToolProgressEvent, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import { runAgent, type RunAgentDependencies } from "../core/run-agent.js";
-import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type LocalAgentTask } from "./local-agent-task.js";
+import { finalizeAgentTool, runAgent, type RunAgentDependencies } from "../core/run-agent.js";
+import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type AgentToolResult, type LocalAgentTask } from "./local-agent-task.js";
 import {
   EXPLORE_AGENT,
   FORK_AGENT,
@@ -20,6 +20,7 @@ import {
 import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
 import { globalAgentActivityStore, type AgentActivityStore } from "./agent-activity.js";
 import path from "node:path";
+import { AGENT_REPORT_TOOL_NAME } from "./agent-report-tool.js";
 
 export const AGENT_TOOL_NAME = "subagent_run";
 
@@ -52,6 +53,8 @@ export interface AgentToolInput {
 
 export interface AgentToolRuntime {
   modelGateway: ModelGateway;
+  /** Optional runner adapter; defaults to the production runAgent lifecycle. */
+  runAgent?: typeof runAgent;
   tools: ToolRegistry;
   contextManager?: ContextManager;
   compactor?: Compactor;
@@ -175,7 +178,7 @@ async function runSyncAgent(input: {
   const onParentAbort = () => abortController.abort(input.context.abortSignal?.reason);
   input.context.abortSignal?.addEventListener("abort", onParentAbort, { once: true });
   if (input.context.abortSignal?.aborted) onParentAbort();
-  taskStore.markRunning(task.taskId);
+  taskStore.markRunning(task.taskId, runGeneration);
   const workspaceCwd = task.executionOptions.cwd;
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
   activityStore.start({
@@ -191,7 +194,7 @@ async function runSyncAgent(input: {
   const wall = mergeAbortWithWallClock(abortController.signal, resolveSubagentWallTimeoutMs());
   let stream: ReturnType<typeof runAgent> | undefined;
   try {
-    stream = runAgent({
+    stream = (input.runtime.runAgent ?? runAgent)({
       agentId: input.agentId,
       agent: input.agent,
       prompt: input.input.prompt,
@@ -199,6 +202,7 @@ async function runSyncAgent(input: {
       parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime),
       ...task.executionOptions,
+      runGeneration,
       onInitialMessages: (messages) => {
         if (ownsRun()) taskStore.reconcileMessages(task.taskId, messages);
       },
@@ -217,44 +221,69 @@ async function runSyncAgent(input: {
     input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { task_id: task.taskId, agent_id: input.agentId, agent_type: input.agent.agentType } });
     let completed = await stream.next();
     while (!completed.done) {
-      if (!ownsRun()) return cancelled();
+      if (!ownsRun()) {
+        if (taskStore.get(task.taskId)?.runGeneration !== runGeneration || taskStore.get(task.taskId)?.status !== "killed") return cancelled();
+        completed = await stream.next();
+        continue;
+      }
       activityStore.recordEvent(input.agentId, completed.value);
       emitSyncAgentEvent(input.options.onProgress, input.agentId, completed.value);
-      if (!ownsRun()) return cancelled();
+      if (!ownsRun()) {
+        if (taskStore.get(task.taskId)?.runGeneration !== runGeneration || taskStore.get(task.taskId)?.status !== "killed") return cancelled();
+        completed = await stream.next();
+        continue;
+      }
       if (completed.value.type === "message") {
         updateProgressFromMessage(task, completed.value.message);
-      } else updateProgressFromEvent(task, completed.value);
+      } else updateProgressFromEvent(task, completed.value, runGeneration, input.context.secretRedactions);
       taskStore.updateProgress(task);
       completed = await stream.next();
     }
-    if (!ownsRun()) return cancelled();
+    // Public reports are rebuilt from this run's authorized messages, including
+    // when an injected runner supplies a broader legacy fallback result.
+    const result = finalizeAgentTool({ agentId: input.agentId, agentType: input.agent.agentType, agent: input.agent,
+      messages: completed.value.messages, durationMs: completed.value.result.total_duration_ms,
+      totalToolUseCount: completed.value.result.total_tool_use_count });
+    result.total_tokens = completed.value.result.total_tokens;
+    result.usage = completed.value.result.usage;
+    const partial = allowedPartialResult(result, completed.value.messages, input.agent);
+    if (!ownsRun()) {
+      if (taskStore.get(task.taskId)?.runGeneration === runGeneration && taskStore.get(task.taskId)?.status === "killed") {
+        taskStore.kill(task.taskId, taskStore.get(task.taskId)?.error, partial, runGeneration);
+      }
+      return cancelled();
+    }
     if (completed.value.status === "aborted") {
-      taskStore.kill(task.taskId, completed.value.terminalReason);
+      taskStore.kill(task.taskId, completed.value.terminalReason, partial, runGeneration);
+      if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
       activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
-      return { ok: false, output: { status: "cancelled", error: completed.value.terminalReason, description: input.description, ...completed.value.result, task_id: task.taskId } };
+      return { ok: false, output: { ...partial, status: "cancelled", report_status: partial?.status, error: completed.value.terminalReason, description: input.description, task_id: task.taskId } };
     }
     if (completed.value.status === "failed") {
-      taskStore.fail(task.taskId, completed.value.terminalReason);
+      taskStore.fail(task.taskId, completed.value.terminalReason, partial, runGeneration);
+      if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
       activityStore.fail(input.agentId, completed.value.terminalReason);
-      return { ok: false, output: { status: "failed", error: completed.value.terminalReason, description: input.description, ...completed.value.result, task_id: task.taskId } };
+      return { ok: false, output: { ...partial, status: "failed", report_status: partial?.status, error: completed.value.terminalReason, description: input.description, task_id: task.taskId } };
     }
-    taskStore.complete(task.taskId, completed.value.result);
+    taskStore.complete(task.taskId, result, runGeneration);
     if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
-    activityStore.complete(input.agentId, completed.value.result);
+    activityStore.complete(input.agentId, result);
     return {
       ok: true,
-      output: { status: "completed", description: input.description, ...completed.value.result, task_id: task.taskId },
+      output: { status: "completed", description: input.description, ...result, task_id: task.taskId },
       newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
     };
   } catch (error) {
     if (!ownsRun()) return cancelled();
     const message = error instanceof Error ? error.message : String(error);
     if (abortController.signal.aborted || wall?.signal.aborted) {
-      taskStore.kill(task.taskId, message);
+      taskStore.kill(task.taskId, message, undefined, runGeneration);
+      if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
       activityStore.fail(input.agentId, message, "killed");
       return cancelled();
     }
-    taskStore.fail(task.taskId, message);
+    taskStore.fail(task.taskId, message, undefined, runGeneration);
+    if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
     activityStore.fail(input.agentId, message);
     return {
       ok: false,
@@ -345,7 +374,7 @@ function launchAsyncAgent(input: {
   const runGeneration = task.runGeneration;
   void runAsyncAgentLifecycle({ ...input, taskId, taskStore, abortController, runGeneration }).catch((error) => {
     const current = taskStore.get(taskId);
-    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error), undefined, runGeneration);
   });
 
   return {
@@ -383,7 +412,7 @@ async function runAsyncAgentLifecycle(input: {
     return current?.runGeneration === runGeneration && !input.taskStore.isTerminal(current);
   };
   if (!ownsRun()) return;
-  input.taskStore.markRunning(input.taskId);
+  input.taskStore.markRunning(input.taskId, runGeneration);
   const task = input.taskStore.get(input.taskId);
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
@@ -401,7 +430,7 @@ async function runAsyncAgentLifecycle(input: {
   const wall = mergeAbortWithWallClock(input.abortController.signal, resolveSubagentWallTimeoutMs());
   let stream: ReturnType<typeof runAgent> | undefined;
   try {
-    stream = runAgent({
+    stream = (input.runtime.runAgent ?? runAgent)({
       agentId: input.agentId,
       agent: input.agent,
       prompt: input.input.prompt,
@@ -409,6 +438,7 @@ async function runAsyncAgentLifecycle(input: {
       parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime),
       ...(task?.executionOptions ?? effectiveExecutionOptions(input.input, input.agent, input.context)),
+      runGeneration,
       abortSignal: wall?.signal ?? input.abortController.signal,
       fork: input.fork,
       existingMessages: input.existingMessages,
@@ -431,12 +461,14 @@ async function runAsyncAgentLifecycle(input: {
     while (!completed.done) {
       const event = completed.value;
       const current = input.taskStore.get(input.taskId);
-      if (!ownsRun() || !current || current.status === "killed") {
-        return;
+      if (!ownsRun() || !current) {
+        if (current?.runGeneration !== runGeneration || current.status !== "killed") return;
+        completed = await stream.next();
+        continue;
       }
       activityStore.recordEvent(input.agentId, event);
       if (event.type !== "message") {
-        updateProgressFromEvent(current, event);
+        updateProgressFromEvent(current, event, runGeneration, input.context.secretRedactions);
         input.taskStore.updateProgress(current);
       }
       if (event.type === "message") {
@@ -454,7 +486,11 @@ async function runAsyncAgentLifecycle(input: {
       while (!remaining.done) {
         const event = remaining.value;
         const current = input.taskStore.get(input.taskId);
-        if (!ownsRun() || !current || current.status === "killed") return;
+        if (!ownsRun() || !current) {
+          if (current?.runGeneration !== runGeneration || current.status !== "killed") return;
+          remaining = await stream.next();
+          continue;
+        }
         activityStore.recordEvent(input.agentId, event);
         if (event.type === "message") {
           updateProgressFromMessage(current, event.message);
@@ -465,25 +501,44 @@ async function runAsyncAgentLifecycle(input: {
       completed = remaining;
     }
 
-    if (!ownsRun()) return;
+    // Public reports are rebuilt from this run's authorized messages, including
+    // when an injected runner supplies a broader legacy fallback result.
+    const result = finalizeAgentTool({ agentId: input.agentId, agentType: input.agent.agentType, agent: input.agent,
+      messages: completed.value.messages, durationMs: completed.value.result.total_duration_ms,
+      totalToolUseCount: completed.value.result.total_tool_use_count });
+    result.total_tokens = completed.value.result.total_tokens;
+    result.usage = completed.value.result.usage;
+    const partial = allowedPartialResult(result, completed.value.messages, input.agent);
+    if (!ownsRun()) {
+      const current = input.taskStore.get(input.taskId);
+      if (current?.runGeneration === runGeneration && current.status === "killed") {
+        input.taskStore.kill(input.taskId, current.error, partial, runGeneration);
+      }
+      return;
+    }
     if (completed.value.status === "aborted") {
-      input.taskStore.kill(input.taskId, completed.value.terminalReason);
+      input.taskStore.kill(input.taskId, completed.value.terminalReason, partial, runGeneration);
+      if (input.taskStore.get(input.taskId)?.runGeneration !== runGeneration) return;
       activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
       return;
     }
     if (completed.value.status === "failed") {
-      input.taskStore.fail(input.taskId, completed.value.terminalReason);
+      input.taskStore.fail(input.taskId, completed.value.terminalReason, partial, runGeneration);
+      if (input.taskStore.get(input.taskId)?.runGeneration !== runGeneration) return;
       activityStore.fail(input.agentId, completed.value.terminalReason);
       return;
     }
-    input.taskStore.complete(input.taskId, completed.value.result);
+    input.taskStore.complete(input.taskId, result, runGeneration);
     if (input.taskStore.get(input.taskId)?.runGeneration !== runGeneration) return;
-    activityStore.complete(input.agentId, completed.value.result);
+    activityStore.complete(input.agentId, result);
   } catch (error) {
     if (!ownsRun()) return;
     const message = error instanceof Error ? error.message : String(error);
-    input.taskStore.fail(input.taskId, message);
-    activityStore.fail(input.agentId, message);
+    const stopped = input.abortController.signal.aborted || wall?.signal.aborted;
+    if (stopped) input.taskStore.kill(input.taskId, message, undefined, runGeneration);
+    else input.taskStore.fail(input.taskId, message, undefined, runGeneration);
+    if (input.taskStore.get(input.taskId)?.runGeneration !== runGeneration) return;
+    activityStore.fail(input.agentId, message, stopped ? "killed" : "failed");
   } finally {
     await stream?.return(undefined as never);
     wall?.dispose();
@@ -527,7 +582,7 @@ export function resumeAgentTask(
     runGeneration,
   }).catch((error) => {
     const current = taskStore.get(taskId);
-    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error));
+    if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error), undefined, runGeneration);
   });
 
   return Promise.resolve({ ok: true });
@@ -610,4 +665,31 @@ function mergeAbortWithWallClock(
 
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "agent";
+}
+
+/** Only explicit report outputs or OBS04-visible assistant text can become a partial report.
+ * The runner's fallback content may contain unmarked text: never publish it wholesale.
+ * messages is the runner's newly produced messages, not resumed/parent context.
+ */
+function allowedPartialResult(result: AgentToolResult, messages: readonly Message[], agent: AgentDefinition): AgentToolResult | undefined {
+  let draft: string | undefined;
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "tool_result" || message.isMeta === true) continue;
+    for (const block of message.blocks) {
+      if (block.type !== "tool_result" || !block.ok || block.name !== (agent.reportToolName ?? AGENT_REPORT_TOOL_NAME)) continue;
+      const output = block.output as { report?: unknown; status?: unknown; final?: unknown } | undefined;
+      if (typeof output?.report !== "string" || !output.report.trim()) continue;
+      if (output.final === true || output.status === "completed" || output.status === "incomplete") {
+        return { ...result, content: output.report.trim(), displaySource: "agent_report", status: "incomplete" };
+      }
+      draft ??= output.report.trim();
+    }
+  }
+  if (draft !== undefined) return { ...result, content: draft, displaySource: "agent_report", status: "incomplete" };
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant" || message.isMeta === true) continue;
+    const content = message.blocks.flatMap((block) => block.type === "text" && block.displayChannel === "visible" ? [block.text] : []).join("\n").trim();
+    if (content) return { ...result, content, displaySource: "visible_text", status: "incomplete" };
+  }
+  return undefined;
 }

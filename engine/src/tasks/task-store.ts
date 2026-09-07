@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { INTERRUPTED_TASK_ERROR, loadTasks, persistTask, type TaskLoadSummary, type RecoverableTask } from "./task-persistence.js";
 import { createTextMessage, type Message } from "../types/messages.js";
-import { writeLocalAgentTaskOutput, type AgentMessageReceipt, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
+import { agentRunDurationMs, writeLocalAgentTaskOutput, type AgentMessageReceipt, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
 
 export class TaskStore {
   private readonly tasks = new Map<string, LocalAgentTask>();
@@ -274,10 +274,11 @@ export class TaskStore {
   prepareResume(taskId: string, abortController: AbortController): LocalAgentTask {
     const task = this.require(taskId);
     if (task.type !== "agent" || !this.isTerminal(task)) throw new Error("Only terminal agent tasks can be resumed");
-    task.abortController?.abort("Superseded by resumed generation");
+    const previousController = task.abortController;
     task.runHistory = [...(task.runHistory ?? []), {
       runGeneration: task.runGeneration, status: task.status, result: task.result,
       error: task.error, progress: structuredClone(task.progress), completedAt: task.completedAt,
+      startedAt: task.startedAt, durationMs: agentRunDurationMs(task),
       archivedAt: new Date().toISOString(),
     }].slice(-8);
     task.runGeneration += 1;
@@ -287,10 +288,13 @@ export class TaskStore {
     task.error = undefined;
     task.progress = { totalEvents: 0, totalToolUseCount: 0 };
     task.completedAt = undefined;
+    task.startedAt = undefined;
+    task.durationMs = undefined;
     task.notified = false;
     // Replace the stable output file so it cannot masquerade as the new generation's result.
     this.persistTerminalOutput(task);
     this.upsert(task);
+    previousController?.abort("Superseded by resumed generation");
     return task;
   }
 
@@ -301,26 +305,28 @@ export class TaskStore {
     );
   }
 
-  markRunning(taskId: string): void {
-    this.patch(taskId, { status: "running" });
-  }
-
-  complete(taskId: string, result: AgentToolResult): void {
-    this.patchTerminal(taskId, { status: "completed", result, completedAt: new Date().toISOString() });
-  }
-
-  fail(taskId: string, error: string): void {
-    this.patchTerminal(taskId, { status: "failed", error, completedAt: new Date().toISOString() });
-  }
-
-  kill(taskId: string, reason = "Task stopped"): void {
+  markRunning(taskId: string, runGeneration?: number): void {
     const task = this.require(taskId);
-    task.abortController?.abort(reason);
-    task.status = "killed";
-    task.error = reason;
-    task.completedAt = new Date().toISOString();
-    this.persistTerminalOutput(task);
-    this.upsert(task);
+    if ((runGeneration !== undefined && task.runGeneration !== runGeneration) || task.status !== "pending") return;
+    this.patch(taskId, { status: "running", startedAt: new Date().toISOString(), completedAt: undefined, durationMs: undefined });
+  }
+
+  complete(taskId: string, result: AgentToolResult, runGeneration?: number): void {
+    this.patchTerminal(taskId, { status: "completed", result }, runGeneration);
+  }
+
+  fail(taskId: string, error: string, result?: AgentToolResult, runGeneration?: number): void {
+    this.patchTerminal(taskId, { status: "failed", error, result: result ? { ...result, status: "incomplete" } : undefined }, runGeneration);
+  }
+
+  kill(taskId: string, reason = "Task stopped", result?: AgentToolResult, runGeneration?: number): void {
+    const task = this.require(taskId);
+    if (runGeneration !== undefined && task.runGeneration !== runGeneration) return;
+    if (this.isTerminal(task) && task.status !== "killed") return;
+    const controller = task.abortController;
+    // Freeze before notifying/aborting: synchronous callbacks may resume the task.
+    this.patchTerminal(taskId, { status: "killed", error: reason, result: result ? { ...result, status: "incomplete" } : undefined }, runGeneration);
+    controller?.abort(reason);
   }
 
   markNotified(taskId: string): void {
@@ -370,10 +376,19 @@ export class TaskStore {
     this.upsert(task);
   }
 
-  private patchTerminal(taskId: string, fields: Partial<LocalAgentTask>): void {
+  private patchTerminal(taskId: string, fields: Partial<LocalAgentTask>, runGeneration?: number): void {
     const task = this.require(taskId);
-    if (this.isTerminal(task)) return;
-    Object.assign(task, fields);
+    if (runGeneration !== undefined && task.runGeneration !== runGeneration) return;
+    if (this.isTerminal(task)) {
+      // A stopped runner may finish finalizing its allowed report after kill().
+      // Enrich only that exact terminal generation; never restart its clock/status.
+      if (runGeneration === undefined || task.status !== fields.status || task.result || !fields.result || fields.status === "completed") return;
+      task.result = fields.result;
+    } else {
+      const completedAt = new Date().toISOString();
+      const durationMs = task.status === "running" ? agentRunDurationMs(task, Date.parse(completedAt)) : undefined;
+      Object.assign(task, fields, { completedAt, durationMs });
+    }
     this.persistTerminalOutput(task);
     this.upsert(task);
   }

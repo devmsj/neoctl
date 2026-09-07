@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -38,6 +39,10 @@ import type { PromptSection } from "../context/prompts.js";
 import type { NeoPluginResource } from "../plugins/plugin-system.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import { createImageId, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
+import { readToolCallDetail, toolErrorText, allowToolDetailRequest, sanitizeAgentToolPayload, redactToolDetail } from "./tool-call-detail.js";
+import { terminalFacts, terminalPreviews, terminalResultText } from "./terminal-presentation.js";
+import { createAgentContentDetailResolver, type AgentContentRequest } from "./agent-content-detail.js";
+import { toolDetailFieldsFromDetail } from "./tool-detail-fields.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
 import { resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
@@ -223,7 +228,7 @@ interface UiToolStreamStep {
   message: string;
   toolName?: string;
   toolLabel?: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "unknown";
   phase?: string;
   sequence?: number;
 }
@@ -264,6 +269,7 @@ interface UiLine {
   bodyTitle?: string;
   titleStatus?: "success" | "failure";
   toolDisplay?: UiToolDisplay;
+  toolError?: string;
   toolStream?: UiToolStream;
   format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
@@ -769,12 +775,13 @@ function webRuntimeScopeKey(scope: WebRuntimeScope): string {
 }
 
 export class WebRepl {
+  private readonly agentContentReader = createAgentContentDetailResolver();
   private readonly subscribers = new Set<WebSubscriber>();
   private eventSequence = 0;
   private pendingDeltaOperations: WebLineOperation[] = [];
   private pendingDeltaStatus = false;
   private pendingDeltaTimer: NodeJS.Timeout | undefined;
-  private readonly pendingTerminalOutput = new Map<string, { text: string; outputStart: number; outputEnd: number }>();
+  private readonly pendingTerminalOutput = new Map<string, { ownerSessionId: string }>();
   private terminalOutputTimer: NodeJS.Timeout | undefined;
   private lineId = 0;
   private assistantLineId: number | undefined;
@@ -839,17 +846,47 @@ export class WebRepl {
     return subscribers.length;
   }
 
+  async toolCallDetail(sessionId: string, toolUseId: string, messageId?: string) {
+    const session = this.runtime.engine.snapshot().session;
+    const detail = await readToolCallDetail({ sessionId: session?.sessionId ?? "", expectedSessionId: sessionId, sessionDir: session?.sessionDir, toolUseId, messageId, redact: value => this.runtime.engine.redactDisplayValue(value), entries: this.runtime.engine.getDisplayEntries() });
+    return detail ? this.runtime.engine.redactDisplayValue({ ...detail, fields: toolDetailFieldsFromDetail(detail) }) : undefined;
+  }
+
+  async agentContent(sessionId: string, view: string, request: AgentContentRequest) {
+    const session = this.runtime.engine.snapshot().session;
+    if (!session?.sessionDir || sessionId !== session.sessionId || !["timeline", "delegation", "report"].includes(view)) return undefined;
+    // Loading/recovery belongs to activateSession, never this read-only route.
+    if (!this.runtime.taskStore.getInSession(request.taskId, session.sessionDir)) return undefined;
+    return this.agentContentReader[view as "timeline" | "delegation" | "report"]({
+      ownerSessionId: sessionId, ownerSessionDir: session.sessionDir, taskStore: this.runtime.taskStore,
+      redact: value => this.runtime.engine.redactDisplayValue(value),
+    }, request);
+  }
+
+  terminalOutput(sessionId: string, runId: string, stream: string, offset: number, limitBytes: number) {
+    const session = this.runtime.engine.snapshot().session;
+    if (!session?.sessionDir || !sessionId || sessionId !== session.sessionId || !runId || !["stdout", "stderr"].includes(stream)) return undefined;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limitBytes) || limitBytes < 4 || limitBytes > 262144) return undefined;
+    const manager = this.runtime.execProcessManager;
+    const registered = manager.registerOwnerSession(sessionId, session.sessionDir);
+    if (!registered.ok) return undefined;
+    const page = manager.readOutput(sessionId, runId, { stream: stream as "stdout" | "stderr", offset, limitBytes });
+    // Cursor addresses stored bytes, not the possibly additionally redacted response length.
+    return page.ok ? this.runtime.engine.redactDisplayValue({ sessionId, runId, ...page.value }) : undefined;
+  }
+
   snapshot(includeCatalog = false) {
     const backgroundTasks = this.backgroundTasks();
     const engineSnapshot = this.runtime.engine.snapshot();
     return {
-      lines: this.lines,
+      lines: this.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
       status: this.status,
       busy: this.busy,
       queuedInput: this.queuedInput,
       backgroundTaskCount: backgroundTasks.length,
       backgroundTasks,
-      agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 20).map((task) => this.agentTaskSnapshot(task)),
+      terminalTaskHistory: this.terminalTaskHistory(),
+      agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((task) => this.agentTaskSnapshot(task)),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: engineSnapshot.session,
@@ -1399,28 +1436,72 @@ export class WebRepl {
 
   private agentTaskSnapshot(task: ReturnType<WebRuntime["taskStore"]["list"]>[number]) {
     const terminal = this.runtime.taskStore.isTerminal(task);
-    const result = (value: typeof task.result, limit = 1500) => value ? { content: value.content.slice(0, limit), truncated: value.content.length > limit, status: value.status } : undefined;
-    return {
+    // Redact complete values before any public preview boundary: clipping first can expose
+    // a credential prefix which no longer matches the runtime registry's full value.
+    const safeText = (value: string | undefined) => value === undefined ? undefined : this.runtime.engine.redactDisplayValue(value);
+    const result = (value: typeof task.result, limit = 1500) => {
+      if (!value) return undefined;
+      if (value.displaySource !== "agent_report" && value.displaySource !== "visible_text") {
+        return { content: "", truncated: false, status: value.status, availability: "unavailable" as const, reason: "旧报告缺少获准展示来源；不会公开未验证的文本" };
+      }
+      const content = safeText(value.content)!;
+      return { content: content.slice(0, limit), truncated: content.length > limit, status: value.status };
+    };
+    const error = safeText(task.error);
+    return this.runtime.engine.redactDisplayValue({
       kind: "agent" as const, taskId: task.taskId, agentId: task.agentId,
       agentType: task.agentType, type: task.type, status: task.status,
       description: task.description, runGeneration: task.runGeneration ?? 1,
-      progress: { lastActivity: task.progress.lastActivity, currentAction: task.progress.currentAction, totalToolUseCount: task.progress.totalToolUseCount, steps: task.progress.steps?.slice(-8).map((step) => ({ id: step.id, title: step.title, status: step.status })) },
+      progress: { visibleText: task.progress.visibleText?.channel === "visible" && task.progress.visibleText.redactionVersion === 1 && task.progress.visibleText.runGeneration === task.runGeneration ? this.runtime.engine.redactDisplayValue(task.progress.visibleText) : undefined, lastActivity: task.progress.lastActivity, currentAction: task.progress.currentAction, totalToolUseCount: task.progress.totalToolUseCount, steps: task.progress.steps?.slice(-8).map((step) => ({ id: step.id, title: step.title, status: step.status })) },
       pendingMessageCount: task.pendingMessages.length,
       deliveredRetainedThisRun: task.messageReceipts?.filter((receipt) => receipt.status === "delivered" && receipt.runGeneration === task.runGeneration).length,
       messageReceipts: (task.messageReceipts ?? []).slice(-20).map(({ id, status, queuedAt, deliveredAt, runGeneration }) => ({ id, status, queuedAt, deliveredAt, runGeneration })),
       result: terminal ? result(task.result) : undefined,
-      error: terminal ? task.error?.slice(0, 1500) : undefined,
-      errorTruncated: terminal && (task.error?.length ?? 0) > 1500,
-      runHistory: (task.runHistory ?? []).slice(-3).map((run) => ({ runGeneration: run.runGeneration, status: run.status, completedAt: run.completedAt, result: result(run.result, 600), error: run.error?.slice(0, 600), errorTruncated: (run.error?.length ?? 0) > 600 })),
-      createdAt: task.createdAt, updatedAt: task.updatedAt, completedAt: task.completedAt,
-    };
+      error: terminal ? error?.slice(0, 1500) : undefined,
+      errorTruncated: terminal && (error?.length ?? 0) > 1500,
+      runHistory: (task.runHistory ?? []).map((run) => {
+        const archivedError = safeText(run.error);
+        return { runGeneration: run.runGeneration, status: run.status, startedAt: run.startedAt, durationMs: run.durationMs, completedAt: run.completedAt, result: result(run.result, 600), error: archivedError?.slice(0, 600), errorTruncated: (archivedError?.length ?? 0) > 600 };
+      }),
+      createdAt: task.createdAt, updatedAt: task.updatedAt, startedAt: task.startedAt, completedAt: task.completedAt, durationMs: task.durationMs,
+    });
+  }
+
+  private terminalTaskHistory() {
+    const session = this.runtime.engine.snapshot().session;
+    if (!session?.sessionId || !session.sessionDir) return [];
+    const manager = this.runtime.execProcessManager;
+    if (!manager.registerOwnerSession?.(session.sessionId, session.sessionDir).ok) return [];
+    const records = [];
+    let offset = 0;
+    do {
+      const history = manager.listHistory(session.sessionId, { offset, limit: 200 });
+      if (!history.ok) break;
+      records.push(...history.value.records);
+      if (history.value.nextOffset === null) break;
+      offset = history.value.nextOffset;
+    } while (true);
+    return records.reverse().map(({ record }) => ({
+      kind: "terminal" as const, taskId: `terminal:${record.runId}`, type: "终端",
+      ownerSessionId: session.sessionId, sessionId: record.runId,
+      status: record.lifecycle === "lost" ? "lost" : record.exit?.status ?? "unknown",
+      description: record.metadata.description || record.metadata.command || "终端运行",
+      command: record.metadata.command, cwd: record.metadata.cwd, shell: record.metadata.shell,
+      tty: record.metadata.tty, processId: record.metadata.processId,
+      createdAt: record.metadata.startedAt, completedAt: record.exit?.finishedAt,
+      durationMs: record.exit?.durationMs, exitCode: record.exit?.exitCode,
+      signal: record.exit?.signal, terminationReason: record.exit?.terminationReason,
+      outputAvailability: record.availability, outputTruncated: record.truncated,
+      metadataTruncated: record.metadata.truncatedFields,
+    })).map(task => this.runtime.engine.redactDisplayValue(task));
   }
 
   private backgroundTasks() {
     const agentTasks = sessionAgentTasks(this.runtime)
       .filter((task) => !this.runtime.taskStore.isTerminal(task))
       .map((task) => this.agentTaskSnapshot(task));
-    const terminalTasks = this.runtime.execProcessManager.list()
+    const ownerSessionId = this.runtime.engine.snapshot().session?.sessionId;
+    const terminalTasks = (ownerSessionId ? this.runtime.execProcessManager.list(ownerSessionId) : [])
       .filter((terminal) => terminal.status === "running" && terminal.backgrounded)
       .map((terminal) => ({
         kind: "terminal" as const,
@@ -1428,7 +1509,8 @@ export class WebRepl {
         type: "终端",
         status: terminal.status,
         description: terminal.description || terminal.command,
-        createdAt: Date.now() - terminal.duration_ms,
+        createdAt: terminal.started_at,
+        ownerSessionId,
         sessionId: terminal.session_id,
         processId: terminal.process_id,
         command: terminal.command,
@@ -1436,8 +1518,11 @@ export class WebRepl {
         shell: terminal.shell,
         tty: terminal.tty,
         durationMs: terminal.duration_ms,
-        output: terminal.output,
-        outputEnd: terminal.outputEnd,
+        // Output is loaded from the owner-bound reader, never copied into state snapshots.
+        exitCode: terminal.exit_code,
+        signal: terminal.signal,
+        terminationReason: terminal.termination_reason,
+        outputAvailability: terminal.output_ref.availability,
       }));
     const sessionTasks = [...this.backgroundSessionRuns.values()].map((run) => ({
       kind: "session" as const,
@@ -1633,7 +1718,7 @@ export class WebRepl {
         return liveLineId;
       }, runtimeToolResultPresenter(this.runtime));
     }
-    const steps = (liveLine.toolStream?.steps ?? []).map((step) => step.status === "running" ? { ...step, status: event.ok ? "completed" as const : "failed" as const } : step);
+    const steps = (liveLine.toolStream?.steps ?? []).map((step) => step.status === "running" ? { ...step, status: "unknown" as const } : step);
     if (replacement) {
       this.replaceLine(liveLineId, {
         ...replacement,
@@ -2032,6 +2117,8 @@ export class WebRepl {
   }
 
   private queueDeltaOperation(operation: WebLineOperation): void {
+    if (operation.type === "line.append" && operation.line.toolError) operation = { ...operation, line: { ...operation.line, toolError: this.runtime.engine.redactDisplayValue?.(operation.line.toolError) ?? operation.line.toolError } };
+    if (operation.type === "line.patch" && operation.patch.toolError) operation = { ...operation, patch: { ...operation.patch, toolError: this.runtime.engine.redactDisplayValue?.(operation.patch.toolError) ?? operation.patch.toolError } };
     this.pendingDeltaOperations.push(operation);
     this.scheduleDeltaFlush();
   }
@@ -2076,16 +2163,10 @@ export class WebRepl {
   }
 
   private queueTerminalOutput(delta: ExecProcessOutputDelta): void {
-    if (!this.subscribers.size || !this.runtime.execProcessManager.isBackgroundRunning(delta.sessionId)) return;
-    const outputStart = Number(delta.outputStart ?? 0);
-    const outputEnd = Number(delta.outputEnd ?? outputStart + delta.text.length);
-    const pending = this.pendingTerminalOutput.get(delta.sessionId);
-    if (pending && pending.outputEnd === outputStart) {
-      pending.text = appendBoundedText(pending.text, delta.text, TERMINAL_OUTPUT_EVENT_MAX_CHARS);
-      pending.outputEnd = outputEnd;
-    } else {
-      this.pendingTerminalOutput.set(delta.sessionId, { text: delta.text.slice(-TERMINAL_OUTPUT_EVENT_MAX_CHARS), outputStart, outputEnd });
-    }
+    const ownerSessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (!this.subscribers.size || !ownerSessionId || delta.ownerSessionId !== ownerSessionId) return;
+    // Invalidation only. The reader owns independent stream cursors; SSE is not a full-output source.
+    this.pendingTerminalOutput.set(delta.sessionId, { ownerSessionId });
     if (this.terminalOutputTimer) return;
     this.terminalOutputTimer = setTimeout(() => this.flushTerminalOutput(), TERMINAL_OUTPUT_FLUSH_MS);
     this.terminalOutputTimer.unref?.();
@@ -2093,10 +2174,10 @@ export class WebRepl {
 
   private flushTerminalOutput(): void {
     this.terminalOutputTimer = undefined;
-    if (!this.pendingTerminalOutput.size) return;
-    const updates = [...this.pendingTerminalOutput.entries()].map(([sessionId, output]) => ({ sessionId, ...output }));
+    const ownerSessionId = this.runtime.engine.snapshot().session?.sessionId;
+    const updates = [...this.pendingTerminalOutput.entries()].filter(([, output]) => output.ownerSessionId === ownerSessionId).map(([sessionId, output]) => ({ sessionId, ...output, invalidated: true }));
     this.pendingTerminalOutput.clear();
-    for (const subscriber of this.subscribers) this.send(subscriber, "terminal.output", { updates });
+    if (updates.length) for (const subscriber of this.subscribers) this.send(subscriber, "terminal.output", { updates });
   }
 
   private broadcastSync(): void {
@@ -2146,9 +2227,35 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
       const body = await readJsonBody<{ clearCache?: boolean; reason?: string }>(req);
       return sendJson(res, await router.requestClientReload(body));
     }
+    if (["/api/tool-call-detail", "/api/terminal-output", "/api/agent-content"].includes(url.pathname) && !allowToolDetailRequest(req.headers.origin, req.headers.host, req.headers["sec-fetch-site"] as string | undefined)) {
+      return sendJson(res, { error: "详情访问被拒绝" }, 403);
+    }
     const scope = webRuntimeScopeFromUrl(url);
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
+    if (req.method === "GET" && url.pathname === "/api/tool-call-detail") {
+      res.setHeader("Cache-Control", "no-store");
+      const detail = await repl.toolCallDetail(url.searchParams.get("sessionId") ?? "", url.searchParams.get("toolUseId") ?? "", url.searchParams.get("messageId") ?? undefined);
+      if (!detail) return sendJson(res, { error: "调用详情不可获取或无权访问" }, 404);
+      return sendJson(res, detail);
+    }
+    if (req.method === "GET" && url.pathname === "/api/agent-content") {
+      res.setHeader("Cache-Control", "no-store");
+      const refresh = url.searchParams.get("refresh");
+      if (refresh !== null && refresh !== "true" && refresh !== "false") return sendJson(res, { error: "代理详情参数无效" }, 404);
+      const page = await repl.agentContent(url.searchParams.get("sessionId") ?? "", url.searchParams.get("view") ?? "timeline", {
+        taskId: url.searchParams.get("taskId") ?? "", runGeneration: Number(url.searchParams.get("runGeneration")),
+        ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+        ...(url.searchParams.has("pageChars") ? { pageChars: Number(url.searchParams.get("pageChars")) } : {}),
+        ...(url.searchParams.has("refresh") ? { refresh: url.searchParams.get("refresh") === "true" } : {}),
+      });
+      return page ? sendJson(res, page) : sendJson(res, { error: "代理内容不可获取或无权访问" }, 404);
+    }
+    if (req.method === "GET" && url.pathname === "/api/terminal-output") {
+      res.setHeader("Cache-Control", "no-store");
+      const page = repl.terminalOutput(url.searchParams.get("sessionId") ?? "", url.searchParams.get("runId") ?? "", url.searchParams.get("stream") ?? "stdout", Number(url.searchParams.get("offset") ?? 0), Number(url.searchParams.get("limitBytes") ?? 65536));
+      return page ? sendJson(res, page) : sendJson(res, { error: "终端输出不可获取或无权访问" }, 404);
+    }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     const workspaceRepl = repl as WebRepl & {
@@ -3035,13 +3142,18 @@ function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean, presentToolResult?: UiToolResultPresenter): Omit<UiLine, "id"> {
+  // Hidden fallback reports in historical agent payloads must not enter line.text
+  // even when the frontend suppresses the ordinary result preview.
+  const authorized = sanitizeAgentToolPayload(toolName, output);
+  if (toolName.startsWith("subagent_")) output = authorized.value;
   const presentation = normalizeToolResultPresentation(presentToolResult?.(toolName, output, ok));
   const resources = presentation?.resources ?? toolResources(output);
   const formatted = resources?.length
     ? { text: ok ? "资源已准备好。" : "资源准备失败。", full: true, bodyTitle: ok ? "资源已就绪" : "资源准备失败" }
-    : formatToolResult(toolName, output, ok);
+    : formatToolResult(toolName, toolName.startsWith("subagent_") ? redactToolDetail(output) : output, ok);
   return {
     kind: ok ? "tool" : "error",
+    toolError: ok ? undefined : toolErrorText(output, ok).slice(0, 2000),
     toolName,
     toolPresentation: toolPresentationForSource(toolName),
     title: presentation?.title ?? toolTitle(toolName, "finished"),
@@ -3210,11 +3322,14 @@ function normalizeToolDisplay(display: UiToolDisplay): UiToolDisplay {
   const visibleText = new Set([subject, purpose].filter((value): value is string => Boolean(value)).map(normalizeDisplayText));
   const facts = display.facts.filter((fact) => {
     const normalized = normalizeDisplayText(fact.value);
-    if (!normalized || visibleText.has(normalized)) return false;
-    visibleText.add(normalized);
+    const identity = `${fact.label}\0${normalized}`;
+    if (!normalized || visibleText.has(identity)) return false;
+    visibleText.add(identity);
     return true;
   });
   const previews = display.previews.filter((preview) => {
+    // Separate terminal streams remain separate even when empty or byte-identical.
+    if (/^(stdout|stderr)(?:$|[（ ·])/.test(preview.label ?? "")) return true;
     const normalized = normalizeDisplayText(preview.content);
     if (!normalized || visibleText.has(normalized)) return false;
     visibleText.add(normalized);
@@ -3256,7 +3371,7 @@ function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
 }
 
 function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean): UiToolDisplay {
-  const data = isRecord(output) ? output : {};
+  const data = toolName.startsWith("subagent_") ? subagentHeader(output) : isRecord(output) ? output : {};
   const facts: UiToolFact[] = [];
   const previews: UiToolPreview[] = [];
   let subject = toolDisplaySubject(toolName, data);
@@ -3269,10 +3384,8 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
     subject = undefined;
     purpose = stringValue(data.description);
     pushToolPreview(previews, "命令", "code", data.command);
-    const outputText = [stringValue(data.stdout), stringValue(data.stderr)].filter(Boolean).join("\n");
-    if (outputText) pushToolPreview(previews, data.stderr ? "输出 / 错误" : "输出", "code", outputText);
-    if (data.timed_out && !outputText) pushToolFact(facts, "状态", "命令执行超时", false, "warning");
-    else if ((!ok || (typeof data.exit_code === "number" && data.exit_code !== 0)) && !outputText) pushToolFact(facts, "状态", `退出码 ${data.exit_code ?? "未知"}`, false, "danger");
+    previews.push(...terminalPreviews(data));
+    facts.push(...terminalFacts(data));
   } else if (toolName === "file_search") {
     subject = stringValue(data.query) || stringValue(data.grepPath) || stringValue(data.path);
     pushToolPreview(previews, undefined, "list", grepPreview(data));
@@ -3289,18 +3402,16 @@ function buildToolResultDisplay(toolName: string, output: unknown, ok: boolean):
   } else if (toolName === "image_create") {
     subject = stringValue(data.semanticName);
     pushToolFact(facts, "图片", `${numberValue(data.returnedImages) ?? arrayLength(data.images)} 张`);
-    pushToolFact(facts, "尺寸", data.size);
+    pushToolFact(facts, "请求尺寸", data.size === "auto" ? "auto（自动策略）" : data.size);
   } else if (toolName === "image_inspect") {
     subject = arrayLabel(data.imageRefs);
   } else if (toolResources(output)?.length) {
     subject = toolResources(output)?.map((item) => item.label || item.downloadName).filter(Boolean).join("、");
   } else if (toolName.startsWith("subagent_") || toolName === "subagent_run") {
     subject = stringValue(data.description) || stringValue(data.task_id) || stringValue(data.agent_id);
-    pushToolFact(facts, "任务状态", data.status);
+    facts.push(...subagentStatusFacts(toolName, output, ok));
     pushToolFact(facts, "轮次", data.run_generation);
     pushToolFact(facts, "待交付", data.pending_messages);
-    if (toolName === "subagent_message") pushToolFact(facts, "交付说明", "仅入队，不代表已交付或完成");
-    if (data.requires_resume === true) pushToolFact(facts, "后续", "需要显式续跑");
   } else if (toolName === "subagent_message") {
     subject = stringValue(data.target);
   } else if (toolName.startsWith("secret_")) {
@@ -3498,17 +3609,8 @@ function isExecOutput(value: unknown): value is ExecOutputLike {
   return isRecord(value) && typeof value.command === "string" && typeof value.duration_ms === "number";
 }
 
-function formatExecToolResult(output: ExecOutputLike, ok: boolean): string {
-  const status = output.status === "running" ? "运行中" : output.timed_out ? "已超时" : ok ? "已完成" : "执行失败";
-  const description = typeof output.description === "string" ? output.description.trim() : "";
-  const lines = [description ? `目的：${description}` : "执行命令", `状态：${status}`, `耗时：${output.duration_ms}ms`];
-  if (output.status === "running" && typeof output.session_id === "string") lines.push(`会话：${output.session_id}`);
-  const stdout = typeof output.stdout === "string" ? output.stdout.replace(/\s+$/u, "") : "";
-  const stderr = typeof output.stderr === "string" ? output.stderr.replace(/\s+$/u, "") : "";
-  if (stdout) lines.push("输出：", stdout);
-  if (stderr) lines.push("错误：", stderr);
-  if (!stdout && !stderr) lines.push(ok ? "无输出。" : "没有捕获到输出。");
-  return lines.join("\n");
+function formatExecToolResult(output: ExecOutputLike, _ok: boolean): string {
+  return terminalResultText(output);
 }
 
 function formatImageGenerationToolResult(output: Record<string, unknown>, ok: boolean): string {

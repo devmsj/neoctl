@@ -15,7 +15,7 @@ export const XHS_ARTIFACT_EDITOR_HINT = `
 4. images 必须是数组且至少一项。每项必须且只能包含 url、caption、overlay、note 四个字符串字段，不能传字符串、Markdown 图片、旧字段名或嵌套对象。
 5. 已生成/已上传图片：把图片工具返回的真实 URL 或绝对路径原样放入 images[].url。未生成图片：url 必须为 ""，将配图方案写入 caption/note。严禁把提示词、图片描述、文件 id 或 Markdown 图片语法放入 url。
 6. interaction 和 review 没有内容时传 ""，不得省略。不要把工具参数再输出成正文。
-7. 修改已有编辑器前，先调用 read_xhs_artifact 读取最新内容，保留用户编辑，再用相同 artifact_id 和完整 payload 调用 open_xhs_artifact_editor。
+7. 修改已有编辑器前，先调用 read_xhs_artifact 读取最新内容，保留用户编辑，再用相同 artifact_id 和完整 payload 调用 open_xhs_artifact_editor。冲突时重新读取并保留用户修改，禁止盲目重试旧内容。
 `.trim();
 
 export const XHS_ARTIFACT_INPUT_SCHEMA = {
@@ -96,6 +96,8 @@ export function selectNewestXhsArtifact(current, candidate) {
   if (!isCompleteXhsArtifact(candidate)) return isCompleteXhsArtifact(current) ? current : null;
   if (!isCompleteXhsArtifact(current)) return candidate;
   if (String(current.id) !== String(candidate.id)) return candidate;
+  if (current.sessionId !== candidate.sessionId) return current;
+  if (Number.isSafeInteger(current.version) || Number.isSafeInteger(candidate.version)) return (candidate.version || 1) > (current.version || 1) ? candidate : current;
   const currentUpdatedAt = Number(current.updatedAt || current.createdAt || 0);
   const candidateUpdatedAt = Number(candidate.updatedAt || candidate.createdAt || 0);
   return candidateUpdatedAt > currentUpdatedAt ? candidate : current;

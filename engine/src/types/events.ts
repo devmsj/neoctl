@@ -55,7 +55,7 @@ export type AgentEvent =
   | { type: "state"; phase: string; detail?: string }
   | { type: "context.metrics"; metrics: ContextMetrics }
   | { type: "context.compacted"; compaction: CompactionReport }
-  | { type: "assistant.delta"; text: string }
+  | { type: "assistant.delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking.delta"; text: string }
   | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "message"; message: Message }

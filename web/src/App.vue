@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
+import TerminalOutputReader from './TerminalOutputReader.vue'
+import AgentContentReader from './AgentContentReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -16,8 +18,9 @@ import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import CwdTreeNode from './components/CwdTreeNode.vue'
-import { agentTaskResult, agentTaskDelivery, agentTaskArchives, agentToolStatus, agentTaskNeedsResume } from './agent-task-presentation.mjs'
+import { agentTaskResult, agentTaskDelivery, agentTaskArchives, agentTaskNeedsResume, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
+import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -74,18 +77,7 @@ const LINE_TITLE_LABELS = {
   multi_tool_use: '并行执行工具',
   '文件下载': '文件下载',
 }
-const TASK_STATUS_LABELS = {
-  pending: '排队中',
-  running: '运行中',
-  completed: '已完成',
-  failed: '失败',
-  killed: '已停止',
-  queued: '已入队',
-  resumed: '已启动续跑',
-  queued_for_resume: '待续跑',
-  incomplete: '未完成',
-  stopped: '已停止',
-}
+
 const LOGIN_FIELD_LABELS = {
   'API key': 'API Key',
   'Base URL': 'Base URL',
@@ -247,6 +239,7 @@ const state = reactive({
   backgroundTaskCount: 0,
   backgroundTasks: [],
   agentTaskHistory: [],
+  terminalTaskHistory: [],
   backgroundSessionRunCount: 0,
   runningSessionIds: [],
   session: undefined,
@@ -282,9 +275,13 @@ const state = reactive({
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
   activePanel: 'chat',
   toolDetailLineId: undefined,
+  toolDetailData: null,
+  toolDetailLoading: false,
+  toolDetailError: "",
   expandedToolGroups: {},
   compactionDetailLineId: undefined,
   backgroundTaskDetail: undefined,
+  agentReaderRun: null,
   imagePreview: undefined,
   confirmDialog: {
     open: false,
@@ -420,7 +417,18 @@ const composerInputTokens = computed(() => compactNumber(state.composerMetrics.i
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
 const composerRunning = computed(() => active.value || state.busy)
 const backgroundTaskCount = computed(() => state.backgroundTasks.length)
-const allBackgroundTasks = computed(() => [...state.backgroundTasks, ...state.agentTaskHistory])
+const backgroundTaskHistory = computed(() => [...state.agentTaskHistory, ...state.terminalTaskHistory].sort((a, b) => {
+  const stamp = task => typeof task.completedAt === 'number' ? task.completedAt : Date.parse(task.completedAt || task.updatedAt || '') || (typeof task.createdAt === 'number' ? task.createdAt : 0)
+  return stamp(b) - stamp(a)
+}))
+const allBackgroundTasks = computed(() => {
+  const seen = new Set()
+  return [...state.backgroundTasks, ...backgroundTaskHistory.value].filter(task => {
+    const key = backgroundTaskKey(task)
+    if (seen.has(key)) return false
+    seen.add(key); return true
+  })
+})
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
 const composerHasDraft = computed(() => Boolean(input.value.trim() || state.attachments.length))
 const composerActionLabel = computed(() => {
@@ -1035,7 +1043,8 @@ function applyDelta(payload) {
 function applyTerminalOutput(payload) {
   for (const update of payload?.updates || []) {
     const sessionId = String(update?.sessionId || '')
-    if (!sessionId) continue
+    if (!sessionId || update.ownerSessionId !== state.session?.sessionId) continue
+    if (update.invalidated === true) continue // Owner-bound reader refreshes its own byte cursors; never append SSE as full output.
     const taskIndex = state.backgroundTasks.findIndex((task) => String(task?.sessionId || '') === sessionId)
     if (taskIndex < 0) continue
     const chunk = String(update.text || '')
@@ -1064,6 +1073,7 @@ function applySync(payload) {
   resetLineTextScheduler()
   const incomingSessionId = String(payload.session?.sessionId || '')
   const previousSessionId = String(state.session?.sessionId || '')
+  if (incomingSessionId && incomingSessionId !== previousSessionId) closeToolDetail()
   if (runtimeSessionId && incomingSessionId && incomingSessionId !== runtimeSessionId && !allowRuntimeSessionChange) {
     repairRuntimeSessionBinding()
     return
@@ -1086,10 +1096,13 @@ function applySync(payload) {
   state.backgroundTaskCount = payload.backgroundTaskCount || 0
   state.backgroundTasks = payload.backgroundTasks || []
   state.agentTaskHistory = payload.agentTaskHistory || []
+  state.terminalTaskHistory = payload.terminalTaskHistory || []
   if (state.backgroundTaskDetail) {
     const currentTask = allBackgroundTasks.value.find((task) => backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail))
     if (currentTask) state.backgroundTaskDetail = { ...currentTask }
-    else closeBackgroundTaskDetail()
+    else if (state.backgroundTaskDetail.kind === 'terminal' && state.backgroundTaskDetail.ownerSessionId === payload.session?.sessionId) {
+      state.backgroundTaskDetail = { ...state.backgroundTaskDetail, status: 'unknown', outputAvailability: 'unavailable' }
+    } else closeBackgroundTaskDetail()
   }
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
@@ -2024,15 +2037,124 @@ function toolGroupPurposes(group) {
   })
 }
 
-function openToolDetail(line) {
-  if (!line || !line.text) return
+let toolDetailEpoch = 0
+let toolDetailAbort
+let toolDetailTrigger
+function openToolDetail(line, event) {
+  if (!line) return
+  toolDetailTrigger = event?.currentTarget || document.activeElement
   state.toolDetailLineId = line.id
   document.body.classList.add('tool-detail-open')
+  void loadToolDetail()
+  nextTick(() => document.querySelector('.tool-result-modal-close')?.focus())
+}
+async function loadToolDetail() {
+  const line = toolDetailLine.value
+  const epoch = ++toolDetailEpoch
+  toolDetailAbort?.abort()
+  toolDetailAbort = new AbortController()
+  state.toolDetailData = null
+  state.toolDetailError = ''
+  if (!line || isImageCreateResultLine(line)) { state.toolDetailLoading = false; return }
+  if (!line.toolUseId || !state.session?.sessionId) {
+    state.toolDetailLoading = false
+    state.toolDetailError = '不可获取：旧记录未提供调用身份，不能将摘要冒充完整输入或结果'
+    return
+  }
+  const sessionId = state.session.sessionId
+  state.toolDetailLoading = true
+  try {
+    const url = new URL(runtimeUrl('/api/tool-call-detail'), location.origin)
+    url.searchParams.set('toolUseId', line.toolUseId)
+    if (line.messageId) url.searchParams.set('messageId', line.messageId)
+    const response = await fetch(url, { signal: toolDetailAbort.signal, cache: 'no-store' })
+    if (!response.ok) throw new Error(response.status === 404 ? '调用详情不可获取或无权访问' : `详情读取失败 (${response.status})`)
+    const detail = await response.json()
+    if (epoch !== toolDetailEpoch || state.session?.sessionId !== sessionId) return
+    if (detail.sessionId !== sessionId || detail.toolUseId !== line.toolUseId || (line.messageId && detail.messageId !== line.messageId)) throw new Error('详情身份不匹配')
+    state.toolDetailData = detail
+  } catch (error) {
+    if (epoch === toolDetailEpoch && error.name !== 'AbortError') state.toolDetailError = error.message || '详情加载失败'
+  } finally { if (epoch === toolDetailEpoch) state.toolDetailLoading = false }
+}
+function renderAgentMarkdown(text) {
+  return sanitizeMarkdown(marked.parse(String(text ?? '')))
+}
+function selectedAgentRun() {
+  const task = state.backgroundTaskDetail
+  if (!task || task.kind !== 'agent') return undefined
+  return state.agentReaderRun === null || state.agentReaderRun === task.runGeneration ? task : task.runHistory?.find(run => run.runGeneration === state.agentReaderRun)
+}
+function agentDetailTarget() {
+  const detail = state.toolDetailData
+  if (!String(detail?.toolName || '').startsWith('subagent_')) return undefined
+  let taskId, runGeneration
+  for (const part of [detail.result, detail.input]) {
+    try { const data = JSON.parse(part?.text || 'null'); taskId ??= data?.task_id; runGeneration ??= data?.run_generation ?? data?.runGeneration } catch {}
+  }
+  if (typeof taskId !== 'string') return undefined
+  const task = allBackgroundTasks.value.find(task => task.kind === 'agent' && task.taskId === taskId)
+  // Never reinterpret an unrecorded old invocation as the current round.
+  if (!Number.isSafeInteger(runGeneration) || runGeneration < 1) return undefined
+  const run = task?.runGeneration === runGeneration ? task : task?.runHistory?.find(run => run.runGeneration === runGeneration)
+  return { taskId, runGeneration, status: run?.status || 'unknown', visiblePreview: task?.runGeneration === runGeneration ? task.progress?.visibleText : undefined }
+}
+
+function terminalDetailRunId() {
+  const detail = state.toolDetailData
+  if (!['terminal_run', 'terminal_control'].includes(detail?.toolName)) return ''
+  for (const part of [detail.result, detail.input]) {
+    try { const data = JSON.parse(part?.text || 'null'); if (typeof data?.session_id === 'string') return data.session_id } catch {}
+  }
+  return ''
 }
 
 function closeToolDetail() {
+  ++toolDetailEpoch
+  toolDetailAbort?.abort()
   state.toolDetailLineId = undefined
+  state.toolDetailData = null
+  state.toolDetailLoading = false
   document.body.classList.remove('tool-detail-open')
+  const trigger = toolDetailTrigger
+  nextTick(() => { if (trigger?.isConnected) trigger.focus() })
+}
+function toolDetailKeydown(event) {
+  if (event.key !== 'Tab') return
+  const nodes = Array.from(event.currentTarget.querySelectorAll('button:not(:disabled), [tabindex="0"]'))
+  const first = nodes[0], last = nodes.at(-1)
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+}
+// Presentation only; classification comes from the authorized detail response.
+function toolDetailFieldText(field) {
+  if (field.state !== 'provided') return { 'not-provided': '未提供', unspecified: '未指定', 'not-applicable': '不适用' }[field.state] || '未提供'
+  return typeof field.value === 'string' ? (field.value === '' ? '（空字符串）' : field.value) : JSON.stringify(field.value, null, 2)
+}
+function toolDetailFieldSource(field) {
+  if (field.source === 'display') return '展示摘要（不是完整输入）'
+  if (!field.source) return ''
+  return `${field.source === 'input' ? '脱敏输入' : '实际返回'}.${field.sourceKey} · ${field.completeness === 'complete' ? '完整来源' : '已截断来源，仅预览'}`
+}
+const toolDetailFieldRows = computed(() => {
+  const fields = state.toolDetailData?.fields
+  if (!fields) return []
+  const display = toolDetailLine.value?.toolDisplay || {}
+  const metadata = key => fields[key]?.state === 'provided' || display[key] === undefined ? fields[key] : { key, state: 'provided', value: display[key], source: 'display', completeness: 'summary' }
+  return [metadata('purpose'), metadata('subject'), fields.object, fields.actualPath, fields.actualProvider, ...fields.keyParameters].filter(Boolean)
+})
+function toolDetailFieldLabel(key) {
+  return { purpose: '目的', subject: '展示对象 / subject', object: '对象', actualPath: '实际路径 / 输入路径', actualProvider: '实际 provider' }[key] || key
+}
+async function copyToolDetailPart(part) {
+  try { await navigator.clipboard.writeText(part.text); state.toolDetailError = '' }
+  catch { state.toolDetailError = '复制失败，可重试复制或下载' }
+}
+function downloadToolDetailPart(part, key) {
+  const url = URL.createObjectURL(new Blob([part.text], { type: 'text/plain;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url; anchor.download = `tool-${key}-${part.state === 'complete' ? 'full' : 'preview'}.txt`; anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 function handleDocumentImageClick(event) {
@@ -2085,7 +2207,7 @@ function closeImagePreview() {
 }
 
 function toolResultStatus(line) {
-  return agentToolStatus(line) || toolResultPresentation(line).status
+  return callStatus(line)
 }
 
 function toolResultSummary(line) {
@@ -2135,7 +2257,7 @@ function toolStreamCurrentText(line) {
 function toolStreamStepsText(line) {
   return toolStreamSteps(line).map((step) => {
     const mark = step?.status === 'completed' ? '✓' : step?.status === 'failed' ? '×' : '•'
-    return `${mark} ${String(step?.message || '').trim()}`.trimEnd()
+    return `${mark} ${String(step?.message || '').trim()}${step?.status === 'unknown' || (!line?.live && step?.status === 'running') ? '（阶段结果未提供）' : ''}`.trimEnd()
   }).join('\n')
 }
 
@@ -2300,7 +2422,8 @@ function backgroundTaskStatusMap(tasks = []) {
 }
 
 function backgroundTaskKey(task) {
-  return String(task?.taskId || task?.agentId || task?.sessionId || '')
+  const identity = String(task?.taskId || task?.agentId || task?.sessionId || '')
+  return task?.kind === 'terminal' ? `${task.ownerSessionId || state.session?.sessionId || ''}:${identity}` : identity
 }
 
 function backgroundTaskTitle(task) {
@@ -2314,7 +2437,14 @@ function backgroundTaskDisplayTitle(task) {
 }
 
 function backgroundTaskElapsed(task) {
-  if (task?.kind === 'agent' && Number(task?.runGeneration) > 1) return ''
+  if (task?.kind === 'terminal') {
+    if (task.status !== 'running') return Number.isFinite(task.durationMs) && task.durationMs >= 0 ? formatDuration(task.durationMs) : '未提供'
+    return Number.isFinite(task.createdAt) && task.createdAt <= state.clockTick ? formatDuration(state.clockTick - task.createdAt) : '未提供'
+  }
+  if (task?.kind === 'agent') {
+    const duration = agentRunElapsedMs(task, state.clockTick)
+    return duration === undefined ? '未提供' : formatDuration(duration)
+  }
   const raw = task?.createdAt
   const numeric = Number(raw)
   const createdAt = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(raw || ''))
@@ -2339,6 +2469,7 @@ function backgroundTaskLiveOutput(task) {
 }
 
 function openBackgroundTaskDetail(task) {
+  state.agentReaderRun = null
   state.backgroundTaskDetail = { ...task }
   document.body.classList.add('tool-detail-open')
 }
@@ -2364,8 +2495,12 @@ function phaseText(phase = 'ready') {
   return labels[phase] || phase
 }
 
+function resultCompletenessText(status) {
+  return ({ completed: '完整', incomplete: '不完整' })[status] || (status ? '未知状态' : '未提供')
+}
+
 function taskStatusText(status) {
-  return TASK_STATUS_LABELS[status] || status || '未知'
+  return ({ pending: '排队中', running: '运行中', completed: '已完成', failed: '失败', killed: '已停止', stopped: '已停止', exited: '已退出', lost: '已失联', unknown: '未提供' })[status] || (status ? '未知状态' : '未提供')
 }
 
 function loginFieldLabel(label) {
@@ -3042,8 +3177,46 @@ function renderImageCreateResult(line) {
   const parsed = parseImageCreateResult(line.text || '')
   const text = String(line.text || '')
   const status = /\bfail(?:ed)?\b|failed/i.test(text) ? '生成失败' : /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
-  const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, parsed.size, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
+  const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, `请求尺寸 ${originalDimensionFacts(parsed.size).requested}`, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
   return `<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div></div>`
+}
+
+const originalDimensions = createOriginalDimensions()
+const imageDimensionResults = ref([])
+let imageDimensionEpoch = 0
+const imageDimensionTarget = computed(() => {
+  const line = toolDetailLine.value
+  return JSON.stringify([state.session?.sessionId || '', line?.id, line?.toolUseId, line?.messageId,
+    line && isImageCreateResultLine(line) ? lineImagePreviews(line).map(item => [item.originalDecodeUrl, item.available, imagePreviewIdentity(item)]) : []])
+})
+watch(imageDimensionTarget, async (target) => {
+  const epoch = ++imageDimensionEpoch
+  imageDimensionResults.value = []
+  originalDimensions.clear() // Reopen/revised resources must revalidate, not reuse old success.
+  const sessionId = state.session?.sessionId || ''
+  originalDimensions.setSession(sessionId)
+  const line = toolDetailLine.value
+  if (!line || !isImageCreateResultLine(line)) return
+  const images = lineImagePreviews(line)
+  imageDimensionResults.value = images.map(item => ({ state: item.available ? 'loading' : 'unavailable' }))
+  await Promise.all(images.map(async (item, index) => {
+    const result = await originalDimensions.load({ sessionId, originalUrl: item.originalDecodeUrl, available: item.available })
+    // Target includes session, call/message identity, resource URLs and availability.
+    if (epoch !== imageDimensionEpoch || target !== imageDimensionTarget.value || result.state === 'stale') return
+    imageDimensionResults.value[index] = result
+  }))
+}, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => { ++imageDimensionEpoch; originalDimensions.clear() })
+
+function renderImageDimensionDetails(line, requested) {
+  const images = lineImagePreviews(line)
+  if (!images.length) return '<p>实际尺寸：未知（未提供原图资源）</p>'
+  return images.map((item, index) => {
+    const result = imageDimensionResults.value[index]
+    const facts = originalDimensionFacts(requested, item.available ? result : { state: 'unavailable' })
+    const actual = result?.state === 'loading' && item.available ? '加载中…' : facts.actual
+    return `<section class="image2-detail-prompt" data-original-dimensions="${index}"><span>${escapeHtml(imageCaption(item, index))}</span><dl class="image2-detail-grid"><div><dt>请求尺寸</dt><dd>${escapeHtml(facts.requested)}</dd></div><div><dt>实际尺寸</dt><dd>${escapeHtml(actual)}</dd></div></dl>${facts.mismatch ? '<p>实际尺寸与请求尺寸不同（保留原图）</p>' : ''}</section>`
+  }).join('')
 }
 
 function renderImageCreateDetail(line) {
@@ -3051,7 +3224,7 @@ function renderImageCreateDetail(line) {
   const fields = [
     ['模型', parsed.model],
     ['模式', parsed.mode],
-    ['尺寸', parsed.size],
+    ['请求尺寸', originalDimensionFacts(parsed.size).requested],
     ['质量', parsed.quality],
     ['格式', parsed.outputFormat],
     ['背景', parsed.background],
@@ -3071,7 +3244,7 @@ function renderImageCreateDetail(line) {
   const revisedPrompt = parsed.revisedPrompt && parsed.revisedPrompt !== parsed.prompt
     ? `<section class="image2-detail-prompt"><span>修订提示词</span><p>${escapeHtml(parsed.revisedPrompt)}</p></section>`
     : ''
-  return `<div class="image2-detail-view">${metadata}${prompt}${revisedPrompt}</div>`
+  return `<div class="image2-detail-view">${metadata}${renderImageDimensionDetails(line, parsed.size)}${prompt}${revisedPrompt}</div>`
 }
 
 function parseImageCreateResult(text) {
@@ -3565,6 +3738,9 @@ function normalizeImagePreview(item) {
     error: item.error,
     previewUrl,
     originalUrl: originalRawUrl ? scopedImageUrl(originalRawUrl) : '',
+    // Only explicit original resources qualify for pixel measurement; never preview fallback.
+    originalDecodeUrl: (item.originalSrc || item.original?.src || item.originalUrl || dataToImageSrc(item.data, mimeType))
+      ? scopedImageUrl(item.originalSrc || item.original?.src || item.originalUrl || dataToImageSrc(item.data, mimeType)) : '',
     name: item.name || item.filename || item.label,
     sizeBytes: item.sizeBytes,
     pending: item.pending === true,
@@ -4192,9 +4368,11 @@ function createMobileSession() {
                           </svg>
                           <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
                           <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
+                          <button type="button" class="image2-detail-button" @click="openToolDetail(item, $event)">详情</button>
                         </div>
                         <div class="tool-result-detail-row">
                           <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
+                          <p v-if="item.toolError">{{ item.toolError }}</p>
                           <div v-if="isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-group-shell">
                             <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(item)" @click="toggleAgentTool(item)">
                               <span class="tool-group-label">
@@ -4224,7 +4402,7 @@ function createMobileSession() {
                           <dl v-if="visibleToolFacts(item).length" class="tool-result-facts">
                             <div v-for="fact in visibleToolFacts(item)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
                               <dt>{{ fact.label }}</dt>
-                              <dd :class="{ code: fact.code }">{{ fact.label === '任务状态' ? taskStatusText(fact.value) : fact.value }}</dd>
+                              <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
                             </div>
                           </dl>
                         </div>
@@ -4301,11 +4479,13 @@ function createMobileSession() {
                     </svg>
                     <strong class="tool-result-name">{{ lineTitle(line) }}</strong>
                     <span v-if="toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
+                    <button type="button" class="image2-detail-button" @click="openToolDetail(line, $event)">详情</button>
                   </div>
                   <div class="tool-result-detail-row">
                     <p v-if="line.toolDisplay?.purpose || line.toolDisplay?.subject" class="tool-result-primary">
                       {{ line.toolDisplay?.purpose || line.toolDisplay?.subject }}
                     </p>
+                    <p v-if="line.toolError">{{ line.toolError }}</p>
                     <div v-if="isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-group-shell">
                       <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(line)" @click="toggleAgentTool(line)">
                         <span class="tool-group-label">
@@ -4335,7 +4515,7 @@ function createMobileSession() {
                     <dl v-if="visibleToolFacts(line).length" class="tool-result-facts">
                       <div v-for="fact in visibleToolFacts(line)" :key="`${fact.label}-${fact.value}`" :class="['tool-result-fact', `tone-${fact.tone || 'neutral'}`]">
                         <dt>{{ fact.label }}</dt>
-                        <dd :class="{ code: fact.code }">{{ fact.label === '任务状态' ? taskStatusText(fact.value) : fact.value }}</dd>
+                        <dd :class="{ code: fact.code }">{{ fact.value }}</dd>
                       </div>
                     </dl>
                   </div>
@@ -4519,11 +4699,11 @@ function createMobileSession() {
               <span v-if="backgroundTaskCount > 1" class="background-task-more">+{{ backgroundTaskCount - 1 }}</span>
               <b aria-hidden="true">›</b>
             </button>
-            <details v-if="state.agentTaskHistory.length" class="background-task-history">
-              <summary><span>最近结束</span><strong>{{ state.agentTaskHistory.length }}</strong></summary>
+            <details v-if="backgroundTaskHistory.length" class="background-task-history">
+              <summary><span>最近结束</span><strong>{{ backgroundTaskHistory.length }}</strong></summary>
               <div class="background-task-history-list">
                 <button
-                  v-for="task in state.agentTaskHistory"
+                  v-for="task in backgroundTaskHistory"
                   :key="backgroundTaskKey(task)"
                   type="button"
                   class="background-task-summary background-task-history-item"
@@ -5120,7 +5300,7 @@ function createMobileSession() {
               <span :class="['tool-result-modal-status', `status-${state.backgroundTaskDetail.status}`]">{{ taskStatusText(state.backgroundTaskDetail.status) }}</span>
             </header>
             <dl class="background-task-meta">
-              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>时长</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
+              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>{{ state.backgroundTaskDetail.kind === 'agent' ? '本轮耗时' : '时长' }}</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
               <div><dt>创建</dt><dd>{{ formatSessionTime(state.backgroundTaskDetail.createdAt) }}</dd></div>
               <div v-if="state.backgroundTaskDetail.kind === 'agent'"><dt>轮次</dt><dd>第 {{ state.backgroundTaskDetail.runGeneration || 1 }} 轮</dd></div>
               <div v-if="state.backgroundTaskDetail.processId"><dt>PID</dt><dd>{{ state.backgroundTaskDetail.processId }}</dd></div>
@@ -5137,21 +5317,26 @@ function createMobileSession() {
                 <header>命令</header>
                 <pre class="background-task-command">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
               </section>
-              <section v-if="state.backgroundTaskDetail.kind === 'terminal'" class="background-task-output-section">
-                <div class="background-task-output-head">
-                  <strong>输出</strong>
-                  <i v-if="state.backgroundTaskDetail.status === 'running'" aria-label="实时更新"></i>
-                </div>
-                <pre ref="backgroundTaskOutput" class="background-task-live-output">{{ backgroundTaskLiveOutput(state.backgroundTaskDetail) || '等待输出…' }}</pre>
-              </section>
-              <section v-else-if="backgroundTaskActivity(state.backgroundTaskDetail) || backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-output-section background-task-progress-section">
+              <TerminalOutputReader v-if="state.backgroundTaskDetail.kind === 'terminal'" :owner-session-id="state.backgroundTaskDetail.ownerSessionId || state.session?.sessionId" :run-id="state.backgroundTaskDetail.sessionId" />
+
+              <div v-if="state.backgroundTaskDetail.kind === 'agent'" style="min-width: 0; width: 100%">
+                <nav aria-label="代理轮次选择" class="tool-call-detail-actions">
+                  <button type="button" :aria-pressed="state.agentReaderRun === null" @click="state.agentReaderRun = null">当前第 {{ state.backgroundTaskDetail.runGeneration }} 轮</button>
+                  <button v-for="run in agentTaskArchives(state.backgroundTaskDetail)" :key="run.runGeneration" type="button" :aria-pressed="state.agentReaderRun === run.runGeneration" @click="state.agentReaderRun = run.runGeneration">第 {{ run.runGeneration }} 轮 · {{ taskStatusText(run.status) }} · 本轮耗时 {{ backgroundTaskElapsed({ ...run, kind: 'agent' }) }}</button>
+                </nav>
+                <AgentContentReader v-if="selectedAgentRun()" :owner-session-id="state.session?.sessionId" :task-id="state.backgroundTaskDetail.taskId" :run-generation="selectedAgentRun().runGeneration" :status="selectedAgentRun().status" :visible-preview="selectedAgentRun().runGeneration === state.backgroundTaskDetail.runGeneration ? state.backgroundTaskDetail.progress?.visibleText : undefined" :render-markdown="renderAgentMarkdown" />
+                <p v-else>该轮次记录已清理，不可获取；不会回退到当前轮次。</p>
+                <details class="background-task-progress-section"><summary>辅助技术日志与最近步骤</summary>
+              <section v-if="backgroundTaskActivity(state.backgroundTaskDetail) || backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-output-section background-task-progress-section">
                 <div class="background-task-output-head"><strong>进度日志</strong><i v-if="state.backgroundTaskDetail.status === 'running'" aria-label="实时更新"></i></div>
                 <div class="background-task-log-stack">
                   <pre v-if="backgroundTaskActivity(state.backgroundTaskDetail)" class="background-task-activity">{{ backgroundTaskActivity(state.backgroundTaskDetail) }}</pre>
                   <pre v-if="backgroundTaskSteps(state.backgroundTaskDetail).length" class="background-task-activity background-task-step-list">{{ backgroundTaskSteps(state.backgroundTaskDetail).map((step) => `${step.status === 'completed' ? '✓' : step.status === 'failed' ? '×' : '•'} ${step.title}`).join('\n') }}</pre>
                 </div>
               </section>
-              <div v-if="state.backgroundTaskDetail.kind === 'agent'" class="background-task-agent-grid">
+                  <p v-if="!backgroundTaskActivity(state.backgroundTaskDetail) && !backgroundTaskSteps(state.backgroundTaskDetail).length">未提供辅助日志；可展示正文和完整过程见上方阅读区。</p>
+                </details>
+                <details class="background-task-delivery-section"><summary>消息交付与辅助信息</summary>
                 <section class="background-task-delivery-section">
                   <div class="background-task-output-head"><strong>消息交付</strong></div>
                   <div class="background-task-delivery-stats">
@@ -5162,17 +5347,7 @@ function createMobileSession() {
                   <p class="background-task-last-activity">最后活动：{{ state.backgroundTaskDetail.progress?.lastActivity ? formatSessionTime(state.backgroundTaskDetail.progress.lastActivity) : '未提供' }}</p>
                   <p class="background-task-help">交付仅表示进入模型上下文，不代表采纳或完成；结束后仍有待交付消息时，需要显式续跑。</p>
                 </section>
-                <section class="background-task-result-section">
-                  <div class="background-task-output-head"><strong>本轮结果{{ state.backgroundTaskDetail.result?.status === 'incomplete' ? ' · 未完成' : '' }}</strong></div>
-                  <pre class="background-task-activity background-task-result">{{ agentTaskResult(state.backgroundTaskDetail) || '本轮尚无最终结果' }}</pre>
-                  <details v-if="agentTaskArchives(state.backgroundTaskDetail).length" class="background-task-archives">
-                    <summary>历史轮次（最近 3 轮）</summary>
-                    <section v-for="run in agentTaskArchives(state.backgroundTaskDetail)" :key="run.runGeneration">
-                      <header>第 {{ run.runGeneration }} 轮 · {{ taskStatusText(run.result?.status === 'incomplete' ? 'incomplete' : run.status) }}</header>
-                      <pre class="background-task-activity">{{ agentTaskResult(run) || '无结果' }}</pre>
-                    </section>
-                  </details>
-                </section>
+                </details>
               </div>
             </div>
           </article>
@@ -5181,7 +5356,7 @@ function createMobileSession() {
     </div>
 
     <div v-if="toolDetailLine" class="tool-result-modal-backdrop" @click.self="closeToolDetail">
-      <section class="tool-result-modal" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)}详情`">
+      <section class="tool-result-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" :aria-label="`${lineTitle(toolDetailLine)}详情`">
         <header class="tool-result-modal-head">
           <div>
             <div class="tool-result-modal-title">
@@ -5193,7 +5368,35 @@ function createMobileSession() {
           <button type="button" class="tool-result-modal-close" aria-label="关闭工具结果" @click="closeToolDetail">×</button>
         </header>
         <div class="tool-result-modal-content">
-          <div class="message-text markdown tool-detail-markdown" v-html="renderToolDetail(toolDetailLine)"></div>
+          <div v-if="isImageCreateResultLine(toolDetailLine)" class="message-text markdown tool-detail-markdown" v-html="renderToolDetail(toolDetailLine)"></div>
+          <template v-else>
+            <p v-if="state.toolDetailLoading" role="status">详情加载中…（只读，不会重新执行工具）</p>
+            <p v-if="state.toolDetailError" role="alert">{{ state.toolDetailError }} <button type="button" @click="loadToolDetail">重试加载详情</button></p>
+            <template v-if="state.toolDetailData">
+              <p>会话 {{ state.toolDetailData.sessionId }} · 调用 {{ state.toolDetailData.toolUseId }}</p>
+              <TerminalOutputReader v-if="terminalDetailRunId()" :owner-session-id="state.toolDetailData.sessionId" :run-id="terminalDetailRunId()" />
+              <AgentContentReader v-if="agentDetailTarget()" :owner-session-id="state.toolDetailData.sessionId" :task-id="agentDetailTarget().taskId" :run-generation="agentDetailTarget().runGeneration" :status="agentDetailTarget().status" :visible-preview="agentDetailTarget().visiblePreview" :render-markdown="renderAgentMarkdown" />
+              <template v-if="state.toolDetailData.fields">
+                <h3>对象与关键参数</h3>
+                <p v-if="state.toolDetailData.fields.result.empty">空结果（有效空内容，不代表数据缺失）</p>
+                <section v-for="(field, index) in toolDetailFieldRows" :key="`${field.source}:${field.key}:${index}`" class="tool-result-preview kind-code" :data-detail-field="field.key">
+                  <h3>{{ toolDetailFieldLabel(field.key) }}</h3>
+                  <p>{{ toolDetailFieldSource(field) }}</p>
+                  <pre tabindex="0" style="white-space: pre-wrap; overflow-wrap: anywhere">{{ toolDetailFieldText(field) }}</pre>
+                  <button v-if="field.key === 'actualPath' && field.copyValue !== undefined" type="button" @click="copyToolDetailPart({ text: field.copyValue })">复制完整路径</button>
+                </section>
+              </template>
+              <section v-for="key in ['input', 'result', 'error']" :key="key" class="tool-result-preview kind-code">
+                <h3>{{ { input: '脱敏输入', result: '脱敏结果', error: '错误原因' }[key] }}</h3>
+                <p>{{ state.toolDetailData[key].reason }}</p>
+                <pre tabindex="0" style="white-space: pre-wrap; overflow-wrap: anywhere">{{ state.toolDetailData[key].text || (state.toolDetailData[key].state === 'complete' ? '（空内容）' : '') }}</pre>
+                <template v-if="state.toolDetailData[key].state !== 'missing'">
+                  <button type="button" @click="copyToolDetailPart(state.toolDetailData[key])">复制{{ state.toolDetailData[key].state === 'complete' ? '脱敏全文' : '当前预览' }}</button>
+                  <button type="button" @click="downloadToolDetailPart(state.toolDetailData[key], key)">下载{{ state.toolDetailData[key].state === 'complete' ? '脱敏全文' : '当前预览' }}</button>
+                </template>
+              </section>
+            </template>
+          </template>
         </div>
         <footer class="tool-result-modal-footer">
           <button type="button" class="primary" @click="closeToolDetail">关闭</button>

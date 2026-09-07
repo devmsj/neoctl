@@ -1,4 +1,4 @@
-import { createTextMessage, createThinkingMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
@@ -10,7 +10,6 @@ import {
   buildResponsesTools,
   dropUndefined,
   ensureToolBuffer,
-  extractResponsesMessageText,
   normalizeOpenAIStreamError,
   normalizeUsage,
   toToolUse,
@@ -82,11 +81,13 @@ export async function* normalizeResponsesStream(
   stream: ReadableStream<Uint8Array>,
   options: OpenAIResponsesMapperOptions,
 ): AsyncGenerator<ModelStreamEvent> {
-  const textParts: string[] = [];
+  const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   let responseId: string | undefined;
   let reasoningPartKey: string | undefined;
+  const outputItems = new Map<string | number, Record<string, unknown>>();
+  const contentParts = new Map<string, Record<string, unknown>>();
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
@@ -99,11 +100,27 @@ export async function* normalizeResponsesStream(
       if (responseId) yield { type: "response_started", responseId };
     }
 
+    const itemKey = asString(event.item_id) ?? asNumber(event.output_index) ?? 0;
+    if (type === "response.output_item.added") {
+      const item = event.item as Record<string, unknown> | undefined;
+      if (item) {
+        outputItems.set(asNumber(event.output_index) ?? 0, item);
+        if (typeof item.id === "string") outputItems.set(item.id, item);
+      }
+    }
+    if (type === "response.content_part.added" && event.part && typeof event.part === "object") {
+      contentParts.set(`${itemKey}:${asNumber(event.content_index) ?? 0}`, event.part as Record<string, unknown>);
+    }
+
     if (type === "response.output_text.delta") {
       const delta = asString(event.delta) ?? "";
       if (delta) {
-        textParts.push(delta);
-        yield { type: "assistant_delta", text: delta };
+        const item = outputItems.get(itemKey) ?? outputItems.get(asNumber(event.output_index) ?? 0);
+        const part = contentParts.get(`${itemKey}:${asNumber(event.content_index) ?? 0}`);
+        const visible = allowsVisibleOutput(event, item, part) && (!item || item.type === "message") && (!part || part.type === "output_text");
+        const display = visible ? { displayChannel: "visible" as const } : {};
+        appendTextBlock(textBlocks, delta, visible);
+        yield { type: "assistant_delta", text: delta, ...display };
       }
     }
 
@@ -164,8 +181,7 @@ export async function* normalizeResponsesStream(
       responseId = asString(response?.id) ?? responseId;
       const thinking = collectThinkingFromResponse(response, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-      const text = textParts.join("");
-      if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+      if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
       const usage = normalizeUsage(response?.usage);
       if (usage) yield { type: "usage", usage };
       yield { type: "response_completed", responseId, stopReason: asString(response?.status) ?? "completed", usage };
@@ -195,11 +211,17 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
   const responseId = asString(body.id);
   if (responseId) yield { type: "response_started", responseId };
   const output = Array.isArray(body.output) ? body.output : [];
-  const textParts: string[] = [];
+  const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
   const thinkingParts: string[] = [];
 
   for (const item of output as Record<string, unknown>[]) {
-    if (item.type === "message") textParts.push(extractResponsesMessageText(item));
+    if (item.type === "message") {
+      const content = Array.isArray(item.content) ? item.content : [];
+      for (const part of content as Record<string, unknown>[]) {
+        const text = asString(part.text) ?? asString(part.output_text) ?? "";
+        appendTextBlock(textBlocks, text, part.type === "output_text" && allowsVisibleOutput(body, item, part));
+      }
+    }
     if (item.type === "reasoning") thinkingParts.push(extractReasoningText(item));
     if (item.type === "function_call") {
       yield {
@@ -215,8 +237,7 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
 
   const thinking = collectThinkingFromResponse(body, thinkingParts);
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-  const text = textParts.join("");
-  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+  if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
   if (body.status === "incomplete") {
@@ -289,4 +310,22 @@ function extractReasoningText(item: Record<string, unknown>): string {
   }).filter(Boolean));
 
   return structuredParts.length > 0 ? structuredParts.join("\n\n") : (direct ?? "");
+}
+
+// Only the Responses output_text contract supplies visibility. Explicit non-user
+// channels/roles always win; missing markers on other providers remain private.
+function allowsVisibleOutput(...scopes: (Record<string, unknown> | undefined)[]): boolean {
+  return scopes.every((scope) => !scope || (
+    (scope.role === undefined || scope.role === "assistant") &&
+    (scope.channel === undefined || ["commentary", "answer", "final"].includes(String(scope.channel))) &&
+    (scope.phase === undefined || ["commentary", "answer", "final", "final_answer"].includes(String(scope.phase)))
+  ));
+}
+
+function appendTextBlock(blocks: Extract<MessageBlock, { type: "text" }>[], text: string, visible: boolean): void {
+  if (!text) return;
+  const displayChannel = visible ? "visible" : undefined;
+  const last = blocks.at(-1);
+  if (last && last.displayChannel === displayChannel) last.text += text;
+  else blocks.push({ type: "text", text, ...(visible ? { displayChannel: "visible" as const } : {}) });
 }

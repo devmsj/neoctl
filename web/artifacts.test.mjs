@@ -29,6 +29,7 @@ test('tool schema and validation enforce exact editor fields', () => {
 
   assert.deepEqual(tool.inputSchema.required, ['payload']);
   assert.equal(tool.inputSchema, XHS_ARTIFACT_INPUT_SCHEMA);
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['artifact_id', 'payload']);
   assert.equal(tool.description, XHS_ARTIFACT_EDITOR_HINT);
   assert.equal(tool.inputSchema.properties.payload.additionalProperties, false);
   assert.deepEqual(tool.inputSchema.properties.payload.required, ['title', 'body', 'interaction', 'hashtags', 'images', 'review']);
@@ -90,8 +91,8 @@ test('editor keeps正文, image path, overlay and review in separate fields', as
   assert.equal(artifact.payload.review, '避免绝对化措辞。');
   assert.match(artifact.payload.images[0].url, /^\/api\/local-images\//);
 
-  registry.update(artifact.id, { payload: { ...artifact.payload, body: '用户亲自修改后的正文', images: artifact.payload.images } });
-  const latest = await readTool.execute(readTool.validate({ id: artifact.id }));
+  registry.update(artifact.id, { payload: { ...artifact.payload, body: '用户亲自修改后的正文', images: artifact.payload.images } }, 'session-1', artifact.version);
+  const latest = await readTool.execute(readTool.validate({ id: artifact.id }), { session: { sessionId: 'session-1' } });
   assert.equal(latest.output.artifact.payload.body, '用户亲自修改后的正文');
 
   const revised = openTool.validate({

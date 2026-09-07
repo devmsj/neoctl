@@ -28,6 +28,8 @@ export interface RunAgentDependencies {
 
 export interface RunAgentOptions {
   agentId: string;
+  /** Actual task-store generation captured by the caller; never inferred on restore. */
+  runGeneration?: number;
   agent: AgentDefinition;
   prompt: string;
   parentContext?: ToolUseContext;
@@ -79,9 +81,9 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   const initialMessages = [...repaired, ...additions];
   let contextMessages = initialMessages.map(cloneMessage);
   const notifyContext = () => options.onContextMessagesChanged?.(contextMessages.map(cloneMessage));
-  const appendContext = (messages: Message[]) => {
+  const appendContext = (messages: Message[], runGeneration?: number) => {
     contextMessages.push(...messages.map(cloneMessage));
-    for (const message of messages) childSession?.recordMessage(message);
+    for (const message of messages) childSession?.recordMessage(message, { runGeneration });
     notifyContext();
   };
   options.onInitialMessages?.(initialMessages.map(cloneMessage));
@@ -142,7 +144,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     })) {
       if (event.type === "message") {
         agentMessages.push(event.message);
-        appendContext([event.message]);
+        appendContext([event.message], options.runGeneration);
       }
       if (event.type === "tool.started") totalToolUseCount += 1;
       if (event.type === "usage") lastUsage = event.usage;
@@ -155,7 +157,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
 
   if (options.agent.requiresReport === true && !extractFinalAgentReport(agentMessages, options.agent.reportToolName)) {
     const retryTurns = options.agent.reportRetryTurns ?? 1;
-    if (retryTurns > 0 && !options.abortSignal?.aborted) {
+    if (retryTurns > 0 && !options.abortSignal?.aborted && !isFailedAgentTerminal(terminalReason)) {
       const reminder = createTextMessage("user", buildReportRequiredReminder());
       appendContext([reminder]);
       const recoveryMessages = contextMessages.map(cloneMessage);
@@ -175,10 +177,14 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   if (terminalReason === "aborted_streaming" || terminalReason === "aborted_tools" || options.abortSignal?.aborted) {
     return { status: "aborted", result, messages: agentMessages, terminalReason: terminalReason ?? "aborted" };
   }
-  if (terminalReason === "model_error" || terminalReason === "image_error" || terminalReason === "prompt_too_long") {
-    return { status: "failed", result, messages: agentMessages, terminalReason };
+  if (isFailedAgentTerminal(terminalReason)) {
+    return { status: "failed", result, messages: agentMessages, terminalReason: terminalReason! };
   }
   return { status: "completed", result, messages: agentMessages, terminalReason };
+}
+
+function isFailedAgentTerminal(reason?: string): boolean {
+  return reason === "model_error" || reason === "image_error" || reason === "prompt_too_long";
 }
 
 export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition): ToolRegistry {
@@ -222,12 +228,13 @@ export function finalizeAgentTool(input: {
   return {
     agent_id: input.agentId,
     agent_type: input.agentType,
+    displaySource: report || latestDraft ? "agent_report" : content ? "visible_text" : undefined,
     content: missingRequiredReport
       ? formatMissingRequiredReportResult(content)
       : validationError
         ? formatIncompleteExploreResult(validationError, content)
         : content,
-    status: missingRequiredReport ? "incomplete" : report?.status === "completed" || report?.status === "incomplete" ? report.status : undefined,
+    status: missingRequiredReport || (!report && input.messages.some(message => message.metadata?.streamedPartial === true)) ? "incomplete" : report?.status === "completed" || report?.status === "incomplete" ? report.status : undefined,
     total_duration_ms: input.durationMs,
     total_tokens: input.usage?.totalTokens,
     total_tool_use_count: totalToolUseCount,
@@ -312,9 +319,9 @@ function buildReportRequiredReminder(): string {
 
 function extractFinalText(messages: readonly Message[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role !== "assistant") continue;
+    if (messages[index].role !== "assistant" || messages[index].isMeta === true) continue;
     const text = messages[index].blocks
-      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .filter((block): block is { type: "text"; text: string } => block.type === "text" && block.displayChannel === "visible")
       .map((block) => block.text)
       .join("\n")
       .trim();
@@ -335,6 +342,7 @@ function extractLatestAgentReport(
 ): AgentReportOutput | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
+    if (message.role !== "tool_result" || message.isMeta === true) continue;
     for (const block of message.blocks) {
       if (block.type !== "tool_result" || block.name !== reportToolName || !block.ok) continue;
       const output = block.output;

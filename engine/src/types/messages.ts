@@ -23,7 +23,7 @@ export interface ImageMessageBlock {
 }
 
 export type MessageBlock =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; displayChannel?: "visible" }
   | ImageMessageBlock
   | { type: "thinking"; text: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }

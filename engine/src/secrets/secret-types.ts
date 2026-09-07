@@ -20,7 +20,8 @@ export interface SecretResolver {
 export interface SecretRedactionRegistry {
   record(key: string, value: string): void;
   redact<T>(value: T): T;
-  createStreamingRedactor?(): { push(chunk: string): string; flush(): string };
+  /** Default preserves terminal tails; previews may redact incomplete secrets at flush. */
+  createStreamingRedactor?(options?: { incompleteSecret?: "preserve" | "redact" }): { push(chunk: string): string; flush(): string };
 }
 
 export class SecretNotFoundError extends Error {

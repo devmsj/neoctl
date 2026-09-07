@@ -34,44 +34,52 @@ export class InMemorySecretRedactionRegistry implements SecretRedactionRegistry 
     return output;
   }
 
-  private secretAt(input: string, offset: number): { key: string; secret: string } | undefined {
-    let best: { key: string; secret: string } | undefined;
-    for (const [key, values] of this.values.entries()) {
-      for (const secret of values) {
-        if (secret && input.startsWith(secret, offset) && (!best || secret.length > best.secret.length)) best = { key, secret };
-      }
-    }
-    return best;
-  }
-
-  createStreamingRedactor(): { push(chunk: string): string; flush(): string } {
-    const secrets = [...this.values.values()].flatMap((values) => [...values]).filter(Boolean);
-    const carryLength = Math.max(0, ...secrets.map((secret) => secret.length - 1));
+  createStreamingRedactor(options?: { incompleteSecret?: "preserve" | "redact" }): { push(chunk: string): string; flush(): string } {
+    // Only an ambiguous suffix stays private. Never attach this carry to a task/DTO.
     let carry = "";
-    return {
-      push: (chunk) => {
-        const combined = carry + chunk;
-        if (carryLength === 0) return this.redactString(combined);
-        const safeLength = Math.max(0, combined.length - carryLength);
-        let cursor = 0;
-        let output = "";
-        while (cursor < safeLength) {
-          const match = this.secretAt(combined, cursor);
-          if (match) {
-            output += `[secret:${match.key}]`;
-            cursor += match.secret.length;
-          } else {
-            output += combined[cursor];
-            cursor += 1;
+    const push = (chunk: string): string => {
+      const combined = carry + chunk;
+      // Registration is live: a stream may predate a tool resolving a new secret.
+      // Values must be registered BEFORE their first byte is emitted; already
+      // published text cannot be recalled by any streaming redactor.
+      const secrets = [...this.values.entries()].flatMap(([key, values]) =>
+        [...values].filter(Boolean).map((secret) => ({ key, secret })));
+      let cursor = 0;
+      let output = "";
+      while (cursor < combined.length) {
+        let match: { key: string; secret: string } | undefined;
+        let ambiguous = false;
+        for (const entry of secrets) {
+          if (entry.secret.length > combined.length - cursor) {
+            if (entry.secret.startsWith(combined.slice(cursor))) ambiguous = true;
+          } else if (combined.startsWith(entry.secret, cursor)
+              && (!match || entry.secret.length > match.secret.length)) {
+            match = entry;
           }
         }
-        carry = combined.slice(cursor);
-        return output;
-      },
+        // A complete shorter secret may also prefix a longer one. Hold it until
+        // disambiguated, rather than expose the longer secret's remaining bytes.
+        if (ambiguous) break;
+        if (match) {
+          output += `[secret:${match.key}]`;
+          cursor += match.secret.length;
+        } else {
+          output += combined[cursor++];
+        }
+      }
+      carry = combined.slice(cursor);
+      return output;
+    };
+    return {
+      push,
       flush: () => {
-        const output = this.redactString(carry);
+        const output = push("");
+        // Preserve the existing terminal/full-text contract by default. A preview
+        // may opt in to an explicit marker rather than publish an ambiguous tail.
+        const tail = options?.incompleteSecret === "redact" && carry
+          ? "[secret:incomplete]" : this.redactString(carry);
         carry = "";
-        return output;
+        return output + tail;
       },
     };
   }

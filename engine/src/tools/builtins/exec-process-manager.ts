@@ -2,6 +2,33 @@ import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from "node:c
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import path from "node:path";
+import {
+  TerminalOutputStore, redactedTerminalChunk, TERMINAL_OUTPUT_RETENTION_MS,
+  type StoreResult, type RunView, type OutputPage, type TerminalRunMetadata,
+} from "../terminal-output-store.js";
+
+export type { StoreResult, RunView, OutputPage } from "../terminal-output-store.js";
+
+/** UTF-8 byte offsets in ONE redacted stream; marker text is not part of these ranges. */
+export interface ExecOutputRange {
+  start: number;
+  end: number;
+  retained: Array<{ start: number; end: number }>;
+  gaps: Array<{ start: number; end: number }>;
+  truncated: boolean;
+}
+export interface ExecOutputReference {
+  owner_session_id: string | null;
+  run_id: string;
+  availability: RunView["record"]["availability"] | "unavailable";
+  reason?: string;
+  persistence?: RunView["persistence"];
+  truncated?: boolean;
+  byte_limit?: number;
+  expires_at?: number | null;
+  streams?: RunView["record"]["streams"];
+}
 
 const LIVE_OUTPUT_MAX_CHARS = 40_000;
 
@@ -19,6 +46,8 @@ export type ExecTerminationReason =
 
 export interface ExecProcessStartOptions {
   ownerId?: string;
+  /** Trusted runtime session directory, never a tool argument. */
+  sessionDir?: string;
   command: string;
   description?: string;
   cwd: string;
@@ -40,6 +69,15 @@ export interface ExecProcessOutputDelta {
   sessionId: string;
   stream: ExecOutputStream;
   text: string;
+  ownerSessionId?: string;
+  outputKind?: "incremental";
+  /** Authoritative stream text; legacy background text may include a display prefix. */
+  streamText?: string;
+  streamStart?: number;
+  streamEnd?: number;
+  cursorUnit?: "utf8_bytes";
+  streamMode?: "separate" | "tty_merged";
+  /** Legacy mixed-display UTF-16 offsets, NOT output-store cursors. */
   outputStart?: number;
   outputEnd?: number;
 }
@@ -62,6 +100,14 @@ export interface ExecProcessResult {
   stderr: string;
   output_chars: { stdout: number; stderr: number };
   omitted_chars: { stdout: number; stderr: number };
+  owner_session_id?: string;
+  started_at: number;
+  finished_at: number | null;
+  output_kind: "incremental";
+  output_cursor_unit: "utf8_bytes";
+  stream_mode: "separate" | "tty_merged";
+  output_ranges: Record<ExecOutputStream, ExecOutputRange>;
+  output_ref: ExecOutputReference;
 }
 
 export interface ExecProcessInteraction {
@@ -102,6 +148,9 @@ interface ProcessSession {
   timeout?: NodeJS.Timeout;
   escalation?: NodeJS.Timeout;
   cleanup?: NodeJS.Timeout;
+  outputRecord?: RunView;
+  outputFailure?: string;
+  outputStore?: TerminalOutputStore;
 }
 
 export class ExecProcessManager {
@@ -109,13 +158,87 @@ export class ExecProcessManager {
   private readonly subscribers = new Set<() => void>();
   private readonly outputSubscribers = new Set<(delta: ExecProcessOutputDelta) => void>();
   private nextId = 1;
+  private readonly ownerBindings = new Map<string, { dir: string; store: TerminalOutputStore }>();
+  private readonly stores = new Map<string, TerminalOutputStore>();
 
   constructor(
     private readonly options: {
       maxProcesses?: number;
       completedRetentionMs?: number;
+      /** Trusted global root, optional for legacy runtimes. */
+      sessionsRoot?: string;
+      /** Injectable independent store for tests/hosts already owning a single store. */
+      outputStore?: TerminalOutputStore;
     } = {},
   ) {}
+
+  /** Bind only an authorized runtime session's actual directory. Never accept an HTTP path. */
+  registerOwnerSession(ownerSessionId: string, sessionDir: string): StoreResult<{ records: RunView[]; rejected: number }> {
+    return this.storeGuard(() => {
+      if (!ownerSessionId || !path.isAbsolute(sessionDir)) return { ok: false, reason: "invalid-input" };
+      const dir = path.resolve(sessionDir);
+      const existing = this.ownerBindings.get(ownerSessionId);
+      const equal = (a: string, b: string) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+      if (existing && !equal(existing.dir, dir)) return { ok: false, reason: "conflict" };
+      for (const [id, binding] of this.ownerBindings) {
+        if (id !== ownerSessionId && equal(binding.dir, dir)) return { ok: false, reason: "conflict" };
+      }
+      const root = path.resolve(this.options.sessionsRoot ?? path.dirname(dir));
+      const key = process.platform === "win32" ? root.toLowerCase() : root;
+      let store = existing?.store ?? this.options.outputStore ?? this.stores.get(key);
+      if (!store) {
+        store = new TerminalOutputStore({ sessionsRoot: root,
+          resolveOwnerSessionDir: (id) => this.ownerBindings.get(id)?.dir });
+        this.stores.set(key, store);
+      }
+      this.ownerBindings.set(ownerSessionId, { dir, store });
+      const restored = store.restoreSession(ownerSessionId, dir);
+      if (!restored.ok && !existing) this.ownerBindings.delete(ownerSessionId);
+      return restored;
+    });
+  }
+
+  listHistory(ownerSessionId: string, pagination: { offset?: number; limit?: number } = {}): StoreResult<{ records: RunView[]; nextOffset: number | null }> {
+    return this.storeGuard(() => this.ownerBindings.get(ownerSessionId)?.store.listHistory(ownerSessionId, pagination)
+      ?? { ok: false, reason: "not-found" });
+  }
+
+  readOutput(ownerSessionId: string, runId: string, page: { stream: ExecOutputStream; offset?: number; limitBytes?: number }): StoreResult<OutputPage> {
+    const result = this.storeGuard(() => this.ownerBindings.get(ownerSessionId)?.store.read(ownerSessionId, runId, page)
+      ?? { ok: false, reason: "not-found" });
+    const session = this.sessions.get(runId);
+    if (session?.options.ownerId === ownerSessionId && result.ok) {
+      // Keep availability/facts in live projections aligned after a read discovers expiry or I/O loss.
+      session.outputRecord = { record: structuredClone(result.value.record), persistence: result.value.persistence };
+    }
+    return result;
+  }
+
+  /** Cleanup is independent of process execution and never turns a successful exit into a tool error. */
+  sweepOutput(): void {
+    for (const store of new Set([...this.ownerBindings.values()].map((binding) => binding.store))) {
+      this.storeGuard(() => store.sweep());
+    }
+  }
+
+  private storeGuard<T>(action: () => StoreResult<T>): StoreResult<T> {
+    try { return action(); } catch { return { ok: false, reason: "io-error" }; }
+  }
+
+  private recordOutputResult(session: ProcessSession, result: StoreResult<RunView>): void {
+    if (result.ok) session.outputRecord = result.value;
+    else session.outputFailure = result.reason;
+  }
+
+  private outputReference(session: ProcessSession): ExecOutputReference {
+    const view = session.outputRecord;
+    const expired = view?.record.expiresAt != null && Date.now() >= view.record.expiresAt;
+    return { owner_session_id: session.options.ownerId ?? null, run_id: session.id,
+      availability: session.outputFailure ? "unavailable" : expired && view?.record.availability === "available" ? "expired" : view?.record.availability ?? "unavailable",
+      reason: session.outputFailure ?? (!view ? "owner-session-unavailable" : undefined),
+      persistence: view?.persistence, truncated: view?.record.truncated, byte_limit: view?.record.byteLimit,
+      expires_at: view?.record.expiresAt, streams: view?.record.streams };
+  }
 
   start(options: ExecProcessStartOptions): string {
     this.prune();
@@ -186,22 +309,35 @@ export class ExecProcessManager {
     return result;
   }
 
-  list(): Array<Pick<ExecProcessResult, "session_id" | "process_id" | "status" | "command" | "description" | "cwd" | "shell" | "duration_ms" | "tty" | "termination_reason"> & { backgrounded: boolean; output: string; outputEnd: number }> {
-    return [...this.sessions.values()].map((session) => ({
-      session_id: session.id,
-      process_id: session.backend.pid,
-      status: session.status,
-      command: session.options.command,
-      description: session.options.description,
-      cwd: session.options.cwd,
-      shell: session.options.shell.requested,
-      duration_ms: (session.finishedAt ?? Date.now()) - session.startedAt,
-      tty: session.options.tty,
-      termination_reason: session.terminationReason,
-      backgrounded: session.backgrounded,
-      output: session.liveOutput.snapshot().text,
-      outputEnd: session.liveOutput.observedChars(),
-    }));
+  /** No owner argument preserves the trusted internal legacy view. Web MUST supply an owner. */
+  list(ownerSessionId?: string) {
+    return [...this.sessions.values()]
+      .filter((session) => ownerSessionId === undefined || session.options.ownerId === ownerSessionId)
+      .map((session) => ({
+        session_id: session.id,
+        owner_session_id: session.options.ownerId,
+        process_id: session.backend.pid,
+        status: session.status,
+        command: session.options.command,
+        description: session.options.description,
+        cwd: session.options.cwd,
+        shell: session.options.shell.requested,
+        started_at: session.startedAt,
+        finished_at: session.finishedAt ?? null,
+        duration_ms: (session.finishedAt ?? Date.now()) - session.startedAt,
+        tty: session.options.tty,
+        exit_code: session.exitCode,
+        signal: session.signal,
+        termination_reason: session.terminationReason,
+        backgrounded: session.backgrounded,
+        output: session.liveOutput.snapshot().text,
+        outputEnd: session.liveOutput.observedChars(),
+        output_kind: "snapshot" as const,
+        output_cursor_unit: "utf16_code_units" as const,
+        output_truncated: session.liveOutput.snapshot().omitted > 0,
+        stream_mode: session.options.tty ? "tty_merged" as const : "separate" as const,
+        output_ref: this.outputReference(session),
+      }));
   }
 
   activeCount(): number {
@@ -235,34 +371,59 @@ export class ExecProcessManager {
   private createSession(id: string, options: ExecProcessStartOptions): ProcessSession {
     let session!: ProcessSession;
     let redactOutput = options.redactOutput;
-    const streamingRedactor = options.createStreamingRedactor?.();
+    const redactors = {
+      stdout: options.createStreamingRedactor?.(),
+      stderr: options.createStreamingRedactor?.(),
+    };
+    // Some redactors operate on UTF-16 code units. Hold a high surrogate until its pair arrives.
+    const unicodeCarry = { stdout: "", stderr: "" };
+    const byteOffsets = { stdout: 0, stderr: 0 };
+    const normalizers = { stdout: createOutputNormalizer(), stderr: createOutputNormalizer() };
     let liveOutputOffset = 0;
-    let lastStream: ExecOutputStream = "stdout";
     const publishSafeOutput = (stream: ExecOutputStream, safeOutput: string) => {
+      safeOutput = unicodeCarry[stream] + safeOutput;
+      unicodeCarry[stream] = "";
+      if (/[\uD800-\uDBFF]$/.test(safeOutput)) {
+        unicodeCarry[stream] = safeOutput.slice(-1);
+        safeOutput = safeOutput.slice(0, -1);
+      }
       if (!safeOutput) return;
+      const streamStart = byteOffsets[stream];
+      byteOffsets[stream] += Buffer.byteLength(safeOutput, "utf8");
+      // The ONLY full-output writer. Never append drain results or live snapshots.
+      if (session.outputStore && options.ownerId) {
+        this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.append(
+          options.ownerId!, id, redactedTerminalChunk(stream, streamStart, safeOutput))));
+      }
+      session[stream].push(safeOutput);
       const liveText = stream === "stderr" ? `[stderr] ${safeOutput}` : safeOutput;
       session.liveOutput.push(liveText);
-      const delta = { sessionId: id, stream, text: safeOutput };
+      const delta: ExecProcessOutputDelta = { sessionId: id, ownerSessionId: options.ownerId,
+        stream, text: safeOutput, streamText: safeOutput, outputKind: "incremental",
+        streamStart, streamEnd: byteOffsets[stream], cursorUnit: "utf8_bytes",
+        streamMode: options.tty ? "tty_merged" : "separate" };
       for (const subscriber of session.subscribers) subscriber(delta);
       const outputStart = liveOutputOffset;
       liveOutputOffset += liveText.length;
       if (session.backgrounded) {
-        const publicDelta = { sessionId: id, stream, text: liveText, outputStart, outputEnd: liveOutputOffset };
+        const publicDelta = { ...delta, text: liveText, outputStart, outputEnd: liveOutputOffset };
         for (const subscriber of this.outputSubscribers) subscriber(publicDelta);
       }
     };
     const onOutput = (stream: ExecOutputStream, text: string) => {
-      const normalized = normalizeOutput(text);
+      const normalized = normalizers[stream].push(text);
       if (!normalized) return;
-      session[stream].push(normalized);
-      lastStream = stream;
-      const safeOutput = streamingRedactor?.push(normalized) ?? redactOutput?.(normalized) ?? normalized;
+      const safeOutput = redactors[stream]?.push(normalized) ?? redactOutput?.(normalized) ?? normalized;
       publishSafeOutput(stream, safeOutput);
     };
     const onExit = (exitCode: number | null, signal: string | number | null, error?: Error) => {
       if (session.finishedAt !== undefined) return;
       if (error) onOutput("stderr", `${error.message}\n`);
-      publishSafeOutput(lastStream, streamingRedactor?.flush() ?? "");
+      for (const stream of ["stdout", "stderr"] as const) {
+        publishSafeOutput(stream, redactors[stream]?.flush() ?? "");
+        // Invalid dangling surrogate is explicitly decoded like Node's UTF-8 output, never persisted malformed.
+        if (unicodeCarry[stream]) { unicodeCarry[stream] = ""; publishSafeOutput(stream, "\ufffd"); }
+      }
       redactOutput = undefined;
       session.options.redactOutput = undefined;
       this.finalizeSession(session, exitCode, signal, error);
@@ -273,7 +434,12 @@ export class ExecProcessManager {
       : createPipeBackend(options, onOutput, onExit);
     session = {
       id,
-      options,
+      options: { ...options, env: {},
+        command: redactOutput?.(options.command) ?? options.command,
+        description: options.description === undefined ? undefined : redactOutput?.(options.description) ?? options.description,
+        cwd: redactOutput?.(options.cwd) ?? options.cwd,
+        shell: { ...options.shell, requested: redactOutput?.(options.shell.requested) ?? options.shell.requested },
+        createStreamingRedactor: undefined },
       backend,
       startedAt: Date.now(),
       backgrounded: false,
@@ -288,6 +454,21 @@ export class ExecProcessManager {
       subscribers: new Set(),
       interactionTail: Promise.resolve(),
     };
+    if (options.ownerId && options.sessionDir) {
+      const binding = this.ownerBindings.get(options.ownerId);
+      const registered = binding?.dir === path.resolve(options.sessionDir)
+        ? { ok: true as const, value: { records: [], rejected: 0 } }
+        : this.registerOwnerSession(options.ownerId, options.sessionDir);
+      if (!registered.ok) session.outputFailure = registered.reason;
+      else {
+        session.outputStore = this.ownerBindings.get(options.ownerId)!.store;
+        this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.start(
+          options.ownerId!, options.sessionDir!, id, {
+            startedAt: session.startedAt, processId: backend.pid, tty: options.tty, sessionId: id,
+            status: "running", ...boundedRunMetadata(session.options),
+          })));
+      }
+    }
     return session;
   }
 
@@ -313,12 +494,12 @@ export class ExecProcessManager {
     const requested = session.requestedTerminationReason;
     if (requested === "timeout") {
       session.status = "timed_out";
-      session.exitCode = null;
-      session.signal = null;
+      session.exitCode = exitCode;
+      session.signal = signal;
       session.terminationReason = "timeout";
     } else if (requested) {
       session.status = "killed";
-      session.exitCode = null;
+      session.exitCode = exitCode;
       session.signal = signal;
       session.terminationReason = requested;
     } else if (error) {
@@ -337,6 +518,14 @@ export class ExecProcessManager {
       session.signal = null;
       session.terminationReason = exitCode === 0 ? "completed" : "failed";
     }
+    if (session.outputStore && session.options.ownerId) {
+      this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.finalize(
+        session.options.ownerId!, session.id, {
+          status: session.status, finishedAt: session.finishedAt!, exitCode: session.exitCode,
+          signal: session.signal, terminationReason: session.terminationReason,
+          durationMs: session.finishedAt! - session.startedAt,
+        })));
+    }
     this.notifyExit(session);
   }
 
@@ -348,8 +537,9 @@ export class ExecProcessManager {
     if (!session.cleanup) {
       session.cleanup = setTimeout(() => {
         this.sessions.delete(session.id);
+        this.sweepOutput();
         this.notify();
-      }, this.options.completedRetentionMs ?? 300_000);
+      }, this.options.completedRetentionMs ?? TERMINAL_OUTPUT_RETENTION_MS);
       session.cleanup.unref();
     }
     this.notify();
@@ -394,6 +584,14 @@ export class ExecProcessManager {
       stderr: stderr.text,
       output_chars: { stdout: stdout.observed, stderr: stderr.observed },
       omitted_chars: { stdout: stdout.omitted, stderr: stderr.omitted },
+      owner_session_id: session.options.ownerId,
+      started_at: session.startedAt,
+      finished_at: session.finishedAt ?? null,
+      output_kind: "incremental",
+      output_cursor_unit: "utf8_bytes",
+      stream_mode: session.options.tty ? "tty_merged" : "separate",
+      output_ranges: { stdout: stdout.range, stderr: stderr.range },
+      output_ref: this.outputReference(session),
     };
   }
 
@@ -405,6 +603,9 @@ export class ExecProcessManager {
     while (this.sessions.size >= limit && completed.length) {
       const session = completed.shift()!;
       if (session.cleanup) clearTimeout(session.cleanup);
+      if (session.outputStore && session.options.ownerId) {
+        this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.evict(session.options.ownerId!, session.id)));
+      }
       this.sessions.delete(session.id);
       this.notify();
     }
@@ -416,15 +617,41 @@ export class ExecProcessManager {
   }
 }
 
+function boundedRunMetadata(options: ExecProcessStartOptions): Pick<TerminalRunMetadata, "command" | "cwd" | "shell" | "description" | "truncatedFields"> {
+  const result: Pick<TerminalRunMetadata, "command" | "cwd" | "shell" | "description" | "truncatedFields"> = {};
+  const limits = { command: 4096, cwd: 2048, shell: 256, description: 2048 } as const;
+  for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+    const text = key === "shell" ? options.shell.requested : options[key];
+    if (text === undefined) continue;
+    const bytes = Buffer.from(text, "utf8");
+    let end = Math.min(limits[key], bytes.length);
+    if (end < bytes.length) {
+      while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+      (result.truncatedFields ??= []).push(key);
+    }
+    result[key] = bytes.subarray(0, end).toString("utf8");
+  }
+  return result;
+}
+
 class TextWindow {
   private head = "";
   private tail = "";
   private observed = 0;
+  private startByte = 0;
+  private endByte = 0;
 
   constructor(private readonly capacity: number) {}
 
   push(text: string): void {
+    const wasTruncated = this.observed > this.head.length + this.tail.length;
     this.observed += text.length;
+    this.endByte += Buffer.byteLength(text, "utf8");
+    if (wasTruncated) {
+      const tailSize = this.capacity - Math.floor(this.capacity / 2);
+      this.tail = (tailSize ? (this.tail + text).slice(-tailSize) : "").replace(/^[\uDC00-\uDFFF]/, "");
+      return;
+    }
     const combined = this.head + this.tail + text;
     if (combined.length <= this.capacity) {
       this.head = combined;
@@ -433,25 +660,32 @@ class TextWindow {
     }
     const headSize = Math.floor(this.capacity / 2);
     const tailSize = this.capacity - headSize;
-    this.head = combined.slice(0, headSize);
-    this.tail = combined.slice(-tailSize);
+    this.head = combined.slice(0, headSize).replace(/[\uD800-\uDBFF]$/, "");
+    this.tail = (tailSize ? combined.slice(-tailSize) : "").replace(/^[\uDC00-\uDFFF]/, "");
   }
 
   observedChars(): number {
     return this.observed;
   }
 
-  snapshot(): { text: string; observed: number; omitted: number } {
+  snapshot(): { text: string; observed: number; omitted: number; range: ExecOutputRange } {
     const omitted = Math.max(0, this.observed - this.head.length - this.tail.length);
     const marker = omitted > 0 ? `\n[... ${omitted} characters omitted ...]\n` : "";
-    return { text: this.head + marker + this.tail, observed: this.observed, omitted };
+    const headEnd = this.startByte + Buffer.byteLength(this.head, "utf8");
+    const tailStart = this.endByte - Buffer.byteLength(this.tail, "utf8");
+    return { text: this.head + marker + this.tail, observed: this.observed, omitted,
+      range: { start: this.startByte, end: this.endByte, truncated: omitted > 0,
+        retained: omitted > 0 ? [{ start: this.startByte, end: headEnd }, { start: tailStart, end: this.endByte }]
+          : [{ start: this.startByte, end: this.endByte }],
+        gaps: omitted > 0 ? [{ start: headEnd, end: tailStart }] : [] } };
   }
 
-  drain(): { text: string; observed: number; omitted: number } {
+  drain(): { text: string; observed: number; omitted: number; range: ExecOutputRange } {
     const result = this.snapshot();
     this.head = "";
     this.tail = "";
     this.observed = 0;
+    this.startByte = this.endByte;
     return result;
   }
 }
@@ -564,6 +798,17 @@ function createPipeBackend(
 
 function shellCommand(options: ExecProcessStartOptions): string {
   return options.shell.commandPrefix ? `${options.shell.commandPrefix}${options.command}` : options.command;
+}
+
+// Match legacy newline normalization without doubling CRLF split across process chunks.
+function createOutputNormalizer(): { push(text: string): string } {
+  let previousCR = false;
+  return { push(text) {
+    if (!text) return "";
+    const input = previousCR && text.startsWith("\n") ? text.slice(1) : text;
+    previousCR = text.endsWith("\r");
+    return normalizeOutput(input);
+  } };
 }
 
 function normalizeOutput(text: string): string {

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { getNeoctlHome } from "../paths.js";
 import type { AgentEvent } from "../types/events.js";
 import type { Message } from "../types/messages.js";
+import type { SecretRedactionRegistry } from "../secrets/secret-types.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
@@ -21,6 +22,8 @@ export interface AgentProgressSnapshot {
   totalToolUseCount: number;
   lastActivity?: string;
   lastText?: string;
+  /** Bounded live delta preview only; transcript is authoritative for full text. */
+  visibleText?: { channel: "visible"; runGeneration: number; text: string; truncated: boolean; redactionVersion?: 1 };
   currentAction?: string;
   steps?: AgentProgressStep[];
 }
@@ -40,6 +43,10 @@ export interface AgentRunArchive {
   result?: AgentToolResult;
   error?: string;
   progress: AgentProgressSnapshot;
+  /** Actual start of this generation (UTC ISO), never task creation time. */
+  startedAt?: string;
+  /** Frozen terminal elapsed milliseconds; absent when timestamps are unknown/invalid. */
+  durationMs?: number;
   completedAt?: string;
   archivedAt: string;
 }
@@ -80,6 +87,10 @@ export interface LocalAgentTask {
   runHistory?: AgentRunArchive[];
   createdAt: string;
   updatedAt: string;
+  /** Actual start of this generation (UTC ISO), never task creation time. */
+  startedAt?: string;
+  /** Frozen terminal elapsed milliseconds; absent when timestamps are unknown/invalid. */
+  durationMs?: number;
   completedAt?: string;
 }
 
@@ -87,6 +98,8 @@ export interface AgentToolResult {
   agent_id: string;
   agent_type: string;
   content: string;
+  /** Explicit report/visible-text provenance; absent on legacy unproven results. */
+  displaySource?: "agent_report" | "visible_text";
   status?: "completed" | "incomplete";
   total_duration_ms: number;
   total_tokens?: number;
@@ -130,6 +143,23 @@ export function createLocalAgentTask(input: {
   };
 }
 
+type PreviewStream = { push(chunk: string): string };
+interface PreviewRedactionState {
+  runGeneration: number;
+  registry?: SecretRedactionRegistry;
+  visible?: PreviewStream;
+  legacy?: PreviewStream;
+  closed: boolean;
+}
+// Task identity (not an id string) and generation isolate concurrent tasks/resumes.
+// Unpublished carry lives only inside these streams, never in progress or task JSON.
+const previewRedactions = new WeakMap<LocalAgentTask, PreviewRedactionState>();
+function previewStream(registry?: SecretRedactionRegistry): PreviewStream {
+  if (!registry) return { push: (chunk) => chunk };
+  // A whole-value-only registry cannot prove a delta prefix safe. Fail closed.
+  return registry.createStreamingRedactor?.({ incompleteSecret: "redact" }) ?? { push: () => "" };
+}
+
 export function updateProgressFromMessage(task: LocalAgentTask, message: Message): void {
   task.progress.totalEvents += 1;
   task.progress.lastActivity = new Date().toISOString();
@@ -138,11 +168,52 @@ export function updateProgressFromMessage(task: LocalAgentTask, message: Message
     .map((block) => block.text)
     .join("\n")
     .trim();
-  if (text) task.progress.lastText = text.slice(-1000);
+  if (text) {
+    const registry = previewRedactions.get(task)?.registry;
+    // A final message is not a visible-delta fallback. Keep the legacy preview
+    // safe too, including a terminal message ending in an incomplete secret.
+    task.progress.lastText = previewStream(registry).push(text).slice(-1000);
+  }
   task.updatedAt = new Date().toISOString();
 }
 
-export function updateProgressFromEvent(task: LocalAgentTask, event: AgentEvent): void {
+export function updateProgressFromEvent(
+  task: LocalAgentTask, event: AgentEvent, runGeneration?: number, secretRedactions?: SecretRedactionRegistry,
+): void {
+  if (runGeneration !== undefined && task.runGeneration !== runGeneration) return;
+  const capturedRun = runGeneration === task.runGeneration && Number.isSafeInteger(runGeneration) && runGeneration! > 0;
+  let state = previewRedactions.get(task);
+  // Once a registry is attached, an omitted optional argument must not downgrade
+  // this task to plaintext. A newly supplied registry takes effect immediately.
+  const registry = secretRedactions ?? state?.registry;
+  if (!state || state.runGeneration !== task.runGeneration || state.registry !== registry) {
+    if (registry) {
+      // Existing bounded text cannot be proven safe (a cut may have removed the
+      // start of a credential). Do not seed the new stream with a persisted tail.
+      task.progress.visibleText = undefined;
+      task.progress.lastText = undefined;
+    }
+    state = { runGeneration: task.runGeneration, registry, closed: state?.runGeneration === task.runGeneration && state.closed === true };
+    previewRedactions.set(task, state);
+  }
+  if (event.type === "terminal" || task.status === "completed" || task.status === "failed" || task.status === "killed") {
+    // Discard, NEVER flush an ambiguous prefix on completion/failure/kill.
+    state.visible = undefined;
+    state.legacy = undefined;
+    state.closed = true;
+  }
+  const acceptsDelta = task.status === "running" && !state.closed && (!registry || capturedRun);
+  let safeLegacyDelta = "";
+  if (event.type === "assistant.delta" && acceptsDelta) {
+    safeLegacyDelta = (state.legacy ??= previewStream(registry)).push(event.text);
+    if (event.displayChannel === "visible" && capturedRun) {
+      const previous = task.progress.visibleText?.runGeneration === runGeneration && task.progress.visibleText.redactionVersion === 1
+        ? task.progress.visibleText : undefined;
+      const safeDelta = (state.visible ??= previewStream(registry)).push(event.text);
+      const text = `${previous?.text ?? ""}${safeDelta}`;
+      task.progress.visibleText = { channel: "visible", runGeneration: runGeneration!, text: text.slice(-4000), truncated: previous?.truncated === true || text.length > 4000, redactionVersion: 1 };
+    }
+  }
   const now = new Date().toISOString();
   task.progress.totalEvents += 1;
   task.progress.lastActivity = now;
@@ -167,8 +238,8 @@ export function updateProgressFromEvent(task: LocalAgentTask, event: AgentEvent)
     upsert(event.toolUse.id, event.toolUse.name, event.ok ? "completed" : "failed");
   } else if (event.type === "state" && event.phase !== "running_tools") {
     task.progress.currentAction = event.detail || event.phase;
-  } else if (event.type === "assistant.delta" && event.text.trim()) {
-    task.progress.lastText = `${task.progress.lastText ?? ""}${event.text}`.slice(-1000);
+  } else if (event.type === "assistant.delta" && safeLegacyDelta) {
+    task.progress.lastText = `${task.progress.lastText ?? ""}${safeLegacyDelta}`.slice(-1000);
   }
   task.updatedAt = now;
 }
@@ -202,4 +273,27 @@ export function renderLocalAgentTaskOutput(task: LocalAgentTask): string {
 
 function defaultTaskOutputFile(taskId: string): string {
   return resolve(getNeoctlHome(), "agent-tasks", `${taskId}.txt`);
+}
+
+/** Running clocks are derived from the persisted start; terminal clocks never tick. */
+export function agentRunDurationMs(run: {
+  status: LocalAgentTaskStatus; startedAt?: string; completedAt?: string; durationMs?: number;
+}, nowMs = Date.now()): number | undefined {
+  const start = agentRunTimestampMs(run.startedAt);
+  if (!Number.isFinite(start)) return undefined;
+  if (run.status === "running") {
+    const elapsed = nowMs - start;
+    return Number.isSafeInteger(elapsed) && elapsed >= 0 ? elapsed : undefined;
+  }
+  if (run.status === "pending") return undefined;
+  const end = agentRunTimestampMs(run.completedAt);
+  const elapsed = end - start;
+  return Number.isSafeInteger(elapsed) && elapsed >= 0 && run.durationMs === elapsed ? elapsed : undefined;
+}
+
+/** Accept only the UTC ISO timestamps emitted by the lifecycle, not Date.parse guesses. */
+function agentRunTimestampMs(value: unknown): number {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return NaN;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value ? ms : NaN;
 }

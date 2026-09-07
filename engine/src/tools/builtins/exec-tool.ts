@@ -126,6 +126,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
       const result = await manager.execute(
         {
           ownerId: context.session?.sessionId ?? context.agentId,
+          sessionDir: context.session?.sessionDir,
           command: input.cmd,
           description: input.description,
           cwd,
@@ -293,7 +294,11 @@ function emitOutputDelta(context: ToolUseContext, delta: ExecProcessOutputDelta)
     operation: "append",
     phase: "running",
     key: delta.sessionId,
-    data: { type: "terminal.output.delta", session_id: delta.sessionId, stream: delta.stream, text, output_start: delta.outputStart, output_end: delta.outputEnd },
+    data: { type: "terminal.output.delta", session_id: delta.sessionId, stream: delta.stream, text,
+      output_start: delta.outputStart, output_end: delta.outputEnd,
+      owner_session_id: delta.ownerSessionId, output_kind: delta.outputKind,
+      stream_start: delta.streamStart, stream_end: delta.streamEnd,
+      output_cursor_unit: delta.cursorUnit, stream_mode: delta.streamMode },
   });
 }
 
@@ -316,6 +321,14 @@ function toToolOutput(result: ExecProcessResult): Record<string, unknown> {
     stderr: result.stderr,
     output_chars: result.output_chars,
     omitted_chars: result.omitted_chars,
+    owner_session_id: result.owner_session_id,
+    started_at: result.started_at,
+    finished_at: result.finished_at,
+    output_kind: result.output_kind,
+    output_cursor_unit: result.output_cursor_unit,
+    stream_mode: result.stream_mode,
+    output_ranges: result.output_ranges,
+    output_ref: result.output_ref,
   };
 }
 
