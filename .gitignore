@@ -1,3 +1,10 @@
 /.neoctl-web-*.log
 /.style-reference/
 /.neoctl-web/
+
+# Local implementation/acceptance notes
+OBS-*.md
+
+# Editor-specific settings
+.vscode/
+.idea/
