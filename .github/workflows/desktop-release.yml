@@ -64,9 +64,12 @@ jobs:
       - name: Install Desktop dependencies
         run: npm ci --prefix desktop
 
-      - name: Run Desktop JavaScript tests
+      - name: Prepare bundled Node.js runtime
+        run: npm run runtime --prefix desktop
+
+      - name: Run Desktop unit tests
         working-directory: desktop
-        run: node --test scripts/*.test.cjs ui/*.test.cjs
+        run: node --test scripts/check-updates.test.cjs ui/app.test.cjs
 
       - name: Check Desktop layout
         run: npm run check --prefix desktop
