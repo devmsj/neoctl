@@ -8,7 +8,7 @@ import { ModelDrivenCompactor, withCompactionReport } from "../context/compactio
 import type { ModelGateway, ReasoningConfig } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, ToolUseContext } from "../tools/tool.js";
-import type { QueryOptions, TaskNotificationSource } from "./query.js";
+import type { BeforeTurnUpdate, QueryOptions, SessionSettingsPatch, TaskNotificationSource } from "./query.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
@@ -23,6 +23,8 @@ import { SessionStore, type SessionDisplayEntry, type SessionStoreSnapshot, type
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { computeStaticTokens } from "./context-metrics.js";
+
+export type { SessionSettingsPatch } from "./query.js";
 
 const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 
@@ -72,6 +74,10 @@ export class QueryEngine {
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
+  private running = false;
+  private pendingSessionSettings: SessionSettingsPatch = {};
+  // Idle mutations and the next generator share a barrier. Never compact alongside a request.
+  private settingsMutation: Promise<unknown> = Promise.resolve();
   private currentContextWindowTokens?: number;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
@@ -138,6 +144,8 @@ export class QueryEngine {
   }
 
   async newSession(): Promise<SessionStoreSnapshot> {
+    if (this.running) throw new Error("cannot switch session while query engine is running");
+    await this.settingsMutation;
     this.sessionInitialized = true;
     await this.openSession({ resume: false });
     const snapshot = this.sessionStore?.snapshot();
@@ -169,97 +177,199 @@ export class QueryEngine {
   }
 
   async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
-    await this.initialize();
-    const cwdTransitionPaths = this.pendingCwdTransitionPaths;
-    const pendingRequestContext = this.pendingRequestContext;
-    const pendingRequestContextConsumed = this.pendingRequestContextConsumed;
-    this.pendingCwdTransitionPaths = undefined;
-    this.options.cwdTransitionPaths = undefined;
-    if (cwdTransitionPaths?.length) void this.options.onCwdTransitionConsumed?.();
-    const userMessage = options.blocks
-      ? await this.persistMessageImages({
-          ...createTextMessage("user", options.displayText ?? text),
-          blocks: options.blocks,
-        })
-      : createTextMessage("user", text);
-    this.history.push(userMessage);
-    this.sessionStore?.recordMessage(userMessage);
-    this.scheduleSessionTitleCheck();
+    if (this.running) throw new Error("query engine is already running");
+    this.running = true;
+    try {
+      await this.settingsMutation;
+      await this.initialize();
+      const cwdTransitionPaths = this.pendingCwdTransitionPaths;
+      const pendingRequestContext = this.pendingRequestContext;
+      const pendingRequestContextConsumed = this.pendingRequestContextConsumed;
+      this.pendingCwdTransitionPaths = undefined;
+      this.options.cwdTransitionPaths = undefined;
+      if (cwdTransitionPaths?.length) void this.options.onCwdTransitionConsumed?.();
+      const userMessage = options.blocks
+        ? await this.persistMessageImages({
+            ...createTextMessage("user", options.displayText ?? text),
+            blocks: options.blocks,
+          })
+        : createTextMessage("user", text);
+      this.history.push(userMessage);
+      this.sessionStore?.recordMessage(userMessage);
+      this.scheduleSessionTitleCheck();
 
-    const initMessage = createSystemInitMessage({
-      agentId: this.agentId,
-      tools: this.options.tools.names(),
-      model: this.currentModel,
-      commands: [...(this.options.commands ?? [])],
-      agents: [...(this.options.agents ?? [])],
-      skills: [...(this.options.skills ?? [])],
-      plugins: [...(this.options.plugins ?? [])],
-    });
-    initMessage.metadata = {
-      ...initMessage.metadata,
-      reasoning: cloneReasoningConfig(this.currentReasoning),
-    };
-    yield {
-      type: "message",
-      message: initMessage,
-    };
-    this.sessionStore?.recordMessage(initMessage);
+      const initMessage = createSystemInitMessage({
+        agentId: this.agentId,
+        tools: this.options.tools.names(),
+        model: this.currentModel,
+        commands: [...(this.options.commands ?? [])],
+        agents: [...(this.options.agents ?? [])],
+        skills: [...(this.options.skills ?? [])],
+        plugins: [...(this.options.plugins ?? [])],
+      });
+      initMessage.metadata = {
+        ...initMessage.metadata,
+        reasoning: cloneReasoningConfig(this.currentReasoning),
+      };
+      yield {
+        type: "message",
+        message: initMessage,
+      };
+      this.sessionStore?.recordMessage(initMessage);
 
-    const queryOptions: QueryOptions = {
-      agentId: this.agentId,
-      model: this.currentModel,
-      reasoning: cloneReasoningConfig(this.currentReasoning),
-      queryOrigin: this.options.queryOrigin ?? "repl",
-      serviceTier: this.currentFastMode ? "priority" : undefined,
-      maxOutputTokensOverride: this.options.maxOutputTokensOverride,
-      contextWindowTokensOverride: this.currentContextWindowTokens,
-      maxTurns: this.options.maxTurns,
-      workspaceCwd: this.options.cwd,
-      requestContext: pendingRequestContext || cwdTransitionPaths?.length
-        ? {
-            ...pendingRequestContext,
-            ...(cwdTransitionPaths?.length
-              ? { cwdTransition: { paths: cwdTransitionPaths, current: cwdTransitionPaths.at(-1) } }
-              : {}),
+      const queryOptions: QueryOptions = {
+        agentId: this.agentId,
+        model: this.currentModel,
+        reasoning: cloneReasoningConfig(this.currentReasoning),
+        queryOrigin: this.options.queryOrigin ?? "repl",
+        serviceTier: this.currentFastMode ? "priority" : undefined,
+        maxOutputTokensOverride: this.options.maxOutputTokensOverride,
+        contextWindowTokensOverride: this.currentContextWindowTokens,
+        maxTurns: this.options.maxTurns,
+        workspaceCwd: this.options.cwd,
+        requestContext: pendingRequestContext || cwdTransitionPaths?.length
+          ? {
+              ...pendingRequestContext,
+              ...(cwdTransitionPaths?.length
+                ? { cwdTransition: { paths: cwdTransitionPaths, current: cwdTransitionPaths.at(-1) } }
+                : {}),
+            }
+          : undefined,
+        onRequestContextConsumed: pendingRequestContext ? () => {
+          pendingRequestContextConsumed?.();
+          if (this.pendingRequestContext === pendingRequestContext) {
+            this.pendingRequestContext = undefined;
+            this.pendingRequestContextConsumed = undefined;
           }
-        : undefined,
-      onRequestContextConsumed: pendingRequestContext ? () => {
-        pendingRequestContextConsumed?.();
-        if (this.pendingRequestContext === pendingRequestContext) {
-          this.pendingRequestContext = undefined;
-          this.pendingRequestContextConsumed = undefined;
-        }
-      } : undefined,
-      abortSignal: options.abortSignal,
-      stopAfterTurn: options.stopAfterTurn,
-    };
+        } : undefined,
+        abortSignal: options.abortSignal,
+        stopAfterTurn: options.stopAfterTurn,
+        beforeTurn: (messages) => this.consumeSessionSettings(messages),
+      };
 
-    const stream = query(
-      this.history,
-      {
-        ...this.options,
-        contextManager: this.contextManager,
-        modelGateway: this.currentModelGateway,
-        taskNotificationSource: this.options.taskNotificationSource,
-        toolResultMemory: this.sessionStore?.toolResultMemory,
-        session: this.sessionStore ? { sessionId: this.sessionStore.sessionId, sessionDir: this.sessionStore.sessionDir, rootDir: this.options.session?.rootDir } : undefined,
-        recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
-        exportToolCalls: (calls) => this.recordSyntheticToolCalls(calls),
-        applyCompaction: (result) => this.applyCompactionResult(result),
-      },
-      queryOptions,
-    );
-    for await (const event of stream) {
-      if (event.type === "message") {
-        const message = await this.persistMessageImages(event.message);
-        this.history.push(message);
-        this.sessionStore?.recordMessage(message);
-        yield { ...event, message };
-        continue;
+      const stream = query(
+        this.history,
+        {
+          ...this.options,
+          contextManager: this.contextManager,
+          modelGateway: this.currentModelGateway,
+          taskNotificationSource: this.options.taskNotificationSource,
+          toolResultMemory: this.sessionStore?.toolResultMemory,
+          session: this.sessionStore ? { sessionId: this.sessionStore.sessionId, sessionDir: this.sessionStore.sessionDir, rootDir: this.options.session?.rootDir } : undefined,
+          recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
+          exportToolCalls: (calls) => this.recordSyntheticToolCalls(calls),
+          applyCompaction: (result) => this.applyCompactionResult(result),
+        },
+        queryOptions,
+      );
+      for await (const event of stream) {
+        if (event.type === "message") {
+          const message = await this.persistMessageImages(event.message);
+          this.history.push(message);
+          this.sessionStore?.recordMessage(message);
+          yield { ...event, message };
+          continue;
+        }
+        if (event.type === "terminal") {
+          this.lastTerminalReason = event.reason;
+          // The final assistant/tool messages have already been recorded by this wrapper.
+          const hadPending = Object.keys(this.pendingSessionSettings).length > 0;
+          for (const result of await this.flushSessionSettings()) {
+            if (result.report) yield { type: "context.compacted", compaction: result.report };
+          }
+          if (hadPending) yield { type: "context.metrics", metrics: await this.contextMetrics() };
+        }
+        yield event;
       }
-      if (event.type === "terminal") this.lastTerminalReason = event.reason;
-      yield event;
+    } finally {
+      // Covers initialization errors, aborts, exceptions and consumer generator.return().
+      // Do not yield in finally: a closing consumer may never resume the generator.
+      try {
+        do { await this.flushSessionSettings(); } while (Object.keys(this.pendingSessionSettings).length);
+      }
+      finally { this.running = false; }
     }
+  }
+
+  /** Queue instance-local settings; no prompt messages or provider-global mutation. */
+  async updateSessionSettings(patch: SessionSettingsPatch): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
+    const normalized: SessionSettingsPatch = {};
+    if (Object.hasOwn(patch, "model")) normalized.model = patch.model?.trim() || undefined;
+    if (Object.hasOwn(patch, "reasoning")) normalized.reasoning = cloneReasoningConfig(patch.reasoning);
+    if (Object.hasOwn(patch, "fastMode")) normalized.fastMode = patch.fastMode === true;
+    if (Object.hasOwn(patch, "contextWindowTokens")) {
+      const tokens = normalizePositiveInteger(patch.contextWindowTokens);
+      if (!tokens) throw new Error("context window tokens must be a positive integer");
+      normalized.contextWindowTokens = tokens;
+    }
+    if (patch.compact) normalized.compact = true;
+    if (this.running) {
+      this.pendingSessionSettings = { ...this.pendingSessionSettings, ...normalized };
+      return { deferred: true };
+    }
+    const mutation = this.settingsMutation.then(async () => {
+      await this.initialize();
+      const update = await this.applySessionSettings(normalized, this.getHistoryMessages());
+      if (update?.compaction) this.applyCompactionResult(update.compaction);
+      return { deferred: false, ...(update?.compaction ? { compaction: update.compaction } : {}) };
+    });
+    // A rejected mutation must not poison subsequent settings or user input.
+    this.settingsMutation = mutation.catch(() => undefined);
+    return mutation;
+  }
+
+  getPendingSessionSettings(): SessionSettingsPatch {
+    const patch = { ...this.pendingSessionSettings };
+    if (Object.hasOwn(patch, "reasoning")) patch.reasoning = cloneReasoningConfig(patch.reasoning);
+    return patch;
+  }
+
+  private async consumeSessionSettings(messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
+    const patch = this.pendingSessionSettings;
+    if (!Object.keys(patch).length) return undefined;
+    this.pendingSessionSettings = {};
+    return this.applySessionSettings(patch, messages);
+  }
+
+  private async applySessionSettings(patch: SessionSettingsPatch, messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
+    const changed: SessionSettingsPatch = {};
+    if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
+      this.currentModel = patch.model;
+      changed.model = patch.model;
+    }
+    if (Object.hasOwn(patch, "reasoning") && !sameReasoningConfig(patch.reasoning, this.currentReasoning)) {
+      this.currentReasoning = cloneReasoningConfig(patch.reasoning);
+      changed.reasoning = cloneReasoningConfig(patch.reasoning);
+    }
+    if (Object.hasOwn(patch, "fastMode") && patch.fastMode !== this.currentFastMode) {
+      this.currentFastMode = patch.fastMode === true;
+      this.sessionStore?.recordFastMode(this.currentFastMode);
+      changed.fastMode = this.currentFastMode;
+    }
+    if (Object.hasOwn(patch, "contextWindowTokens") && patch.contextWindowTokens !== this.currentContextWindowTokens) {
+      this.currentContextWindowTokens = patch.contextWindowTokens;
+      this.sessionStore?.recordContextWindowTokens(this.currentContextWindowTokens!);
+      changed.contextWindowTokens = this.currentContextWindowTokens;
+    }
+    let compaction: CompactionResult | undefined;
+    if (patch.compact) {
+      const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+      const budget = { ...this.options.contextBudget, contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
+      compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
+    }
+    return Object.keys(changed).length || compaction ? { settings: changed, compaction } : undefined;
+  }
+
+  private async flushSessionSettings(): Promise<CompactionResult[]> {
+    const results: CompactionResult[] = [];
+    while (Object.keys(this.pendingSessionSettings).length) {
+      const update = await this.consumeSessionSettings(this.getHistoryMessages());
+      if (update?.compaction) {
+        this.applyCompactionResult(update.compaction);
+        if (update.compaction.changed) results.push(update.compaction);
+      }
+    }
+    return results;
   }
 
   setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
@@ -327,6 +437,8 @@ export class QueryEngine {
   }
 
   reset(): void {
+    if (this.running) throw new Error("cannot reset while query engine is running");
+    this.pendingSessionSettings = {};
     this.history.length = 0;
     this.lastTerminalReason = undefined;
     this.cancelPendingTitleWork();
@@ -335,20 +447,9 @@ export class QueryEngine {
   }
 
   async compact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
-    await this.initialize();
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
-
-    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-    const contextBudget = {
-      ...this.options.contextBudget,
-      contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
-    };
-    const result = withCompactionReport(
-      await (compactor.manualCompact?.(this.history, contextBudget) ?? compactor.compact(this.history, contextBudget)),
-      this.history.length,
-    );
-    this.applyCompactionResult(result);
-    return result;
+    const result = await this.updateSessionSettings({ compact: true });
+    return result.compaction ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" };
   }
 
   async pureCompact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
@@ -694,6 +795,11 @@ function resolveSessionTitleDelayMs(): number {
     if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   }
   return DEFAULT_SESSION_TITLE_DELAY_MS;
+}
+
+function sameReasoningConfig(a: ReasoningConfig | null | undefined, b: ReasoningConfig | null | undefined): boolean {
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  return a.effort === b.effort && a.summary === b.summary;
 }
 
 function cloneReasoningConfig(reasoning: ReasoningConfig | null | undefined): ReasoningConfig | null | undefined {

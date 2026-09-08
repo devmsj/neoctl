@@ -32,6 +32,10 @@ export const AGENT_TOOL_PROMPT_RULES = [
   "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
   "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
   "Launch independent agents in the same model turn when parallel work is useful.",
+  "Subagents cannot communicate directly with sibling agents, even when given their names or IDs. Never ask a worker to contact, message, query, or coordinate directly with another worker; the main agent must relay all cross-agent questions, decisions, and interface changes.",
+  "Every delegation must specify the goal, owned files/modules, allowed edits and explicit exclusions, required inputs and interface contracts, dependencies, expected deliverables, and acceptance checks. Use disjoint write scopes; reserve shared-file changes and integration decisions to a named owner or the main agent.",
+  "Settle cross-agent interface contracts before parallel implementation. If a dependency is unresolved, assign independent work or have the worker report the blocker to the main agent; do not tell workers to negotiate with each other.",
+  "Workers report progress or coordination needs through subagent_report status='draft'; this does not pause execution. For blocking ambiguity, require status='incomplete' with a precise question and completed/untouched scope, then explicitly resume after deciding. Relay updates through subagent_message; queued or delivered is not proof of implementation.",
   "Avoid vague delegation; give each worker a concrete scope and say whether edits are allowed.",
 ].join("\n");
 

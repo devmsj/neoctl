@@ -878,6 +878,12 @@ export class WebRepl {
   snapshot(includeCatalog = false) {
     const backgroundTasks = this.backgroundTasks();
     const engineSnapshot = this.runtime.engine.snapshot();
+    const pendingSessionSettings = this.runtime.engine.getPendingSessionSettings?.() ?? {};
+    // Include retained reasoning alongside a queued model. Explicit undefined is
+    // the default reset and is intentionally omitted by JSON serialization.
+    if (Object.hasOwn(pendingSessionSettings, "model") && !Object.hasOwn(pendingSessionSettings, "reasoning")) {
+      pendingSessionSettings.reasoning = engineSnapshot.reasoning;
+    }
     return {
       lines: this.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
       status: this.status,
@@ -891,6 +897,7 @@ export class WebRepl {
       runningSessionIds: [...this.backgroundSessionRuns.keys()],
       session: engineSnapshot.session,
       modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning },
+      pendingSessionSettings,
       fastMode: this.runtime.engine.isFastMode(),
       appPrompt: this.runtime.engine.getAppPrompt(),
       catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
@@ -1292,31 +1299,80 @@ export class WebRepl {
     return undefined;
   }
 
-  async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean }>> {
+  private async refreshSessionSettingMetrics(engine: QueryEngine): Promise<void> {
+    const metrics = await engine.contextMetrics();
+    // A request can finish after its owner session was detached/switched.
+    if (this.runtime.engine !== engine) return;
+    this.runtime.initialMetrics = metrics;
+    this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
+  }
+
+  async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean; deferred: boolean }>> {
+    const engine = this.runtime.engine;
     try {
-      const fastMode = await this.runtime.engine.setFastMode(enabled);
-      this.broadcastSync();
-      return { ok: true, fastMode };
+      const { deferred } = await engine.updateSessionSettings({ fastMode: enabled });
+      if (this.runtime.engine === engine) this.broadcastSync();
+      return { ok: true, fastMode: enabled, deferred };
     } catch (error) {
       return actionFailure("FAST_MODE_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
     }
   }
 
-  async setContextWindowK(value: unknown): Promise<WebActionResult<{ contextWindowK: number; contextWindowTokens: number }>> {
-    if (this.busy) return actionFailure("CONTEXT_WINDOW_UPDATE_BLOCKED", "cannot change context window while a response is running");
-    if (typeof value !== "string" || !/^\d+$/u.test(value) || Number(value) <= 0) {
+  async setContextWindowK(value: unknown): Promise<WebActionResult<{ contextWindowK: number; contextWindowTokens: number; deferred: boolean }>> {
+    if (typeof value !== "string" || !/^\d+$/u.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value) * 1000)) {
       return actionFailure("CONTEXT_WINDOW_INVALID", "context window must be a positive integer in k");
     }
     const contextWindowK = Number(value);
     const contextWindowTokens = contextWindowK * 1000;
+    const engine = this.runtime.engine;
     try {
-      await this.runtime.engine.setContextWindowTokensOverride(contextWindowTokens);
-      const metrics = await this.runtime.engine.contextMetrics();
-      this.runtime.initialMetrics = metrics;
-      this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
-      return { ok: true, contextWindowK, contextWindowTokens };
+      const { deferred } = await engine.updateSessionSettings({ contextWindowTokens });
+      if (!deferred) await this.refreshSessionSettingMetrics(engine);
+      if (this.runtime.engine === engine) this.broadcastSync();
+      return { ok: true, contextWindowK, contextWindowTokens, deferred };
     } catch (error) {
       return actionFailure("CONTEXT_WINDOW_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async setSessionModel(model: unknown, reasoning: unknown): Promise<WebActionResult<{ modelSettings: { model: string; reasoning?: ReasoningConfig | null }; deferred: boolean }>> {
+    if (typeof model !== "string" || !model.trim() || model.length > 256 || /[\s\x00-\x1f]/u.test(model.trim())) {
+      return actionFailure("MODEL_INVALID", "invalid model");
+    }
+    if (reasoning !== undefined && (typeof reasoning !== "string" || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"].includes(reasoning))) {
+      return actionFailure("MODEL_INVALID", "invalid reasoning effort");
+    }
+    const engine = this.runtime.engine;
+    const nextModel = model.trim();
+    const current = { ...engine.getModelSettings(), ...engine.getPendingSessionSettings() };
+    const argument = reasoning as ModelReasoningArgument | undefined;
+    const validationError = validateModelReasoningArgument(nextModel, argument);
+    if (validationError) return actionFailure("MODEL_INVALID", validationError);
+    const update = resolveModelReasoningUpdate(argument, current.reasoning, nextModel, nextModel !== current.model);
+    try {
+      // Current engine only: no env write, provider replacement, transcript message,
+      // runtime-context injection or prompt-cache prefix change for UI settings.
+      const { deferred } = await engine.updateSessionSettings({ model: nextModel, ...(update.update ? { reasoning: update.reasoning } : {}) });
+      if (!deferred) await this.refreshSessionSettingMetrics(engine);
+      if (this.runtime.engine === engine) this.broadcastSync();
+      return { ok: true, deferred, modelSettings: { model: nextModel, reasoning: update.reasoning } };
+    } catch (error) {
+      return actionFailure("MODEL_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async compactSession(): Promise<WebActionResult<{ deferred: boolean }>> {
+    const engine = this.runtime.engine;
+    try {
+      const result = await engine.updateSessionSettings({ compact: true });
+      if (this.runtime.engine === engine) {
+        if (result.compaction?.report) this.appendCompaction(result.compaction.report);
+        if (!result.deferred) await this.refreshSessionSettingMetrics(engine);
+        this.broadcastSync();
+      }
+      return { ok: true, deferred: result.deferred };
+    } catch (error) {
+      return actionFailure("COMPACTION_FAILED", error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1481,7 +1537,9 @@ export class WebRepl {
       if (history.value.nextOffset === null) break;
       offset = history.value.nextOffset;
     } while (true);
-    return records.reverse().map(({ record }) => ({
+    // Output history includes foreground commands too. Only an explicit durable
+    // background transition belongs in this UI; legacy records are not inferred.
+    return records.filter(({ record }) => record.metadata.backgrounded === true).reverse().map(({ record }) => ({
       kind: "terminal" as const, taskId: `terminal:${record.runId}`, type: "终端",
       ownerSessionId: session.sessionId, sessionId: record.runId,
       status: record.lifecycle === "lost" ? "lost" : record.exit?.status ?? "unknown",
@@ -2317,6 +2375,11 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
       const body = await readJsonBody<WebSetAppPromptPayload>(req);
       return sendJson(res, repl.setAppPrompt(body));
     }
+    if (req.method === "POST" && url.pathname === "/api/session-model") {
+      const body = await readJsonBody<{ model?: unknown; reasoning?: unknown }>(req);
+      return sendJson(res, await repl.setSessionModel(body.model, body.reasoning));
+    }
+    if (req.method === "POST" && url.pathname === "/api/compact") return sendJson(res, await repl.compactSession());
     if (req.method === "POST" && url.pathname === "/api/fast-mode") {
       const body = await readJsonBody<{ enabled?: boolean }>(req);
       return sendJson(res, await repl.setFastMode(body.enabled === true));
@@ -2439,6 +2502,7 @@ function webCatalog(runtime: WebRuntime) {
   return {
     commands: replCommandDefinitions,
     modelIds,
+    modelReasoning: Object.fromEntries(modelIds.map(model => [model, reasoningEffortsForModel(model) ?? []])),
     reasoning: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"],
     envPath: runtime.envPath,
   };

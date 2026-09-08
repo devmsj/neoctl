@@ -32,7 +32,25 @@ import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-notes.js";
 import { buildImageRegistry } from "./image-registry.js";
 
+export interface SessionSettingsPatch {
+  model?: string;
+  reasoning?: ReasoningConfig | null;
+  fastMode?: boolean;
+  contextWindowTokens?: number;
+  compact?: boolean;
+}
+
+export interface BeforeTurnUpdate {
+  /** Only changed fields; never a full settings snapshot. */
+  settings?: SessionSettingsPatch;
+  compaction?: CompactionResult;
+}
+
 export interface QueryOptions {
+  /** Safe boundary before context construction, never inside streaming/retries/tools.
+   * Compaction is calculated from these authoritative query messages, not engine history.
+   */
+  beforeTurn?: (messages: readonly Message[]) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
   /** Synchronous inbox handoff immediately before a model request. */
   takePendingMessages?: () => Message[];
   agentId: string;
@@ -153,6 +171,28 @@ async function* queryLoop(
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
+    const update = await options.beforeTurn?.(state.messages);
+    const settings = update?.settings;
+    if (settings) {
+      if (Object.hasOwn(settings, "model")) {
+        if (settings.model !== (state.currentModel ?? options.model)) {
+          state.previousResponseId = undefined;
+          state.modelInputMessages = undefined;
+        }
+        state.currentModel = settings.model;
+        options.model = settings.model;
+      }
+      if (Object.hasOwn(settings, "reasoning")) options.reasoning = settings.reasoning;
+      if (Object.hasOwn(settings, "fastMode")) options.serviceTier = settings.fastMode ? "priority" : undefined;
+      if (Object.hasOwn(settings, "contextWindowTokens")) options.contextWindowTokensOverride = settings.contextWindowTokens;
+    }
+    if (update?.compaction?.changed) {
+      state = { ...state, messages: update.compaction.messages, modelInputMessages: undefined, previousResponseId: undefined };
+      await dependencies.applyCompaction?.(update.compaction);
+      if (update.compaction.report) yield { type: "context.compacted", compaction: update.compaction.report };
+      yield { type: "state", phase: "compacting", detail: formatCompactionDetail(update.compaction) };
+    }
+    if (options.abortSignal?.aborted) return "aborted_streaming";
     state = beginTurn(state);
     toolContext = {
       ...toolContext,
@@ -163,6 +203,9 @@ async function* queryLoop(
         mainLoopModel: state.currentModel ?? options.model,
         modelGateway: dependencies.modelGateway,
         reasoning: options.reasoning,
+        serviceTier: options.serviceTier,
+        contextWindowTokensOverride: options.contextWindowTokensOverride,
+        maxOutputTokensOverride: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
       },
     };
     yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };

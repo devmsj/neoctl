@@ -230,6 +230,15 @@ const state = reactive({
   sessionTools: { items: [], busy: false, loading: false },
   fastMode: false,
   fastModeMutating: false,
+  fastModeDraft: false,
+  pendingSessionSettings: {},
+  compactSaving: false,
+  modelModalOpen: false,
+  modelDraft: '',
+  reasoningDraft: 'default',
+  modelSearch: '',
+  modelError: '',
+  modelSaving: false,
   contextWindowModalOpen: false,
   contextWindowDraft: '',
   contextWindowError: '',
@@ -355,6 +364,9 @@ let memoryStateTimer
 let metricsRaf = 0
 let fastModeMutationQueue = Promise.resolve()
 let fastModeMutationVersion = 0
+let sessionSettingsEpoch = 0
+let sessionSettingsSyncRevision = 0
+let settingsReturnFocus
 let previousBackgroundTaskStatuses = new Map()
 let confirmDialogResolver
 let clientReloading = false
@@ -411,10 +423,28 @@ const updateSessionTitleMarquee = async () => {
 }
 const currentSessionId = computed(() => state.session?.sessionId || '暂无会话')
 const currentCwd = computed(() => state.cwd || '—')
-const modelName = computed(() => formatModelDisplay(
-  state.modelSettings?.model ?? state.status?.metrics?.model,
-  state.modelSettings?.reasoning?.effort,
-))
+const selectedModelSettings = computed(() => {
+  const pending = state.pendingSessionSettings
+  const current = state.modelSettings || { model: state.status?.metrics?.model }
+  return {
+    model: pending.model ?? current.model,
+    reasoning: Object.hasOwn(pending, 'reasoning') || Object.hasOwn(pending, 'model') ? pending.reasoning : current.reasoning,
+  }
+})
+const modelName = computed(() => formatModelDisplay(selectedModelSettings.value.model, selectedModelSettings.value.reasoning?.effort))
+const selectedFastMode = computed(() => state.fastModeMutating ? state.fastModeDraft : (state.pendingSessionSettings.fastMode ?? state.fastMode))
+const modelOptions = computed(() => [...new Set([
+  selectedModelSettings.value.model, state.modelSettings?.model, ...(state.catalog.modelIds || []),
+].filter(Boolean))])
+const filteredModelOptions = computed(() => modelOptions.value.filter(model => model.toLowerCase().includes(state.modelSearch.trim().toLowerCase())))
+const modelReasoningOptions = computed(() => {
+  const supported = state.catalog.modelReasoning?.[state.modelDraft] || []
+  const available = state.catalog.reasoning || []
+  return ['default', 'off', ...supported.filter(effort => available.includes(effort) && effort !== 'default' && effort !== 'off')]
+})
+watch(() => state.modelDraft, () => {
+  if (!modelReasoningOptions.value.includes(state.reasoningDraft)) state.reasoningDraft = 'default'
+})
 const contextPercent = computed(() => {
   const ratio = state.status?.metrics?.contextUsageRatio
   return ratio === undefined ? '—' : `${(ratio * 100).toFixed(1)}%`
@@ -423,7 +453,7 @@ const inputTokens = computed(() => compactNumber(state.status?.usage?.inputToken
 const outputTokens = computed(() => compactNumber(state.status?.usage?.outputTokens ?? state.status?.streamedOutputTokens))
 const composerContextValue = computed(() => `${state.composerMetrics.context.display.toFixed(1)}%`)
 const currentContextWindowK = computed(() => {
-  const tokens = Number(state.status?.metrics?.contextWindowTokens)
+  const tokens = Number(state.pendingSessionSettings.contextWindowTokens ?? state.status?.metrics?.contextWindowTokens)
   return Number.isFinite(tokens) && tokens > 0 ? String(Math.max(1, Math.round(tokens / 1000))) : ''
 })
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
@@ -1093,8 +1123,10 @@ function applySync(payload) {
     repairRuntimeSessionBinding()
     return
   }
+  sessionSettingsSyncRevision += 1
   const shouldFollow = isTranscriptNearBottom()
   if (incomingSessionId !== previousSessionId) {
+    resetSessionSettingsUi()
     resetVirtualMessages()
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
     state.attachmentCounter = 0
@@ -1123,8 +1155,9 @@ function applySync(payload) {
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
   state.modelSettings = payload.modelSettings
+  state.pendingSessionSettings = { ...(payload.pendingSessionSettings || {}) }
   state.cwd = payload.cwd || ''
-  if (!state.fastModeMutating) state.fastMode = payload.fastMode === true
+  state.fastMode = payload.fastMode === true
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session, allowRuntimeSessionChange)
   if (incomingSessionId && incomingSessionId !== previousSessionId) void Promise.all([fetchSessionPlugins(), fetchSessionTools()])
@@ -1531,12 +1564,128 @@ async function sendQueuedNow() {
   }
 }
 
-async function compressSession() {
+// Freeze both the URL and UI generation before any await (including queued toggles).
+function captureSessionSetting(path) {
+  const url = runtimeUrl(path)
+  const epoch = sessionSettingsEpoch
+  const revision = sessionSettingsSyncRevision
+  return { url, revision, isCurrent: () => epoch === sessionSettingsEpoch && url === runtimeUrl(path) }
+}
+
+async function reconcileSessionSetting(request, isLatest = () => true) {
+  if (!request.isCurrent() || !isLatest() || request.revision === sessionSettingsSyncRevision) return
+  // A next-round SSE can overtake its deferred HTTP acknowledgement. Read the
+  // owner again rather than reviving an already-applied pending patch forever.
+  const revision = sessionSettingsSyncRevision
   try {
-    await postJson('/api/submit', { text: '/compact', attachments: [] })
-    notify('压缩会话将在下一轮生效')
+    const target = new URL(request.url, window.location.origin)
+    target.pathname = '/api/state'
+    const res = await fetch(`${target.pathname}${target.search}`, { cache: 'no-store' })
+    const snapshot = await res.json()
+    if (res.ok && request.isCurrent() && isLatest() && revision === sessionSettingsSyncRevision) applySync(snapshot)
+  } catch {
+    // Subsequent SSE/reconnection will reconcile the owner if the read is offline.
+  }
+}
+
+function resetSessionSettingsUi() {
+  sessionSettingsEpoch += 1
+  fastModeMutationVersion += 1
+  fastModeMutationQueue = Promise.resolve()
+  state.fastModeMutating = false
+  state.compactSaving = false
+  state.modelSaving = false
+  state.contextWindowSaving = false
+  state.modelModalOpen = false
+  state.contextWindowModalOpen = false
+  state.modelError = ''
+  state.contextWindowError = ''
+  state.pendingSessionSettings = {}
+  settingsReturnFocus = undefined
+  document.body.classList.remove('context-window-open')
+}
+
+function notifySetting(label, result) {
+  notify(`${label}${result.deferred === true ? '将在下一轮生效' : '已生效'}`)
+}
+
+function focusSettingsDialog(selector) {
+  settingsReturnFocus = document.activeElement
+  document.body.classList.add('context-window-open')
+  nextTick(() => document.querySelector(selector)?.focus())
+}
+
+function restoreSettingsFocus() {
+  document.body.classList.remove('context-window-open')
+  if (settingsReturnFocus?.isConnected) settingsReturnFocus.focus()
+  settingsReturnFocus = undefined
+}
+
+function trapSettingsFocus(event) {
+  if (event.key !== 'Tab') return
+  const controls = [...event.currentTarget.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]')]
+    .filter(el => el.getClientRects().length)
+  const first = controls[0]
+  const last = controls.at(-1)
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+}
+
+async function compressSession() {
+  if (state.compactSaving || state.pendingSessionSettings.compact) return
+  const request = captureSessionSetting('/api/compact')
+  state.compactSaving = true
+  try {
+    const result = await postJson(request.url, {}, true)
+    if (!request.isCurrent()) return
+    if (result.deferred) state.pendingSessionSettings.compact = true
+    notifySetting('压缩会话', result)
+    await reconcileSessionSetting(request)
   } catch (error) {
-    notifyActionError(error, '压缩上下文失败')
+    if (request.isCurrent()) notifyActionError(error, '压缩上下文失败')
+  } finally {
+    if (request.isCurrent()) state.compactSaving = false
+  }
+}
+
+function openModelModal() {
+  state.modelDraft = selectedModelSettings.value.model || modelOptions.value[0] || ''
+  const reasoning = selectedModelSettings.value.reasoning
+  state.reasoningDraft = reasoning === null ? 'off' : (reasoning?.effort || 'default')
+  if (!modelReasoningOptions.value.includes(state.reasoningDraft)) state.reasoningDraft = 'default'
+  state.modelSearch = ''
+  state.modelError = ''
+  state.modelModalOpen = true
+  focusSettingsDialog('#session-model-search')
+}
+
+function closeModelModal() {
+  state.modelModalOpen = false
+  state.modelError = ''
+  restoreSettingsFocus()
+}
+
+async function saveSessionModel() {
+  if (state.modelSaving || !state.modelDraft) return
+  const request = captureSessionSetting('/api/session-model')
+  const model = state.modelDraft
+  const reasoning = modelReasoningOptions.value.includes(state.reasoningDraft) ? state.reasoningDraft : 'default'
+  state.modelSaving = true
+  state.modelError = ''
+  try {
+    const result = await postJson(request.url, { model, reasoning }, true)
+    if (!request.isCurrent()) return
+    delete state.pendingSessionSettings.model
+    delete state.pendingSessionSettings.reasoning
+    if (result.deferred) Object.assign(state.pendingSessionSettings, { model: result.modelSettings.model, reasoning: result.modelSettings.reasoning })
+    else state.modelSettings = result.modelSettings
+    closeModelModal()
+    notifySetting('模型', result)
+    await reconcileSessionSetting(request)
+  } catch (error) {
+    if (request.isCurrent()) state.modelError = actionErrorMessage(error, '模型切换失败')
+  } finally {
+    if (request.isCurrent()) state.modelSaving = false
   }
 }
 
@@ -1544,14 +1693,13 @@ function openContextWindowModal() {
   state.contextWindowDraft = currentContextWindowK.value
   state.contextWindowError = ''
   state.contextWindowModalOpen = true
-  document.body.classList.add('context-window-open')
+  focusSettingsDialog('#context-window-input')
 }
 
 function closeContextWindowModal() {
-  if (state.contextWindowSaving) return
   state.contextWindowModalOpen = false
   state.contextWindowError = ''
-  document.body.classList.remove('context-window-open')
+  restoreSettingsFocus()
 }
 
 function normalizeContextWindowDraft() {
@@ -1559,57 +1707,76 @@ function normalizeContextWindowDraft() {
 }
 
 async function saveContextWindow() {
-  const value = String(state.contextWindowDraft || '')
-  if (!/^\d+$/.test(value) || value === '0') {
+  if (state.contextWindowSaving) return
+  const value = String(state.contextWindowDraft || '').trim()
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value) * 1000) || Number(value) <= 0) {
     state.contextWindowError = '请输入大于 0 的整数'
     return
   }
+  const request = captureSessionSetting('/api/context-window')
   state.contextWindowSaving = true
   state.contextWindowError = ''
   try {
-    const result = await postJson('/api/context-window', { value })
-    const metrics = state.status?.metrics || {}
+    const result = await postJson(request.url, { value }, true)
+    if (!request.isCurrent()) return
     const tokens = Number(result.contextWindowTokens)
-    const estimatedInputTokens = Number(metrics.estimatedInputTokens || 0)
-    state.status = {
-      ...state.status,
-      metrics: {
-        ...metrics,
-        contextWindowTokens: tokens,
-        contextWindowSource: 'session',
-        contextUsageRatio: tokens > 0 ? estimatedInputTokens / tokens : undefined,
-      },
+    if (result.deferred) {
+      state.pendingSessionSettings.contextWindowTokens = tokens
+    } else {
+      delete state.pendingSessionSettings.contextWindowTokens
+      const metrics = state.status?.metrics || {}
+      state.status = {
+        ...state.status,
+        metrics: {
+          ...metrics,
+          contextWindowTokens: tokens,
+          contextWindowSource: 'session',
+          contextUsageRatio: tokens > 0 ? Number(metrics.estimatedInputTokens || 0) / tokens : undefined,
+        },
+      }
+      updateComposerMetricTargets()
     }
-    updateComposerMetricTargets()
-    state.contextWindowModalOpen = false
-    document.body.classList.remove('context-window-open')
+    closeContextWindowModal()
+    notifySetting('上下文窗口', result)
+    await reconcileSessionSetting(request)
   } catch (error) {
-    state.contextWindowError = actionErrorMessage(error, '调整失败')
+    if (request.isCurrent()) state.contextWindowError = actionErrorMessage(error, '调整失败')
   } finally {
-    state.contextWindowSaving = false
+    if (request.isCurrent()) state.contextWindowSaving = false
   }
 }
 
 function toggleFastMode() {
-  const enabled = !state.fastMode
+  const enabled = !selectedFastMode.value
   const version = ++fastModeMutationVersion
-  state.fastMode = enabled
+  const request = captureSessionSetting('/api/fast-mode')
+  state.fastModeDraft = enabled
   state.fastModeMutating = true
 
   fastModeMutationQueue = fastModeMutationQueue
     .catch(() => undefined)
-    .then(() => postJson('/api/fast-mode', { enabled }))
-    .then((result) => {
-      if (version !== fastModeMutationVersion) return
-      state.fastMode = result.fastMode === true
+    .then(() => postJson(request.url, { enabled }, true))
+    .then(async (result) => {
+      if (!request.isCurrent() || version !== fastModeMutationVersion) return
+      if (result.deferred) state.pendingSessionSettings.fastMode = result.fastMode === true
+      else {
+        delete state.pendingSessionSettings.fastMode
+        state.fastMode = result.fastMode === true
+      }
       state.fastModeMutating = false
-      notify(state.fastMode ? '快速模式已为当前会话启动' : '快速模式已关闭')
+      notifySetting('快速模式', result)
+      await reconcileSessionSetting(request, () => version === fastModeMutationVersion)
     })
     .catch(async (error) => {
-      if (version !== fastModeMutationVersion) return
+      if (!request.isCurrent() || version !== fastModeMutationVersion) return
       state.fastModeMutating = false
-      await fetchState()
       notifyActionError(error, '快速模式切换失败')
+      // This refresh is also owner-bound; never apply an old session's response.
+      try {
+        const res = await fetch(request.url.replace('/api/fast-mode?', '/api/state?'))
+        const snapshot = await res.json()
+        if (res.ok && request.isCurrent() && version === fastModeMutationVersion) applySync(snapshot)
+      } catch {}
     })
 }
 
@@ -1684,6 +1851,7 @@ async function fetchMemoryState() {
 }
 
 async function newSession() {
+  resetSessionSettingsUi()
   const previousTabId = runtimeTabId
   const previousSessionId = runtimeSessionId
   disconnectRuntimeEvents()
@@ -1865,8 +2033,8 @@ function clearMemoryHover() {
   memoryHoverIndex.value = -1
 }
 
-async function postJson(url, body) {
-  const res = await fetch(runtimeUrl(url), {
+async function postJson(url, body, scoped = false) {
+  const res = await fetch(scoped ? url : runtimeUrl(url), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -2867,6 +3035,7 @@ async function repairRuntimeSessionBinding() {
 async function bindRuntimeSession(sessionId) {
   const targetSessionId = String(sessionId || '').trim()
   if (!targetSessionId) return false
+  if (targetSessionId !== runtimeSessionId) resetSessionSettingsUi()
   disconnectRuntimeEvents()
   runtimeSessionId = targetSessionId
   allowRuntimeSessionChange = false
@@ -2878,6 +3047,7 @@ async function bindRuntimeSession(sessionId) {
 }
 
 async function restoreRuntimeBinding(tabId, sessionId) {
+  resetSessionSettingsUi()
   disconnectRuntimeEvents()
   runtimeTabId = tabId
   runtimeSessionId = sessionId
@@ -3307,6 +3477,11 @@ function handleGlobalKeydown(event) {
   if (event.key === 'Escape' && state.confirmDialog.open) {
     event.preventDefault()
     resolveConfirmation(false)
+    return
+  }
+  if (event.key === 'Escape' && state.modelModalOpen) {
+    event.preventDefault()
+    closeModelModal()
     return
   }
   if (event.key === 'Escape' && state.contextWindowModalOpen) {
@@ -4546,18 +4721,18 @@ function createMobileSession() {
               </summary>
               <div class="mobile-session-options-body">
                 <dl>
-                  <div><dt>模型</dt><dd>{{ modelName }}</dd></div>
+                  <div><dt>模型</dt><dd><button type="button" class="mobile-context-button model-trigger" aria-label="选择模型" @click="openModelModal">{{ modelName }}</button></dd></div>
                   <div><dt>上下文</dt><dd><button type="button" class="mobile-context-button" @click="openContextWindowModal">{{ composerContextValue }}</button></dd></div>
                   <div><dt>Token</dt><dd>↑ {{ composerInputTokens }} / ↓ {{ composerOutputTokens }}</dd></div>
                 </dl>
                 <div class="mobile-session-actions">
                   <button
                     type="button"
-                    :class="['fast-mode-button', { active: state.fastMode, syncing: state.fastModeMutating }]"
-                    :aria-pressed="state.fastMode"
+                    :class="['fast-mode-button', { active: selectedFastMode, syncing: state.fastModeMutating }]"
+                    :aria-pressed="selectedFastMode"
                     @click="toggleFastMode"
                   ><span>快速模式</span></button>
-                  <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
+                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true" @click="compressSession">压缩会话</button>
                 </div>
                 <details class="mobile-runtime-info">
                   <summary>运行信息 <span>{{ backgroundTaskCount ? `${backgroundTaskCount} 个后台任务` : '无后台任务' }}</span></summary>
@@ -4572,21 +4747,21 @@ function createMobileSession() {
             </details>
             <div class="composer-footer">
               <div class="composer-metrics" aria-label="运行状态指标">
-                <span class="metric-chip model-chip"><em>模型</em><strong>{{ modelName }}</strong></span>
+                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" aria-label="选择模型" @click="openModelModal"><em>模型</em><strong>{{ modelName }}</strong></button>
                 <button type="button" :class="['metric-chip', 'numeric', 'context-window-trigger', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
                 <span :class="['metric-chip numeric', metricBumpClass('inputTokens')]" :key="`input-${state.composerMetrics.inputTokens.bump}`"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
                 <span :class="['metric-chip numeric', metricBumpClass('outputTokens')]" :key="`output-${state.composerMetrics.outputTokens.bump}`"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
                 <button
                   type="button"
-                  :class="['fast-mode-button', { active: state.fastMode, syncing: state.fastModeMutating }]"
-                  :aria-pressed="state.fastMode"
-                  :title="state.fastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
+                  :class="['fast-mode-button', { active: selectedFastMode, syncing: state.fastModeMutating }]"
+                  :aria-pressed="selectedFastMode"
+                  :title="selectedFastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
                   @click="toggleFastMode"
                 >
                   <span>快速模式</span>
                 </button>
                 <span class="compress-wrap">
-                  <button type="button" class="compact-button" :disabled="active" @click="compressSession">压缩会话</button>
+                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true" @click="compressSession">压缩会话</button>
                 </span>
               </div>
               <div class="composer-actions">
@@ -5036,10 +5211,39 @@ function createMobileSession() {
   </Teleport>
 
   <Teleport to="body">
+    <div v-if="state.modelModalOpen" class="context-window-backdrop" @click.self="closeModelModal">
+      <section class="context-window-modal session-model-modal" role="dialog" aria-modal="true" aria-label="选择模型" @keydown="trapSettingsFocus">
+        <form @submit.prevent="saveSessionModel">
+          <header class="session-model-header"><h2>模型</h2><button type="button" class="ghost" aria-label="关闭模型选择" @click="closeModelModal">×</button></header>
+          <input id="session-model-search" v-model="state.modelSearch" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off" />
+          <div class="session-model-list" role="radiogroup" aria-label="模型">
+            <label v-for="model in filteredModelOptions" :key="model" class="session-model-option" :class="{ selected: state.modelDraft === model }">
+              <input v-model="state.modelDraft" type="radio" name="session-model" :value="model" :disabled="state.modelSaving" />
+              <span>{{ model }}</span>
+            </label>
+          </div>
+          <fieldset class="session-reasoning-options" :disabled="state.modelSaving">
+            <legend>推理强度</legend>
+            <label v-for="effort in modelReasoningOptions" :key="effort" :class="{ selected: state.reasoningDraft === effort }">
+              <input v-model="state.reasoningDraft" type="radio" name="session-reasoning" :value="effort" />
+              <span>{{ effort === 'default' ? '默认' : effort === 'off' ? '关闭' : effort }}</span>
+            </label>
+          </fieldset>
+          <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>
+          <div class="context-window-actions">
+            <button type="button" class="ghost" @click="closeModelModal">取消</button>
+            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft">{{ state.modelSaving ? '保存中…' : '确认' }}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
     <div v-if="state.contextWindowModalOpen" class="context-window-backdrop" @click.self="closeContextWindowModal">
-      <section class="context-window-modal" role="dialog" aria-modal="true" aria-label="调整上下文窗口">
+      <section class="context-window-modal" role="dialog" aria-modal="true" aria-label="上下文窗口" @keydown="trapSettingsFocus">
         <form @submit.prevent="saveContextWindow">
-          <label for="context-window-input">调整本次会话上下文窗口大小：</label>
+          <label for="context-window-input">上下文窗口</label>
           <div class="context-window-input-wrap">
             <input
               id="context-window-input"
@@ -5055,7 +5259,7 @@ function createMobileSession() {
           </div>
           <p v-if="state.contextWindowError" class="context-window-error" role="alert">{{ state.contextWindowError }}</p>
           <div class="context-window-actions">
-            <button type="button" class="ghost" :disabled="state.contextWindowSaving" @click="closeContextWindowModal">取消</button>
+            <button type="button" class="ghost" @click="closeContextWindowModal">取消</button>
             <button type="submit" class="primary" :disabled="state.contextWindowSaving">{{ state.contextWindowSaving ? '保存中…' : '确认' }}</button>
           </div>
         </form>

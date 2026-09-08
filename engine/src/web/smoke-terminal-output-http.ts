@@ -177,7 +177,7 @@ try {
   phases.push('real-process-multiline-dual-stream-drain-nonzero');
 
   // Same run identity in a second owner is intentionally created via the independent store fixture.
-  value(store.start('B', dirs.get('B')!, run, { startedAt: clock, command: 'B identity fixture' }), 'B same-run start');
+  value(store.start('B', dirs.get('B')!, run, { startedAt: clock, command: 'B identity fixture', backgrounded: true }), 'B same-run start');
   value(store.append('B', run, redactedTerminalChunk('stdout', 0, 'B_ONLY\n')), 'B same-run append');
   value(store.finalize('B', run, { status: 'exited', finishedAt: clock, exitCode: 0, signal: null, terminationReason: 'completed', durationMs: 0 }), 'B same-run finish');
   equal((await page('B', run)).text, 'B_ONLY\n', 'same run B resolves only B bytes');
@@ -226,7 +226,11 @@ try {
     equal(snapshot.backgroundTasks.map(task => task.sessionId), [owner === 'A' ? stopRun : bLive], 'active task identity isolated');
     check(snapshot.backgroundTasks.every(task => task.ownerSessionId === owner), 'active owner identity');
     check(snapshot.terminalTaskHistory.every(task => task.ownerSessionId === owner), 'history owner identity');
-    equal(snapshot.terminalTaskHistory.find(task => task.sessionId === run)?.exitCode, owner === 'A' ? 7 : 0, 'same-run history resolves owner-specific exit facts');
+    if (owner === 'A') {
+      check(!snapshot.terminalTaskHistory.some(task => task.sessionId === run || task.sessionId === bigRun), 'foreground runs remain absent from background history');
+    } else {
+      equal(snapshot.terminalTaskHistory.find(task => task.sessionId === run)?.exitCode, 0, 'same-run explicit background fixture retains B exit facts');
+    }
     check(snapshot.terminalTaskHistory.every(task => !('output' in task)), 'history does not embed terminal output');
     check(snapshot.backgroundTasks.every(task => !('output' in task)), 'snapshot does not embed terminal output');
     equal(snapshot.lines, [], 'terminal reads did not create transcript lines');
@@ -313,7 +317,8 @@ try {
   equal(recoveredB.backgroundTaskCount, 0, 'lost residual not active after refresh');
   equal(recoveredB.terminalTaskHistory.find(task => task.sessionId === bLive)?.status, 'lost', 'HTTP history exposes lost');
   const recoveredA = await state('A');
-  equal(recoveredA.terminalTaskHistory.find(task => task.sessionId === run)?.exitCode, 7, 'refresh history retains nonzero exit');
+  check(!recoveredA.terminalTaskHistory.some(task => task.sessionId === run || task.sessionId === bigRun), 'refresh does not promote foreground runs into background history');
+  equal(recoveredA.terminalTaskHistory.find(task => task.sessionId === stopRun)?.status, 'killed', 'refresh retains explicitly backgrounded terminal history');
   phases.push('fresh-manager-store-server-runtime-recovery-real-running-lost');
 
   const expiresAt = terminal.record.expiresAt;
@@ -329,8 +334,7 @@ try {
   equal(expired.record.lifecycle, 'terminal', 'expiration never changes process lifecycle');
   equal((await page('A', run, { stream: 'stderr' })).text, null, 'both streams expire');
   const expiredHistory = (await state('A')).terminalTaskHistory.find(task => task.sessionId === run);
-  equal(expiredHistory?.exitCode, 7, 'expired history retains exit');
-  equal(expiredHistory?.outputAvailability, 'expired', 'expired history availability');
+  equal(expiredHistory, undefined, 'foreground history stays absent after output expiry');
   // Another full refresh proves TTL does not get renewed and facts stay durable.
   await closeServer(); store = createStore(); manager = createManager(); await startServer();
   const reexpired = await page('A', run);

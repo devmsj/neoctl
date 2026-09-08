@@ -609,6 +609,10 @@ button:disabled,
 }
 .message.assistant .message-marker { color: var(--pink) !important; }
 .message.user .message-marker { color: var(--lime) !important; }
+.background-task-dot.status-completed,
+.background-task-dot.status-succeeded { background: var(--lime); }
+.background-task-summary-status.status-completed,
+.background-task-summary-status.status-succeeded { color: var(--lime); }
 .message.tool .message-marker,
 .message.agent .message-marker { color: var(--sky) !important; }
 .message.compact-tool {
@@ -1566,6 +1570,12 @@ input[type='radio'] {
   border-bottom: 0 !important;
 }
 
+@media (min-width: 821px) {
+  .settings-form .plugin-settings-row:nth-last-child(2):nth-child(odd) {
+    border-bottom: 0 !important;
+  }
+}
+
 .settings-form .plugin-settings-row:hover {
   border-color: var(--line-soft) !important;
   background: color-mix(in srgb, var(--sky) 8%, transparent) !important;
@@ -2216,6 +2226,28 @@ input[type='radio'] {
   .right-panel[data-mobile-card="quota"] > [data-card="quota"],
   .right-panel[data-mobile-card="memory"] > [data-card="memory"] { display: block; }
   .right-panel .mobile-card-close { display: block; justify-self: end; width: 36px; height: 36px; }
+}
+
+/* Session-local model picker shares the context dialog, with no explanatory chrome. */
+.session-model-modal { max-height: calc(100dvh - 48px); overflow-y: auto; border-radius: 16px; }
+.session-model-modal form { min-width: 0; }
+.session-model-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.session-model-header h2 { margin: 0; font-size: 18px; }
+.session-model-header button { min-width: 36px; min-height: 36px; padding: 0; font-size: 22px; box-shadow: none; }
+#session-model-search { box-sizing: border-box; min-width: 0; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--text); font: inherit; }
+.session-model-list { display: grid; gap: 6px; max-height: min(36dvh, 320px); overflow-y: auto; min-width: 0; }
+.session-model-modal .session-model-option { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 10px 12px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+.session-model-option span { min-width: 0; overflow-wrap: anywhere; }
+.session-model-modal input[type="radio"] { appearance: auto; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: 0 0 16px; accent-color: var(--purple); }
+.session-model-modal .selected { background: var(--purple-soft); border-color: var(--purple); }
+.session-model-modal label:focus-within, #session-model-search:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+.session-reasoning-options { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.session-reasoning-options legend { margin-bottom: 10px; padding: 0; font-size: 15px; font-weight: 750; }
+.session-model-modal .session-reasoning-options label { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.mobile-context-button.model-trigger { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: right; }
+@media (max-width: 820px) {
+  .session-model-modal { width: min(500px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); }
+  .session-model-modal form { padding: 18px; gap: 16px; }
 }
 
 /* Compact composer toolbar: retain every value and action without nested frames. */

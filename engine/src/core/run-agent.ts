@@ -7,7 +7,7 @@ import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
-import { buildForkChildPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
+import { buildForkChildPrompt, buildSubagentSystemPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
 import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { SessionStore } from "../session/session-store.js";
@@ -277,9 +277,8 @@ async function createChildAgentSession(options: RunAgentOptions): Promise<Sessio
 }
 
 function createAgentContextManager(options: RunAgentOptions): ContextManager {
-  const parent = options.dependencies.contextManager;
   const inheritedCwd = options.workspaceCwd ?? options.parentContext?.appState.snapshot().cwd;
-  if (!parent) return new DefaultContextManager({ cwd: inheritedCwd });
+  const parent = options.dependencies.contextManager ?? new DefaultContextManager({ cwd: inheritedCwd });
 
   return {
     async build(input) {
@@ -287,7 +286,7 @@ function createAgentContextManager(options: RunAgentOptions): ContextManager {
         ...input,
         cwd: options.workspaceCwd ?? input.cwd,
         omitProjectMemory: options.agent.omitProjectMemory ?? input.omitProjectMemory,
-        agentPrompt: options.agent.buildSystemPrompt?.(options.parentContext),
+        agentPrompt: buildSubagentSystemPrompt(options.agent, options.parentContext),
         agentPromptMode: shouldAppendAgentPrompt(options.agent) ? "proactive_append" : "replace",
       });
       return runtime;

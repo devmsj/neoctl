@@ -12,6 +12,8 @@ export type OutputAvailability = "available" | "expired" | "evicted" | "lost" | 
 export interface TerminalRunMetadata {
   startedAt: number; processId?: number | null; tty?: boolean;
   sessionId?: string; status?: string;
+  /** True only after execution yielded to the background; absent in legacy records. */
+  backgrounded?: boolean;
   command?: string; cwd?: string; shell?: string; description?: string;
   /** Explicitly bounded metadata previews, never claimed as full original parameters. */
   truncatedFields?: Array<"command" | "cwd" | "shell" | "description">;
@@ -108,12 +110,14 @@ function metadataDTO(value: TerminalRunMetadata): TerminalRunMetadata {
   if (value.truncatedFields !== undefined) result.truncatedFields = [...value.truncatedFields];
   if (value.processId !== undefined) result.processId = value.processId;
   if (value.tty !== undefined) result.tty = value.tty;
+  if (value.backgrounded !== undefined) result.backgrounded = value.backgrounded;
   for (const key of Object.keys(textLimits) as (keyof typeof textLimits)[]) if (value[key] !== undefined) result[key] = value[key];
   return result;
 }
 function validMetadata(value: TerminalRunMetadata): boolean {
   return !!value && integer(value.startedAt) && (value.processId === undefined || value.processId === null || integer(value.processId))
     && (value.tty === undefined || typeof value.tty === "boolean")
+    && (value.backgrounded === undefined || typeof value.backgrounded === "boolean")
     && (value.truncatedFields === undefined || (Array.isArray(value.truncatedFields) && value.truncatedFields.length <= 4
       && new Set(value.truncatedFields).size === value.truncatedFields.length
       && value.truncatedFields.every((key) => ["command", "cwd", "shell", "description"].includes(key))))
@@ -219,6 +223,20 @@ export class TerminalOutputStore {
         for (const stream of ["stdout", "stderr"] as const) this.withFile(path.join(dir, `${stream}.txt`), "create", () => undefined);
         this.persist(owner, entry);
       } catch (error) { this.unavailable(owner, entry, error); }
+      return this.view(entry);
+    });
+  }
+
+  /** Persist the one-way foreground-to-background transition, even without output. */
+  markBackgrounded(ownerSessionId: string, runId: string): StoreResult<RunView> {
+    return this.guard(() => {
+      const [owner, entry] = this.entry(ownerSessionId, runId);
+      if (entry.record.metadata.backgrounded === true) return this.view(entry);
+      // An exit can win the race with execute() returning a running snapshot.
+      // The manager still knows it yielded, so terminal records may be marked too.
+      if (entry.record.lifecycle === "lost") fail("conflict");
+      entry.record.metadata.backgrounded = true;
+      this.save(owner, entry);
       return this.view(entry);
     });
   }

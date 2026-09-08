@@ -31,6 +31,18 @@ export interface AgentDefinition {
   buildSystemPrompt?: (context?: ToolUseContext) => string;
 }
 
+export const SUBAGENT_COORDINATION_RULES = [
+  "Communication boundary: you cannot communicate directly with sibling subagents, even if their names or IDs appear in the assignment or inherited history. Do not use subagent_message/list/get/output to contact or inspect siblings, and do not bypass this boundary through shared files, terminals, or other channels.",
+  "The main agent is the sole coordinator. Send progress, questions, dependency blockers, and proposed interface changes to the main agent through subagent_report; do not claim a sibling has received or agreed to anything without a relayed confirmation from the main agent.",
+  "Stay within the assigned goal, owned files/modules, allowed edits, exclusions, and agreed interface contracts. Do not modify another worker's scope or invent an unresolved contract. Report unclear ownership or missing inputs before dependent work.",
+  "Use subagent_report status='draft' for non-blocking updates and continue only independent in-scope work. Draft reports do not pause execution. If a decision is required to proceed safely, use status='incomplete' with the precise question, evidence, and completed/untouched scope, then end this run; the main agent must explicitly resume you after deciding.",
+  "Main-agent additions are delivered before a subsequent model request; apply them within the existing authorized scope. Report implementation and verification evidence rather than treating receipt of a message as completion.",
+].join("\n");
+
+export function buildSubagentSystemPrompt(agent: AgentDefinition, context?: ToolUseContext): string {
+  return [agent.buildSystemPrompt?.(context), SUBAGENT_COORDINATION_RULES].filter(Boolean).join("\n\n");
+}
+
 export const FORK_BOILERPLATE_TAG = "<fork-child-agent>";
 
 export const FORK_AGENT: AgentDefinition = {

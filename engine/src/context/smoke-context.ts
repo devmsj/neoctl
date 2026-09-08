@@ -444,7 +444,9 @@ async function main(): Promise<void> {
     !secondSequenceCompact.summary.includes("Persistent facts:");
 
   const manualOnly = new ManualOnlyCompactor(modelCompactor);
-  const gpt56WindowOk = resolveContextWindowTokens("gpt-5.6", {}).tokens === 256000
+  const gpt56WindowOk = resolveContextWindowTokens("gpt-5.6", {}).source === "unknown"
+    && resolveContextWindowTokens("gpt-6", {}).source === "unknown"
+    && resolveContextWindowTokens("gpt-6-astra", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-5.6-sol", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-5.6-terra", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-5.6-luna", {}).tokens === 256000;

@@ -301,6 +301,9 @@ export class ExecProcessManager {
       const session = this.sessions.get(sessionId);
       if (session && !session.backgrounded) {
         session.backgrounded = true;
+        if (session.outputStore && options.ownerId) {
+          this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.markBackgrounded(options.ownerId!, sessionId)));
+        }
         if (session.timeout) clearTimeout(session.timeout);
         session.timeout = undefined;
         this.notify();
@@ -465,7 +468,7 @@ export class ExecProcessManager {
         this.recordOutputResult(session, this.storeGuard(() => session.outputStore!.start(
           options.ownerId!, options.sessionDir!, id, {
             startedAt: session.startedAt, processId: backend.pid, tty: options.tty, sessionId: id,
-            status: "running", ...boundedRunMetadata(session.options),
+            status: "running", backgrounded: false, ...boundedRunMetadata(session.options),
           })));
       }
     }

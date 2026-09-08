@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-05",
+  "updatedAt": "2026-09-08",
   "notes": [
     "Static metadata for the supported multimodal GPT model aliases.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
@@ -14,7 +14,6 @@
       "id": "gpt-5.6-sol",
       "provider": "openai",
       "modelIds": [
-        "gpt-5.6",
         "gpt-5.6-sol"
       ],
       "contextWindowTokens": 256000,
@@ -78,7 +77,6 @@
       "id": "gpt-6-astra",
       "provider": "openai",
       "modelIds": [
-        "gpt-6",
         "gpt-6-astra"
       ],
       "contextWindowTokens": 256000,
