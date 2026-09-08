@@ -1,12 +1,13 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { contentUrl, emptyContent, mergeContent } from './agent-content-reader.mjs'
+import { contentUrl, emptyContent, mergeContent, sameIdentity, validIdentity } from './agent-content-reader.mjs'
 
 const props = defineProps({ ownerSessionId: String, task: Object, renderMarkdown: Function })
 const items = ref([])
 const error = ref('')
 let epoch = 0, controller, timer
 const preStyle = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }
+const identity = () => ({ ownerSessionId: props.ownerSessionId, taskId: props.task?.taskId, runGeneration: props.task?.runGeneration })
 
 async function load() {
   const current = ++epoch
@@ -15,9 +16,10 @@ async function load() {
   const signal = controller.signal
   clearTimeout(timer)
   const task = props.task
-  const ownerSessionId = props.ownerSessionId
-  if (!task?.taskId || !ownerSessionId || !Number.isSafeInteger(task.runGeneration)) return
-  const active = () => current === epoch && !signal.aborted
+  const requestedIdentity = identity()
+  const { ownerSessionId } = requestedIdentity
+  if (!validIdentity(requestedIdentity)) return
+  const active = () => current === epoch && !signal.aborted && sameIdentity(requestedIdentity, identity())
   const next = []
   let failed = false
   async function read(view, runGeneration) {
@@ -56,12 +58,26 @@ async function load() {
     add(`report:${run.runGeneration}`, '子代理 → 主代理', await get('report', run.runGeneration))
   }
   if (!active()) return
-  items.value = next
+  // A transient refresh failure must not remove previously rendered messages and
+  // reinsert them on the next poll. On first load, still show available sections.
+  if (!failed || !items.value.length) items.value = next
   error.value = failed ? '加载失败' : ''
-  if (['pending', 'running'].includes(task.status)) timer = setTimeout(load, 3000)
+  if (['pending', 'running'].includes(props.task?.status)) timer = setTimeout(load, 3000)
 }
-watch(() => [props.ownerSessionId, props.task?.taskId, props.task?.runGeneration, props.task?.status], () => {
-  items.value = []; error.value = ''; void load()
+// Watch scalar sources separately: a getter returning a fresh array fires whenever
+// App replaces the task snapshot, even when all four values are unchanged.
+watch([
+  () => props.ownerSessionId,
+  () => props.task?.taskId,
+  () => props.task?.runGeneration,
+  () => props.task?.status,
+], (values, previous) => {
+  // Lifecycle changes refresh in place; only a different owner/task/run may reset
+  // the reader. Batched prop patches must never fetch a mixed task/run identity.
+  if (values.slice(0, 3).some((value, index) => value !== previous[index])) {
+    items.value = []; error.value = ''
+  }
+  void load()
 }, { immediate: true })
 onBeforeUnmount(() => { epoch++; controller?.abort(); clearTimeout(timer) })
 </script>
