@@ -1,4 +1,6 @@
 export * from "./core/query-engine.js";
+export { readSessionPrompt, updateSessionPrompt, SessionPromptError, MAX_SESSION_PROMPT_CHARS } from "./web/session-prompt-protocol.js";
+export type { SessionPromptSnapshot, SessionPromptUpdate, SessionPromptUpdateResult } from "./web/session-prompt-protocol.js";
 export * from "./core/query.js";
 export * from "./core/state.js";
 export * from "./core/message-pipeline.js";
@@ -7,6 +9,7 @@ export * from "./core/assistant-output-filter.js";
 export * from "./core/context-metrics.js";
 export * from "./plugins/plugin-system.js";
 export * from "./context/prompts.js";
+export * from "./context/prompt-config.js";
 export * from "./context/context-manager.js";
 export * from "./context/compaction.js";
 export * from "./agents/agent-definition.js";

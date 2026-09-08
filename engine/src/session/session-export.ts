@@ -13,6 +13,7 @@ export interface SessionPromptExportSnapshot {
   reasoning?: unknown;
   systemPrompt?: string;
   baseSystemPrompt?: string;
+  sessionPrompt?: { override: boolean; revision: string; deferred: boolean; pendingOverride?: boolean };
   promptSections?: unknown;
   appPrompt?: unknown;
   userContext?: unknown;

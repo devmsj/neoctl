@@ -29,7 +29,7 @@
     "vendor:rg": "node scripts/install-ripgrep.cjs",
     "vendor:rg:all": "node scripts/install-ripgrep.cjs --all",
     "verify:rg": "node scripts/verify-ripgrep.cjs",
-    "build": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true })).catch(() => process.exit(1))\" && tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs",
+    "build": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true })).catch(() => process.exit(1))\" && tsc -p tsconfig.json && node scripts/copy-model-metadata.mjs && node scripts/copy-prompt-resources.mjs",
     "prepare": "npm run build",
     "prepack": "npm run build && npm run verify:rg",
     "release:local": "node scripts/release-local.mjs",
@@ -88,6 +88,7 @@
     "dist",
     "scripts",
     "vendor/ripgrep",
-    "README.md"
+    "README.md",
+    "docs/prompt-config.md"
   ]
 }

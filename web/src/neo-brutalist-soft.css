@@ -1505,6 +1505,56 @@ input[type='radio'] {
 }
 
 
+/* Prompt configuration shares the model settings palette and controls. */
+.settings-subpage-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.settings-prompt-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 56px;
+  padding: 14px 18px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent) !important;
+  background: var(--surface) !important;
+  box-shadow: none !important;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.settings-prompt-entry:hover { background: var(--panel-soft) !important; }
+.settings-prompt-entry > strong { font-size: 14px; }
+.settings-prompt-entry > span { color: var(--pink); font-size: 22px; }
+.prompt-config-editor { display: grid; gap: 14px; min-width: 0; }
+.prompt-config-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.prompt-config-scope { color: var(--muted); font-size: 12px; }
+.prompt-config-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prompt-config-textarea {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  max-height: 65vh;
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent) !important;
+  background: var(--panel-soft) !important;
+  color: var(--text);
+  box-shadow: none !important;
+  font: 13px/1.75 ui-monospace, SFMono-Regular, Consolas, monospace;
+  resize: vertical;
+  outline: none;
+  tab-size: 2;
+}
+.prompt-config-textarea:focus {
+  border-color: var(--pink) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pink) 18%, transparent) !important;
+}
+.prompt-config-error { color: var(--red); font-size: 12px; }
+@media (max-width: 640px) {
+  .prompt-config-textarea { min-height: 280px; padding: 12px; font-size: 12px; }
+  .prompt-config-actions { gap: 6px; }
+  .prompt-config-actions > button { min-height: 36px; padding: 7px 10px; }
+}
+
 /* Model settings: keep hierarchy without heavy nested outlines. */
 .settings-page {
   background: var(--surface) !important;

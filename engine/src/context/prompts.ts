@@ -1,3 +1,4 @@
+import { readBundledSystemPrompt } from "./prompt-config.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
 import type { ToolUseContext } from "../tools/tool.js";
 
@@ -19,38 +20,19 @@ export interface EffectiveSystemPromptOptions {
   toolUseContext?: ToolUseContext;
 }
 
-export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = []): PromptSection[] {
+export function buildDefaultSystemPromptSections(enabledTools: readonly string[] = [], basePrompt: string = readBundledSystemPrompt()): PromptSection[] {
   const hasImageGenerationTool = enabledTools.includes("image_create");
   const hasLoadImageTool = enabledTools.includes("image_inspect");
   const hasSecretTools = enabledTools.includes("secret_list") || enabledTools.includes("secret_request");
   return [
+    { name: "System Prompt", cacheStable: true, content: basePrompt },
     {
-      name: "Agent Scaffold",
-      cacheStable: true,
-      content: [
-        "You are an engineering agent running inside neo.",
-        "You may identify yourself as neo when referring to your operating identity.",
-        "Drive tasks through the shared query loop, tool system, context manager, and model gateway.",
-      ].join("\n"),
-    },
-    {
-      name: "Doing Tasks",
-      cacheStable: true,
-      content: [
-        "Keep work concrete and verifiable.",
-        "For tasks with multiple meaningful steps, call the plan_update tool to create and maintain the visible execution plan, updating item statuses as work progresses.",
-        "Use tools for real workspace changes and report validation results precisely.",
-        "When following a concrete strategy, you may briefly state meaningful progress transitions, such as finishing code edits and preparing to run tests.",
-      ].join("\n"),
-    },
-    {
-      name: "Using Tools",
+      name: "Runtime Tool Capabilities",
       cacheStable: true,
       content: [
         enabledTools.length
           ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
           : "Available tools are provided separately by the runtime.",
-        "When using tools, you may briefly state the intent of the tool call; if a tool result contains valuable information, you may briefly report it.",
         `Tool results use a default context budget of ${DEFAULT_TOOL_RESULT_BUDGET_CHARS} serialized characters unless a tool specifies a larger default. Use maxResultChars on an individual call to override it within 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`,
         hasLoadImageTool
           ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the image_inspect tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
@@ -62,11 +44,6 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           ? "Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>. Do not ask users to paste secret values into the conversation; pass secret keys to tools that accept secret references such as terminal_run.envSecrets."
           : "",
       ].join("\n"),
-    },
-    {
-      name: "Tone And Output",
-      cacheStable: true,
-      content: "Be direct, concise, and action-oriented. Avoid inventing file contents or command results.",
     },
   ];
 }

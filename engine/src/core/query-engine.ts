@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { InMemoryAppState } from "../app/app-state.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
 import { AppPromptContextManager, DefaultContextManager, readProjectMemoryDocuments, type ContextManager } from "../context/context-manager.js";
@@ -23,6 +24,9 @@ import { SessionStore, type SessionDisplayEntry, type SessionStoreSnapshot, type
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { computeStaticTokens } from "./context-metrics.js";
+import { applySessionPrompt, createSessionPromptSnapshot, parseSessionPromptUpdate, SessionPromptError, type SessionPromptSnapshot, type SessionPromptState, type SessionPromptUpdate, type SessionPromptUpdateResult } from "./session-settings-prompt.js";
+
+type PendingSessionSettings = SessionSettingsPatch & { sessionPrompt?: string | null };
 
 export type { SessionSettingsPatch } from "./query.js";
 
@@ -75,17 +79,22 @@ export class QueryEngine {
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
   private running = false;
-  private pendingSessionSettings: SessionSettingsPatch = {};
+  private pendingSessionSettings: PendingSessionSettings = {};
+  private sessionPromptState?: SessionPromptState;
+  private activeSessionPrompt: string | null = null;
+  private readonly ephemeralSessionKey = randomUUID();
   // Idle mutations and the next generator share a barrier. Never compact alongside a request.
   private settingsMutation: Promise<unknown> = Promise.resolve();
   private currentContextWindowTokens?: number;
   private currentModelGateway: ModelGateway;
   private sessionInitialized = false;
+  private sessionInitialization?: Promise<void>;
   private titleSchedulerVersion = 0;
   private titleAgentRun?: { version: number; controller: AbortController };
   private readonly sessionTitleListeners = new Set<(snapshot: SessionStoreSnapshot | undefined) => void>();
   private readonly appPromptStore: AppPromptStore;
   private readonly contextManager: ContextManager;
+  private readonly baselineContextManager: ContextManager;
   private readonly additionalPromptContextManager: AdditionalPromptContextManager;
   private pendingCwdTransitionPaths?: string[];
   private pendingRequestContext?: Record<string, unknown>;
@@ -102,7 +111,12 @@ export class QueryEngine {
       ?? options.contextManager
       ?? new DefaultContextManager({ cwd: options.cwd });
     this.additionalPromptContextManager = new AdditionalPromptContextManager(baseContextManager, options.additionalPromptSections);
-    this.contextManager = new AppPromptContextManager(this.additionalPromptContextManager, this.appPromptStore);
+    this.baselineContextManager = new AppPromptContextManager(this.additionalPromptContextManager, this.appPromptStore);
+    this.contextManager = { build: async (input) => {
+      // Capture before any asynchronous baseline work: an in-flight request never observes a later edit.
+      const content = this.activeSessionPrompt;
+      return applySessionPrompt(await this.baselineContextManager.build(input), content);
+    } };
     this.pendingCwdTransitionPaths = normalizeCwdTransitionPaths(options.cwdTransitionPaths);
   }
 
@@ -133,24 +147,32 @@ export class QueryEngine {
   }
 
   async initialize(): Promise<void> {
+    if (this.sessionInitialization) return this.sessionInitialization;
     if (this.sessionInitialized) return;
-    this.sessionInitialized = true;
-    if (this.options.session?.enabled === false) return;
-    if (!this.options.session) return;
-    await this.openSession({
-      sessionId: this.options.session.sessionId,
-      resume: this.options.session.resume,
-    });
+    const initialization = (async () => {
+      if (this.options.session?.enabled !== false && this.options.session) {
+        await this.openSession({ sessionId: this.options.session.sessionId, resume: this.options.session.resume });
+      }
+      this.sessionInitialized = true;
+    })();
+    this.sessionInitialization = initialization;
+    try { await initialization; }
+    finally { this.sessionInitialization = undefined; }
   }
 
   async newSession(): Promise<SessionStoreSnapshot> {
     if (this.running) throw new Error("cannot switch session while query engine is running");
-    await this.settingsMutation;
-    this.sessionInitialized = true;
-    await this.openSession({ resume: false });
-    const snapshot = this.sessionStore?.snapshot();
-    if (!snapshot) throw new Error("session transcripts are disabled");
-    return snapshot;
+    const mutation = this.settingsMutation.then(async () => {
+      await this.sessionInitialization;
+      await this.openSession({ resume: false });
+      this.sessionInitialized = true;
+      const snapshot = this.sessionStore?.snapshot();
+      if (!snapshot) throw new Error("session transcripts are disabled");
+      return snapshot;
+    });
+    // Session switches share the editor barrier: stale saves can never land in a new session.
+    this.settingsMutation = mutation.catch(() => undefined);
+    return mutation;
   }
 
   async listSessions(limit = 10): Promise<SessionSummary[]> {
@@ -318,7 +340,42 @@ export class QueryEngine {
     return mutation;
   }
 
-  getPendingSessionSettings(): SessionSettingsPatch {
+  /** Editor state includes accepted queued changes; runtime exports still describe the active turn. */
+  async getSessionPrompt(): Promise<SessionPromptSnapshot> {
+    await this.settingsMutation;
+    await this.initialize();
+    const snapshot = await this.buildPromptExportSnapshot(this.getHistoryMessages());
+    return createSessionPromptSnapshot(this.sessionPromptKey(), this.sessionPromptState, snapshot.baseSystemPrompt ?? "");
+  }
+
+  async updateSessionPrompt(input: SessionPromptUpdate): Promise<SessionPromptUpdateResult> {
+    const update = parseSessionPromptUpdate(input);
+    const mutation = this.settingsMutation.then(async () => {
+      await this.initialize();
+      const key = this.sessionPromptKey();
+      const snapshot = await this.buildPromptExportSnapshot(this.getHistoryMessages());
+      const current = createSessionPromptSnapshot(key, this.sessionPromptState, snapshot.baseSystemPrompt ?? "");
+      if (key !== this.sessionPromptKey() || update.revision !== current.revision) {
+        throw new SessionPromptError("session prompt changed; reload before saving", 409);
+      }
+      const state: SessionPromptState = { content: update.reset ? null : update.content, revision: randomUUID() };
+      // Persist before accepting, including busy edits, so same-session resume cannot lose them.
+      this.sessionStore?.recordSessionPrompt(state);
+      this.sessionPromptState = state;
+      const deferred = this.running;
+      if (deferred) this.pendingSessionSettings = { ...this.pendingSessionSettings, sessionPrompt: state.content };
+      else this.activeSessionPrompt = state.content;
+      return { ok: true as const, ...createSessionPromptSnapshot(key, state, snapshot.baseSystemPrompt ?? ""), deferred };
+    });
+    this.settingsMutation = mutation.catch(() => undefined);
+    return mutation;
+  }
+
+  private sessionPromptKey(): string {
+    return this.sessionStore ? `${this.sessionStore.sessionDir}:${this.agentId}` : this.ephemeralSessionKey;
+  }
+
+  getPendingSessionSettings(): PendingSessionSettings {
     const patch = { ...this.pendingSessionSettings };
     if (Object.hasOwn(patch, "reasoning")) patch.reasoning = cloneReasoningConfig(patch.reasoning);
     return patch;
@@ -331,8 +388,9 @@ export class QueryEngine {
     return this.applySessionSettings(patch, messages);
   }
 
-  private async applySessionSettings(patch: SessionSettingsPatch, messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
+  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
     const changed: SessionSettingsPatch = {};
+    if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
       this.currentModel = patch.model;
       changed.model = patch.model;
@@ -555,12 +613,15 @@ export class QueryEngine {
       emit: () => undefined,
     };
     const initialToolDefinitions = this.options.tools.definitions(toolContext);
-    const context = await this.contextManager.build({
+    const activePrompt = this.activeSessionPrompt;
+    const baseline = await this.baselineContextManager.build({
       agentId: this.agentId,
       messages,
       enabledTools: initialToolDefinitions.map((tool) => tool.name),
       toolUseContext: toolContext,
     });
+    const context = applySessionPrompt(baseline, activePrompt);
+    const desiredPrompt = createSessionPromptSnapshot(this.sessionPromptKey(), this.sessionPromptState, baseline.systemPrompt);
     const toolDefinitions = this.options.tools.definitions(toolContext);
     const messagesWithUserContext = applyRuntimeContextForPromptCache([], context.userContext, {});
     const userContextPrompt = messagesWithUserContext[0]?.blocks
@@ -571,7 +632,13 @@ export class QueryEngine {
       model: this.currentModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       systemPrompt: context.systemPrompt,
-      baseSystemPrompt: context.systemPrompt,
+      baseSystemPrompt: baseline.systemPrompt,
+      sessionPrompt: {
+        override: activePrompt !== null,
+        revision: desiredPrompt.revision,
+        deferred: Object.hasOwn(this.pendingSessionSettings, "sessionPrompt"),
+        pendingOverride: desiredPrompt.override,
+      },
       promptSections: context.promptSections,
       userContext: context.userContext,
       systemContext: context.systemContext,
@@ -632,6 +699,9 @@ export class QueryEngine {
       resume: options.resume,
       toolResultThresholdChars: this.options.session.toolResultThresholdChars,
     });
+    this.pendingSessionSettings = {};
+    this.sessionPromptState = this.sessionStore.getSessionPrompt();
+    this.activeSessionPrompt = this.sessionPromptState?.content ?? null;
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
     this.appPromptStore.setAppPrompt(this.sessionStore.getAppPrompt());

@@ -161,12 +161,15 @@ const chatAssistant = chatMessages.find((message) => message.role === "assistant
 const ok =
   plain.store === false &&
   typeof plain.prompt_cache_key === "string" &&
-  cached.instructions === undefined &&
+  plain.instructions === undefined &&
+  cached.instructions === "## Stable\ncache me\n\n## Dynamic\nchanges" &&
   cached.prompt_cache_options &&
-  cachedBreakpoints === 2 &&
-  !cachedInputJson.includes("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__") &&
-  cachedInputJson.indexOf("cache me") < cachedInputJson.indexOf("project memory") &&
-  cachedInputJson.indexOf("project memory") < cachedInputJson.indexOf("changes") &&
+  cachedBreakpoints === 1 &&
+  !JSON.stringify(cached).includes("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__") &&
+  !cachedInputJson.includes("cache me") &&
+  !cachedInputJson.includes("changes") &&
+  cachedInput[0]?.role === "user" &&
+  cachedInputJson.indexOf("project memory") < cachedInputJson.indexOf("hello") &&
   typeof cachedChat.prompt_cache_key === "string" &&
   !cachedChatJson.includes("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__") &&
   cachedChatJson.indexOf("stable") < cachedChatJson.indexOf("dynamic") &&

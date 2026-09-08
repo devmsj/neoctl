@@ -1,3 +1,4 @@
+import { PromptConfigStore } from "./prompt-config.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AppPromptStore } from "../app/app-prompt.js";
@@ -49,6 +50,8 @@ export interface ContextManager {
 }
 
 export interface DefaultContextManagerOptions {
+  /** File-backed global baseline; provide an isolated store for embedded runtimes/tests. */
+  promptConfigStore?: PromptConfigStore;
   cwd?: string;
   memoryFileNames?: readonly string[];
   currentDate?: () => string;
@@ -93,16 +96,18 @@ function normalizeAdditionalPromptSections(sections: readonly PromptSection[]): 
 
 export class DefaultContextManager implements ContextManager {
   private readonly cwd: string;
+  private readonly promptConfigStore: PromptConfigStore;
   private systemContextCache?: { cwd: string; sessionDir?: string; value: SystemContext };
 
   constructor(private readonly options: DefaultContextManagerOptions = {}) {
     this.cwd = resolve(options.cwd ?? process.cwd());
+    this.promptConfigStore = options.promptConfigStore ?? new PromptConfigStore();
   }
 
   async build(input: ContextBuildInput): Promise<RuntimeContext> {
     const cwd = resolve(input.cwd ?? this.cwd);
     const promptSections = [
-      ...buildDefaultSystemPromptSections(input.enabledTools ?? []),
+      ...buildDefaultSystemPromptSections(input.enabledTools ?? [], (await this.promptConfigStore.read()).content),
       {
         name: "Runtime",
         cacheStable: false,

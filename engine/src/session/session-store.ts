@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CompactionReason, CompactionReport } from "../context/compaction.js";
 import type { AppPromptValue } from "../app/app-prompt.js";
+import { validateSessionPromptContent, type SessionPromptState } from "../core/session-settings-prompt.js";
 import type { Message } from "../types/messages.js";
 import { getNeoctlHome } from "../paths.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
@@ -16,6 +17,7 @@ export type SessionTranscriptEntry =
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
+  | { type: "session-prompt"; sessionId: string; agentId: string; createdAt: string; prompt: SessionPromptState }
   | { type: "fast-mode"; sessionId: string; agentId: string; createdAt: string; enabled: boolean }
   | { type: "context-window"; sessionId: string; agentId: string; createdAt: string; tokens: number }
   | {
@@ -81,6 +83,7 @@ export interface SessionStoreSnapshot {
   resumedMessages: number;
   contentReplacements: number;
   appPrompt?: AppPromptValue;
+  sessionPrompt?: SessionPromptState;
   fastMode: boolean;
   contextWindowTokens?: number;
   windowNumber: number;
@@ -112,6 +115,7 @@ export class SessionStore {
   private hasInitialTitle = false;
   private hasTitleRefinement = false;
   private appPrompt?: AppPromptValue;
+  private sessionPrompt?: SessionPromptState;
   private fastMode = false;
   private contextWindowTokens?: number;
   private lastCompaction?: CompactionReport;
@@ -133,6 +137,7 @@ export class SessionStore {
     this.hasInitialTitle = loaded.hasInitialTitle;
     this.hasTitleRefinement = loaded.hasTitleRefinement;
     this.appPrompt = loaded.appPrompt;
+    this.sessionPrompt = loaded.sessionPrompt;
     this.fastMode = loaded.fastMode;
     this.contextWindowTokens = loaded.contextWindowTokens;
     this.lastCompaction = loaded.lastCompaction ? cloneCompactionReport(loaded.lastCompaction) : undefined;
@@ -325,6 +330,18 @@ export class SessionStore {
     this.appPrompt = nextAppPrompt;
   }
 
+  getSessionPrompt(): SessionPromptState | undefined {
+    return this.sessionPrompt ? { ...this.sessionPrompt } : undefined;
+  }
+
+  recordSessionPrompt(prompt: SessionPromptState): void {
+    if (prompt.content !== null) validateSessionPromptContent(prompt.content);
+    if (!prompt.revision.trim()) throw new Error("session prompt revision is required");
+    const stored = { ...prompt };
+    this.appendEntry({ type: "session-prompt", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString(), prompt: stored });
+    this.sessionPrompt = stored;
+  }
+
   getFastMode(): boolean {
     return this.fastMode;
   }
@@ -400,6 +417,7 @@ export class SessionStore {
       resumedMessages: this.resumedMessages.length,
       contentReplacements: this.contentReplacements.length,
       fastMode: this.fastMode,
+      ...(this.sessionPrompt ? { sessionPrompt: { ...this.sessionPrompt } } : {}),
       contextWindowTokens: this.contextWindowTokens,
       windowNumber: this.windowNumber,
       ...(this.lastCompaction ? { lastCompaction: cloneCompactionReport(this.lastCompaction) } : {}),
@@ -446,6 +464,7 @@ interface LoadedTranscript {
   hasInitialTitle: boolean;
   hasTitleRefinement: boolean;
   appPrompt?: AppPromptValue;
+  sessionPrompt?: SessionPromptState;
   fastMode: boolean;
   contextWindowTokens?: number;
   lastCompaction?: CompactionReport;
@@ -537,6 +556,14 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       }
     }
     if (entry.type === "app-prompt") loaded.appPrompt = entry.appPrompt ? cloneAppPrompt(entry.appPrompt) : undefined;
+    if (entry.type === "session-prompt") {
+      const prompt = entry.prompt;
+      if (!prompt || typeof prompt.revision !== "string" || !prompt.revision.trim() || (prompt.content !== null && typeof prompt.content !== "string")) {
+        throw new Error("invalid persisted session prompt");
+      }
+      if (prompt.content !== null) validateSessionPromptContent(prompt.content);
+      loaded.sessionPrompt = { content: prompt.content, revision: prompt.revision };
+    }
     if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
     if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
   }

@@ -16,6 +16,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
+import PromptConfigEditor from './components/PromptConfigEditor.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
@@ -222,6 +223,7 @@ const state = reactive({
   runtimeContextError: '',
   runtimeContextModal: '',
   runtimeContextDetail: undefined,
+  settingsPage: '',
   projectContextOpen: false,
   projectContextDocument: undefined,
   globalPlugins: { items: [], locked: false, restartRequired: true, loading: false },
@@ -1910,6 +1912,7 @@ async function deleteSession(sessionId) {
 
 async function openLogin(provider) {
   state.activePanel = 'settings'
+  state.settingsPage = ''
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
     const res = await fetch(runtimeUrl(`/api/login${query}`))
@@ -1923,6 +1926,11 @@ async function openLogin(provider) {
   } catch (error) {
     notifyActionError(error, '加载模型配置失败')
   }
+}
+
+async function onPromptConfigSaved(result) {
+  notify(result?.deferred ? '已保存，下一轮生效' : '提示词已保存')
+  await fetchRuntimeContext()
 }
 
 async function switchLoginProvider() {
@@ -2618,10 +2626,6 @@ function runtimeToolSchema(tool) {
   return JSON.stringify(tool?.inputSchema || {}, null, 2)
 }
 
-function runtimeSectionLabel(section) {
-  return section?.cacheStable ? '稳定缓存段' : '动态段'
-}
-
 function openRuntimeContextModal(kind) {
   state.runtimeContextModal = kind
   state.runtimeContextDetail = undefined
@@ -2798,24 +2802,6 @@ async function selectCwd() {
     state.cwdPicker.error = actionErrorMessage(error, '切换失败')
   } finally {
     state.cwdPicker.mutating = false
-  }
-}
-
-function openRuntimePromptDetail(section) {
-  state.runtimeContextDetail = {
-    kind: 'prompt',
-    title: section.name,
-    meta: runtimeSectionLabel(section),
-    content: section.content,
-  }
-}
-
-function openRuntimeFullPromptDetail() {
-  state.runtimeContextDetail = {
-    kind: 'prompt',
-    title: '完整系统提示词',
-    meta: `${compactNumber(state.runtimeContext?.prompt?.chars || 0)} 字符`,
-    content: state.runtimeContext?.prompt?.systemPrompt || '',
   }
 }
 
@@ -5006,12 +4992,25 @@ function createMobileSession() {
 
       <section v-else-if="state.activePanel === 'settings'" class="content-grid single">
         <div class="panel-page settings-page">
+          <template v-if="state.settingsPage === 'prompt'">
+            <div class="page-head settings-page-head">
+              <div class="settings-subpage-title">
+                <button type="button" class="mini-button" aria-label="返回模型配置" @click="state.settingsPage = ''">←</button>
+                <h2>提示词配置</h2>
+              </div>
+            </div>
+            <PromptConfigEditor endpoint="/api/prompt-config" @saved="onPromptConfigSaved" />
+          </template>
+          <template v-else>
           <div class="page-head settings-page-head">
             <h2>模型配置</h2>
             <button class="primary" @click="saveLogin" :disabled="!state.login">保存</button>
           </div>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
           <form v-else class="settings-form" @submit.prevent="saveLogin">
+            <button type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
+              <strong>提示词配置</strong><span aria-hidden="true">›</span>
+            </button>
             <section class="settings-card">
               <header class="settings-card-head"><strong>模型</strong></header>
               <div class="settings-field-grid">
@@ -5083,6 +5082,7 @@ function createMobileSession() {
               </div>
             </section>
           </form>
+          </template>
         </div>
       </section>
 
@@ -5315,16 +5315,12 @@ function createMobileSession() {
         </header>
 
         <div class="runtime-context-modal-content">
-          <div v-if="state.runtimeContextModal === 'prompt'" class="runtime-context-index">
-            <button type="button" class="runtime-context-index-item featured" @click="openRuntimeFullPromptDetail">
-              <span><strong>完整系统提示词</strong><small>{{ compactNumber(state.runtimeContext?.prompt?.chars || 0) }} 字符</small></span>
-              <b>›</b>
-            </button>
-            <button v-for="(section, index) in runtimePromptSections" :key="`${section.name}-${index}`" type="button" class="runtime-context-index-item" @click="openRuntimePromptDetail(section)">
-              <span><strong>{{ section.name }}</strong><small>{{ runtimeSectionLabel(section) }} · {{ compactNumber(section.chars || 0) }} 字符</small></span>
-              <b>›</b>
-            </button>
-          </div>
+          <PromptConfigEditor
+            v-if="state.runtimeContextModal === 'prompt'"
+            :endpoint="runtimeUrl('/api/session-prompt')"
+            session
+            @saved="onPromptConfigSaved"
+          />
 
           <div v-else-if="state.runtimeContextModal === 'tools'" class="runtime-plugin-list">
             <div v-if="state.sessionTools.loading" class="runtime-context-empty">同步中</div>

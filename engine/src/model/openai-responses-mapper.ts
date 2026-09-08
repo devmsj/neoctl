@@ -34,16 +34,15 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     markStableRuntimeContextBreakpoint: explicitCaching,
   });
   const conversationInput = buildResponsesInput(request.messages.slice(stableRuntimeCount));
-  const input = [
-    ...(promptCache.stableSystemPrompt ? [developerInput(promptCache.stableSystemPrompt, explicitCaching)] : []),
-    ...stableRuntimeInput,
-    ...(promptCache.dynamicSystemPrompt ? [developerInput(promptCache.dynamicSystemPrompt)] : []),
-    ...conversationInput,
-  ];
+  // The boundary is an internal cache marker, not part of the model instructions.
+  // Send the full prompt on every request, including previous_response_id continuations.
+  const instructions = [promptCache.stableSystemPrompt, promptCache.dynamicSystemPrompt].filter(Boolean).join("\n\n") || undefined;
+  const input = [...stableRuntimeInput, ...conversationInput];
   const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
   const toolChoice = constrainedResponsesToolChoice(request.toolChoice, tools);
   const body = dropUndefined({
     model,
+    instructions,
     input,
     previous_response_id: request.previousResponseId,
     max_output_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
@@ -61,17 +60,6 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     tool_choice: toolChoice,
   });
   return body;
-}
-
-function developerInput(text: string, explicitBreakpoint = false): Record<string, unknown> {
-  return {
-    role: "developer",
-    content: [{
-      type: "input_text",
-      text,
-      ...(explicitBreakpoint ? { prompt_cache_breakpoint: { mode: "explicit" } } : {}),
-    }],
-  };
 }
 
 function supportsExplicitPromptCaching(model: string): boolean {

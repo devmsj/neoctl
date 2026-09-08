@@ -43,6 +43,7 @@ export interface WebRuntimeContextPayload {
     stableSections: number;
     dynamicSections: number;
     sections: WebRuntimePromptSection[];
+    sessionPrompt?: SessionPromptExportSnapshot["sessionPrompt"];
     appPrompt?: unknown;
     userContext?: unknown;
     systemContext?: unknown;
@@ -86,6 +87,7 @@ export function createWebRuntimeContextPayload(
       stableSections: sections.filter((section) => section.cacheStable).length,
       dynamicSections: sections.filter((section) => !section.cacheStable).length,
       sections,
+      ...(snapshot.sessionPrompt ? { sessionPrompt: { ...snapshot.sessionPrompt } } : {}),
       appPrompt: snapshot.appPrompt,
       userContext: snapshot.userContext,
       systemContext: snapshot.systemContext,

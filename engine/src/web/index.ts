@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
+import { handlePromptConfigRequest } from "./prompt-config-protocol.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { readSessionPrompt, updateSessionPrompt, SessionPromptError } from "./session-prompt-protocol.js";
 import { QueryEngine } from "../core/query-engine.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptStore } from "../app/app-prompt.js";
 import { InMemoryAppState } from "../app/app-state.js";
@@ -1361,6 +1363,21 @@ export class WebRepl {
     }
   }
 
+  sessionPrompt() {
+    return readSessionPrompt(this.runtime.engine);
+  }
+
+  async saveSessionPrompt(body: unknown) {
+    const engine = this.runtime.engine;
+    const result = await updateSessionPrompt(engine, body);
+    if (this.runtime.engine === engine) {
+      if (!result.deferred) await this.refreshSessionSettingMetrics(engine);
+      this.publishRuntimeContext();
+      this.broadcastSync();
+    }
+    return result;
+  }
+
   async compactSession(): Promise<WebActionResult<{ deferred: boolean }>> {
     const engine = this.runtime.engine;
     try {
@@ -2280,6 +2297,7 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "GET" && url.pathname === "/vendor/marked.esm.js") return sendFile(res, markedAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight.min.js") return sendFile(res, highlightAssetPath, "text/javascript; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/vendor/highlight-theme.css") return sendFile(res, highlightThemeAssetPath, "text/css; charset=utf-8");
+    if (url.pathname === "/api/prompt-config") return handlePromptConfigRequest(req, res);
     if (req.method === "GET" && url.pathname === "/api/client-info") return sendJson(res, router.clientInfo());
     if (req.method === "POST" && url.pathname === "/api/client-reload") {
       const body = await readJsonBody<{ clearCache?: boolean; reason?: string }>(req);
@@ -2374,6 +2392,20 @@ async function route(req: IncomingMessage, res: ServerResponse, router: WebRunti
     if (req.method === "POST" && url.pathname === "/api/app-prompt") {
       const body = await readJsonBody<WebSetAppPromptPayload>(req);
       return sendJson(res, repl.setAppPrompt(body));
+    }
+    if (url.pathname === "/api/session-prompt" && (req.method === "GET" || req.method === "POST")) {
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        if (req.method === "GET") return sendJson(res, await repl.sessionPrompt());
+        let body: unknown;
+        try { body = await readJsonBody<unknown>(req); }
+        catch { return sendJson(res, actionFailure("SESSION_PROMPT_INVALID", "invalid JSON body"), 400); }
+        return sendJson(res, await repl.saveSessionPrompt(body));
+      } catch (error) {
+        const status = error instanceof SessionPromptError ? error.statusCode : 500;
+        const code = status === 409 ? "SESSION_PROMPT_CONFLICT" : status === 400 ? "SESSION_PROMPT_INVALID" : "SESSION_PROMPT_FAILED";
+        return sendJson(res, actionFailure(code, error instanceof Error ? error.message : String(error)), status);
+      }
     }
     if (req.method === "POST" && url.pathname === "/api/session-model") {
       const body = await readJsonBody<{ model?: unknown; reasoning?: unknown }>(req);

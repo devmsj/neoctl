@@ -94,6 +94,9 @@ async function injectSeaBlob() {
 }
 
 async function copyRuntimeFiles() {
+  // The editable global baseline is initialized from this version's real Markdown.
+  // Fail packaging rather than ship a runtime that cannot initialize prompt configuration.
+  await fs.access(path.join(projectRoot, "dist", "context", "system.md"));
   await fs.cp(path.join(projectRoot, "dist"), path.join(outDir, "dist"), { recursive: true });
   await fs.cp(path.join(projectRoot, "node_modules"), path.join(outDir, "node_modules"), {
     recursive: true,
