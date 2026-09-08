@@ -3,6 +3,7 @@ mod control_config;
 mod control_config_validation;
 mod downloads;
 mod install_path;
+mod install_storage;
 mod node_isolation;
 mod runtime_control;
 mod tray;
@@ -61,14 +62,26 @@ struct RuntimeVersions {
 #[derive(Clone, Copy)]
 enum RuntimeSource {
     Bundled,
+    RegistryLatestInstall,
     RegistryLatest,
 }
 
 impl RuntimeSource {
+    fn web_specifier(self) -> &'static str {
+        match self {
+            Self::Bundled => "file:packages/neoctl-web.tgz",
+            Self::RegistryLatestInstall | Self::RegistryLatest => "latest",
+        }
+    }
+
+    fn is_update(self) -> bool {
+        matches!(self, Self::RegistryLatest)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Bundled => "bundled",
-            Self::RegistryLatest => "registry-latest",
+            Self::RegistryLatestInstall | Self::RegistryLatest => "registry-latest",
         }
     }
 }
@@ -80,6 +93,8 @@ struct InstallProgress {
     message: String,
     stage: String,
     log: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_dir: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -120,21 +135,31 @@ fn sync_window_theme(window: WebviewWindow, theme: String) -> Result<(), String>
 
 #[tauri::command]
 fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
-    let default_dir = default_install_dir()?;
-    let configured = read_desktop_config(&app)
-        .ok()
-        .map(|value| PathBuf::from(value.install_dir));
-    let install_dir = configured.filter(|path| runtime_is_installed(path));
+    let configured =
+        read_optional_desktop_config(&app)?.map(|value| PathBuf::from(value.install_dir));
+    // A configured but inaccessible/incomplete runtime is not a fresh install.
+    let default_dir = match &configured {
+        Some(path) => path.clone(),
+        None => default_install_dir()?,
+    };
+    let install_dir = configured;
     let versions = install_dir
         .as_deref()
         .and_then(|path| read_runtime_versions(&path.join("runtime")).ok());
     Ok(BootstrapState {
         default_install_dir: default_dir.to_string_lossy().into_owned(),
-        installed: install_dir.is_some(),
-        auto_launch: !app
-            .state::<DesktopState>()
-            .manual_start
-            .load(std::sync::atomic::Ordering::Acquire),
+        installed: install_dir
+            .as_deref()
+            .map(runtime_is_installed)
+            .unwrap_or(false),
+        auto_launch: install_dir
+            .as_deref()
+            .map(runtime_is_installed)
+            .unwrap_or(false)
+            && !app
+                .state::<DesktopState>()
+                .manual_start
+                .load(std::sync::atomic::Ordering::Acquire),
         install_dir: install_dir.map(|path| path.to_string_lossy().into_owned()),
         web_version: versions.as_ref().map(|value| value.web_version.clone()),
         core_version: versions.map(|value| value.core_version),
@@ -157,8 +182,12 @@ async fn choose_install_directory(initial: String) -> Result<Option<String>, Str
 #[tauri::command]
 async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_runtime_blocking(&app, PathBuf::from(install_dir), RuntimeSource::Bundled)
-            .map(|_| ())
+        install_runtime_blocking(
+            &app,
+            PathBuf::from(install_dir),
+            RuntimeSource::RegistryLatestInstall,
+        )
+        .map(|_| ())
     })
     .await
     .map_err(|error| format!("安装任务异常结束：{error}"))?
@@ -201,26 +230,63 @@ fn install_runtime_blocking(
     let state = app.state::<DesktopState>();
     let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
     if runtime_control::runtime_status(app.clone()) {
-        return Err(match source {
-            RuntimeSource::Bundled => "请先关闭核心和后台再安装".into(),
-            RuntimeSource::RegistryLatest => "请先关闭核心和后台再更新".into(),
+        return Err(if source.is_update() {
+            "请先关闭核心和后台再更新".into()
+        } else {
+            "请先关闭核心和后台再安装".into()
         });
     }
     validate_install_dir(&install_dir)?;
-    let updating = matches!(source, RuntimeSource::RegistryLatest);
-    emit_progress(
-        app,
-        2,
-        if updating {
-            "准备更新运行环境"
-        } else {
-            "准备运行环境"
+    let updating = source.is_update();
+    let configured = read_optional_desktop_config(app)?;
+    if let Some(config) = &configured {
+        if !install_storage::same_path(Path::new(&config.install_dir), &install_dir) {
+            return Err("已有安装配置，请使用原目录；迁移需手动完成。".into());
+        }
+    }
+    // Fail before downloading when the stable config pointer cannot be saved.
+    preflight_desktop_config(app)?;
+    let requested = install_dir;
+    let mut probe_failures = Vec::new();
+    let install_dir = install_storage::select(
+        &requested,
+        &install_storage::candidates(),
+        updating || configured.is_some(),
+        validate_install_dir,
+        |path| {
+            let result = install_storage::probe(path);
+            if let Err(reason) = &result {
+                probe_failures.push(reason.clone());
+            }
+            result
         },
-        "正在创建临时目录…",
-        "初始化",
-        None,
+    )
+    .map_err(|detail| {
+        let message = if updating || configured.is_some() || detail.contains("不会自动切换") {
+            "原目录不可用，请检查权限；未更换目录。"
+        } else {
+            "目录不可用，请检查权限或另选专用目录。"
+        };
+        emit_progress(app, 2, "目录检查失败", message, "初始化", Some(detail));
+        message.to_string()
+    })?;
+    let changed = !install_storage::same_path(&requested, &install_dir);
+    let _ = app.emit(
+        "install-progress",
+        InstallProgress {
+            percent: 2,
+            title: if changed {
+                "已自动更换目录"
+            } else {
+                "准备运行环境"
+            }
+            .into(),
+            message: install_dir.to_string_lossy().into_owned(),
+            stage: "初始化".into(),
+            log: changed.then(|| probe_failures.join("\n")),
+            install_dir: Some(install_dir.to_string_lossy().into_owned()),
+        },
     );
-    fs::create_dir_all(&install_dir).map_err(display_io("无法创建安装目录"))?;
 
     let resource_dir = app
         .path()
@@ -240,10 +306,7 @@ fn install_runtime_blocking(
     remove_dir_if_exists(&staging)?;
     fs::create_dir_all(staging.join("packages")).map_err(display_io("无法创建临时目录"))?;
 
-    let web_specifier = match source {
-        RuntimeSource::Bundled => "file:packages/neoctl-web.tgz",
-        RuntimeSource::RegistryLatest => "latest",
-    };
+    let web_specifier = source.web_specifier();
     let package_json = serde_json::json!({
         "name": "neoctl-desktop-runtime",
         "version": "1.0.0",
@@ -283,10 +346,10 @@ fn install_runtime_blocking(
         } else {
             "安装应用依赖"
         },
-        if updating {
-            "正在获取最新 Web 与其兼容的 Core…"
-        } else {
+        if matches!(source, RuntimeSource::Bundled) {
             "正在通过国内镜像获取 Core 与依赖…"
+        } else {
+            "正在通过国内镜像获取最新 Web 与其兼容的 Core…"
         },
         "连接软件源",
         Some(format!("registry: {REGISTRY}")),
@@ -697,14 +760,10 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 fn default_install_dir() -> Result<PathBuf, String> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .map(|home| PathBuf::from(home).join("AppData").join("Local"))
-        })
-        .ok_or("无法确定 Windows 本地应用数据目录")?;
-    Ok(local.join("Neo Desktop Data"))
+    install_storage::candidates()
+        .into_iter()
+        .find(|path| validate_install_dir(path).is_ok())
+        .ok_or_else(|| "无法确定安全目录，请检查用户目录设置。".into())
 }
 
 fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -712,7 +771,6 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_local_data_dir()
         .map_err(|error| format!("无法确定桌面壳配置目录：{error}"))?;
-    fs::create_dir_all(&dir).map_err(display_io("无法创建桌面壳配置目录"))?;
     Ok(dir.join("desktop.json"))
 }
 
@@ -722,14 +780,47 @@ fn development_runtime_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
+fn read_optional_desktop_config(app: &AppHandle) -> Result<Option<DesktopConfig>, String> {
     if let Some(install_dir) = development_runtime_dir() {
-        return Ok(DesktopConfig {
+        return Ok(Some(DesktopConfig {
             install_dir: install_dir.to_string_lossy().into_owned(),
-        });
+        }));
     }
-    let content = fs::read(desktop_config_path(app)?).map_err(display_io("无法读取桌面壳配置"))?;
-    serde_json::from_slice(&content).map_err(|error| format!("桌面壳配置格式错误：{error}"))
+    read_desktop_config_file(&desktop_config_path(app)?)
+}
+
+fn read_desktop_config_file(path: &Path) -> Result<Option<DesktopConfig>, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法检查桌面配置，请检查权限：{error}")),
+        Ok(_) => {}
+    }
+    let content =
+        fs::read(&path).map_err(|error| format!("无法读取已有桌面配置，请检查权限：{error}"))?;
+    serde_json::from_slice(&content)
+        .map(Some)
+        .map_err(|error| format!("桌面配置损坏，请修复后重试：{error}"))
+}
+
+fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
+    read_optional_desktop_config(app)?.ok_or_else(|| "尚未配置安装目录".into())
+}
+
+fn preflight_desktop_config(app: &AppHandle) -> Result<(), String> {
+    if development_runtime_dir().is_some() {
+        return Ok(());
+    }
+    let path = desktop_config_path(app)?;
+    let parent = path.parent().ok_or("无法确定桌面配置目录")?;
+    validate_install_dir(parent)?;
+    fs::create_dir_all(parent).map_err(display_io("无法创建桌面配置目录，请检查权限"))?;
+    // Non-destructive write-open catches an existing read-only pointer too.
+    match fs::OpenOptions::new().write(true).open(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("桌面配置不可写，请检查权限：{e}")),
+    }
+    install_storage::probe(parent).map_err(|e| format!("桌面配置目录不可写，请检查权限：{e}"))
 }
 
 fn write_desktop_config(app: &AppHandle, install_dir: &Path) -> Result<(), String> {
@@ -747,8 +838,18 @@ fn write_desktop_config(app: &AppHandle, install_dir: &Path) -> Result<(), Strin
 }
 
 fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        fs::remove_dir_all(path).map_err(display_io("无法清理旧目录"))?;
+    const ATTEMPTS: usize = 5;
+    for attempt in 0..ATTEMPTS {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) if attempt + 1 < ATTEMPTS => {
+                // Antivirus/indexers can briefly hold freshly stopped Node files on Windows.
+                // Retrying also finishes a prior remove_dir_all that deleted only part of a tree.
+                thread::sleep(Duration::from_millis(150 * (attempt as u64 + 1)));
+            }
+            Err(error) => return Err(display_io("无法清理旧目录")(error)),
+        }
     }
     Ok(())
 }
@@ -769,6 +870,7 @@ fn emit_progress(
             message: message.to_string(),
             stage: stage.to_string(),
             log,
+            install_dir: None,
         },
     );
 }
@@ -837,4 +939,33 @@ pub fn run() {
         .on_window_event(tray::on_window_event)
         .run(tauri::generate_context!())
         .expect("failed to run Neo Desktop");
+}
+
+#[cfg(test)]
+mod runtime_source_tests {
+    use super::RuntimeSource;
+
+    #[test]
+    fn first_install_uses_registry_latest_without_update_semantics() {
+        let source = RuntimeSource::RegistryLatestInstall;
+        assert_eq!(source.web_specifier(), "latest");
+        assert_eq!(source.label(), "registry-latest");
+        assert!(!source.is_update());
+    }
+
+    #[test]
+    fn startup_page_update_still_uses_registry_latest() {
+        let source = RuntimeSource::RegistryLatest;
+        assert_eq!(source.web_specifier(), "latest");
+        assert_eq!(source.label(), "registry-latest");
+        assert!(source.is_update());
+    }
+
+    #[test]
+    fn bundled_source_remains_explicit_and_is_not_an_update() {
+        let source = RuntimeSource::Bundled;
+        assert_eq!(source.web_specifier(), "file:packages/neoctl-web.tgz");
+        assert_eq!(source.label(), "bundled");
+        assert!(!source.is_update());
+    }
 }

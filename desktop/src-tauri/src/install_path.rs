@@ -357,8 +357,19 @@ fn validate_with_protected(path: &Path, protected: &[PathBuf]) -> Result<(), Str
         }
         let owned = if name == ".neo-node" {
             read_marker(&dir.join(".neo-owned"))?.map_or(false, |text| text == NODE_OWNER)
+        } else if name == ".runtime-staging" {
+            package_owned(&dir)?
+        } else if name == ".runtime-previous" {
+            // A successful replacement deletes the old backup after the new runtime is live.
+            // On Windows remove_dir_all can delete the receipt first and then leave locked Node
+            // files behind. Treat that partial cleanup as ours only when both directories still
+            // carry the managed package marker and the current runtime has a valid receipt.
+            package_owned(&dir)?
+                && (receipt_owned(&dir)?
+                    || (package_owned(&path.join("runtime"))?
+                        && receipt_owned(&path.join("runtime"))?))
         } else {
-            package_owned(&dir)? && (name == ".runtime-staging" || receipt_owned(&dir)?)
+            package_owned(&dir)? && receipt_owned(&dir)?
         };
         if !owned {
             return Err(invalid(
@@ -483,23 +494,48 @@ mod tests {
     }
 
     #[test]
-    fn runtime_and_previous_require_both_parsed_markers() {
-        for name in ["runtime", ".runtime-previous"] {
-            let temp = Temp::new();
-            let dir = temp.dir(name);
-            package(&dir);
+    fn runtime_requires_both_parsed_markers() {
+        let temp = Temp::new();
+        let dir = temp.dir("runtime");
+        package(&dir);
+        assert!(!valid(&temp.0));
+        for receipt in ["not json", r#"{"schema":"1"}"#, r#"{"schema":2}"#, "{}"] {
+            fs::write(dir.join("neo-desktop-runtime.json"), receipt).unwrap();
             assert!(!valid(&temp.0));
-            for receipt in ["not json", r#"{"schema":"1"}"#, r#"{"schema":2}"#, "{}"] {
-                fs::write(dir.join("neo-desktop-runtime.json"), receipt).unwrap();
-                assert!(!valid(&temp.0));
-            }
-            fs::write(dir.join("neo-desktop-runtime.json"), r#"{"schema":1}"#).unwrap();
-            assert!(valid(&temp.0));
-            for manifest in ["broken", r#"{"name":"some-other-package"}"#, "{}"] {
-                fs::write(dir.join("package.json"), manifest).unwrap();
-                assert!(!valid(&temp.0));
-            }
         }
+        fs::write(dir.join("neo-desktop-runtime.json"), r#"{"schema":1}"#).unwrap();
+        assert!(valid(&temp.0));
+        for manifest in ["broken", r#"{"name":"some-other-package"}"#, "{}"] {
+            fs::write(dir.join("package.json"), manifest).unwrap();
+            assert!(!valid(&temp.0));
+        }
+    }
+
+    #[test]
+    fn complete_previous_is_a_valid_rollback_backup() {
+        let temp = Temp::new();
+        let previous = temp.dir(".runtime-previous");
+        package(&previous);
+        fs::write(previous.join("neo-desktop-runtime.json"), r#"{"schema":1}"#).unwrap();
+        assert!(valid(&temp.0));
+    }
+
+    #[test]
+    fn partial_previous_cleanup_requires_a_complete_current_runtime() {
+        let temp = Temp::new();
+        let previous = temp.dir(".runtime-previous");
+        package(&previous);
+        fs::write(previous.join("locked-node-file"), "left behind").unwrap();
+        assert!(!valid(&temp.0));
+
+        let runtime = temp.dir("runtime");
+        package(&runtime);
+        assert!(!valid(&temp.0));
+        fs::write(runtime.join("neo-desktop-runtime.json"), r#"{"schema":1}"#).unwrap();
+        assert!(valid(&temp.0));
+
+        fs::write(previous.join("package.json"), r#"{"name":"some-other-package"}"#).unwrap();
+        assert!(!valid(&temp.0));
     }
 
     #[test]

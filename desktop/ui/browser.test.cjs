@@ -41,7 +41,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       assert.equal(layout.views, 1);
       console.log('PASS responsive layout', width, height);
     }
-    await evaluate(`document.querySelector('#installPath').focus()`);
+    assert.equal(await evaluate(`document.querySelector('#pathOptions').open`), false);
+    await evaluate(`document.querySelector('#pathOptions').open = true; document.querySelector('#installPath').focus()`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
     assert.equal(await evaluate('document.activeElement.id'), 'browseButton');

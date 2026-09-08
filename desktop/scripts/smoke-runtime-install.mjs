@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const bundled = process.argv.includes('--bundled');
 const target = path.join(os.tmpdir(), `neo-desktop-runtime-smoke-${process.pid}-${Date.now()}`);
 process.env.NEO_DESKTOP_SMOKE_RUNTIME = target;
 await mkdir(path.join(target, 'packages'), { recursive: true });
-await cp(path.join(desktopRoot, 'resources', 'payload', 'neoctl-web.tgz'), path.join(target, 'packages', 'neoctl-web.tgz'));
+if (bundled) await cp(path.join(desktopRoot, 'resources', 'payload', 'neoctl-web.tgz'), path.join(target, 'packages', 'neoctl-web.tgz'));
 await writeFile(path.join(target, 'package.json'), `${JSON.stringify({
   name: 'neoctl-desktop-runtime-smoke',
   version: '1.0.0',
   private: true,
-  dependencies: { 'neoctl-web': 'file:packages/neoctl-web.tgz' },
+  dependencies: { 'neoctl-web': bundled ? 'file:packages/neoctl-web.tgz' : 'latest' },
 }, null, 2)}\n`);
 
 const node = path.join(desktopRoot, 'resources', 'node', 'node.exe');
@@ -23,10 +26,14 @@ await run(node, [npm, 'install', '--omit=dev', '--no-audit', '--no-fund', '--ins
 const web = JSON.parse(await readFile(path.join(target, 'node_modules', 'neoctl-web', 'package.json'), 'utf8'));
 const coreRoot = path.join(target, 'node_modules', 'neoctl-web', 'node_modules', 'neoctl');
 const core = JSON.parse(await readFile(path.join(coreRoot, 'package.json'), 'utf8'));
+const semver = createRequire(import.meta.url)(path.join(desktopRoot, 'resources', 'node', 'node_modules', 'npm', 'node_modules', 'semver'));
+const requirement = web.dependencies?.neoctl;
+assert.ok(requirement, 'Web must declare its compatible Core dependency');
+assert.ok(semver.satisfies(core.version, requirement), `Core ${core.version} does not satisfy Web requirement ${requirement}`);
 await readFile(path.join(target, 'node_modules', 'neoctl-web', 'server.mjs'));
 await readFile(path.join(coreRoot, 'dist', 'index.js'));
 await writeFile(path.join(desktopRoot, '.smoke-runtime-path'), target, 'utf8');
-console.log(`[smoke] installed ${web.name}@${web.version} with ${core.name}@${core.version}`);
+console.log(`[smoke] source=${bundled ? 'bundled' : 'registry-latest'} installed ${web.name}@${web.version} with ${core.name}@${core.version}`);
 
 function run(file, args, cwd) {
   return new Promise((resolve, reject) => {

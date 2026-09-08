@@ -16,6 +16,7 @@ let disposed = false;
 let busy = false;
 let initialized = false;
 let installedDir = '';
+let defaultDir = '';
 let backendRunning = false;
 let retryAction = 'initialize';
 let phase = 'booting';
@@ -65,18 +66,20 @@ function applyProgress(payload = {}) {
   $('#progressBar').style.transform = `scaleX(${estimate / 100})`;
   $('#progressTrack').setAttribute('aria-valuenow', String(estimate));
   $('#progressTrack').setAttribute('aria-valuetext', `${payload.stage || '准备中'}，${Math.round(estimate)}%`);
-  if (payload.log) appendLog(payload.log);
+  if (payload.message) appendLog(payload.message);
+  if (payload.log && payload.log !== payload.message) appendLog(payload.log);
 }
 
 function fail(error, action) {
   if (disposed) return;
   retryAction = action;
   $('#progressTitle').textContent = action === 'launch' ? '启动未完成' : action === 'install' ? '安装未完成' : action === 'update' ? '更新未完成' : '暂时无法准备';
-  $('#progressMessage').textContent = String(error);
+  $('#progressMessage').textContent = action === 'install' ? '请重试，或更改目录。详情见日志。' : '请重试，详情见日志。';
   $('#progressStage').textContent = '需要重试';
   $('#progressTrack').setAttribute('aria-valuetext', `操作失败，${Math.round(estimate)}%`);
   appendLog(error);
   retryButton.textContent = action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
+  if (action === 'refresh-install') retryButton.textContent = '重新读取位置并启动';
   retryButton.hidden = false;
   showView('progressView', 'error');
 }
@@ -86,6 +89,51 @@ async function subscribe(event, handler) {
   // A subscription may resolve after the WebView has already navigated away.
   if (disposed) unlisten();
   else cleanups.push(unlisten);
+}
+
+function updatePathDisplay() {
+  $('#pathDisplay').textContent = `${installedDir ? '数据位置' : '安装位置'}：${pathInput.value.trim() || defaultDir}`;
+}
+on(pathInput, 'input', updatePathDisplay);
+
+function applyBootstrap(state) {
+  // Any configured path is existing data, even if runtime validation failed.
+  if (state.installed && !state.install_dir) throw new Error('已有安装缺少数据位置，请检查配置后重试。');
+  installedDir = state.install_dir || '';
+  defaultDir = state.default_install_dir || '';
+  pathInput.value = installedDir || defaultDir;
+  updatePathDisplay();
+  $('#pathOptions').open = false;
+  $('#pathSummary').textContent = installedDir ? '查看目录（只读）' : '更改目录';
+  initialized = true;
+  enterButton.hidden = !installedDir;
+  installButton.hidden = Boolean(installedDir);
+  browseButton.disabled = Boolean(installedDir);
+  pathInput.readOnly = Boolean(installedDir);
+  $('#readyTitle').textContent = installedDir ? 'Neo 启动页' : '安装 Neo';
+  $('#readyMessage').textContent = installedDir ? '' : '首次安装需联网。';
+  $('#versionStatus').textContent = installedDir
+    ? `当前 Web ${state.web_version || '未知'} / Core ${state.core_version || '未知'}。`
+    : '';
+  $('#backendControls').hidden = !installedDir;
+}
+
+async function finishInstall() {
+  if (busy || disposed) return;
+  setBusy(true);
+  let ready = false;
+  try {
+    const state = await api.core.invoke('bootstrap_state');
+    if (disposed) return;
+    if (!state.installed || !state.install_dir) throw new Error('安装已完成，但未能确认最终数据位置。请重新读取后启动。');
+    applyBootstrap(state);
+    ready = true;
+  } catch (error) {
+    fail(error, 'refresh-install');
+  } finally {
+    if (!disposed) setBusy(false);
+  }
+  if (ready && !disposed) await launch(installedDir);
 }
 
 let subscribed = false;
@@ -112,24 +160,14 @@ async function initialize() {
     if (disposed) return;
     const state = await api.core.invoke('bootstrap_state');
     if (disposed) return;
-    autoLaunch = state.auto_launch !== false;
-    installedDir = state.installed ? state.install_dir || '' : '';
-    pathInput.value = installedDir || state.default_install_dir || '';
-    initialized = true;
-    enterButton.hidden = !installedDir;
-    installButton.hidden = Boolean(installedDir);
-    browseButton.disabled = Boolean(installedDir);
-    pathInput.readOnly = Boolean(installedDir);
-    $('#readyTitle').textContent = installedDir ? 'Neo 启动页' : '安装 Neo';
-    $('#readyMessage').textContent = '';
-    $('#versionStatus').textContent = installedDir
-      ? `当前 Web ${state.web_version || '未知'} / Core ${state.core_version || '未知'}。点击更新将获取最新兼容版本。`
-      : '';
-    $('#backendControls').hidden = !installedDir;
+    autoLaunch = state.installed && state.auto_launch !== false;
+    applyBootstrap(state);
     await refreshBackend();
     setBusy(false);
     showView('readyView', 'ready', false);
   } catch (error) {
+    autoLaunch = false;
+    initialized = false;
     fail(error, 'initialize');
   } finally {
     if (!disposed) setBusy(false);
@@ -156,9 +194,10 @@ async function launch(installDir) {
 on($('#installForm'), 'submit', async (event) => {
   event.preventDefault();
   if (busy || !initialized || disposed || installedDir) return;
-  const installDir = pathInput.value.trim();
+  const installDir = pathInput.value.trim() || defaultDir;
   if (!installDir) {
     $('#readyMessage').textContent = '请选择安装位置。';
+    $('#pathOptions').open = true;
     pathInput.focus();
     return;
   }
@@ -167,20 +206,18 @@ on($('#installForm'), 'submit', async (event) => {
   $('#logDetails').open = false;
   retryButton.hidden = true;
   showView('progressView', 'installing');
-  applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在检查内置资源…' });
+  applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在准备安装…', log: '正在准备内置 Node.js，将联网获取最新 Web 与其兼容的 Core…' });
   let completed = false;
   try {
     await api.core.invoke('install_runtime', { installDir });
     if (disposed) return;
-    installedDir = installDir;
-    enterButton.hidden = false;
     completed = true;
   } catch (error) {
     fail(error, 'install');
   } finally {
     if (!disposed) setBusy(false);
   }
-  if (completed && !disposed) await launch(installDir);
+  if (completed && !disposed) await finishInstall();
 });
 
 on(updateButton, 'click', async () => {
@@ -194,8 +231,8 @@ on(updateButton, 'click', async () => {
   try {
     const versions = await api.core.invoke('update_runtime');
     if (disposed) return;
-    $('#versionStatus').textContent = `当前 Web ${versions.web_version} / Core ${versions.core_version}。已更新到最新兼容版本。`;
-    $('#readyMessage').textContent = '更新完成，可以启动核心和后台。';
+    $('#versionStatus').textContent = `当前 Web ${versions.web_version} / Core ${versions.core_version}。`;
+    $('#readyMessage').textContent = '更新完成。';
     showView('readyView', 'ready');
   } catch (error) {
     fail(error, 'update');
@@ -205,13 +242,13 @@ on(updateButton, 'click', async () => {
 });
 
 on(browseButton, 'click', async () => {
-  if (busy || !initialized || disposed) return;
+  if (busy || !initialized || disposed || installedDir) return;
   setBusy(true);
   try {
     const selected = await api.core.invoke('choose_install_directory', { initial: pathInput.value });
-    if (!disposed && selected) pathInput.value = selected;
+    if (!disposed && selected) { pathInput.value = selected; updatePathDisplay(); }
   } catch (error) {
-    if (!disposed) $('#readyMessage').textContent = `无法选择目录：${String(error)}`;
+    if (!disposed) { appendLog(error); $('#readyMessage').textContent = '无法选择目录，请重试或手动输入。'; }
   } finally {
     if (!disposed) { setBusy(false); browseButton.focus(); }
   }
@@ -223,10 +260,15 @@ on(enterButton, 'click', async () => {
 });
 on(retryButton, 'click', () => {
   if (busy || disposed) return;
+  if (retryAction === 'refresh-install') return finishInstall();
   if (retryAction === 'initialize') return initialize();
   if (retryAction === 'launch') return launch(installedDir);
+  $('#readyMessage').textContent = $('#progressMessage').textContent;
   showView('readyView', 'ready');
-  pathInput.focus();
+  if (retryAction === 'install') {
+    $('#pathOptions').open = true;
+    pathInput.focus();
+  } else updateButton.focus();
 });
 
 on(document, 'visibilitychange', () => {

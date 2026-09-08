@@ -3,6 +3,7 @@ node_modules/
 artifacts/
 src-tauri/gen/
 src-tauri/target/
+src-tauri/target-public/
 resources/node/
 resources/payload/*.tgz
 resources/payload/payload-manifest.json

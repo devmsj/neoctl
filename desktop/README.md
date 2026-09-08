@@ -27,16 +27,16 @@ desktop/
 
 ## 行为
 
-1. 安装包内包含 `neoctl-web.tgz`、Windows Node.js 和 npm。
+1. 安装包内包含 Windows Node.js 和 npm；构建仍生成并携带 `neoctl-web.tgz`，但默认首次安装不使用该快照。
 2. 首次启动允许选择运行数据位置。
-3. 将基础资源释放到临时目录。
-4. 使用 `https://registry.npmmirror.com` 执行 nested 策略的 `npm install --omit=dev`。
+3. 将内置 Node.js 与 npm 释放到临时目录，首次安装需联网获取 Web 和 Core。
+4. 临时 `package.json` 声明 `neoctl-web: "latest"`，使用 `https://registry.npmmirror.com` 执行 nested 策略的 `npm install --omit=dev`；npm 按最新 Web 的依赖声明解析兼容 Core，而非单独安装 Core latest。
 5. 安装输出通过 Tauri event 实时显示，并映射为阶段进度。
 6. 安装成功后原子替换 `runtime/`，失败不破坏已有版本。
 7. 启动 `neoctl-web/server.mjs`，等待本地 HTTP 健康检查后在当前窗口进入工作台。
 8. 服务只监听 `127.0.0.1`，窗口关闭时终止托管的 Node 进程。
 9. 后续双击启动会读取安装记录并自动进入已安装工作台。
-10. 从菜单返回启动页并关闭后台后，可在线更新 latest Web；npm 会按该 Web 的依赖声明安装最新兼容 Core，并继续使用临时目录、原子替换和失败回滚。
+10. 从菜单返回启动页并关闭后台后，仍可在线更新 latest Web 及其兼容 Core，继续使用临时目录、原子替换和失败回滚。首次安装与更新均以 registry 的 latest Web 为准，不受桌面构建时 payload 版本限制；网络失败会报错，不会静默回退到内置快照。
 
 ## 桌面视觉与卸载
 
@@ -95,6 +95,22 @@ npm run payload
 npm run runtime
 ```
 
+## 目录容错
+
+首次启动可直接“安装并启动”，目录编辑收在“更改目录”。安装前实测目录创建、写入、读取、重命名和删除；首次安装的安全目录不可写时，尝试 LocalAppData、AppData、用户目录下的 `Neo Desktop Data`，不使用临时目录保存长期数据。成功后以实际目录启动。
+
+已有配置或数据不自动迁移；危险路径、无法确认数据状态的目录不会绕过检查。桌面配置文件不可写会在下载前报错。简短结果显示在界面，详细原因保留在日志。
+
+## 安装回归测试
+
+无需网络的来源和启动页回归测试：
+
+```powershell
+node --test desktop/ui/app.test.cjs desktop/scripts/runtime-source.test.cjs desktop/scripts/check-updates.test.cjs
+```
+
+在仓库根目录运行 `node desktop/scripts/smoke-runtime-install.mjs` 可实际安装 registry latest Web 及其兼容 Core，并用内置 npm 的 semver 检查 Core 满足 Web 的依赖范围。仅验证内置快照时显式传入 `--bundled`；该模式不代表桌面默认安装行为。Smoke 使用临时目录并写入 `desktop/.smoke-runtime-path` 供启动测试使用，需要已准备好的内置 Node/npm；bundled 模式还需要 payload。
+
 ## 本地桌面调试（无需发布）
 
 首次调试先确保 `desktop/resources/node` 已准备好（没有时执行一次 `npm run runtime`），然后运行：
@@ -110,7 +126,7 @@ npm run dev:local
 
 - `resources/node` 与生成的 tgz 被 `.gitignore` 排除，避免把大型构建资源提交进源码。
 - 当前 Node 固定为 22.12.0，可通过 `prepare-node-runtime.ps1 -NodeVersion <version>` 调整。
-- `neoctl-web` 自身锁定兼容的 `neoctl` 版本，桌面壳不单独追踪 core latest。
+- `neoctl-web` 自身声明兼容的 `neoctl` 版本范围，桌面壳不单独追踪 core latest。
 - 当前退出时通过 `taskkill /T` 清理托管进程树；正式发布可进一步改为 Windows Job Object。
 - 正式发布前应增加 Authenticode 签名和升级/回滚策略。
 

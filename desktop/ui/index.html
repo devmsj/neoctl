@@ -31,11 +31,15 @@
       <section id="readyView" class="view" aria-labelledby="readyTitle">
         <h2 id="readyTitle" tabindex="-1">安装 Neo</h2>
         <form id="installForm">
-          <label for="installPath">安装位置</label>
-          <div class="path-control">
-            <input id="installPath" name="installPath" type="text" required spellcheck="false" autocomplete="off" aria-describedby="readyMessage" placeholder="选择安装目录" />
-            <button id="browseButton" class="browse-button" type="button" disabled>浏览<span aria-hidden="true">↗</span></button>
-          </div>
+          <p id="pathDisplay" class="status-message">正在读取默认数据位置…</p>
+          <details id="pathOptions">
+            <summary id="pathSummary">更改目录</summary>
+            <label for="installPath">数据位置</label>
+            <div class="path-control">
+              <input id="installPath" name="installPath" type="text" spellcheck="false" autocomplete="off" aria-describedby="readyMessage" placeholder="使用默认数据位置" />
+              <button id="browseButton" class="browse-button" type="button" disabled>浏览<span aria-hidden="true">↗</span></button>
+            </div>
+          </details>
           <p id="readyMessage" class="status-message" role="status" aria-live="polite">正在读取安装位置…</p>
           <button id="installButton" class="primary-button" type="submit" disabled>安装并启动<span aria-hidden="true">↗</span></button>
           <div id="backendControls" hidden>
@@ -51,7 +55,7 @@
 
       <section id="progressView" class="view" aria-labelledby="progressTitle" hidden>
         <h2 id="progressTitle" tabindex="-1">准备运行环境</h2>
-        <p id="progressMessage" class="status-message" role="status" aria-live="polite">正在检查内置资源…</p>
+        <p id="progressMessage" class="status-message" role="status" aria-live="polite">正在准备安装…</p>
         <div class="progress-meta"><span id="progressStage">初始化</span><strong id="progressPercent">0%</strong></div>
         <div id="progressTrack" class="progress-track" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div>
         <details id="logDetails">

@@ -74,9 +74,9 @@ jobs:
       - name: Check Desktop layout
         run: npm run check --prefix desktop
 
-      - name: Check Rust
+      - name: Test Rust
         working-directory: desktop/src-tauri
-        run: cargo check --locked
+        run: cargo test --lib --locked
 
       - name: Build NSIS installer
         run: npm run build --prefix desktop
