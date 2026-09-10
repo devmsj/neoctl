@@ -106,6 +106,7 @@ interface WebRuntimeToolSupport {
   globalOverrides: Record<string, boolean>;
   sessionOverrides: Record<string, boolean>;
   persistGlobal?: (overrides: Record<string, boolean>) => Promise<void>;
+  resolveGlobal?: () => Record<string, boolean>;
   persistSession?: (sessionId: string, overrides: Record<string, boolean>) => Promise<void>;
   resolveSession?: (sessionId: string) => Promise<Record<string, boolean>> | Record<string, boolean>;
 }
@@ -350,6 +351,7 @@ export interface CreateWebRuntimeOptions {
   /** Per-session tool overrides. Missing names inherit their global default. */
   sessionToolOverrides?: Readonly<Record<string, boolean>>;
   persistGlobalToolOverrides?: WebRuntimeToolSupport["persistGlobal"];
+  resolveGlobalToolOverrides?: WebRuntimeToolSupport["resolveGlobal"];
   persistSessionToolOverrides?: WebRuntimeToolSupport["persistSession"];
   resolveSessionToolOverrides?: WebRuntimeToolSupport["resolveSession"];
 }
@@ -533,6 +535,11 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     modelGateway,
     tools,
     contextManagerFactory: (cwd) => new DefaultContextManager({ cwd }),
+    refreshTools: () => {
+      if (!options.resolveGlobalToolOverrides) return;
+      if (runtime) refreshGlobalToolOverrides(runtime);
+      else applyToolOverrides(tools, toolCatalog, normalizeToolOverrides(options.resolveGlobalToolOverrides(), toolCatalog), sessionToolOverrides);
+    },
     additionalPromptSections: [
       ...(options.externalPromptSections ?? []),
       ...activePlugins.flatMap((plugin) => plugin.promptSections ?? []),
@@ -581,6 +588,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
       globalOverrides: globalToolOverrides,
       sessionOverrides: sessionToolOverrides,
       persistGlobal: options.persistGlobalToolOverrides,
+      resolveGlobal: options.resolveGlobalToolOverrides,
       persistSession: options.persistSessionToolOverrides,
       resolveSession: options.resolveSessionToolOverrides,
     },
@@ -624,6 +632,14 @@ function applyToolOverrides(
   sessionOverrides: Readonly<Record<string, boolean>>,
 ): void {
   for (const tool of catalog) registry.setEnabled(tool.name, sessionOverrides[tool.name] ?? globalOverrides[tool.name] ?? true);
+}
+
+/** Called only at a safe turn boundary or while idle, never during tool execution. */
+export function refreshGlobalToolOverrides(runtime: Pick<WebRuntime, "tools" | "toolSupport">): void {
+  const support = runtime.toolSupport;
+  if (!support?.resolveGlobal) return;
+  support.globalOverrides = normalizeToolOverrides(support.resolveGlobal(), support.catalog);
+  applyToolOverrides(runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
 }
 
 /** Bind only the foreground view; never stop work owned by another session. */
@@ -935,6 +951,7 @@ export class WebRepl {
   }
 
   globalTools() {
+    this.runtime.engine.refreshToolsIfIdle();
     const support = this.runtime.toolSupport;
     if (!support) return { items: [] };
     return {
@@ -946,6 +963,7 @@ export class WebRepl {
   }
 
   sessionTools() {
+    this.runtime.engine.refreshToolsIfIdle();
     const support = this.runtime.toolSupport;
     const sessionId = this.runtime.engine.snapshot().session?.sessionId;
     if (!support) return { sessionId, busy: this.busy, items: [] };
@@ -978,10 +996,11 @@ export class WebRepl {
     const normalized = this.parseToolOverrides(value, support);
     if (!normalized.ok) return normalized;
     try {
+      // Persist before publishing so a failed write never changes active capabilities.
+      if (support.persistGlobal) await support.persistGlobal(normalized.value);
       support.globalOverrides = normalized.value;
       this.syncPluginToolRegistration();
       applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
-      if (support.persistGlobal) await support.persistGlobal(support.globalOverrides);
       await this.refreshToolConfiguration();
       return { ok: true, state: this.globalTools() };
     } catch (error) {
@@ -1063,11 +1082,13 @@ export class WebRepl {
   private async applySessionToolOverrides(overrides: Record<string, boolean>, persist: boolean): Promise<void> {
     const support = this.runtime.toolSupport;
     if (!support) return;
-    support.sessionOverrides = normalizeToolOverrides(overrides, support.catalog);
+    const normalized = normalizeToolOverrides(overrides, support.catalog);
+    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
+    if (persist && sessionId && support.persistSession) await support.persistSession(sessionId, normalized);
+    support.sessionOverrides = normalized;
+    this.runtime.engine.refreshToolsIfIdle();
     this.syncPluginToolRegistration();
     applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
-    const sessionId = this.runtime.engine.snapshot().session?.sessionId;
-    if (persist && sessionId && support.persistSession) await support.persistSession(sessionId, support.sessionOverrides);
     await this.refreshToolConfiguration();
   }
 

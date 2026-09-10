@@ -107,6 +107,10 @@ test("every ContextManager build reloads the baseline and preserves tool/plugin/
   assert.match(noTools.systemPrompt, /no drawing\/image generation\/editing tool/);
   assert.match(noTools.systemPrompt, /no image loading tool/);
   assert.doesNotMatch(noTools.systemPrompt, /Secrets:/);
+  assert.doesNotMatch(noTools.systemPrompt, /call plan_update/);
+  const listOnly = await managers[0].build({ ...input, enabledTools: ["secret_list"] });
+  assert.match(listOnly.systemPrompt, /Secrets:/);
+  assert.doesNotMatch(listOnly.systemPrompt, /Use secret_request/);
 });
 
 test("standard QueryEngine uses the file-backed DefaultContextManager on future requests", async (t) => {

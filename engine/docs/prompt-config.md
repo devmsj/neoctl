@@ -50,13 +50,28 @@ Reads use the actual file, not a process content cache. Initialization and compa
 
 The lock is deliberately **not stolen based on age** (which could allow two live writers). After a crashed/killed writer, an administrator may remove the leftover `.lock` directory only after confirming that no writer is active. The prior complete `system.md` remains readable; orphan `.tmp` files can likewise be removed. External editors should save atomically; the API detects edits made before its locked revision check, but cannot coordinate an external editor that ignores the lock and writes concurrently.
 
-## Session prompt overrides
+## Layered session instructions
 
-`GET /api/session-prompt?tabId=...&sessionId=...` returns `{content, override, revision}`. The content is the current complete effective prompt without internal cache markers. Once overridden, it is the exact session-owned prompt, not an edit to the version file.
+`GET /api/session-prompt?tabId=...&sessionId=...` returns `{content, mode, override, revision, effectiveContent, effectiveRevision}`. **content is only the editable session instruction**, empty when inheriting; `effectiveContent` is a read-only composition without internal cache markers. Clients must never save the effective preview as editable content.
 
-`POST` to the same scoped URL accepts `{content, revision}` or `{reset:true, revision}`. Success returns `{ok:true, content, override, revision, deferred}`. Invalid input returns HTTP 400 / `SESSION_PROMPT_INVALID`; stale revisions return 409 / `SESSION_PROMPT_CONFLICT`; storage failures return 500 / `SESSION_PROMPT_FAILED`. Empty text, internal cache markers, unknown fields and content above 256 Ki characters are rejected.
+Modes:
 
-A saved override is persisted in the current session transcript and restored when that same session resumes. New sessions do not inherit it. While a model request is running, accepted changes are queued and applied at the next model-turn boundary; the current request is not changed. Reset removes the override and uses the latest version file plus current runtime/plugin/application sections. Tools and user/runtime context remain separate from the full prompt override. The runtime-context protocol additionally exposes `prompt.sessionPrompt` to distinguish active and pending state.
+- `inherit`: no session instruction; follows the latest global file.
+- `append`: latest global baseline plus session instructions (default for new edits).
+- `replace_base`: replaces only sections tagged `source: "global"`, preserving runtime/tool/plugin/application sections. Embedded custom context managers must tag their global sections to opt into replacement.
+- `legacy_full_override`: existing transcripts without a mode retain their exact historical full replacement. No automatic text stripping or migration occurs. The UI warns and requires confirmation before switching modes; new sessions cannot create this mode. Old clients editing an existing legacy prompt without specifying mode retain legacy semantics.
+
+`POST` accepts `{content, mode?, revision}` or `{reset:true, revision}`. Success adds `{ok:true, deferred}` to the GET shape. Reset returns to inherit and clears only session configuration. Empty custom text, internal markers, invalid modes, unknown fields, and content over 256 Ki characters are rejected (400 / `SESSION_PROMPT_INVALID`). Competing session edits return 409 / `SESSION_PROMPT_CONFLICT`; storage failures return 500 / `SESSION_PROMPT_FAILED`.
+
+`revision` covers the session configuration and its owner, not generated text. Global/tool/plugin changes update `effectiveRevision` and the preview without invalidating a session draft. Global editing retains its independent file CAS. Clients preserve drafts on failed saves and runtime preview updates.
+
+Session content and mode persist in the transcript and restore in the same session only. Accepted busy edits persist immediately but become active at the next model-turn boundary; in-flight requests do not change. Runtime context exposes active `mode`, `effectiveRevision`, and queued `pendingMode`/`deferred`, separately from the editor's desired state.
+
+## Tool-dependent context
+
+Effective tool definitions are captured once per model request and used both for capability instructions and the provider tools list. Plugin prompt sections may declare `requiresTools: ["tool_name"]`; such sections are included only when all dependencies are in the effective tool set. General plugin instructions remain independent. The downloads plugin uses this for `expose_downloads`. Disabled tools do not rewrite arbitrary user-authored text; runtime instructions explicitly explain that text cannot enable an unavailable tool.
+
+Web hosts provide `resolveGlobalToolOverrides` alongside persistence. Existing runtimes re-read this shared source at the next model-turn boundary or idle preview/tool-list refresh, so `inherit` follows global changes without reconstructing the session. Explicit session enable/disable settings retain precedence. Busy previews never change the executing tool registry. This is lazy refresh within the host, not a cross-process file watcher or a push update to every browser tab. Tool settings publish only after successful persistence; concurrent global/session writes are serialized.
 
 ## Validation
 

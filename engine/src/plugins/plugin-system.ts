@@ -207,6 +207,9 @@ function validatePromptSection(value: unknown, index: number, entryPath: string)
   if (!isRecord(value) || !requireOptionalText(value.name) || typeof value.content !== "string") {
     throw new Error(`invalid plugin module ${entryPath}: promptSections[${index}] must contain name and content`);
   }
+  if (value.requiresTools !== undefined && (!Array.isArray(value.requiresTools) || value.requiresTools.some((name) => typeof name !== "string" || !name.trim()))) {
+    throw new Error(`invalid plugin module ${entryPath}: promptSections[${index}].requiresTools must be tool names`);
+  }
   if (value.cacheStable !== undefined && typeof value.cacheStable !== "boolean") {
     throw new Error(`invalid plugin module ${entryPath}: promptSections[${index}].cacheStable must be boolean`);
   }

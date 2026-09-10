@@ -51,7 +51,7 @@ test("WebRepl session editor uses real file baseline and session persistence wit
   await store.save("Latest global baseline", original.revision);
   const reset = await repl.saveSessionPrompt({ reset: true, revision: saved.revision });
   assert.equal(reset.override, false);
-  assert.ok(reset.content.includes("Latest global baseline"));
+  assert.ok(reset.effectiveContent.includes("Latest global baseline"));
   assert.equal(published, 2);
   assert.equal((await store.read()).content, "Latest global baseline");
 });

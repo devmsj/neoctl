@@ -210,14 +210,14 @@ async function* queryLoop(
     };
     yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
 
+    const toolDefinitions = dependencies.tools.definitions(toolContext);
     const context = await contextManager.build({
       agentId: options.agentId,
       messages: state.messages,
       cwd: options.workspaceCwd,
-      enabledTools: dependencies.tools.definitions(toolContext).map((tool) => tool.name),
+      enabledTools: toolDefinitions.map((tool) => tool.name),
       toolUseContext: toolContext,
     });
-    const toolDefinitions = dependencies.tools.definitions(toolContext);
     const systemPrompt = context.systemPrompt;
     const requestContextForTurn = options.requestContext;
     const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {

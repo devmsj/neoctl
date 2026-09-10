@@ -9,10 +9,14 @@ export async function createWebToolSettings(storageFile) {
     return structuredClone(state);
   }
 
-  async function update(next) {
-    state = next;
-    writeQueue = writeQueue.catch(() => undefined).then(() => writeState(storageFile, state));
-    await writeQueue;
+  async function update(transform) {
+    const mutation = writeQueue.catch(() => undefined).then(async () => {
+      const next = transform(state);
+      await writeState(storageFile, next);
+      state = next;
+    });
+    writeQueue = mutation;
+    await mutation;
   }
 
   return {
@@ -25,16 +29,19 @@ export async function createWebToolSettings(storageFile) {
       return value && typeof value === 'object' ? { ...value } : {};
     },
     async setGlobalOverrides(overrides) {
-      await update({ ...state, global: normalizeOverrides(overrides) });
+      const global = normalizeOverrides(overrides);
+      await update(current => ({ ...current, global }));
     },
     async setSessionOverrides(sessionId, overrides) {
       const id = String(sessionId || '').trim();
       if (!id) throw new Error('session id is required');
-      const sessions = { ...state.sessions };
       const normalized = normalizeOverrides(overrides);
-      if (Object.keys(normalized).length) sessions[id] = normalized;
-      else delete sessions[id];
-      await update({ ...state, sessions });
+      await update(current => {
+        const sessions = { ...current.sessions };
+        if (Object.keys(normalized).length) sessions[id] = normalized;
+        else delete sessions[id];
+        return { ...current, sessions };
+      });
     },
   };
 }

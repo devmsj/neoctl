@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CompactionReason, CompactionReport } from "../context/compaction.js";
 import type { AppPromptValue } from "../app/app-prompt.js";
-import { validateSessionPromptContent, type SessionPromptState } from "../core/session-settings-prompt.js";
+import { validateSessionPromptState, type SessionPromptState } from "../core/session-settings-prompt.js";
 import type { Message } from "../types/messages.js";
 import { getNeoctlHome } from "../paths.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
@@ -335,7 +335,7 @@ export class SessionStore {
   }
 
   recordSessionPrompt(prompt: SessionPromptState): void {
-    if (prompt.content !== null) validateSessionPromptContent(prompt.content);
+    validateSessionPromptState(prompt);
     if (!prompt.revision.trim()) throw new Error("session prompt revision is required");
     const stored = { ...prompt };
     this.appendEntry({ type: "session-prompt", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString(), prompt: stored });
@@ -561,8 +561,8 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       if (!prompt || typeof prompt.revision !== "string" || !prompt.revision.trim() || (prompt.content !== null && typeof prompt.content !== "string")) {
         throw new Error("invalid persisted session prompt");
       }
-      if (prompt.content !== null) validateSessionPromptContent(prompt.content);
-      loaded.sessionPrompt = { content: prompt.content, revision: prompt.revision };
+      validateSessionPromptState(prompt);
+      loaded.sessionPrompt = { ...prompt };
     }
     if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
     if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;

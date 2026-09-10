@@ -68,14 +68,18 @@ test("save during asynchronous context construction does not contaminate that re
   releaseBuild.release(); await done;
   assert.equal(f.requests[0].systemPrompt, "BASELINE");
   await drain(f.engine.sendUserText("next"));
-  assert.equal(f.requests[1].systemPrompt, "NEXT_REQUEST_ONLY");
+  assert.match(f.requests[1].systemPrompt!, /NEXT_REQUEST_ONLY/);
+  assert.match(f.requests[1].systemPrompt!, /BASELINE/);
 });
 
-test("latest default changes conflict, session switching serializes with stale saves, and ephemeral forks isolate", async (t) => {
+test("latest default changes only the preview, session switching serializes with stale saves, and ephemeral forks isolate", async (t) => {
   const f = fixture(await temp(t));
   const initial = await f.engine.getSessionPrompt();
   f.setBaseline("UPDATED_DEFAULT");
-  await assert.rejects(f.engine.updateSessionPrompt({ content: "stale", revision: initial.revision }), { statusCode: 409 });
+  const updatedDefault = await f.engine.getSessionPrompt();
+  assert.equal(updatedDefault.revision, initial.revision);
+  assert.notEqual(updatedDefault.effectiveRevision, initial.effectiveRevision);
+  await f.engine.updateSessionPrompt({ content: "fresh addition", revision: initial.revision });
   const current = await f.engine.getSessionPrompt();
   const switched = f.engine.newSession();
   const staleSave = f.engine.updateSessionPrompt({ content: "old session", revision: current.revision });
@@ -89,7 +93,7 @@ test("latest default changes conflict, session switching serializes with stale s
 });
 
 // All storage is temporary and every model gateway is fake; no provider/environment secrets.
-test("full prompt replaces the actual model instructions, while tools and user/runtime context stay intact", async (t) => {
+test("session instructions append to actual model instructions, while tools and user/runtime context stay intact", async (t) => {
   const dir = await temp(t);
   const f = fixture(dir);
   f.engine.setRuntimePlugins(["test-plugin"], [{ name: "Plugin", content: "PLUGIN_RULE", cacheStable: false }]);
@@ -97,31 +101,34 @@ test("full prompt replaces the actual model instructions, while tools and user/r
   f.engine.setAppPrompt({ content: "APP_RULE", title: "Test app" });
   const current = await readSessionPrompt(f.engine);
   assert.equal(current.override, false);
-  assert.match(current.content, /GLOBAL_V1/);
-  assert.match(current.content, /PLUGIN_RULE/);
-  assert.match(current.content, /APP_RULE/);
-  assert.doesNotMatch(current.content, /__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__/);
-  assert.notEqual(current.revision, initial.revision);
+  assert.match(current.effectiveContent, /GLOBAL_V1/);
+  assert.match(current.effectiveContent, /PLUGIN_RULE/);
+  assert.match(current.effectiveContent, /APP_RULE/);
+  assert.doesNotMatch(current.effectiveContent, /__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__/);
+  assert.equal(current.revision, initial.revision);
+  assert.notEqual(current.effectiveRevision, initial.effectiveRevision);
   const text = "  MY COMPLETE SYSTEM PROMPT\nIncluding dynamic instructions.\n";
   const result = await updateSessionPrompt(f.engine, { content: text, revision: current.revision });
   assert.equal(result.deferred, false);
   assert.equal(result.content, text);
   await drain(f.engine.sendUserText("USER_INPUT"));
-  assert.equal(f.requests[0].systemPrompt, text);
+  assert.ok(f.requests[0].systemPrompt!.includes(text));
+  assert.match(f.requests[0].systemPrompt!, /GLOBAL_V1/);
+  assert.match(f.requests[0].systemPrompt!, /PLUGIN_RULE/);
   assert.equal(f.requests[0].tools[0].name, "probe");
   assert.match(JSON.stringify(f.requests[0].messages), /PROJECT_MEMORY/);
   assert.match(JSON.stringify(f.requests[0].messages), /2026-09-08/);
   assert.match(JSON.stringify(f.requests[0].messages), /USER_INPUT/);
   const wire = buildResponsesRequest(f.requests[0], { model: "gpt-5" });
-  assert.equal(wire.instructions, text);
+  assert.ok(String(wire.instructions).includes(text));
   const exported = await f.engine.promptExportSnapshot();
-  assert.equal(exported.systemPrompt, text);
+  assert.ok(exported.systemPrompt!.includes(text));
   assert.match(exported.baseSystemPrompt!, /GLOBAL_V1/);
-  assert.deepEqual(exported.promptSections, [{ name: "Session Prompt Override", content: text, cacheStable: true }]);
+  assert.ok((exported.promptSections as Array<{name: string}>).some(section => section.name === "Session Instructions"));
   const runtime = createWebRuntimeContextPayload(exported, { revision: 1 });
   assert.equal(runtime.prompt.sessionPrompt?.override, true);
   assert.equal(runtime.prompt.sessionPrompt?.deferred, false);
-  assert.equal(runtime.prompt.systemPrompt, text);
+  assert.ok(runtime.prompt.systemPrompt.includes(text));
   assert.doesNotMatch(JSON.stringify(f.engine.getHistoryMessages()), /MY COMPLETE SYSTEM PROMPT/);
 });
 
@@ -133,9 +140,10 @@ test("resume restores accepted metadata and revision; fork/new-session cannot in
   const transcript = await readFile(f.engine.snapshot().session!.transcriptPath, "utf8");
   assert.match(transcript, /"type":"session-prompt"/);
   const resumed = f.engine.forkForSession("session-one", true);
-  assert.deepEqual(await resumed.getSessionPrompt(), { content: saved.content, override: true, revision: saved.revision });
+  const { ok: _ok, deferred: _deferred, ...savedSnapshot } = saved;
+  assert.deepEqual(await resumed.getSessionPrompt(), savedSnapshot);
   await drain(resumed.sendUserText("resume"));
-  assert.equal(f.requests.at(-1)!.systemPrompt, "SESSION_ONE_ONLY");
+  assert.match(f.requests.at(-1)!.systemPrompt!, /SESSION_ONE_ONLY/);
   const forked = f.engine.forkForSession("session-two", false);
   assert.equal((await forked.getSessionPrompt()).override, false);
   assert.notEqual((await forked.getSessionPrompt()).revision, original.revision);
@@ -177,7 +185,8 @@ test("busy edits persist immediately but apply only on the next model turn; coal
   assert.equal((await recovered.getSessionPrompt()).content, "QUEUED_TWO");
   assert.equal(JSON.stringify(requests[0]), requestBefore);
   release.release(); await done;
-  assert.equal(requests[1].systemPrompt, "QUEUED_TWO");
+  assert.match(requests[1].systemPrompt!, /QUEUED_TWO/);
+  assert.match(requests[1].systemPrompt!, /GLOBAL_V1/);
   assert.equal(requests[1].serviceTier, "priority");
   assert.deepEqual(requests[1].tools, requests[0].tools);
   assert.deepEqual(f.engine.getPendingSessionSettings(), {});
@@ -195,10 +204,10 @@ test("reset reads latest baseline plus dynamic plugin/app and persists removal a
   assert.equal((await f.engine.getSessionPrompt()).revision, edited.revision);
   const reset = await f.engine.updateSessionPrompt({ reset: true, revision: edited.revision });
   assert.equal(reset.override, false);
-  assert.match(reset.content, /GLOBAL_V2/);
-  assert.match(reset.content, /PLUGIN_V2/);
-  assert.match(reset.content, /APP_V2/);
-  assert.doesNotMatch(reset.content, /CUSTOM|__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__/);
+  assert.match(reset.effectiveContent, /GLOBAL_V2/);
+  assert.match(reset.effectiveContent, /PLUGIN_V2/);
+  assert.match(reset.effectiveContent, /APP_V2/);
+  assert.doesNotMatch(reset.effectiveContent, /CUSTOM|__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__/);
   await drain(f.engine.sendUserText("reset query"));
   assert.match(f.requests[0].systemPrompt!, /GLOBAL_V2/);
   assert.match(f.requests[0].systemPrompt!, /PLUGIN_V2/);
@@ -243,7 +252,7 @@ test("a queued reset at a final/aborted boundary is applied without another mode
     const done = drain(f.engine.sendUserText("start", { abortSignal: controller.signal })); await opened.promise;
     const reset = await f.engine.updateSessionPrompt({ reset: true, revision: edited.revision });
     assert.equal(reset.deferred, true);
-    assert.equal((await f.engine.promptExportSnapshot()).systemPrompt, "CUSTOM");
+    assert.match((await f.engine.promptExportSnapshot()).systemPrompt!, /CUSTOM/);
     if (abort) controller.abort();
     release.release(); await done;
     assert.equal((await f.engine.promptExportSnapshot()).sessionPrompt?.override, false);

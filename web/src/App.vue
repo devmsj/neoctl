@@ -714,7 +714,7 @@ async function saveGlobalTools() {
     const result = await postJson('/api/tools/global', { overrides })
     state.globalTools = { ...result.state, loading: false }
     await Promise.all([fetchSessionTools(), fetchRuntimeContext()])
-    notify('全局工具配置已保存并立即生效')
+    notify('全局工具配置已保存，各会话在下一轮或刷新时生效')
   } catch (error) {
     state.globalTools.loading = false
     notifyActionError(error, '工具配置保存失败')
@@ -5319,6 +5319,7 @@ function createMobileSession() {
             v-if="state.runtimeContextModal === 'prompt'"
             :endpoint="runtimeUrl('/api/session-prompt')"
             session
+            :runtime-prompt="state.runtimeContext?.prompt"
             @saved="onPromptConfigSaved"
           />
 

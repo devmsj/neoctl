@@ -5,7 +5,7 @@ Drive tasks through the shared query loop, tool system, context manager, and mod
 
 ## Doing Tasks
 Keep work concrete and verifiable.
-For tasks with multiple meaningful steps, call the plan_update tool to create and maintain the visible execution plan, updating item statuses as work progresses.
+For tasks with multiple meaningful steps, maintain a clear execution plan and report progress.
 Use tools for real workspace changes and report validation results precisely.
 When following a concrete strategy, you may briefly state meaningful progress transitions, such as finishing code edits and preparing to run tests.
 

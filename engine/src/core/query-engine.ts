@@ -24,9 +24,9 @@ import { SessionStore, type SessionDisplayEntry, type SessionStoreSnapshot, type
 import type { SessionPromptExportSnapshot } from "../session/session-export.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { computeStaticTokens } from "./context-metrics.js";
-import { applySessionPrompt, createSessionPromptSnapshot, parseSessionPromptUpdate, SessionPromptError, type SessionPromptSnapshot, type SessionPromptState, type SessionPromptUpdate, type SessionPromptUpdateResult } from "./session-settings-prompt.js";
+import { applySessionPrompt, sessionPromptMode, createSessionPromptSnapshot, parseSessionPromptUpdate, SessionPromptError, type SessionPromptSnapshot, type SessionPromptState, type SessionPromptUpdate, type SessionPromptUpdateResult } from "./session-settings-prompt.js";
 
-type PendingSessionSettings = SessionSettingsPatch & { sessionPrompt?: string | null };
+type PendingSessionSettings = SessionSettingsPatch & { sessionPrompt?: SessionPromptState | null };
 
 export type { SessionSettingsPatch } from "./query.js";
 
@@ -46,6 +46,8 @@ export interface QueryEngineOptions {
   contextManager?: ContextManager;
   contextManagerFactory?: (cwd?: string) => ContextManager;
   additionalPromptSections?: readonly PromptSection[];
+  /** Synchronous refresh at a safe model-turn boundary or idle preview. */
+  refreshTools?: () => void;
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
@@ -81,7 +83,7 @@ export class QueryEngine {
   private running = false;
   private pendingSessionSettings: PendingSessionSettings = {};
   private sessionPromptState?: SessionPromptState;
-  private activeSessionPrompt: string | null = null;
+  private activeSessionPrompt: SessionPromptState | null = null;
   private readonly ephemeralSessionKey = randomUUID();
   // Idle mutations and the next generator share a barrier. Never compact alongside a request.
   private settingsMutation: Promise<unknown> = Promise.resolve();
@@ -266,7 +268,10 @@ export class QueryEngine {
         } : undefined,
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
-        beforeTurn: (messages) => this.consumeSessionSettings(messages),
+        beforeTurn: (messages) => {
+          this.options.refreshTools?.();
+          return this.consumeSessionSettings(messages);
+        },
       };
 
       const stream = query(
@@ -345,7 +350,7 @@ export class QueryEngine {
     await this.settingsMutation;
     await this.initialize();
     const snapshot = await this.buildPromptExportSnapshot(this.getHistoryMessages());
-    return createSessionPromptSnapshot(this.sessionPromptKey(), this.sessionPromptState, snapshot.baseSystemPrompt ?? "");
+    return snapshot.sessionPromptConfig!;
   }
 
   async updateSessionPrompt(input: SessionPromptUpdate): Promise<SessionPromptUpdateResult> {
@@ -354,18 +359,22 @@ export class QueryEngine {
       await this.initialize();
       const key = this.sessionPromptKey();
       const snapshot = await this.buildPromptExportSnapshot(this.getHistoryMessages());
-      const current = createSessionPromptSnapshot(key, this.sessionPromptState, snapshot.baseSystemPrompt ?? "");
+      const current = snapshot.sessionPromptConfig!;
       if (key !== this.sessionPromptKey() || update.revision !== current.revision) {
         throw new SessionPromptError("session prompt changed; reload before saving", 409);
       }
-      const state: SessionPromptState = { content: update.reset ? null : update.content, revision: randomUUID() };
+      if (!update.reset && update.mode === "legacy_full_override" && current.mode !== "legacy_full_override") {
+        throw new SessionPromptError("full replacement is only supported for existing legacy prompts", 400);
+      }
+      const state: SessionPromptState = { content: update.reset ? null : update.content, mode: update.reset ? "inherit" : update.mode ?? (current.mode === "legacy_full_override" ? "legacy_full_override" : "append"), revision: randomUUID() };
+      const nextSnapshot = (await this.buildPromptExportSnapshot(this.getHistoryMessages(), state)).sessionPromptConfig!;
       // Persist before accepting, including busy edits, so same-session resume cannot lose them.
       this.sessionStore?.recordSessionPrompt(state);
       this.sessionPromptState = state;
       const deferred = this.running;
-      if (deferred) this.pendingSessionSettings = { ...this.pendingSessionSettings, sessionPrompt: state.content };
-      else this.activeSessionPrompt = state.content;
-      return { ok: true as const, ...createSessionPromptSnapshot(key, state, snapshot.baseSystemPrompt ?? ""), deferred };
+      if (deferred) this.pendingSessionSettings = { ...this.pendingSessionSettings, sessionPrompt: state };
+      else this.activeSessionPrompt = state;
+      return { ok: true as const, ...nextSnapshot, deferred };
     });
     this.settingsMutation = mutation.catch(() => undefined);
     return mutation;
@@ -378,6 +387,7 @@ export class QueryEngine {
   getPendingSessionSettings(): PendingSessionSettings {
     const patch = { ...this.pendingSessionSettings };
     if (Object.hasOwn(patch, "reasoning")) patch.reasoning = cloneReasoningConfig(patch.reasoning);
+    if (patch.sessionPrompt) patch.sessionPrompt = { ...patch.sessionPrompt };
     return patch;
   }
 
@@ -590,7 +600,12 @@ export class QueryEngine {
     return this.buildPromptExportSnapshot(this.getHistoryMessages());
   }
 
-  private async buildPromptExportSnapshot(messages: Message[]): Promise<SessionPromptExportSnapshot> {
+  refreshToolsIfIdle(): void {
+    if (!this.running) this.options.refreshTools?.();
+  }
+
+  private async buildPromptExportSnapshot(messages: Message[], desiredState = this.sessionPromptState): Promise<SessionPromptExportSnapshot> {
+    this.refreshToolsIfIdle();
     const toolContext: ToolUseContext = {
       agentId: this.agentId,
       tools: this.options.tools,
@@ -621,8 +636,8 @@ export class QueryEngine {
       toolUseContext: toolContext,
     });
     const context = applySessionPrompt(baseline, activePrompt);
-    const desiredPrompt = createSessionPromptSnapshot(this.sessionPromptKey(), this.sessionPromptState, baseline.systemPrompt);
-    const toolDefinitions = this.options.tools.definitions(toolContext);
+    const desiredPrompt = createSessionPromptSnapshot(this.sessionPromptKey(), desiredState, baseline);
+    const toolDefinitions = initialToolDefinitions;
     const messagesWithUserContext = applyRuntimeContextForPromptCache([], context.userContext, {});
     const userContextPrompt = messagesWithUserContext[0]?.blocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
@@ -633,8 +648,12 @@ export class QueryEngine {
       reasoning: cloneReasoningConfig(this.currentReasoning),
       systemPrompt: context.systemPrompt,
       baseSystemPrompt: baseline.systemPrompt,
+      sessionPromptConfig: desiredPrompt,
       sessionPrompt: {
-        override: activePrompt !== null,
+        mode: sessionPromptMode(activePrompt),
+        pendingMode: desiredPrompt.mode,
+        effectiveRevision: createSessionPromptSnapshot(this.sessionPromptKey(), activePrompt ?? undefined, baseline).effectiveRevision,
+        override: sessionPromptMode(activePrompt) !== "inherit",
         revision: desiredPrompt.revision,
         deferred: Object.hasOwn(this.pendingSessionSettings, "sessionPrompt"),
         pendingOverride: desiredPrompt.override,
@@ -701,7 +720,7 @@ export class QueryEngine {
     });
     this.pendingSessionSettings = {};
     this.sessionPromptState = this.sessionStore.getSessionPrompt();
-    this.activeSessionPrompt = this.sessionPromptState?.content ?? null;
+    this.activeSessionPrompt = this.sessionPromptState ?? null;
     this.history.length = 0;
     if (options.resume) this.history.push(...this.sessionStore.getInitialMessages());
     this.appPromptStore.setAppPrompt(this.sessionStore.getAppPrompt());

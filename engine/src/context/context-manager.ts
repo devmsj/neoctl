@@ -79,7 +79,8 @@ export class AdditionalPromptContextManager implements ContextManager {
   async build(input: ContextBuildInput): Promise<RuntimeContext> {
     const runtimeContext = await this.base.build(input);
     if (this.sections.length === 0) return runtimeContext;
-    const promptSections = [...runtimeContext.promptSections, ...this.sections];
+    const enabled = new Set(input.enabledTools ?? []);
+    const promptSections = [...runtimeContext.promptSections, ...this.sections.filter((section) => section.requiresTools?.every((name) => enabled.has(name)) ?? true)];
     return {
       ...runtimeContext,
       promptSections,

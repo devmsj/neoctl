@@ -60,6 +60,7 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
     ...runtimeOptions,
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),
     globalToolOverrides: toolSettings.globalOverrides(),
+    resolveGlobalToolOverrides: () => toolSettings.globalOverrides(),
     sessionToolOverrides: toolSettings.sessionOverrides(runtimeOptions.sessionId),
     persistGlobalToolOverrides: (overrides) => toolSettings.setGlobalOverrides(overrides),
     persistSessionToolOverrides: (sessionId, overrides) => toolSettings.setSessionOverrides(sessionId, overrides),

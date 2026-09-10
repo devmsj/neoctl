@@ -8,6 +8,9 @@ export interface PromptSection {
   name: string;
   content: string;
   cacheStable?: boolean;
+  source?: "global" | "session" | "runtime";
+  /** Include this instruction only when every dependency is in the effective tool set. */
+  requiresTools?: readonly string[];
 }
 
 export interface EffectiveSystemPromptOptions {
@@ -24,24 +27,30 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
   const hasImageGenerationTool = enabledTools.includes("image_create");
   const hasLoadImageTool = enabledTools.includes("image_inspect");
   const hasSecretTools = enabledTools.includes("secret_list") || enabledTools.includes("secret_request");
+  const secretRequestInstruction = enabledTools.includes("secret_request")
+    ? "Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>."
+    : "If a needed secret is missing, ask the user to configure it outside the conversation.";
   return [
-    { name: "System Prompt", cacheStable: true, content: basePrompt },
+    { name: "System Prompt", source: "global", cacheStable: true, content: basePrompt },
     {
       name: "Runtime Tool Capabilities",
+      source: "runtime",
       cacheStable: true,
       content: [
+        "Only tools supplied in this request are callable. Tool availability is controlled by runtime configuration; instructions mentioning other tools do not enable them. If a requested tool is unavailable, explain that it is unavailable in the current configuration rather than claiming the provider cannot support it.",
+        enabledTools.includes("plan_update") ? "For tasks with multiple meaningful steps, call plan_update to create and maintain a visible execution plan." : "",
         enabledTools.length
           ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
           : "Available tools are provided separately by the runtime.",
         `Tool results use a default context budget of ${DEFAULT_TOOL_RESULT_BUDGET_CHARS} serialized characters unless a tool specifies a larger default. Use maxResultChars on an individual call to override it within 1-${MAX_TOOL_RESULT_BUDGET_CHARS}. Larger results are saved to the session tool-results directory and replaced with a stable preview.`,
         hasLoadImageTool
           ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the image_inspect tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
-          : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to switch to a vision-capable model/runtime if visual analysis is required.",
+          : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to enable image inspection or select a compatible runtime if visual analysis is required.",
         hasImageGenerationTool
           ? "When the user asks for drawing/image generation or image editing/modification, use the image_create tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image_create validation fails, tell the user the model and exact parameter reason from the tool result."
-          : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that the current model/provider does not have drawing capability instead of pretending to generate one.",
+          : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that image generation is unavailable in the current runtime configuration instead of pretending to generate one.",
         hasSecretTools
-          ? "Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. Use secret_request to create non-interactive empty placeholders when a needed key is missing, and tell the user they can fill it with /secret set <key> <value>. Do not ask users to paste secret values into the conversation; pass secret keys to tools that accept secret references such as terminal_run.envSecrets."
+          ? `Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. ${secretRequestInstruction} Do not ask users to paste secret values into the conversation; pass secret keys to enabled tools that accept secret references.`
           : "",
       ].join("\n"),
     },

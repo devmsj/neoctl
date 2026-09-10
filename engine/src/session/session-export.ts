@@ -13,7 +13,8 @@ export interface SessionPromptExportSnapshot {
   reasoning?: unknown;
   systemPrompt?: string;
   baseSystemPrompt?: string;
-  sessionPrompt?: { override: boolean; revision: string; deferred: boolean; pendingOverride?: boolean };
+  sessionPromptConfig?: import("../core/session-settings-prompt.js").SessionPromptSnapshot;
+  sessionPrompt?: { override: boolean; revision: string; deferred: boolean; pendingOverride?: boolean; mode?: string; pendingMode?: string; effectiveRevision?: string };
   promptSections?: unknown;
   appPrompt?: unknown;
   userContext?: unknown;
