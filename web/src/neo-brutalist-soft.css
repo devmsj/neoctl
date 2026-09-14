@@ -2358,3 +2358,26 @@ input[type='radio'] {
     transform: none !important;
   }
 }
+
+/* Upload fill stays visible when disabled/hovered, including in dark mode. */
+:root .ghost.upload-button,
+:root .ghost.upload-button:hover:not(:disabled) {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: 108px;
+  background: #fff !important;
+  color: #17212b !important;
+  opacity: 1 !important;
+}
+.upload-button::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--upload-progress, 0%);
+  background: var(--pink, #f472b6);
+  pointer-events: none;
+}
+.upload-button-label {
+  position: relative;
+}

@@ -21,6 +21,7 @@ import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
+import { uploadJson, createUploadProgress } from './upload-progress.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
 
 hljs.registerLanguage('javascript', javascript)
@@ -307,6 +308,7 @@ const state = reactive({
   attachments: [],
   attachmentCounter: 0,
   uploadingFiles: false,
+  uploadProgress: 0,
   messageImagePreviews: [],
   liveToolStartedAt: {},
   clockTick: Date.now(),
@@ -3581,13 +3583,16 @@ async function handleFileInputChange(event) {
 }
 
 async function uploadFiles(files) {
+  if (!files.length || state.uploadingFiles) return
   state.uploadingFiles = true
+  const progress = createUploadProgress(files, (value) => { state.uploadProgress = value })
+  const uploadUrl = runtimeUrl('/api/uploads')
   try {
     const uploaded = []
     const compressionRates = []
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
       if (file.type.startsWith('image/')) {
-        const payload = await fileToDataUrlPayload(file)
+        const payload = await fileToDataUrlPayload(file, (fraction) => progress.update(index, fraction * 0.9))
         const label = `[img#${++state.attachmentCounter}]`
         if (payload.compressionRate > 0) compressionRates.push(payload.compressionRate)
         uploaded.push({
@@ -3599,14 +3604,15 @@ async function uploadFiles(files) {
           data: payload.data,
           previewUrl: payload.previewUrl,
         })
+        progress.complete(index)
         continue
       }
-      const payload = await fileToBase64Payload(file)
-      const result = await postJson('/api/uploads', {
+      const payload = await fileToBase64Payload(file, (fraction) => progress.update(index, fraction * 0.1))
+      const result = await uploadJson(uploadUrl, {
         name: file.name,
         mimeType: file.type || 'application/octet-stream',
         data: payload.data,
-      })
+      }, (fraction) => progress.update(index, 0.1 + fraction * 0.9), requestError)
       if (!result?.file?.absolutePath) throw new Error('upload response missing path')
       uploaded.push({
         kind: 'file',
@@ -3617,11 +3623,14 @@ async function uploadFiles(files) {
         absolutePath: result.file.absolutePath,
         relativePath: result.file.relativePath || '',
       })
+      progress.complete(index)
     }
     state.attachments.push(...uploaded)
+    progress.succeed()
     if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
     notify(`已上传 ${uploaded.length} 个附件`)
   } catch (error) {
+    progress.fail()
     notify(error.message || String(error))
   } finally {
     state.uploadingFiles = false
@@ -3924,21 +3933,28 @@ function insertAtCursor(value) {
   })
 }
 
-async function fileToDataUrlPayload(file) {
-  const dataUrl = await readFileAsDataUrl(file)
+async function fileToDataUrlPayload(file, onProgress) {
+  const dataUrl = await readFileAsDataUrl(file, onProgress)
   return normalizeImageDataUrlPayload(dataUrl, file.type || 'image/png')
 }
 
-async function fileToBase64Payload(file) {
-  const dataUrl = await readFileAsDataUrl(file)
+async function fileToBase64Payload(file, onProgress) {
+  const dataUrl = await readFileAsDataUrl(file, onProgress)
   const comma = dataUrl.indexOf(',')
   return { mimeType: file.type || 'application/octet-stream', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl }
 }
 
-async function readFileAsDataUrl(file) {
+async function readFileAsDataUrl(file, onProgress) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total)
+    }
+    reader.onload = () => {
+      onProgress?.(1)
+      resolve(String(reader.result || ''))
+    }
+    reader.onabort = () => reject(new Error('文件读取已取消'))
     reader.onerror = () => reject(reader.error || new Error('read failed'))
     reader.readAsDataURL(file)
   })
@@ -4752,7 +4768,16 @@ function createMobileSession() {
                 </span>
               </div>
               <div class="composer-actions">
-                <button type="button" class="ghost" :disabled="state.uploadingFiles" @click="triggerFilePicker">{{ state.uploadingFiles ? '上传中…' : '上传附件' }}</button>
+                <button
+                  type="button"
+                  class="ghost upload-button"
+                  :style="{ '--upload-progress': state.uploadProgress + '%' }"
+                  :disabled="state.uploadingFiles"
+                  :aria-busy="state.uploadingFiles"
+                  @click="triggerFilePicker"
+                >
+                  <span class="upload-button-label" aria-live="polite">{{ state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件' }}</span>
+                </button>
                 <button
                   :type="composerRunning ? 'button' : 'submit'"
                   :class="['primary', 'composer-action', { stop: composerRunning }]"
