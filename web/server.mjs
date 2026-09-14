@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createChunkUploadHandler } from './chunk-uploads.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -46,7 +47,7 @@ const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(dataRoot, 'memory-monitor.json'));
 const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(dataRoot, 'plugins.json'));
 const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(dataRoot, 'tools.json'));
-const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const chunkUploads = createChunkUploadHandler({ uploadsDir, baseDir: __dirname });
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
@@ -213,6 +214,7 @@ async function routeRequest(req, res) {
       await writePromptLibrary(ordered);
       return sendJson(res, { ok: true, items: ordered });
     }
+    if (await chunkUploads(req, res, url)) return;
     if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
       return serveUploadedFile(res, storedName);
@@ -385,7 +387,6 @@ async function storeUploadedFile(payload) {
   if (!data) throw new Error('missing upload data');
   const buffer = Buffer.from(data, 'base64');
   if (!buffer.length) throw new Error('empty upload data');
-  if (buffer.length > maxUploadBytes) throw new Error(`upload too large: max ${maxUploadBytes} bytes`);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const random = Math.random().toString(36).slice(2, 8);
   const storedName = `${stamp}-${random}-${name}`;
@@ -419,12 +420,14 @@ async function serveUploadedFile(res, storedName) {
     return;
   }
   try {
-    const body = await fsp.readFile(filePath);
+    const stat = await fsp.stat(filePath);
+    if (!stat.isFile()) throw new Error('not a file');
     res.writeHead(200, {
+      'Content-Length': String(stat.size),
       'Content-Type': mime[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
       'Cache-Control': 'public, max-age=31536000, immutable',
     });
-    res.end(body);
+    fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('not found');

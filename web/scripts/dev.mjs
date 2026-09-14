@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import { createChunkUploadHandler } from '../chunk-uploads.mjs';
 import path from 'node:path';
 import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } from '../core-runtime.mjs';
 import { createWebPluginHost } from '../plugins.mjs';
@@ -32,7 +33,7 @@ const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(dataRoot, 'memory-monitor.json'));
 const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(dataRoot, 'plugins.json'));
 const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(dataRoot, 'tools.json'));
-const maxUploadBytes = Number(process.env.NEO_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+const chunkUploads = createChunkUploadHandler({ uploadsDir, baseDir: process.cwd() });
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
@@ -158,6 +159,7 @@ async function routeRequest(req, res) {
       await writePromptLibrary(nextItems);
       return sendJson(res, { ok: true, items: nextItems });
     }
+    if (await chunkUploads(req, res, url)) return;
     if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
       return serveUploadedFile(res, storedName);
@@ -294,7 +296,6 @@ async function storeUploadedFile(payload) {
   if (!data) throw new Error('missing upload data');
   const buffer = Buffer.from(data, 'base64');
   if (!buffer.length) throw new Error('empty upload data');
-  if (buffer.length > maxUploadBytes) throw new Error(`upload too large: max ${maxUploadBytes} bytes`);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const random = Math.random().toString(36).slice(2, 8);
   const storedName = `${stamp}-${random}-${name}`;
@@ -328,12 +329,14 @@ async function serveUploadedFile(res, storedName) {
     return;
   }
   try {
-    const body = await readFile(filePath);
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) throw new Error('not a file');
     res.writeHead(200, {
+      'Content-Length': String(fileStat.size),
       'Content-Type': mimeTypeForPath(filePath),
       'Cache-Control': 'public, max-age=31536000, immutable',
     });
-    res.end(body);
+    fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('not found');

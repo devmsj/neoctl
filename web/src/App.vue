@@ -21,7 +21,8 @@ import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
-import { uploadJson, createUploadProgress } from './upload-progress.mjs'
+import { createUploadProgress } from './upload-progress.mjs'
+import { uploadFileChunks } from './chunk-upload.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
 
 hljs.registerLanguage('javascript', javascript)
@@ -3607,12 +3608,7 @@ async function uploadFiles(files) {
         progress.complete(index)
         continue
       }
-      const payload = await fileToBase64Payload(file, (fraction) => progress.update(index, fraction * 0.1))
-      const result = await uploadJson(uploadUrl, {
-        name: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        data: payload.data,
-      }, (fraction) => progress.update(index, 0.1 + fraction * 0.9), requestError)
+      const result = await uploadFileChunks(uploadUrl, file, (fraction) => progress.update(index, fraction))
       if (!result?.file?.absolutePath) throw new Error('upload response missing path')
       uploaded.push({
         kind: 'file',
@@ -3936,12 +3932,6 @@ function insertAtCursor(value) {
 async function fileToDataUrlPayload(file, onProgress) {
   const dataUrl = await readFileAsDataUrl(file, onProgress)
   return normalizeImageDataUrlPayload(dataUrl, file.type || 'image/png')
-}
-
-async function fileToBase64Payload(file, onProgress) {
-  const dataUrl = await readFileAsDataUrl(file, onProgress)
-  const comma = dataUrl.indexOf(',')
-  return { mimeType: file.type || 'application/octet-stream', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl }
 }
 
 async function readFileAsDataUrl(file, onProgress) {
