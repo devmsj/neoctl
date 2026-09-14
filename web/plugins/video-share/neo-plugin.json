@@ -1,0 +1,9 @@
+{
+  "protocol": "neo-plugin/v1",
+  "id": "video-share",
+  "name": "视频播放",
+  "version": "2.1.0",
+  "entry": "index.mjs",
+  "defaultEnabled": true,
+  "description": "聊天消息内嵌 HTML5 视频播放、Range 流式播放、零复制路径映射、无自动过期链接及手动撤销。"
+}

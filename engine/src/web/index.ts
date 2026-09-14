@@ -1283,12 +1283,13 @@ export class WebRepl {
             source: payload.source,
           } satisfies AppPromptInput);
       const usage = payload.usage?.trim();
-      if (!shouldClear && usage) {
+      if (!shouldClear) {
         this.append({
           kind: "meta",
           title: "提示词用法",
-          text: usage,
+          text: usage || "提示词已应用。请在下方输入框中描述你的需求，按提示词要求补充材料后发送；它会用于后续对话。可在提示词管理中切换或清除。",
           format: "markdown",
+          presentationLevel: "primary",
         });
       }
       this.broadcastSync();

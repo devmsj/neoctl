@@ -2157,7 +2157,7 @@ function isToolGroup(line) {
 
 function isPrimaryPresentationLine(line) {
   if (!line) return true
-  if (line.presentationLevel === 'primary') return true
+  if (line.presentationLevel === 'primary' || isPromptUsageLine(line)) return true
   if (line.kind === 'user' || line.kind === 'assistant') return true
   return isImageCreateLine(line)
 }
@@ -2613,7 +2613,8 @@ function loginFieldOptions(field) {
 }
 
 function shouldMarkdown(line) {
-  return !['ansi', 'plain', 'diff'].includes(line.format) && ['assistant', 'thinking', 'system', 'tool'].includes(line.kind)
+  return !['ansi', 'plain', 'diff'].includes(line.format)
+    && (isPromptUsageLine(line) || ['assistant', 'thinking', 'system', 'tool'].includes(line.kind))
 }
 
 function runtimeToolSummary(tool) {

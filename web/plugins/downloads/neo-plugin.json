@@ -2,8 +2,8 @@
   "protocol": "neo-plugin/v1",
   "id": "downloads",
   "name": "文件下载",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "entry": "index.mjs",
   "defaultEnabled": true,
-  "description": "将本地文件安全地暴露为临时浏览器下载链接。"
+  "description": "仅持久保存原始文件路径映射，无目录限制、无文件复制、无自动过期；原文件移动或删除后链接失效。"
 }

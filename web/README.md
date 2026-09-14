@@ -70,7 +70,7 @@ Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo w
 - `/api/login`：模型供应商配置
 - `/vendor/*`：neo web 运行时静态资源
 
-`expose_downloads` 可暴露任意现有绝对文件路径，不受当前工作目录限制；下载链接仍为临时链接并按注册表有效期失效。
+`expose_downloads` 可暴露任意现有绝对文件路径，不受当前工作目录限制；下载链接无自动过期，仅持久保存原始路径映射、不复制文件；原文件移动、删除或不可读后链接失效。详见 `plugins/downloads/README.md`。独立视频播放插件见 `plugins/video-share/README.md`。
 
 如果只想启动纯前端 Vite：
 

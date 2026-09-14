@@ -275,6 +275,7 @@ function normalizePromptItem(item) {
     id: String(item.id || createPromptId()).trim(),
     title,
     content,
+    usage: String(item.usage || '').trim(),
   };
 }
 

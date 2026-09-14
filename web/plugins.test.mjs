@@ -39,14 +39,16 @@ test('core loader discovers the plugin resource directory', async () => {
     appDataDir: path.resolve('.neoctl-web', 'test-plugin-data'),
     env: {},
   });
-  assert.deepEqual(catalog.map((plugin) => plugin.id), ['downloads', 'xhs-artifact']);
+  assert.deepEqual(catalog.map((plugin) => plugin.id), ['downloads', 'video-share', 'xhs-artifact']);
   assert.deepEqual(catalog.flatMap((plugin) => plugin.tools.map((tool) => tool.name)), [
     'expose_downloads',
+    'expose_videos',
+    'revoke_videos',
     'open_xhs_artifact_editor',
     'read_xhs_artifact',
   ]);
   const host = createWebPluginHost({ plugins: catalog });
-  assert.deepEqual(host.ids, ['downloads', 'xhs-artifact']);
+  assert.deepEqual(host.ids, ['downloads', 'video-share', 'xhs-artifact']);
   const runtimePlugin = host.runtimePlugins('session-1').externalPlugins.find((plugin) => plugin.id === 'xhs-artifact');
   assert.equal(typeof runtimePlugin.presentToolResult, 'function');
 });
