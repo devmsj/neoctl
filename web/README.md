@@ -13,6 +13,46 @@ neow
 
 当前版本目标：先复刻 `neo web` 的能力；绘图工具等待后续 `neoctl` 更新后再接入。
 
+## 隔离模式
+
+默认关闭，仅通过文件配置。配置文件为用户数据目录下的 `isolation.json`，或由 `NEO_ISOLATION_CONFIG` 指定绝对路径；指定文件缺失或格式错误时拒绝启动。
+
+在 `web` 目录执行，交互输入密码，不写入命令历史：
+
+```bash
+node scripts/isolation-user.mjs /absolute/path/isolation.json admin admin
+node scripts/isolation-user.mjs /absolute/path/isolation.json alice user
+```
+
+脚本以唯一用户名创建或更新用户并保存 scrypt 哈希。用户名同时用于数据目录，不应改名或复用。编辑文件：
+
+```json
+{
+  "enabled": true,
+  "secureCookie": true,
+  "cookiePath": "/neo/",
+  "sessionHours": 12,
+  "retiredUsernames": [],
+  "users": [
+    { "username": "admin", "role": "admin", "passwordHash": "保留脚本生成的哈希" },
+    { "username": "alice", "role": "user", "passwordHash": "保留脚本生成的哈希" }
+  ]
+}
+```
+
+本地 HTTP 使用 `secureCookie: false`、`cookiePath: "/"`。HTTPS 部署使用 `secureCookie: true`，反向代理保留原始 `Host`。修改配置或账号后重启 Web；重启会清除全部登录态。关闭时改为 `enabled: false`，无需前端操作。
+
+- 后台按用户分组会话，列表、恢复、删除、SSE 和详情均校验归属；不向新用户分配原有公共会话。
+- 超管可在页面创建、删除普通用户并读取全部用户会话。超管查看会话时前端隐藏输入、新建和删除入口；底层会话接口不额外限制。删除账号不删除历史数据，用户名不可复用。
+- 会话、上传及内置插件记录保存在 `isolated-users/<用户名>/`，工作目录位于 `workspaces/users/<用户名>/`。旧模式数据不迁移、不删除。
+- 登录前不创建用户运行时；开启时直接嵌入运行时路由，不另开无认证 core HTTP 端口。
+- 超管显示完整模型配置页：模型、CPA、工具、插件、系统提示词。模型和工具保存后同步全部用户；插件按原逻辑重启生效，系统提示词按原逻辑在后续请求生效。
+- 普通用户不显示模型配置、提示词管理，配置接口拒绝访问。所有用户显示服务端内存，有有效额度时显示 CPA 额度卡片。
+- Cookie 使用 HttpOnly、SameSite=Strict、过期时间；登录有限流，退出或过期关闭对应 SSE。凭据文件不放工程公开目录或挂进工作容器。
+- 此处隔离的是 Web 账号和会话访问，不是 OS 沙箱。唯一 root 工作容器仍共享文件与进程；恶意 Agent 的跨用户文件访问需要额外执行层隔离。本地执行同样继承运行服务的系统权限。
+
+源码部署先运行 `npm --prefix ../engine run build`，生产页面运行 `npm run build`。`npm run dev` 和 `server.mjs` 均支持该配置。第三方插件需自行遵守传入的用户专属 `appDataDir`，不要使用共享数据目录。
+
 ## 开发启动
 
 ```bash

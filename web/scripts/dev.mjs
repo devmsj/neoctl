@@ -72,9 +72,12 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
 process.env.VITE_NEO_RUNTIME_TARGET = `http://${host}:${runtimePort}`;
 process.env.OPENAI_IMAGE_TIMEOUT_MS ||= '600000';
 
+const { createIsolationMode } = await import('../isolation.mjs');
+const isolation = await createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginSettings, toolSettings, cpaQuotaMonitor, memoryState: () => memoryMonitor.getPublicState() });
+
 const DEFAULT_APP_PROMPT_LIBRARY = [];
 
-await runWebServer(['--host', host, '--port', String(upstreamPort)], {
+if (!isolation.enabled) await runWebServer(['--host', host, '--port', String(upstreamPort)], {
   createRuntime: workspaceRuntime.createRuntime,
   createRepl: workspaceRuntime.createRepl,
 });
@@ -117,6 +120,7 @@ async function startPromptLibraryProxy() {
 async function routeRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://${host}:${runtimePort}`);
   try {
+    if (await isolation.route(req, res, url)) return;
     if (await pluginHost.route(req, res, url, { readJsonBody, sendJson })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });

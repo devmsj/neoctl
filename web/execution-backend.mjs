@@ -54,7 +54,13 @@ export async function deliverUpload(file, url, runtimeTarget) {
   const state = await response.json();
   if (!state.cwd?.startsWith('/')) throw new Error('Container workspace unavailable');
   const destination = path.posix.join(state.cwd, file.storedName);
-  await workspaceFs.mkdir(state.cwd, { recursive: true });
+  return deliverUploadToWorkspace(file, destination);
+}
+
+/** Destination is resolved by the authenticated Web workspace manager. */
+export async function deliverUploadToWorkspace(file, destination) {
+  if (!containerMode) return file;
+  await workspaceFs.mkdir(path.posix.dirname(destination), { recursive: true });
   const script = "const fs=require('node:fs');const out=fs.createWriteStream(process.argv[1],{flags:'wx'});out.on('error',e=>{console.error(e.message);process.exit(1)});process.stdin.pipe(out)";
   const child = spawn('docker', backend.dockerArgs(['node', '-e', script, destination]), { env: backend.dockerHostEnv(), stdio: ['pipe', 'ignore', 'pipe'] });
   let diagnostic = '';

@@ -8,9 +8,9 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/api': neoRuntimeTarget,
-      '/events': neoRuntimeTarget,
-      '/vendor': neoRuntimeTarget,
+      '/api': { target: neoRuntimeTarget, changeOrigin: false },
+      '/events': { target: neoRuntimeTarget, changeOrigin: false },
+      '/vendor': { target: neoRuntimeTarget, changeOrigin: false },
     },
   },
 })

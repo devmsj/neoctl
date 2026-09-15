@@ -324,6 +324,8 @@ export interface RunWebServerOptions {
 }
 
 export interface CreateWebRuntimeOptions {
+  /** Optional storage root for this runtime's session transcripts. */
+  sessionRootDir?: string;
   /** Override the initial session id for this runtime. */
   sessionId?: string;
   /** Override whether the initial session should resume transcript history. */
@@ -452,7 +454,7 @@ interface WebBackgroundSessionRun {
 export async function runWebServer(argv = process.argv.slice(2), runtimeOptions: RunWebServerOptions = {}): Promise<void> {
   const options = parseWebArgs(argv);
   const router = await createWebRuntimeRouter(runtimeOptions);
-  const server = http.createServer((req, res) => void route(req, res, router));
+  const server = http.createServer((req, res) => void handleWebRequest(req, res, router));
   await new Promise<void>((resolve) => server.listen(options.port, options.host, resolve));
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : options.port;
@@ -554,7 +556,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
       sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
-      rootDir: process.env.AGENT_SESSION_DIR,
+      rootDir: options.sessionRootDir ?? process.env.AGENT_SESSION_DIR,
       resume: options.resume ?? parseResumeFlag(process.env.AGENT_SESSION_RESUME),
       toolResultThresholdChars: process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS ? Number(process.env.AGENT_TOOL_RESULT_THRESHOLD_CHARS) : undefined,
     },
@@ -740,6 +742,16 @@ export class WebRuntimeRouter {
 
   async snapshot(scope: WebRuntimeScope = {}, includeCatalog = true): Promise<ReturnType<WebRepl["snapshot"]>> {
     return (await this.get(scope)).snapshot(includeCatalog);
+  }
+
+  async reloadModelConfig(): Promise<void> {
+    const repls = await Promise.all([...this.repls.values()]);
+    await Promise.all(repls.map(repl => repl.reloadModelConfig()));
+  }
+
+  async reloadGlobalTools(overrides: Record<string, boolean>): Promise<void> {
+    const repls = await Promise.all([...this.repls.values()]);
+    await Promise.all(repls.map(repl => repl.reloadGlobalTools(overrides)));
   }
 
   activeScopes(): string[] {
@@ -999,14 +1011,20 @@ export class WebRepl {
     try {
       // Persist before publishing so a failed write never changes active capabilities.
       if (support.persistGlobal) await support.persistGlobal(normalized.value);
-      support.globalOverrides = normalized.value;
-      this.syncPluginToolRegistration();
-      applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
-      await this.refreshToolConfiguration();
+      await this.reloadGlobalTools(normalized.value);
       return { ok: true, state: this.globalTools() };
     } catch (error) {
       return actionFailure("TOOL_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async reloadGlobalTools(overrides: Record<string, boolean>): Promise<void> {
+    const support = this.runtime.toolSupport;
+    if (!support) return;
+    support.globalOverrides = normalizeToolOverrides(overrides, support.catalog);
+    this.syncPluginToolRegistration();
+    applyToolOverrides(this.runtime.tools, support.catalog, support.globalOverrides, support.sessionOverrides);
+    await this.refreshToolConfiguration();
   }
 
   async setSessionTools(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionTools"]> }>> {
@@ -1433,22 +1451,29 @@ export class WebRepl {
     try {
       await saveLoginPayloadToEnv(payload);
       applyLoginPayloadToProcessEnv(payload);
-      const config = readModelProviderConfig(process.env);
-      if (!config) throw new Error("Saved provider config could not be loaded from environment.");
-      const innerGateway = createModelGatewayFromConfig(config);
-      this.runtime.modelGateway.setInner(innerGateway);
-      this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
-      this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
-      syncImageGenerationTool(this.runtime, config.provider);
-      this.runtime.defaultReasoning = config.defaultReasoning;
-      const metrics = await this.runtime.engine.contextMetrics();
-      this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
-      this.publishRuntimeContext();
+      await this.reloadModelConfig();
       return { ok: true };
     } catch (error) {
       const message = `Login save failed: ${error instanceof Error ? error.message : String(error)}`;
       return actionFailure("LOGIN_SAVE_FAILED", message);
     }
+  }
+
+  async reloadModelConfig(): Promise<void> {
+    const config = readModelProviderConfig(process.env);
+    if (!config) throw new Error("Saved provider config could not be loaded from environment.");
+    const innerGateway = createModelGatewayFromConfig(config);
+    this.runtime.modelGateway.setInner(innerGateway);
+    this.runtime.agentRuntime.modelGateway = this.runtime.modelGateway;
+    this.runtime.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
+    for (const run of this.backgroundSessionRuns.values()) {
+      run.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
+    }
+    syncImageGenerationTool(this.runtime, config.provider);
+    this.runtime.defaultReasoning = config.defaultReasoning;
+    const metrics = await this.runtime.engine.contextMetrics();
+    this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
+    this.publishRuntimeContext();
   }
 
   interrupt(): { ok: true; interrupted: boolean } {
@@ -2316,7 +2341,8 @@ function reqKeepAlive(res: ServerResponse): void {
   res.on("close", () => clearInterval(timer));
 }
 
-async function route(req: IncomingMessage, res: ServerResponse, router: WebRuntimeRouter): Promise<void> {
+/** Embed runtime HTTP routes behind an application's own authentication/authorization layer. */
+export async function handleWebRequest(req: IncomingMessage, res: ServerResponse, router: WebRuntimeRouter): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   try {
     if (req.method === "GET" && url.pathname === "/") return sendHtml(res, WEB_HTML);

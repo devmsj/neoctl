@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "secureCookie": false,
+  "cookiePath": "/",
+  "sessionHours": 12,
+  "retiredUsernames": [],
+  "users": []
+}

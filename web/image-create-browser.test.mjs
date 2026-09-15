@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const dist = fileURLToPath(new URL('./dist/', import.meta.url))
 const require = createRequire(import.meta.url)
-const { chromium } = require('../desktop/.cache/ui-test/node_modules/playwright-core')
+const { chromium } = require(process.env.NEO_PLAYWRIGHT_MODULE || '../desktop/.cache/ui-test/node_modules/playwright-core')
 const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 const server = createServer(async (req, res) => {
   try {
@@ -47,12 +47,14 @@ try {
     interactive: {},
   }
   await page.route('**/api/**', (route) => {
+    if (route.request().url().includes('/api/auth/status')) return route.fulfill({ json: { isolation: false, user: null } })
     if (route.request().url().includes('/api/images/')) return route.continue()
     return route.fulfill({ json: route.request().url().includes('/api/state') ? snapshot : {} })
   })
   await page.route('**/events', (route) => route.fulfill({ contentType: 'text/event-stream', body: '' }))
   await page.goto(`http://127.0.0.1:${server.address().port}/`)
 
+  await page.locator('.image2-result-shell').first().waitFor()
   const imageShells = page.locator('.image2-result-shell')
   assert.equal(await imageShells.count(), 2, 'only image_create invocation/result lines use the rich image UI')
   assert.equal(await page.locator('.image2-diamond-field').count(), 1, 'live image_create renders the generation animation')

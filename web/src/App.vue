@@ -1,4 +1,5 @@
 <script setup>
+import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
@@ -48,6 +49,9 @@ hljs.registerLanguage('yaml', yaml)
 hljs.registerLanguage('yml', yaml)
 hljs.registerLanguage('diff', diff)
 
+const adminViewing = computed(isIsolationAdmin)
+const canConfigureModel = computed(() => !authState.isolation || adminViewing.value)
+
 const IMAGE_MAX_EDGE = 2048
 const IMAGE_MAX_BYTES = 1_800_000
 const IMAGE_MIN_QUALITY = 0.62
@@ -66,6 +70,7 @@ const ATTACHMENT_MANIFEST_END = '<</ATTACHMENT_MANIFEST>>'
 const PANEL_LABELS = {
   chat: '对话工作台',
   sessions: '会话管理',
+  users: '用户管理',
   tools: '运行时能力',
   settings: '模型配置',
 }
@@ -133,8 +138,10 @@ const ACTION_ERROR_MESSAGES = {
   WEB_REQUEST_FAILED: '请求处理失败',
 }
 const CPA_PASSWORD_MASK = '••••••••••••••••••'
-const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId'
-const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId'
+const ADMIN_OWNER_STORAGE_KEY = 'neoctl-web.adminOwnerUsername'
+if (isIsolationAdmin()) authState.adminOwnerUsername = sessionStorage.getItem(ADMIN_OWNER_STORAGE_KEY) || ''
+const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId' + authStorageSuffix()
+const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId' + authStorageSuffix()
 const THEME_STORAGE_KEY = 'neoctl-web.theme'
 const CLIENT_REVISION_STORAGE_KEY = 'neoctl-web.clientRevision'
 const CLIENT_RELOAD_STORAGE_KEY = 'neoctl-web.clientReloadRequest'
@@ -282,6 +289,10 @@ const state = reactive({
   catalog: { commands: [], modelIds: [], reasoning: [] },
   interactive: {},
   sessions: [],
+  adminUsers: [],
+  adminUsersLoading: false,
+  adminUserBusy: false,
+  adminUserError: '',
   login: undefined,
   cpaConfig: { url: '', password: '', hasPassword: false, loaded: false },
   cpaQuotas: [],
@@ -325,6 +336,8 @@ const state = reactive({
 const input = ref('')
 const sessionSearch = ref('')
 const sessionPage = ref(1)
+const adminUsername = ref('')
+const adminPassword = ref('')
 const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
@@ -492,6 +505,7 @@ const filteredSessions = computed(() => {
   if (!query) return sessions
   return sessions.filter((session) => [
     displaySessionTitle(session),
+    session.ownerUsername,
     session.title,
     session.sessionId,
     session.updatedAt,
@@ -512,6 +526,7 @@ const sessionPageNumbers = computed(() => {
 const activePanelLabel = computed(() => ({
   chat: '对话工作台',
   sessions: '会话管理',
+  users: '用户管理',
   prompts: '提示词管理',
   settings: '模型配置',
 }[state.activePanel] || state.activePanel))
@@ -616,6 +631,12 @@ watch(() => state.activePanel, async (panel) => {
   observeVirtualLayout()
   updateVirtualScrollMargin()
 })
+
+async function logoutUser() {
+  sessionStorage.removeItem(ADMIN_OWNER_STORAGE_KEY)
+  const response = await appFetch('/api/auth/logout', { method: 'POST' })
+  if (response.ok) location.reload()
+}
 
 onMounted(async () => {
   if (typeof ResizeObserver !== 'undefined') {
@@ -809,6 +830,7 @@ async function updateSessionPlugin(item, mode) {
 }
 
 async function fetchPromptLibrary() {
+  if (authState.isolation) { state.promptLibraryLoading = false; return }
   state.promptLibraryLoading = true
   try {
     const res = await appFetch(runtimeUrl('/api/prompt-library'))
@@ -1205,6 +1227,7 @@ function togglePromptManager() {
 }
 
 function openPromptManager(promptId) {
+  if (authState.isolation) return
   state.activePanel = 'prompts'
   state.promptManagerOpen = true
   if (promptId) state.selectedPromptId = promptId
@@ -1481,6 +1504,7 @@ function resetPromptSortState() {
 }
 
 async function submit() {
+  if (adminViewing.value) return
   const text = input.value
   if (!text.trim() && state.attachments.length === 0) return
   if (text.trim() === '/sessions') {
@@ -1790,11 +1814,23 @@ async function openSessions() {
   state.activePanel = 'sessions'
   state.sessionsLoading = true
   try {
-    const res = await appFetch(runtimeUrl('/api/sessions'))
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
-    state.sessions = body.sessions || []
-    state.runningSessionIds = body.runningSessionIds || []
+    if (adminViewing.value) {
+      const res = await appFetch('/api/admin/sessions')
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.error) throw requestError(body, res.status)
+      state.sessions = (body.groups || []).flatMap(group => (group.sessions || []).map(session => ({
+        ...session,
+        ownerUsername: group.user.username,
+        ownerDeleted: group.user.deleted === true,
+      })))
+      state.runningSessionIds = []
+    } else {
+      const res = await appFetch(runtimeUrl('/api/sessions'))
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
+      state.sessions = body.sessions || []
+      state.runningSessionIds = body.runningSessionIds || []
+    }
   } catch (error) {
     notifyActionError(error, '加载会话失败')
   } finally {
@@ -1802,16 +1838,77 @@ async function openSessions() {
   }
 }
 
-async function resumeSession(sessionId) {
+async function openUserManagement() {
+  if (!adminViewing.value) return
+  state.activePanel = 'users'
+  state.adminUsersLoading = true
+  state.adminUserError = ''
+  try {
+    const res = await appFetch('/api/admin/users')
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error) throw requestError(body, res.status)
+    state.adminUsers = body.users || []
+  } catch (error) {
+    state.adminUserError = actionErrorMessage(error, '加载用户失败')
+  } finally {
+    state.adminUsersLoading = false
+  }
+}
+
+async function createManagedUser() {
+  state.adminUserBusy = true
+  state.adminUserError = ''
+  try {
+    const res = await appFetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: adminUsername.value, password: adminPassword.value }) })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error) throw requestError(body, res.status)
+    adminUsername.value = ''; adminPassword.value = ''
+    notify('普通用户已创建')
+    await openUserManagement()
+  } catch (error) {
+    state.adminUserError = actionErrorMessage(error, '创建用户失败')
+  } finally {
+    state.adminUserBusy = false
+  }
+}
+
+async function deleteManagedUser(user) {
+  if (!window.confirm(`删除账号 ${user.username}？历史会话将保留。`)) return
+  state.adminUserBusy = true
+  state.adminUserError = ''
+  try {
+    const res = await appFetch('/api/admin/users/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: user.username }) })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.error) throw requestError(body, res.status)
+    notify('普通用户已删除')
+    await openUserManagement()
+  } catch (error) {
+    state.adminUserError = actionErrorMessage(error, '删除用户失败')
+  } finally {
+    state.adminUserBusy = false
+  }
+}
+
+async function resumeSession(sessionOrId) {
+  const session = typeof sessionOrId === 'object' ? sessionOrId : { sessionId: sessionOrId }
+  const sessionId = session.sessionId
   const previousTabId = runtimeTabId
   const previousSessionId = runtimeSessionId
+  const previousOwnerUsername = authState.adminOwnerUsername
+  if (adminViewing.value && session.ownerUsername) {
+    authState.adminOwnerUsername = session.ownerUsername
+    sessionStorage.setItem(ADMIN_OWNER_STORAGE_KEY, session.ownerUsername)
+  }
   state.pendingResumeSessionId = sessionId
   state.sessionResumeLoading = true
   const connected = await bindRuntimeSession(sessionId)
   if (connected) {
     state.activePanel = 'chat'
-    notify('已打开会话')
+    notify(adminViewing.value ? `已打开 ${session.ownerUsername} 的会话` : '已打开会话')
   } else {
+    authState.adminOwnerUsername = previousOwnerUsername
+    if (previousOwnerUsername) sessionStorage.setItem(ADMIN_OWNER_STORAGE_KEY, previousOwnerUsername)
+    else sessionStorage.removeItem(ADMIN_OWNER_STORAGE_KEY)
     const restored = await restoreRuntimeBinding(previousTabId, previousSessionId)
     notify(restored ? '打开会话失败，已恢复原会话' : '打开会话失败，运行时连接已断开')
   }
@@ -1857,6 +1954,7 @@ async function fetchMemoryState() {
 }
 
 async function newSession() {
+  if (adminViewing.value) return
   resetSessionSettingsUi()
   const previousTabId = runtimeTabId
   const previousSessionId = runtimeSessionId
@@ -1915,6 +2013,7 @@ async function deleteSession(sessionId) {
 }
 
 async function openLogin(provider) {
+  if (!canConfigureModel.value) return
   state.activePanel = 'settings'
   state.settingsPage = ''
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
@@ -1942,6 +2041,7 @@ async function switchLoginProvider() {
 }
 
 async function saveLogin() {
+  if (!canConfigureModel.value) return
   const [modelSave, cpaSave] = await Promise.allSettled([
     postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } }),
     postJson('/api/cpa-config', {
@@ -2632,6 +2732,7 @@ function runtimeToolSchema(tool) {
 }
 
 function openRuntimeContextModal(kind) {
+  if (authState.isolation && kind === 'prompt') return
   state.runtimeContextModal = kind
   state.runtimeContextDetail = undefined
   document.body.classList.add('runtime-context-open')
@@ -4219,6 +4320,7 @@ function openMobilePanel(panel) {
   mobileCard.value = ''
   closeMobileMenu()
   if (panel === 'sessions') return openSessions()
+  if (panel === 'users') return openUserManagement()
   if (panel === 'prompts') return openPromptManager()
   if (panel === 'settings') return openLogin()
   state.activePanel = 'chat'
@@ -4265,7 +4367,7 @@ function createMobileSession() {
       </div>
 
       <nav class="nav">
-        <button :class="{ active: state.activePanel === 'chat' }" @click="newSession">
+        <button v-if="!adminViewing" :class="{ active: state.activePanel === 'chat' }" @click="newSession">
           <span class="nav-button-content">
             <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 4v12M4 10h12" />
@@ -4282,7 +4384,16 @@ function createMobileSession() {
             <span>会话管理</span>
           </span>
         </button>
-        <button :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
+        <button v-if="adminViewing" :class="{ active: state.activePanel === 'users' }" @click="openUserManagement">
+          <span class="nav-button-content">
+            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="7" cy="7" r="3" />
+              <path d="M2.5 16c.5-3 2-4.5 4.5-4.5s4 1.5 4.5 4.5M13 7h4M15 5v4" />
+            </svg>
+            <span>用户管理</span>
+          </span>
+        </button>
+        <button v-if="canConfigureModel" :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
           <span class="nav-button-content">
             <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 3.5v2M10 14.5v2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M3.5 10h2M14.5 10h2M5.4 14.6l1.4-1.4M13.2 6.8l1.4-1.4" />
@@ -4305,7 +4416,7 @@ function createMobileSession() {
         </span>
       </button>
 
-      <section class="sidebar-card prompt-stack">
+      <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
         <div class="prompt-stack-head">
           <button type="button" class="mini-button" @click="openPromptManager()">提示词管理</button>
         </div>
@@ -4333,6 +4444,21 @@ function createMobileSession() {
           </article>
         </div>
       </section>
+
+      <div v-if="authState.isolation" class="sidebar-footer">
+        <button
+          class="logout-icon-button"
+          type="button"
+          aria-label="退出登录"
+          :title="`${authState.user?.username} · 退出登录`"
+          @click="logoutUser"
+        >
+          <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M8 4H4.75A1.75 1.75 0 0 0 3 5.75v8.5A1.75 1.75 0 0 0 4.75 16H8" />
+            <path d="M11 6.5 14.5 10 11 13.5M6.5 10h8" />
+          </svg>
+        </button>
+      </div>
     </aside>
 
     <main class="workspace">
@@ -4346,10 +4472,11 @@ function createMobileSession() {
             </summary>
             <nav>
               <button type="button" :class="{ active: state.activePanel === 'chat' }" @click="openMobilePanel('chat')">对话</button>
-              <button type="button" @click="createMobileSession">新建会话</button>
+              <button v-if="!adminViewing" type="button" @click="createMobileSession">新建会话</button>
               <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
-              <button type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
-              <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">模型配置</button>
+              <button v-if="adminViewing" type="button" :class="{ active: state.activePanel === 'users' }" @click="openMobilePanel('users')">用户</button>
+              <button v-if="!authState.isolation" type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
+              <button v-if="canConfigureModel" type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">模型配置</button>
               <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
               <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
                 <span class="core-version-spark spark-a" aria-hidden="true"></span>
@@ -4387,7 +4514,7 @@ function createMobileSession() {
               </span>
             </span>
           </button>
-          <button class="ghost desktop-config-button" @click="openLogin()">配置模型</button>
+          <button v-if="canConfigureModel" class="ghost desktop-config-button" @click="openLogin()">配置模型</button>
           <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
         </div>
       </header>
@@ -4400,7 +4527,7 @@ function createMobileSession() {
                 <strong>运行上下文</strong>
               </div>
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
-                <button type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
+                <button v-if="!authState.isolation" type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
                 <button type="button" @click="openRuntimeContextModal('tools')"><span>工具</span><strong>{{ runtimeTools.length }}</strong></button>
                 <button type="button" @click="openRuntimeContextModal('plugins')"><span>插件</span><strong>{{ effectiveSessionPluginCount }}</strong></button>
               </div>
@@ -4662,7 +4789,7 @@ function createMobileSession() {
             </div>
           </div>
 
-          <div v-if="state.queuedInput" class="queued">
+          <div v-if="state.queuedInput && !adminViewing" class="queued">
             <span>已排队：{{ state.queuedInput }}</span>
             <div>
               <button type="button" @click="sendQueuedNow">立即发送</button>
@@ -4671,6 +4798,7 @@ function createMobileSession() {
           </div>
 
           <form
+            v-if="!adminViewing"
             :class="['composer', { 'drop-active': state.composerDropActive }]"
             @submit.prevent="submit"
             @dragover="handleComposerDragOver"
@@ -4888,9 +5016,9 @@ function createMobileSession() {
           <div class="page-head sessions-page-head">
             <div>
               <h2>会话管理</h2>
-              <p>查找、继续或整理历史会话</p>
+              <p>{{ adminViewing ? '查看全部用户的历史会话' : '查找、继续或整理历史会话' }}</p>
             </div>
-            <button class="primary" @click="newSession">+ 新建会话</button>
+            <button v-if="!adminViewing" class="primary" @click="newSession">+ 新建会话</button>
           </div>
           <div class="session-toolbar">
             <label class="session-search" aria-label="搜索会话">
@@ -4902,11 +5030,12 @@ function createMobileSession() {
           <div v-else-if="!state.sessions.length" class="empty-state">暂无会话</div>
           <div v-else-if="!filteredSessions.length" class="empty-state">没有匹配的会话</div>
           <div v-else class="session-list">
-            <article v-for="session in paginatedSessions" :key="session.sessionId" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
+            <article v-for="session in paginatedSessions" :key="`${session.ownerUsername || ''}:${session.sessionId}`" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
               <div class="session-card-main">
                 <div class="session-card-title">
                   <strong>{{ displaySessionTitle(session) }}</strong>
-                  <span v-if="isCurrentSession(session.sessionId)" class="current-pill">当前</span>
+                  <span v-if="adminViewing" class="current-pill">{{ session.ownerUsername }}{{ session.ownerDeleted ? ' · 已删除' : '' }}</span>
+                  <span v-if="isCurrentSession(session.sessionId) && (!adminViewing || authState.adminOwnerUsername === session.ownerUsername)" class="current-pill">当前</span>
                   <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
                 </div>
                 <div class="session-card-meta">
@@ -4915,8 +5044,8 @@ function createMobileSession() {
                 </div>
               </div>
               <div class="session-actions">
-                <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session.sessionId)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>
-                <button class="danger" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)">删除</button>
+                <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>
+                <button v-if="!adminViewing" class="danger" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)">删除</button>
               </div>
             </article>
           </div>
@@ -4935,7 +5064,30 @@ function createMobileSession() {
         </div>
       </section>
 
-      <section v-else-if="state.activePanel === 'prompts'" class="content-grid single">
+      <section v-else-if="adminViewing && state.activePanel === 'users'" class="content-grid single">
+        <div class="panel-page sessions-page admin-users-page">
+          <div class="page-head sessions-page-head">
+            <div><h2>用户管理</h2><p>创建和删除普通用户账号</p></div>
+          </div>
+          <form class="admin-user-form" @submit.prevent="createManagedUser">
+            <label>用户名<input v-model="adminUsername" maxlength="100" autocomplete="off" required /></label>
+            <label>密码<input v-model="adminPassword" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required /></label>
+            <button class="primary" :disabled="state.adminUserBusy">创建普通用户</button>
+          </form>
+          <p v-if="state.adminUserError" class="admin-user-error" role="alert">{{ state.adminUserError }}</p>
+          <div v-if="state.adminUsersLoading" class="empty-state">正在加载用户…</div>
+          <div v-else class="session-list admin-user-list">
+            <article v-for="user in state.adminUsers" :key="user.username" class="session-card">
+              <div class="session-card-main">
+                <div class="session-card-title"><strong>{{ user.username }}</strong><span class="current-pill">{{ user.role === 'admin' ? '超管' : '普通用户' }}</span></div>
+              </div>
+              <div class="session-actions"><button v-if="user.role !== 'admin'" class="danger" :disabled="state.adminUserBusy" @click="deleteManagedUser(user)">删除账号</button></div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section v-else-if="!authState.isolation && state.activePanel === 'prompts'" class="content-grid single">
         <div class="panel-page prompt-page">
           <div class="page-head">
             <h2>提示词</h2>
@@ -5007,9 +5159,9 @@ function createMobileSession() {
         </div>
       </section>
 
-      <section v-else-if="state.activePanel === 'settings'" class="content-grid single">
+      <section v-else-if="canConfigureModel && state.activePanel === 'settings'" class="content-grid single">
         <div class="panel-page settings-page">
-          <template v-if="state.settingsPage === 'prompt'">
+          <template v-if="canConfigureModel && state.settingsPage === 'prompt'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
                 <button type="button" class="mini-button" aria-label="返回模型配置" @click="state.settingsPage = ''">←</button>
@@ -5025,7 +5177,7 @@ function createMobileSession() {
           </div>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
           <form v-else class="settings-form" @submit.prevent="saveLogin">
-            <button type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
+            <button v-if="canConfigureModel" type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
               <strong>提示词配置</strong><span aria-hidden="true">›</span>
             </button>
             <section class="settings-card">
@@ -5053,7 +5205,7 @@ function createMobileSession() {
               </div>
             </section>
 
-            <section class="settings-card">
+            <section v-if="canConfigureModel" class="settings-card">
               <header class="settings-card-head"><strong>CPA</strong></header>
               <div class="settings-field-grid">
                 <label class="settings-field">
@@ -5067,7 +5219,7 @@ function createMobileSession() {
               </div>
             </section>
 
-            <section class="settings-card settings-plugin-card">
+            <section v-if="canConfigureModel" class="settings-card settings-plugin-card">
               <header class="settings-card-head">
                 <div><strong>工具</strong><small>内置与插件工具默认开启，关闭后立即对当前会话生效。</small></div>
                 <button type="button" class="mini-button" :disabled="state.busy || state.globalTools.loading" @click="saveGlobalTools">保存</button>
@@ -5083,7 +5235,7 @@ function createMobileSession() {
               </div>
             </section>
 
-            <section class="settings-card settings-plugin-card">
+            <section v-if="canConfigureModel" class="settings-card settings-plugin-card">
               <header class="settings-card-head">
                 <strong>插件</strong>
                 <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存</button>
@@ -5333,7 +5485,7 @@ function createMobileSession() {
 
         <div class="runtime-context-modal-content">
           <PromptConfigEditor
-            v-if="state.runtimeContextModal === 'prompt'"
+            v-if="!authState.isolation && state.runtimeContextModal === 'prompt'"
             :endpoint="runtimeUrl('/api/session-prompt')"
             session
             :runtime-prompt="state.runtimeContext?.prompt"

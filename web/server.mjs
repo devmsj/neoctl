@@ -99,6 +99,10 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
   }),
 });
 
+const { createIsolationMode } = await import('./isolation.mjs');
+const isolation = await createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginSettings, toolSettings, cpaQuotaMonitor, memoryState: () => memoryMonitor.getPublicState() });
+if (isolation.enabled && controlEnabled) throw new Error('Isolation mode cannot use desktop control sync');
+
 const DEFAULT_APP_PROMPT_LIBRARY = [];
 
 const mime = {
@@ -123,9 +127,10 @@ const server = http.createServer((req, res) => {
   void routeRequest(req, res);
 });
 
+server.once('close', () => isolation.close());
 server.keepAliveTimeout = 70_000;
 server.headersTimeout = 75_000;
-if (embedRuntime) await startEmbeddedRuntime();
+if (embedRuntime && !isolation.enabled) await startEmbeddedRuntime();
 await cpaQuotaMonitor.start();
 await memoryMonitor.start();
 await new Promise((resolve, reject) => {
@@ -163,6 +168,7 @@ async function startEmbeddedRuntime() {
 async function routeRequest(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   try {
+    if (await isolation.route(req, res, url)) return;
     if (await pluginHost.route(req, res, url, { readJsonBody, sendJson })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });

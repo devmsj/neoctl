@@ -2,6 +2,10 @@
 /.style-reference/
 /.neoctl-web/
 
+# Private Web account configuration and user data
+isolation.json
+isolated-users/
+
 # Local implementation/acceptance notes
 OBS-*.md
 
