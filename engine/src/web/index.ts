@@ -828,6 +828,8 @@ export class WebRepl {
   private queuedAttachments: WebAttachmentPayload[] | undefined;
   private foregroundRun: Promise<void> | undefined;
   private foregroundRunToken = 0;
+  private stoppingRun: Promise<boolean> | undefined;
+  private immediateSend: Promise<{ ok: true; interrupted: boolean }> | undefined;
   private pendingUserImageEchoIds: string[] | undefined;
   private pendingUserImageEchoMessageId: string | undefined;
   private runtimeContextRevision = 0;
@@ -1152,6 +1154,7 @@ export class WebRepl {
   }
 
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.stoppingRun || this.immediateSend) return { ok: false, error: "正在停止上一轮请求，请稍后发送" };
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
     const command = parseReplCommand(text);
@@ -1169,7 +1172,9 @@ export class WebRepl {
     return { ok: true };
   }
 
-  submitImmediately(text: string, attachments: WebAttachmentPayload[] = []): { ok: true; interrupted: boolean } {
+  async submitImmediately(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true; interrupted: boolean } | { ok: false; error: string }> {
+    if (this.immediateSend) return { ok: false, error: "正在发送，请勿重复提交" };
+    if (this.stoppingRun) return { ok: false, error: "正在停止上一轮请求，请稍后发送" };
     if (!this.busy) {
       this.startRun(text, attachments);
       return { ok: true, interrupted: false };
@@ -1178,15 +1183,19 @@ export class WebRepl {
     return this.sendQueuedNow();
   }
 
-  sendQueuedNow(): { ok: true; interrupted: boolean } {
+  sendQueuedNow(): Promise<{ ok: true; interrupted: boolean }> {
+    if (this.immediateSend) return this.immediateSend;
     const queuedText = this.queuedInput;
     const queuedAttachments = this.queuedAttachments ?? [];
-    if (queuedText === undefined) return { ok: true, interrupted: false };
-    this.queuedInput = undefined;
-    this.queuedAttachments = undefined;
-    const interrupted = this.stopForegroundRun("Interrupted to send queued web input");
-    this.startRun(queuedText, queuedAttachments);
-    return { ok: true, interrupted };
+    if (queuedText === undefined) return Promise.resolve({ ok: true, interrupted: false });
+    const pending = (async (): Promise<{ ok: true; interrupted: boolean }> => {
+      const interrupted = await this.stopForegroundRun("Interrupted to send queued web input", true);
+      this.startRun(queuedText, queuedAttachments);
+      return { ok: true, interrupted };
+    })();
+    this.immediateSend = pending;
+    void pending.finally(() => { if (this.immediateSend === pending) this.immediateSend = undefined; }).catch(() => undefined);
+    return pending;
   }
 
   private enqueueInput(text: string, attachments: WebAttachmentPayload[]): void {
@@ -1476,8 +1485,9 @@ export class WebRepl {
     this.publishRuntimeContext();
   }
 
-  interrupt(): { ok: true; interrupted: boolean } {
-    const interrupted = this.stopForegroundRun("Interrupted from neo web");
+  async interrupt(): Promise<{ ok: true; interrupted: boolean }> {
+    if (this.immediateSend) await this.immediateSend;
+    const interrupted = await this.stopForegroundRun("Interrupted from neo web");
     return { ok: true, interrupted };
   }
 
@@ -1537,14 +1547,13 @@ export class WebRepl {
     this.finalizedThinkingLineId = undefined;
   }
 
-  private stopForegroundRun(reason: string): boolean {
+  private stopForegroundRun(reason: string, keepBusy = false): Promise<boolean> {
+    if (this.stoppingRun) return this.stoppingRun;
     const controller = this.activeAbortController;
+    const run = this.foregroundRun;
     const runWasActive = this.busy || Boolean(controller && !controller.signal.aborted);
     this.foregroundRunToken += 1;
-    this.foregroundRun = undefined;
-    this.runtime.usage.reset();
     if (controller && !controller.signal.aborted) controller.abort(reason);
-    this.activeAbortController = undefined;
     this.interruptArmed = false;
     this.queuedInput = undefined;
     this.queuedAttachments = undefined;
@@ -1552,10 +1561,23 @@ export class WebRepl {
     this.pendingUserImageEchoMessageId = undefined;
     this.finalizeForegroundView();
     this.cancelLiveToolLines(reason);
-    this.busy = false;
-    this.status = { ...this.status, phase: "ready", detail: undefined, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
+    this.busy = true;
+    this.status = { ...this.status, phase: "running", detail: "stopping", currentTool: undefined, retryCooldownUntil: undefined };
     this.broadcastSync();
-    return runWasActive;
+    const pending = (async () => {
+      // Abort is cooperative: the engine still owns its run until the iterator settles.
+      await run;
+      if (this.foregroundRun === run) this.foregroundRun = undefined;
+      if (this.activeAbortController === controller) this.activeAbortController = undefined;
+      this.runtime.usage.reset();
+      this.busy = keepBusy;
+      this.status = { ...this.status, phase: keepBusy ? "running" : "ready", detail: undefined, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined };
+      this.broadcastSync();
+      return runWasActive;
+    })();
+    this.stoppingRun = pending;
+    void pending.finally(() => { if (this.stoppingRun === pending) this.stoppingRun = undefined; }).catch(() => undefined);
+    return pending;
   }
 
   private agentTaskSnapshot(task: ReturnType<WebRuntime["taskStore"]["list"]>[number]) {
@@ -2478,11 +2500,11 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     }
     if (req.method === "POST" && url.pathname === "/api/submit-now") {
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
-      return sendJson(res, repl.submitImmediately(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
+      return sendJson(res, await repl.submitImmediately(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
-    if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, repl.interrupt());
+    if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, await repl.interrupt());
     if (req.method === "POST" && url.pathname === "/api/queue/cancel") return sendJson(res, repl.cancelQueue());
-    if (req.method === "POST" && url.pathname === "/api/queue/send-now") return sendJson(res, repl.sendQueuedNow());
+    if (req.method === "POST" && url.pathname === "/api/queue/send-now") return sendJson(res, await repl.sendQueuedNow());
     if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions());
     if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
       const body = await readJsonBody<{ sessionId?: string }>(req);

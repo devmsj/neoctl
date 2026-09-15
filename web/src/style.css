@@ -127,7 +127,7 @@ a { color: var(--purple); }
 }
 .mobile-theme-toggle { display: none; align-items: center; justify-content: center; padding: 0; width: 34px; }
 .mobile-nav-menu,
-.mobile-session-options { display: none; }
+.session-options-toggle { display: none; }
 
 .nav {
   padding: 16px 12px;
@@ -3226,7 +3226,6 @@ body.tool-detail-open {
 .composer-cwd strong { flex: 0 0 auto; color: var(--text); font: 700 11px var(--mono); }
 .composer-cwd span { min-width: 0; overflow: hidden; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .composer-cwd:hover, .composer-cwd:focus-visible { border-color: var(--purple); color: var(--text); outline: none; }
-.mobile-runtime-info { display: none; }
 .composer-footer {
   display: flex;
   flex-wrap: wrap;
@@ -4368,75 +4367,6 @@ button.metric-chip {
     padding: 11px 12px;
     font-size: 16px;
   }
-  .mobile-session-options {
-    display: block;
-    margin-top: 7px;
-  }
-  .mobile-session-options > summary {
-    min-height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 0 2px;
-    color: var(--muted);
-    cursor: pointer;
-    list-style: none;
-    font-size: 12px;
-  }
-  .mobile-session-options > summary::-webkit-details-marker { display: none; }
-  .mobile-session-chevron {
-    width: 12px;
-    height: 12px;
-    flex: 0 0 12px;
-    display: block;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    color: var(--faint);
-    transition: transform .16s ease;
-  }
-  .mobile-session-options[open] .mobile-session-chevron { transform: rotate(180deg); }
-  .mobile-session-options > summary span { font-weight: 650; }
-  .mobile-session-options > summary small {
-    min-width: 0;
-    margin-left: auto;
-    overflow: hidden;
-    color: var(--faint);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .mobile-session-options-body {
-    display: grid;
-    gap: 10px;
-    margin-top: 4px;
-    padding: 10px;
-    border: 1px solid var(--line-soft);
-    background: var(--panel-soft);
-  }
-  .mobile-session-options-body dl { gap: 6px; }
-  .mobile-session-options-body dl div {
-    grid-template-columns: 64px minmax(0, 1fr);
-  }
-  .mobile-session-options-body dd { font-size: 12px; }
-  .mobile-session-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-  }
-  .mobile-session-actions > button { min-height: 38px; flex: 1 1 120px; }
-  .mobile-runtime-info { display: block; border-top: 1px solid var(--line-soft); padding-top: 8px; }
-  .mobile-runtime-info > summary { display: flex; justify-content: space-between; gap: 10px; min-height: 36px; align-items: center; cursor: pointer; list-style: none; font-weight: 650; }
-  .mobile-runtime-info > summary::-webkit-details-marker { display: none; }
-  .mobile-runtime-info > summary span { min-width: 0; overflow: hidden; color: var(--faint); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-  .mobile-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding-top: 7px; }
-  .mobile-runtime-card { min-width: 0; min-height: 72px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--text); text-align: left; }
-  button.mobile-runtime-card { cursor: pointer; }
-  .mobile-runtime-card > span, .mobile-runtime-card > small { color: var(--muted); font-size: 10px; }
-  .mobile-runtime-card > strong { max-width: 100%; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .composer-footer {
     justify-content: flex-end;
     margin-top: 7px;

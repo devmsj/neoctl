@@ -1305,7 +1305,6 @@ select:focus,
   background: #25202f !important;
   color: var(--text) !important;
 }
-.mobile-runtime-card { box-shadow: 2px 2px 0 rgba(0, 0, 0, .14); }
 .fast-mode-button:not(.active) { background: #f3f4f6 !important; color: var(--muted) !important; box-shadow: 2px 2px 0 rgba(0, 0, 0, .14) !important; }
 .fast-mode-button.active { transform: translate(2px, 2px); box-shadow: none !important; }
 
@@ -1490,7 +1489,13 @@ input[type='radio'] {
   .tool-result-primary { white-space: normal; }
   .tool-result-facts { width: 100%; }
   .tool-result-fact dd { max-width: calc(100vw - 160px); }
-  .mobile-nav-menu nav { border: 2px solid var(--line) !important; background: #ffffff !important; box-shadow: var(--soft-shadow) !important; }
+  .mobile-nav-menu nav { border: 2px solid var(--line) !important; background: var(--surface) !important; color: var(--text); box-shadow: var(--soft-shadow) !important; }
+  :root[data-theme] .mobile-nav-menu nav button { background: transparent !important; color: var(--text) !important; border: 0 !important; box-shadow: none !important; transform: none !important; }
+  :root[data-theme] .mobile-nav-menu nav button.active,
+  :root[data-theme] .mobile-nav-menu nav button:hover:not(:disabled),
+  :root[data-theme] .mobile-nav-menu[open] > summary { background: var(--purple-soft) !important; color: var(--purple) !important; }
+  :root[data-theme] .mobile-nav-menu nav button:focus-visible { outline: 2px solid var(--purple); outline-offset: -2px; }
+  :root[data-theme] .mobile-nav-menu .mobile-core-version { color: var(--purple) !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2301,8 +2306,11 @@ input[type='radio'] {
 }
 
 /* Compact composer toolbar: retain every value and action without nested frames. */
+.composer .composer-path-row { min-width: 0; max-width: 100%; }
 .composer .composer-cwd {
   width: fit-content;
+  min-width: 0;
+  overflow: hidden;
   max-width: 100%;
   border: 0 !important;
   box-shadow: none !important;
@@ -2310,45 +2318,47 @@ input[type='radio'] {
 }
 .composer-cwd-icon { width: 14px; height: 14px; flex: 0 0 14px; }
 .composer .composer-cwd span {
-  flex: 1;
-  overflow-x: auto;
-  text-overflow: clip;
-  scrollbar-width: thin;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .composer .composer-cwd:focus-visible {
   outline: 2px solid var(--purple);
   outline-offset: 1px;
 }
+.composer .metric-chip {
+  min-height: 28px;
+  padding: 2px 3px;
+  gap: 4px;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  max-width: 100%;
+}
+.composer .metric-chip em { color: var(--muted); letter-spacing: 0; }
+.composer .model-chip strong { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.composer .fast-mode-button,
+.composer .compact-button {
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-soft) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.composer .fast-mode-button:not(.active),
+.composer .compact-button { background: transparent !important; }
+.composer .context-window-trigger:hover,
+.composer .compact-button:hover:not(:disabled),
+.composer .fast-mode-button:not(.active):hover { background: var(--purple-soft) !important; }
+.composer .composer-footer button:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+
 @media (min-width: 821px) {
   .composer .composer-path-row { margin-top: 4px; }
   .composer .composer-cwd { min-height: 26px; padding: 3px 6px; }
   .composer .composer-footer { justify-content: flex-start; align-items: center; gap: 4px 8px; margin-top: 6px; }
   .composer .composer-metrics { display: contents; }
-  .composer .metric-chip {
-    min-height: 28px;
-    padding: 2px 3px;
-    gap: 4px;
-    border: 0 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    max-width: 100%;
-  }
-  .composer .metric-chip em { color: var(--muted); letter-spacing: 0; }
-  .composer .model-chip strong { max-width: none; white-space: normal; overflow-wrap: anywhere; }
-  .composer .fast-mode-button,
-  .composer .compact-button {
-    min-height: 28px;
-    padding: 3px 6px;
-    border: 1px solid var(--line-soft) !important;
-    box-shadow: none !important;
-    transform: none !important;
-  }
-  .composer .fast-mode-button:not(.active),
-  .composer .compact-button { background: transparent !important; }
-  .composer .context-window-trigger:hover,
-  .composer .compact-button:hover:not(:disabled),
-  .composer .fast-mode-button:not(.active):hover { background: var(--purple-soft) !important; }
-  .composer .composer-footer button:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
   .composer .composer-actions { gap: 6px; }
   .composer .composer-actions button {
     min-height: 30px;
@@ -2365,10 +2375,13 @@ input[type='radio'] {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  min-width: 108px;
-  background: #fff !important;
-  color: #17212b !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
   opacity: 1 !important;
+  transform: none !important;
+}
+:root[data-theme='dark'] .upload-button::before {
+  background: var(--purple-soft);
 }
 .upload-button::before {
   content: '';
@@ -2378,6 +2391,93 @@ input[type='radio'] {
   background: var(--pink, #f472b6);
   pointer-events: none;
 }
-.upload-button-label {
-  position: relative;
+.composer .composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  width: auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
 }
+.composer .composer-actions > button {
+  flex: 0 0 36px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border-width: 1px !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.composer .composer-actions > .upload-button,
+.composer .composer-actions > .composer-action { display: inline-flex; }
+.composer-button-icon {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.composer .composer-actions > button:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+@media (max-width: 820px) {
+  .composer .composer-footer { gap: 6px; align-items: center; }
+  .composer .session-options-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    margin-right: auto;
+    padding: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    transform: none !important;
+    color: var(--muted) !important;
+    transition: color .18s ease, background-color .18s ease;
+  }
+  .composer .session-options-toggle[aria-expanded="true"] { color: var(--pink) !important; background: var(--purple-soft) !important; }
+  .composer .session-options-toggle:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+  .session-options-toggle svg { width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .composer .composer-metrics { display: none; }
+  .composer .session-options-open .composer-metrics {
+    display: flex;
+    flex: 0 0 100%;
+    width: 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 0 0 6px;
+  }
+  .composer .composer-metrics > * { flex: 0 0 auto; max-width: 100%; min-width: 0; }
+  .composer .metric-chip { min-height: 32px; }
+  .composer .metric-chip em { flex-shrink: 0; white-space: nowrap; }
+  .composer .metric-chip.numeric { white-space: nowrap; }
+  .composer .model-chip { flex: 0 1 auto; }
+  .composer .model-chip strong { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .composer .fast-mode-button, .composer .compact-button { min-height: 32px; font-size: 12px; }
+  .composer .compress-wrap { display: inline-flex; align-items: center; }
+  .composer .composer-actions { flex: 0 0 auto; margin-left: auto; }
+  .composer .composer-actions > button { flex-basis: 40px; width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer .session-options-toggle { transition: none; }
+}
+
+.compaction-context-bar[role="button"] { cursor: pointer; }
+.compaction-context-bar[role="button"]:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+.compaction-context-bar[role="button"]:hover { border-color: var(--purple) !important; }
+
+.composer-wait-icon { animation: composer-wait-spin .75s linear infinite; }
+@keyframes composer-wait-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .composer-wait-icon { animation-duration: 2s; } }

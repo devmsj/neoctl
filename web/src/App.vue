@@ -49,6 +49,8 @@ hljs.registerLanguage('yaml', yaml)
 hljs.registerLanguage('yml', yaml)
 hljs.registerLanguage('diff', diff)
 
+const composerActionPending = ref(false)
+const sessionOptionsOpen = ref(false)
 const adminViewing = computed(isIsolationAdmin)
 const canConfigureModel = computed(() => !authState.isolation || adminViewing.value)
 
@@ -494,6 +496,7 @@ const allBackgroundTasks = computed(() => {
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
 const composerHasDraft = computed(() => Boolean(input.value.trim() || state.attachments.length))
 const composerActionLabel = computed(() => {
+  if (composerActionPending.value) return '正在处理'
   if (!composerRunning.value) return '发送 ↵'
   if (composerHasDraft.value) return '打断并发送'
   if (state.queuedInput) return '立即发送'
@@ -1504,6 +1507,7 @@ function resetPromptSortState() {
 }
 
 async function submit() {
+  if (composerActionPending.value) return
   if (adminViewing.value) return
   const text = input.value
   if (!text.trim() && state.attachments.length === 0) return
@@ -1533,6 +1537,7 @@ async function submit() {
   input.value = ''
   state.attachments = []
   resetComposerHeight()
+  composerActionPending.value = true
   try {
     const res = await appFetch(runtimeUrl('/api/submit'), {
       method: 'POST',
@@ -1543,10 +1548,13 @@ async function submit() {
     if (!res.ok || body?.error) throw new Error(body.error || `submit ${res.status}`)
   } catch (error) {
     notify(error.message || String(error))
+  } finally {
+    composerActionPending.value = false
   }
 }
 
 async function interruptAndSubmit() {
+  if (composerActionPending.value) return
   if (!composerHasDraft.value) {
     if (state.queuedInput) await sendQueuedNow()
     else await interrupt()
@@ -1561,18 +1569,25 @@ async function interruptAndSubmit() {
   input.value = ''
   state.attachments = []
   resetComposerHeight()
+  composerActionPending.value = true
   try {
     await postJson('/api/submit-now', { text: submitText, attachments: [...imageAttachments, ...fileAttachments] })
   } catch (error) {
     notify(error.message || String(error))
+  } finally {
+    composerActionPending.value = false
   }
 }
 
 async function interrupt() {
+  if (composerActionPending.value) return
+  composerActionPending.value = true
   try {
     await postJson('/api/interrupt', {})
   } catch (error) {
     notifyActionError(error, '停止回答失败')
+  } finally {
+    composerActionPending.value = false
   }
 }
 
@@ -1586,11 +1601,15 @@ async function retractQueuedInput() {
 }
 
 async function sendQueuedNow() {
+  if (composerActionPending.value) return
+  composerActionPending.value = true
   try {
     const result = await postJson('/api/queue/send-now', {})
     notify(result.interrupted ? '已打断并发送排队消息' : '已发送排队消息')
   } catch (error) {
     notifyActionError(error, '发送排队消息失败')
+  } finally {
+    composerActionPending.value = false
   }
 }
 
@@ -3732,6 +3751,7 @@ async function uploadFiles(files) {
     notify(error.message || String(error))
   } finally {
     state.uploadingFiles = false
+    state.uploadProgress = 0
   }
 }
 
@@ -4583,7 +4603,7 @@ function createMobileSession() {
                           </div>
                         </div>
                       </details>
-                      <section v-else-if="isCompactionLine(item)" :class="['compaction-context-bar', { current: item.compaction.current }]">
+                      <section v-else-if="isCompactionLine(item)" :class="['compaction-context-bar', { current: item.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(item)" @keydown.enter.prevent="openCompactionDetail(item)" @keydown.space.prevent="openCompactionDetail(item)">
                         <div class="compaction-context-title"><strong>压缩上下文</strong></div>
                         <div class="compaction-context-actions">
                           <span><span>摘要</span><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
@@ -4646,7 +4666,7 @@ function createMobileSession() {
                 </svg>
               </div>
               <div v-if="isCompactionLine(line)" class="message-body compaction-message-body">
-                <section :class="['compaction-context-bar', { current: line.compaction.current }]">
+                <section :class="['compaction-context-bar', { current: line.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(line)" @keydown.enter.prevent="openCompactionDetail(line)" @keydown.space.prevent="openCompactionDetail(line)">
                   <div class="compaction-context-title">
                     <strong>压缩上下文</strong>
                   </div>
@@ -4792,8 +4812,8 @@ function createMobileSession() {
           <div v-if="state.queuedInput && !adminViewing" class="queued">
             <span>已排队：{{ state.queuedInput }}</span>
             <div>
-              <button type="button" @click="sendQueuedNow">立即发送</button>
-              <button type="button" @click="retractQueuedInput">取消</button>
+              <button type="button" :disabled="composerActionPending" @click="sendQueuedNow">立即发送</button>
+              <button type="button" :disabled="composerActionPending" @click="retractQueuedInput">取消</button>
             </div>
           </div>
 
@@ -4833,42 +4853,8 @@ function createMobileSession() {
                 <svg class="composer-cwd-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h5l2 2h8v9h-15Z" /></svg><span :title="currentCwd">{{ currentCwd }}</span>
               </button>
             </div>
-            <details class="mobile-session-options">
-              <summary>
-                <span>会话选项</span>
-                <small>{{ exactPhaseLabel }}</small>
-                <svg class="mobile-session-chevron" viewBox="0 0 12 12" aria-hidden="true">
-                  <path d="m3 4.5 3 3 3-3" />
-                </svg>
-              </summary>
-              <div class="mobile-session-options-body">
-                <dl>
-                  <div><dt>模型</dt><dd><button type="button" class="mobile-context-button model-trigger" aria-label="选择模型" @click="openModelModal">{{ modelName }}</button></dd></div>
-                  <div><dt>上下文</dt><dd><button type="button" class="mobile-context-button" @click="openContextWindowModal">{{ composerContextValue }}</button></dd></div>
-                  <div><dt>Token</dt><dd>↑ {{ composerInputTokens }} / ↓ {{ composerOutputTokens }}</dd></div>
-                </dl>
-                <div class="mobile-session-actions">
-                  <button
-                    type="button"
-                    :class="['fast-mode-button', { active: selectedFastMode, syncing: state.fastModeMutating }]"
-                    :aria-pressed="selectedFastMode"
-                    @click="toggleFastMode"
-                  ><span>快速模式</span></button>
-                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true" @click="compressSession">压缩会话</button>
-                </div>
-                <details class="mobile-runtime-info">
-                  <summary>运行信息 <span>{{ backgroundTaskCount ? `${backgroundTaskCount} 个后台任务` : '无后台任务' }}</span></summary>
-                  <div class="mobile-runtime-grid">
-                    <button v-if="allBackgroundTasks.length" type="button" class="mobile-runtime-card" @click="openBackgroundTaskDetail(allBackgroundTasks[0])"><span>{{ backgroundTaskCount ? '后台任务' : '最近结束' }}</span><strong>{{ backgroundTaskDisplayTitle(allBackgroundTasks[0]) }}</strong></button>
-                    <div v-else class="mobile-runtime-card"><span>后台任务</span><strong>暂无</strong></div>
-                    <div v-if="currentCpaQuota" class="mobile-runtime-card"><span>周额度</span><strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong><small>续期 {{ formatQuotaReset(currentCpaQuota.resetAt) }}</small></div>
-                    <div class="mobile-runtime-card"><span>{{ rightPanelTitle('memory') }}</span><strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong><small>堆 {{ formatMemoryBytes(memoryCurrent?.heapUsed) }} · 外部 {{ formatMemoryBytes(memoryCurrent?.external) }}</small></div>
-                  </div>
-                </details>
-              </div>
-            </details>
-            <div class="composer-footer">
-              <div class="composer-metrics" aria-label="运行状态指标">
+            <div :class="['composer-footer', { 'session-options-open': sessionOptionsOpen }]">
+              <div id="composer-session-metrics" class="composer-metrics" aria-label="运行状态指标">
                 <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" aria-label="选择模型" @click="openModelModal"><em>模型</em><strong>{{ modelName }}</strong></button>
                 <button type="button" :class="['metric-chip', 'numeric', 'context-window-trigger', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
                 <span :class="['metric-chip numeric', metricBumpClass('inputTokens')]" :key="`input-${state.composerMetrics.inputTokens.bump}`"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
@@ -4887,23 +4873,44 @@ function createMobileSession() {
                 </span>
               </div>
               <div class="composer-actions">
+              <button
+                type="button"
+                class="session-options-toggle"
+                aria-label="会话选项"
+                :aria-expanded="sessionOptionsOpen"
+                aria-controls="composer-session-metrics"
+                @click="sessionOptionsOpen = !sessionOptionsOpen"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 14h14M7 3v6M13 11v6" /></svg>
+              </button>
+
                 <button
                   type="button"
                   class="ghost upload-button"
                   :style="{ '--upload-progress': state.uploadProgress + '%' }"
                   :disabled="state.uploadingFiles"
                   :aria-busy="state.uploadingFiles"
+                  :aria-label="state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件'"
+                  :title="state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件'"
                   @click="triggerFilePicker"
                 >
-                  <span class="upload-button-label" aria-live="polite">{{ state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件' }}</span>
+                  <svg class="composer-button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 10 5-5a3 3 0 0 1 4 4l-7 7a4.25 4.25 0 0 1-6-6l7-7M6 11l6-6" /></svg>
                 </button>
                 <button
                   :type="composerRunning ? 'button' : 'submit'"
                   :class="['primary', 'composer-action', { stop: composerRunning }]"
-                  :disabled="!composerRunning && (state.uploadingFiles || (!input.trim() && !state.attachments.length))"
+                  :disabled="composerActionPending || (!composerRunning && (state.uploadingFiles || (!input.trim() && !state.attachments.length)))"
+                  :aria-busy="composerActionPending"
                   :aria-label="composerActionLabel"
+                  :title="composerActionLabel"
                   @click="composerRunning ? interruptAndSubmit() : undefined"
-                >{{ composerActionLabel }}</button>
+                >
+                  <svg v-if="composerActionPending" class="composer-button-icon composer-wait-icon" data-action="waiting" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" opacity=".25" /><path d="M10 3.5a6.5 6.5 0 0 1 6.5 6.5" /></svg>
+                  <svg v-else-if="!composerRunning" class="composer-button-icon" data-action="send" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5" /></svg>
+                  <svg v-else-if="composerHasDraft" class="composer-button-icon" data-action="interrupt-send" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5v10M11 16V4m-4 4 4-4 4 4" /></svg>
+                  <svg v-else-if="state.queuedInput" class="composer-button-icon" data-action="send-now" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 5 7 5-7 5Zm10 0v10" /></svg>
+                  <svg v-else class="composer-button-icon" data-action="stop" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5h10v10H5Z" fill="currentColor" stroke="none" /></svg>
+                </button>
               </div>
             </div>
           </form>

@@ -46,6 +46,16 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        window.testEventSource = this;
+        this.addEventListener('sync', event => { window.testSync = JSON.parse(event.data); });
+      }
+    };
+  });
   await page.goto(base);
   await page.getByRole('form', { name: '用户登录' }).waitFor();
   assert.equal(await page.getByText('Neo', { exact: true }).count(), 0);
@@ -115,6 +125,149 @@ try {
   await page.locator('[data-card="quota"]').waitFor();
   await page.locator('.memory-card').waitFor();
   assert.equal(await page.getByRole('button', { name: '模型配置', exact: true }).count(), 0);
+  const uploadButton = page.locator('.upload-button');
+  await page.locator('input[type="file"]').setInputFiles({ name: 'check.txt', mimeType: 'text/plain', buffer: Buffer.from('upload test') });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('.upload-button');
+    return document.querySelector('.file-attachment') && button.getAttribute('aria-busy') === 'false' && button.style.getPropertyValue('--upload-progress') === '0%';
+  });
+  assert.equal(await uploadButton.evaluate(el => getComputedStyle(el, '::before').width), '0px');
+  await page.getByRole('button', { name: '移除附件' }).click();
+  const actionButton = page.locator('.composer-action');
+  assert.equal((await actionButton.textContent()).trim(), '');
+  assert.equal(await actionButton.isDisabled(), true);
+  await page.waitForFunction(() => window.testSync && window.testEventSource);
+  const setRunning = (busy, queuedInput) => page.evaluate(({ busy, queuedInput }) => {
+    const payload = { ...window.testSync, busy, queuedInput, status: { ...window.testSync.status, phase: 'idle' } };
+    window.testEventSource.dispatchEvent(new MessageEvent('sync', { data: JSON.stringify(payload) }));
+  }, { busy, queuedInput });
+  await setRunning(true);
+  await actionButton.locator('[data-action="stop"]').waitFor();
+  assert.equal(await actionButton.isDisabled(), false);
+  assert.equal(await actionButton.getAttribute('type'), 'button');
+  await page.locator('.composer textarea').fill('draft');
+  await actionButton.locator('[data-action="interrupt-send"]').waitFor();
+  await page.locator('.composer textarea').fill('');
+  await setRunning(true, 'queued draft');
+  await actionButton.locator('[data-action="send-now"]').waitFor();
+  await setRunning(false);
+  await actionButton.locator('[data-action="send"]').waitFor();
+  assert.equal(await actionButton.getAttribute('type'), 'submit');
+  for (const endpoint of ['/api/submit', '/api/queue/send-now']) {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route(`**${endpoint}?*`, async route => { await held; await route.fulfill({ json: { ok: true, interrupted: true } }); });
+    if (endpoint.endsWith('send-now')) await setRunning(true, 'queued test');
+    else await page.locator('.composer textarea').fill('test submit');
+    await actionButton.click();
+    await actionButton.locator('[data-action="waiting"]').waitFor();
+    assert.equal(await actionButton.isDisabled(), true);
+    release();
+    await page.waitForFunction(() => document.querySelector('.composer-action').getAttribute('aria-busy') === 'false');
+    await page.unroute(`**${endpoint}?*`);
+    await setRunning(false);
+  }
+  await page.evaluate(() => {
+    const line = { id: 98765, kind: 'system', text: 'compacted', compaction: { current: true, summary: 'test summary', continuationState: 'test continuation details', createdAt: new Date().toISOString() } };
+    window.testEventSource.dispatchEvent(new MessageEvent('sync', { data: JSON.stringify({ ...window.testSync, busy: false, queuedInput: undefined, lines: [line] }) }));
+  });
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.getByRole('button', { name: '查看压缩上下文' }).click();
+    const detail = page.getByRole('dialog', { name: '压缩上下文详情' });
+    await detail.waitFor();
+    assert.ok((await detail.innerText()).includes('test continuation details'));
+    await page.keyboard.press('Escape');
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileMenu = page.locator('.mobile-nav-menu');
+  await mobileMenu.locator('summary').click();
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    await page.waitForFunction(expected => getComputedStyle(document.querySelector('.mobile-nav-menu nav button.active')).backgroundColor === expected,
+      theme === 'dark' ? 'rgb(86, 57, 75)' : 'rgb(252, 231, 243)');
+    const colors = await mobileMenu.locator('nav').evaluate(el => {
+      const style = getComputedStyle(el), button = getComputedStyle(el.querySelector('button.active'));
+      return { background: style.backgroundColor, active: button.backgroundColor, transform: button.transform, shadow: button.boxShadow };
+    });
+    assert.equal(colors.background, theme === 'dark' ? 'rgb(52, 59, 68)' : 'rgb(255, 255, 255)');
+    assert.equal(colors.active, theme === 'dark' ? 'rgb(86, 57, 75)' : 'rgb(252, 231, 243)');
+    assert.equal(colors.transform, 'none');
+    assert.equal(colors.shadow, 'none');
+  }
+  await mobileMenu.locator('summary').click();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      const expected = theme === 'dark'
+        ? { background: 'rgb(52, 59, 68)', color: 'rgb(243, 244, 246)', fill: 'rgb(86, 57, 75)' }
+        : { background: 'rgb(255, 255, 255)', color: 'rgb(26, 26, 26)', fill: 'rgb(244, 114, 182)' };
+      await uploadButton.hover();
+      for (const progress of [0, 50, 100, 0]) {
+        await uploadButton.evaluate((el, progress) => {
+          el.disabled = progress > 0;
+          el.style.setProperty('--upload-progress', `${progress}%`);
+        }, progress);
+        await page.waitForFunction(({ expected, progress }) => {
+          const el = document.querySelector('.upload-button');
+          const style = getComputedStyle(el), fill = getComputedStyle(el, '::before');
+          return style.backgroundColor === expected.background && style.color === expected.color
+            && fill.backgroundColor === expected.fill
+            && Math.abs(parseFloat(fill.width) - el.clientWidth * progress / 100) < 1;
+        }, { expected, progress });
+      }
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const metrics = page.locator('#composer-session-metrics');
+  assert.equal(await metrics.count(), 1);
+  const metricAppearance = () => metrics.locator('.metric-chip').first().evaluate(el => {
+    const style = getComputedStyle(el);
+    return { background: style.backgroundColor, border: style.borderWidth, shadow: style.boxShadow };
+  });
+  const desktopMetricAppearance = await metricAppearance();
+  for (const width of [320, 390, 512, 820]) {
+    await page.setViewportSize({ width, height: 900 });
+    const toggle = page.getByRole('button', { name: '会话选项', exact: true });
+    if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+    await metrics.waitFor();
+    assert.equal((await toggle.textContent()).trim(), '');
+    await page.waitForFunction(() => [...document.querySelector('.composer-actions').children]
+      .filter(el => getComputedStyle(el).display !== 'none')
+      .every(el => Math.abs(el.getBoundingClientRect().height - 40) < 0.1));
+    const actionLayout = await page.locator('.composer-actions').evaluate(el => {
+      const buttons = [...el.children].filter(button => getComputedStyle(button).display !== 'none');
+      const rects = buttons.map(button => button.getBoundingClientRect());
+      return { order: buttons.map(button => button.classList.contains('session-options-toggle') ? 'options' : button.classList.contains('upload-button') ? 'upload' : 'send'),
+        aligned: rects.every(rect => Math.abs(rect.top - rects[0].top) < 1 && Math.abs(rect.height - rects[0].height) < 1),
+        overlap: rects.some((rect, i) => i > 0 && rect.left < rects[i - 1].right), overflow: el.scrollWidth > el.clientWidth };
+    });
+    assert.deepEqual(actionLayout, { order: ['options', 'upload', 'send'], aligned: true, overlap: false, overflow: false });
+    await page.locator('.composer-cwd span').evaluate(el => { el.textContent = 'C:\\workspace\\' + 'very-long-directory-name\\'.repeat(30); });
+    await metrics.locator('.model-chip strong').evaluate(el => { el.textContent = 'very-long-model-name-'.repeat(30); });
+    const pathLayout = await page.locator('.composer-path-row').evaluate(el => {
+      const row = el.getBoundingClientRect(), button = el.querySelector('button').getBoundingClientRect();
+      return { contained: button.right <= row.right + 1, overflow: el.scrollWidth > el.clientWidth, ellipsis: getComputedStyle(el.querySelector('span')).textOverflow };
+    });
+    assert.deepEqual(pathLayout, { contained: true, overflow: false, ellipsis: 'ellipsis' });
+    assert.deepEqual(await metricAppearance(), desktopMetricAppearance);
+    const geometry = await metrics.evaluate(el => {
+      const root = el.getBoundingClientRect();
+      const boxes = [...el.children].map(child => child.getBoundingClientRect());
+      return { overflow: el.scrollWidth > el.clientWidth,
+        outside: boxes.some(box => box.left < root.left - 1 || box.right > root.right + 1),
+        overlap: boxes.some((box, i) => boxes.slice(i + 1).some(other => Math.min(box.right, other.right) - Math.max(box.left, other.left) > 1 && Math.min(box.bottom, other.bottom) - Math.max(box.top, other.top) > 1)),
+        splitLabels: [...el.querySelectorAll('.numeric')].some(chip => { const a = chip.querySelector('em').getBoundingClientRect(), b = chip.querySelector('strong').getBoundingClientRect(); return Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2) > 2; }) };
+    });
+    assert.deepEqual(geometry, { overflow: false, outside: false, overlap: false, splitLabels: false }, `toolbar at ${width}px`);
+    if (process.env.NEO_LOGIN_SCREENSHOT_DIR && width === 390) await page.screenshot({ path: path.join(process.env.NEO_LOGIN_SCREENSHOT_DIR, 'composer-mobile.png') });
+    await toggle.click();
+    assert.equal(await metrics.isVisible(), false);
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  assert.equal(await metrics.isVisible(), true);
   await page.getByRole('button', { name: '会话管理', exact: true }).first().click();
   await page.getByRole('button', { name: '新建会话', exact: true }).first().click();
   await page.getByRole('button', { name: '退出登录', exact: true }).click();
