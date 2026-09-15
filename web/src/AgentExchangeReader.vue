@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch } from './app-url.mjs'
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { contentUrl, emptyContent, mergeContent, sameIdentity, validIdentity } from './agent-content-reader.mjs'
 
@@ -26,7 +27,7 @@ async function load() {
     const identity = { ownerSessionId, taskId: task.taskId, runGeneration }
     let content = emptyContent(), cursor
     do {
-      const response = await fetch(contentUrl(identity, view, cursor), { signal, cache: 'no-store' })
+      const response = await appFetch(contentUrl(identity, view, cursor), { signal, cache: 'no-store' })
       if (!response.ok) throw new Error('加载失败')
       const page = await response.json()
       if (!active()) return ''

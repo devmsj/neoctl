@@ -1,3 +1,4 @@
+import { openWorkspaceRead } from '../../execution-backend.mjs';
 import fs from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 
@@ -6,7 +7,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 
 export function playerPage(entry, options = {}) {
   const title = escapeHtml(entry.filename);
-  const src = `${PREFIX}${entry.id}/media`;
+  const src = `${(process.env.NEO_WEB_BASE_PATH || "").replace(/\/$/, "")}${PREFIX}${entry.id}/media`;
   const theme = options.theme === 'light' ? 'light' : 'dark';
   return `<!doctype html><html lang="zh-CN" data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>
   :root{color-scheme:dark;--bg:#11151d;--fg:#eee;--muted:#aab2c1}html[data-theme=light]{color-scheme:light;--bg:#fff;--fg:#222;--muted:#667085}*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}main{height:100%;display:flex;flex-direction:column;gap:10px;padding:14px}h1{margin:0;font-size:16px;overflow-wrap:anywhere}video{display:block;flex:1;min-height:0;width:100%;background:#000;border-radius:8px}p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
@@ -48,7 +49,7 @@ export function createVideoRoute(store) {
     try {
       const entry = await store.get(match[1]);
       if (!entry) { text(res, 404, 'Video not found', head); return true; }
-      handle = await fs.open(entry.mediaPath, 'r');
+      handle = await openWorkspaceRead(entry.mediaPath);
       const stat = await handle.stat();
       if (!stat.isFile()) { text(res, 404, 'Video not found', head); return true; }
       res.setHeader('X-Content-Type-Options', 'nosniff');

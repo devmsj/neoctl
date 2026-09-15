@@ -1,4 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
+import { executionReadFileSync as readFileSync, executionStatSync as statSync } from "../../execution/filesystem.js";
+import { dockerEnabled, executionCwd } from "../../execution/docker.js";
 import path from "node:path";
 import { supportsImageInput } from "../../model/context-window.js";
 import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
@@ -199,13 +200,14 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         }
 
         if (isExternalFilePath(ref)) {
-          const result = loadExternalImage(ref);
+          const externalPath = dockerEnabled() ? path.posix.resolve(executionCwd(context.appState.snapshot().cwd), ref) : ref;
+          const result = loadExternalImage(externalPath);
           if ("error" in result) {
             failedRefs.push(`${ref} (${result.error})`);
             continue;
           }
           externalCount += 1;
-          const resolvedPath = path.resolve(ref);
+          const resolvedPath = path.resolve(externalPath);
           imageBlocks.push({
             type: "image",
             mimeType: result.mimeType,

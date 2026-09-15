@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import { executionFs as fs } from "../../execution/filesystem.js";
 import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 

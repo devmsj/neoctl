@@ -13,6 +13,8 @@ let desktopControlConfig;
   try { desktopControlConfig = raw ? JSON.parse(raw) : undefined; } catch {}
 }
 
+const { containerMode, workspaceFs, deliverUpload, verifyExecutionBackend } = await import('./execution-backend.mjs');
+await verifyExecutionBackend();
 const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } = await import('./core-runtime.mjs');
 const { createWebPluginHost } = await import('./plugins.mjs');
 const { createWebPluginSettings } = await import('./plugin-settings.mjs');
@@ -38,7 +40,9 @@ const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
 const host = process.env.APP_HOST || '0.0.0.0';
 const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
 const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
-const { dataRoot, workspaceRoot } = resolveWebStorage();
+const storage = resolveWebStorage();
+const dataRoot = storage.dataRoot;
+const workspaceRoot = containerMode ? '/workspace' : storage.workspaceRoot;
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
 const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(__dirname, 'plugins'));
@@ -47,7 +51,7 @@ const cpaConfigFile = path.resolve(process.env.NEO_CPA_CONFIG_FILE || path.join(
 const memoryMonitorFile = path.resolve(process.env.NEO_MEMORY_MONITOR_FILE || path.join(dataRoot, 'memory-monitor.json'));
 const pluginSettingsFile = path.resolve(process.env.NEO_WEB_PLUGIN_SETTINGS_FILE || path.join(dataRoot, 'plugins.json'));
 const toolSettingsFile = path.resolve(process.env.NEO_WEB_TOOL_SETTINGS_FILE || path.join(dataRoot, 'tools.json'));
-const chunkUploads = createChunkUploadHandler({ uploadsDir, baseDir: __dirname });
+const chunkUploads = createChunkUploadHandler({ uploadsDir, baseDir: __dirname, finalize: containerMode ? (file, url) => deliverUpload(file, url, runtimeTarget) : undefined });
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
@@ -225,7 +229,7 @@ async function routeRequest(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/api/uploads') {
       const body = await readJsonBody(req);
-      const file = await storeUploadedFile(body);
+      const file = await deliverUpload(await storeUploadedFile(body), url, runtimeTarget);
       return sendJson(res, { ok: true, file });
     }
     if (shouldProxy(url.pathname)) {
@@ -451,6 +455,12 @@ async function serveLocalImage(res, encodedPath) {
     return;
   }
   try {
+    if (containerMode) {
+      const body = await workspaceFs.readFile(absolutePath);
+      res.writeHead(200, { "Content-Type": contentType, "Content-Length": body.length, "Cache-Control": "no-store" });
+      res.end(body);
+      return;
+    }
     const fileStat = await fsp.stat(absolutePath);
     if (!fileStat.isFile()) throw new Error('not a file');
     res.writeHead(200, {

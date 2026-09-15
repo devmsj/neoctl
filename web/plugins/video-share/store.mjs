@@ -1,3 +1,4 @@
+import { workspaceFs, openWorkspaceRead, containerMode } from '../../execution-backend.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -16,7 +17,7 @@ export class VideoStore {
     if (typeof source !== 'string' || !path.isAbsolute(source)) throw new Error('Video path must be absolute');
     const type = VIDEO_TYPES[path.extname(source).toLowerCase()];
     if (!type) throw new Error('Supported video extensions: .mp4, .m4v, .mov, .webm, .ogv');
-    const sourceStat = await fs.stat(source);
+    const sourceStat = await workspaceFs.stat(source);
     if (!sourceStat.isFile() || sourceStat.size === 0) throw new Error('Video must be a non-empty regular file');
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const id = randomBytes(24).toString('hex');
@@ -24,9 +25,14 @@ export class VideoStore {
     await fs.mkdir(staging, { mode: 0o700 });
     try {
       // Validate only a small header, then persist the original path, never a copy.
-      const handle = await fs.open(source, 'r');
       const header = Buffer.alloc(64);
-      try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+      if (containerMode) {
+        const handle = await openWorkspaceRead(source);
+        try { let offset = 0; for await (const chunk of handle.createReadStream({ start: 0, end: 63 })) { chunk.copy(header, offset); offset += chunk.length; } } finally { await handle.close(); }
+      } else {
+        const handle = await fs.open(source, 'r');
+        try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+      }
       const extension = path.extname(source).toLowerCase();
       const valid = extension === '.webm' ? header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
         : extension === '.ogv' ? header.toString('ascii', 0, 4) === 'OggS'

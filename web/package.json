@@ -51,6 +51,8 @@
     "control-sync.mjs",
     "control-protocol.mjs",
     "core-runtime.mjs",
+    "execution-backend.mjs",
+    "chunk-uploads.mjs",
     "plugins.mjs",
     "plugin-settings.mjs",
     "platform-paths.mjs",

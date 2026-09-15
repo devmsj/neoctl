@@ -5,6 +5,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { dockerEnabled } from "../execution/docker.js";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { readSessionPrompt, updateSessionPrompt, SessionPromptError } from "./session-prompt-protocol.js";
@@ -1423,6 +1424,9 @@ export class WebRepl {
   async saveLogin(providerValue: string, values: Record<string, string>): Promise<WebActionResult> {
     const provider = parseLoginProvider(providerValue);
     if (!provider) return actionFailure("LOGIN_INVALID", "provider must be openai");
+    if (dockerEnabled() && !values.apiKey?.trim()) {
+      values = { ...values, apiKey: parseEnvFileSafe(this.runtime.envPath).OPENAI_API_KEY || process.env.OPENAI_API_KEY || "" };
+    }
     const payload: LoginFormPayload = { ...createLoginFormPayload(this.runtime.envPath, provider), provider, values };
     const validationError = validateLoginFormPayload(payload);
     if (validationError) return actionFailure("LOGIN_INVALID", validationError);
@@ -2922,7 +2926,7 @@ function createLoginFormPayload(envPath: string, provider?: LoginProviderName): 
 
 function loginValuesForProvider(provider: LoginProviderName, env: Record<string, string>): Record<string, string> {
   const values: Record<string, string> = {};
-  for (const field of LOGIN_FIELD_DEFINITIONS[provider]) values[field.key] = env[field.envKey] ?? "";
+  for (const field of LOGIN_FIELD_DEFINITIONS[provider]) values[field.key] = dockerEnabled() && field.secret ? "" : env[field.envKey] ?? "";
   if (!values.baseUrl) values.baseUrl = defaultBaseUrlForLoginProvider(provider);
   if (!values.model) values.model = defaultModelForLoginProvider(provider);
   if (provider === "openai" && !values.endpoint) values.endpoint = "auto";

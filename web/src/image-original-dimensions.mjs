@@ -1,5 +1,6 @@
+import { appFetch } from './app-url.mjs'
 // Original resources only: never feed this helper a thumbnail URL.
-export function createOriginalDimensions({ maxEntries = 64, timeoutMs = 15000, createImage, fetchOriginal = createImage ? null : (url, signal) => fetch(url, { cache: 'no-store', signal }) } = {}) {
+export function createOriginalDimensions({ maxEntries = 64, timeoutMs = 15000, createImage, fetchOriginal = createImage ? null : (url, signal) => appFetch(url, { cache: 'no-store', signal }) } = {}) {
   createImage ||= () => new Image()
   if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 512) throw new RangeError('maxEntries must be 1..512')
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw new RangeError('timeoutMs must be positive')

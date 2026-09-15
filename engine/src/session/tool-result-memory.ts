@@ -1,3 +1,5 @@
+import { dockerEnabled } from "../execution/docker.js";
+import { executionFs } from "../execution/filesystem.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Message, MessageBlock } from "../types/messages.js";
@@ -134,8 +136,14 @@ export class FileToolResultMemory implements ToolResultMemory {
     }
     const previewSource = formatToolOutputPreview(output, serialized);
     const preview = generatePreview(previewSource, this.previewChars);
+    let visiblePath = filepath;
+    if (dockerEnabled()) {
+      visiblePath = path.posix.join("/workspace/.neo-results", path.basename(this.options.sessionDir), path.basename(filepath));
+      await executionFs.mkdir(path.posix.dirname(visiblePath), { recursive: true });
+      await executionFs.writeFile(visiblePath, serialized, "utf8");
+    }
     return {
-      filepath,
+      filepath: visiblePath,
       originalSize: serialized.length,
       isJson,
       preview: preview.preview,

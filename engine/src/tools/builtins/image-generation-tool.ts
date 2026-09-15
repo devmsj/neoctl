@@ -1,3 +1,6 @@
+import { executionFs, executionExistsSync } from "../../execution/filesystem.js";
+import { dockerEnabled, executionCwd } from "../../execution/docker.js";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -566,8 +569,9 @@ async function persistGeneratedImages(
 ): Promise<ImageGenerationResult[]> {
   if (images.length === 0) return images;
 
+  const outputFs = dockerEnabled() ? executionFs : fs;
   const outputDir = resolveGeneratedImageOutputDir(input, context);
-  await fs.mkdir(outputDir, { recursive: true });
+  await outputFs.mkdir(outputDir, { recursive: true });
   const allocatedLabels = new Set<string>();
 
   return Promise.all(images.map(async (image, offset) => {
@@ -576,13 +580,16 @@ async function persistGeneratedImages(
     const label = uniqueGeneratedImageLabel(requestedBase, context.messages, allocatedLabels);
     const binaryPath = path.resolve(
       input.outputPath && images.length === 1
-        ? uniqueOutputPath(input.outputPath, label, extension)
+        ? uniqueOutputPath(dockerEnabled() ? path.posix.resolve(executionCwd(context.appState.snapshot().cwd), input.outputPath) : input.outputPath, label, extension)
         : path.join(outputDir, `${sanitizeFilename(label)}.${extension}`),
     );
-    await fs.mkdir(path.dirname(binaryPath), { recursive: true });
-    await fs.writeFile(binaryPath, Buffer.from(normalizeBase64ImageData(image.base64), "base64"));
+    await outputFs.mkdir(path.dirname(binaryPath), { recursive: true });
+    await outputFs.writeFile(binaryPath, Buffer.from(normalizeBase64ImageData(image.base64), "base64"));
 
-    const storagePath = `${binaryPath}.base64.txt`;
+    const storagePath = dockerEnabled()
+      ? path.join(context.session?.sessionDir || getNeoctlHome(), "generated", "images", `${randomUUID()}.base64.txt`)
+      : `${binaryPath}.base64.txt`;
+    if (dockerEnabled()) await fs.mkdir(path.dirname(storagePath), { recursive: true });
     await fs.writeFile(storagePath, normalizeBase64ImageData(image.base64), "utf8");
 
     return {
@@ -595,6 +602,10 @@ async function persistGeneratedImages(
 }
 
 function resolveGeneratedImageOutputDir(input: ImageGenerationToolInput, context: ToolUseContext): string {
+  if (dockerEnabled()) {
+    const cwd = executionCwd(context.appState.snapshot().cwd);
+    return input.outputDir?.trim() ? path.posix.resolve(cwd, input.outputDir) : input.outputPath?.trim() ? path.posix.dirname(path.posix.resolve(cwd, input.outputPath)) : path.posix.join(cwd, "generated", "images");
+  }
   if (input.outputDir?.trim()) return path.resolve(input.outputDir.trim());
   if (input.outputPath?.trim()) return path.dirname(path.resolve(input.outputPath.trim()));
   if (context.session?.sessionDir) return path.join(context.session.sessionDir, "generated", "images");
@@ -632,7 +643,8 @@ function uniqueOutputPath(requestedPath: string, label: string, extension: strin
   const base = sanitizeFilename(label);
   let candidate = path.join(directory, `${base}${ext}`);
   let suffix = 2;
-  while (existsSync(candidate) || existsSync(`${candidate}.base64.txt`)) {
+  const exists = dockerEnabled() ? executionExistsSync : existsSync;
+  while (exists(candidate) || exists(`${candidate}.base64.txt`)) {
     candidate = path.join(directory, `${base}-${suffix}${ext}`);
     suffix += 1;
   }

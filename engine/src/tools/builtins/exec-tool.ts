@@ -1,4 +1,5 @@
-import fs from "node:fs/promises";
+import { dockerEnabled, executionCwd } from "../../execution/docker.js";
+import { executionFs as fs } from "../../execution/filesystem.js";
 import os from "node:os";
 import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
@@ -252,16 +253,17 @@ function resolveShell(shell: ExecShell): ResolvedShell {
 }
 
 function defaultShell(): ExecShell {
-  return os.platform() === "win32" ? "powershell" : "bash";
+  return !dockerEnabled() && os.platform() === "win32" ? "powershell" : "bash";
 }
 
 function resolveCwd(cwd: string | undefined, context: ToolUseContext): string {
-  const root = path.resolve(context.appState.snapshot().cwd ?? process.cwd());
+  const root = executionCwd(context.appState.snapshot().cwd);
   if (!cwd?.trim()) return root;
   return path.isAbsolute(cwd) ? path.normalize(cwd) : path.resolve(root, cwd);
 }
 
 async function resolveEnvSecrets(env: Record<string, string>, envSecrets: Record<string, string>, context: ToolUseContext): Promise<Record<string, string>> {
+  if (dockerEnabled() && Object.keys(envSecrets).length) throw new Error("Host secrets cannot be passed to container commands");
   const resolved = { ...env };
   for (const [envName, secretKey] of Object.entries(envSecrets)) {
     if (!context.secrets) throw new Error(`Secret store is not available; cannot resolve envSecrets.${envName}`);

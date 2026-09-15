@@ -7,7 +7,7 @@ const prefix = '/api/uploads/chunks'
 
 // No total file-size limit. Only individual requests are bounded, keeping memory
 // usage constant. Each chunk is appended to one file; completion is an atomic rename.
-export function createChunkUploadHandler({ uploadsDir, baseDir }) {
+export function createChunkUploadHandler({ uploadsDir, baseDir, finalize }) {
   const sessions = new Map()
   const partialDir = path.join(uploadsDir, '.partial')
   const reply = (res, value, status = 200) => {
@@ -104,12 +104,13 @@ export function createChunkUploadHandler({ uploadsDir, baseDir }) {
           const absolutePath = path.join(uploadsDir, storedName)
           await fs.rename(session.partialPath, absolutePath)
           sessions.delete(id)
-          reply(res, { ok: true, file: {
+          const file = {
             id: `upload-${id}`, name: session.name, storedName, size: session.size,
             mimeType: session.mimeType, absolutePath,
             relativePath: path.relative(baseDir, absolutePath) || storedName,
             url: `/api/uploads/${encodeURIComponent(storedName)}`,
-          } })
+          };
+          reply(res, { ok: true, file: finalize ? await finalize(file, url) : file });
         } else throw fail('不支持的上传操作', 405)
       } finally {
         session.busy = false

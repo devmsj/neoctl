@@ -1,9 +1,10 @@
+import { appFetch } from './app-url.mjs'
 // Upload bounded Blob slices, never read/encode the entire file in memory.
 export async function uploadFileChunks(url, file, onProgress) {
   const endpoint = new URL(url, globalThis.location?.href || 'http://localhost')
   endpoint.pathname += '/chunks'
   const request = async (target, method, body) => {
-    const res = await fetch(target, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+    const res = await appFetch(target, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
     const value = await res.json()
     if (!res.ok || value?.ok === false || value?.error) throw new Error(value?.error || `上传失败 (${res.status})`)
     return value

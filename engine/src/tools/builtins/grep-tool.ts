@@ -1,5 +1,7 @@
+import { dockerEnabled } from "../../execution/docker.js";
+import { executionLaunch } from "../../execution/process.js";
 import { spawn } from "node:child_process";
-import fs from "node:fs/promises";
+import { executionFs as fs } from "../../execution/filesystem.js";
 import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import { resolveBundledRipgrepBinary } from "./ripgrep-binary.js";
@@ -126,7 +128,7 @@ export const grepTool: Tool<GrepToolInput> = {
     return true;
   },
   async call(input, context, options) {
-    const { executablePath, platformKey } = resolveBundledRipgrepBinary();
+    const { executablePath, platformKey } = dockerEnabled() ? { executablePath: "rg", platformKey: "container" } : resolveBundledRipgrepBinary();
     const root = workingDirectory(context);
     const target = path.resolve(root, input.path ?? ".");
 
@@ -163,7 +165,9 @@ async function runRipgrep(
   let stderr = "";
   let stdoutBuffer = "";
 
-  const child = spawn(executablePath, args, { cwd: root, windowsHide: true });
+  const launch = executionLaunch(executablePath, args, root, {});
+  const child = spawn(launch.file, launch.args, { cwd: launch.cwd, env: launch.env, windowsHide: true });
+  child.stdin.end();
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
@@ -176,7 +180,8 @@ async function runRipgrep(
       if (line) handleJsonLine(line, root, state);
       if (shouldStopGrep(state)) {
         state.stopped = true;
-        child.kill();
+        if (launch.signal) launch.signal("SIGTERM");
+        else child.kill();
         break;
       }
       newline = stdoutBuffer.indexOf("\n");

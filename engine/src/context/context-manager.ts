@@ -1,5 +1,5 @@
 import { PromptConfigStore } from "./prompt-config.js";
-import { existsSync, readFileSync } from "node:fs";
+import { executionExistsSync as existsSync, executionReadFileSync as readFileSync } from "../execution/filesystem.js";
 import { join, resolve } from "node:path";
 import type { AppPromptStore } from "../app/app-prompt.js";
 import type { ToolUseContext } from "../tools/tool.js";

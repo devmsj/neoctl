@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch } from './app-url.mjs'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import { canRenderMarkdown, parseControlTranscript, sessionEndpoint } from '../control-transcript.mjs'
@@ -58,7 +59,7 @@ async function refresh() {
     if (etag) headers['If-None-Match'] = etag
     // Fixed same-origin, GET-only endpoint. Refuse redirects rather than forward
     // credentials or follow resource URLs supplied by a report.
-    const response = await fetch(endpoint, {
+    const response = await appFetch(endpoint, {
       method: 'GET', headers, signal: controller.signal, mode: 'same-origin',
       credentials: 'omit', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer',
     })

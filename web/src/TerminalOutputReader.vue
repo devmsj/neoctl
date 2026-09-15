@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch } from './app-url.mjs'
 import { reactive, watch, onBeforeUnmount } from 'vue'
 const props = defineProps({ ownerSessionId: String, runId: String })
 const state = reactive({ record: null, stdout: '', stderr: '', offsets: { stdout: 0, stderr: 0 } })
@@ -11,7 +12,7 @@ async function load() {
       do {
         const offset = state.offsets[stream]
         const query = new URLSearchParams({ sessionId: props.ownerSessionId, runId: props.runId, stream, offset: String(offset), limitBytes: '65536' })
-        const response = await fetch(`/api/terminal-output?${query}`, { signal: controller.signal, cache: 'no-store' })
+        const response = await appFetch(`/api/terminal-output?${query}`, { signal: controller.signal, cache: 'no-store' })
         if (token !== generation || !response.ok) return
         const data = await response.json()
         if (token !== generation) return

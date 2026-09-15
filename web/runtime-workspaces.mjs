@@ -1,5 +1,7 @@
 import path from 'node:path';
-import { mkdir, readFile, readdir, rmdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir as localMkdir, readFile, writeFile } from 'node:fs/promises';
+import { workspaceFs, workspaceHome, containerMode } from './execution-backend.mjs';
+const { mkdir, readdir, rmdir, stat } = workspaceFs;
 import os from 'node:os';
 import { QueryEngine, WebRepl } from './core-runtime.mjs';
 
@@ -370,7 +372,7 @@ export class SessionWorkspaceRegistry {
         : options.cwdNoticePending === true,
     };
     this.writeQueue = this.writeQueue.then(async () => {
-      await mkdir(path.dirname(this.file), { recursive: true });
+      await localMkdir(path.dirname(this.file), { recursive: true });
       await writeFile(this.file, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
     });
     await this.writeQueue;
@@ -406,7 +408,7 @@ export async function browseWorkspace(value, currentCwd) {
     requested,
     fallback: path.resolve(current) !== path.resolve(requested),
     parent: current === path.parse(current).root ? undefined : path.dirname(current),
-    home: os.homedir(),
+    home: (workspaceHome() || os.homedir()),
     locations,
     entries: entries
       .filter((entry) => entry.isDirectory())
@@ -437,8 +439,9 @@ let workspaceLocationsCache;
 let workspaceLocationsCachedAt = 0;
 
 export async function discoverWorkspaceLocations() {
+  if (containerMode) return [{ id: "workspace", label: "workspace", path: "/workspace", kind: "favorite" }, { id: "root", label: "/", path: "/", kind: "root" }, { id: "home", label: "root", path: "/root", kind: "home" }];
   if (workspaceLocationsCache && Date.now() - workspaceLocationsCachedAt < 5000) return workspaceLocationsCache;
-  const home = os.homedir();
+  const home = (workspaceHome() || os.homedir());
   const candidates = [
     { id: 'home', label: '主目录', path: home, kind: 'home' },
     ...[
@@ -486,8 +489,8 @@ export async function discoverWorkspaceLocations() {
 export function resolveWorkspaceInput(value, currentCwd) {
   let input = String(value || '').trim().replace(/^["']|["']$/g, '');
   if (!input) return path.resolve(currentCwd || process.cwd());
-  if (input === '~') input = os.homedir();
-  else if (input.startsWith('~/') || input.startsWith('~\\')) input = path.join(os.homedir(), input.slice(2));
+  if (input === '~') input = (workspaceHome() || os.homedir());
+  else if (input.startsWith('~/') || input.startsWith('~\\')) input = path.join((workspaceHome() || os.homedir()), input.slice(2));
   input = input.replace(/[\\/]+/g, path.sep);
   if (process.platform === 'win32' && /^[a-zA-Z]:$/.test(input)) input += path.sep;
   return path.resolve(currentCwd || process.cwd(), input);

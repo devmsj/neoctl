@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch } from '../app-url.mjs'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps({
@@ -59,7 +60,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const response = await fetch(endpoint, { cache: 'no-store', signal: controller.signal })
+    const response = await appFetch(endpoint, { cache: 'no-store', signal: controller.signal })
     const body = await response.json()
     if (current !== generation || endpoint !== props.endpoint) return
     if (!response.ok || body?.ok === false || body?.error) {
@@ -82,7 +83,7 @@ async function save(reset = false) {
   saving.value = true
   error.value = ''
   try {
-    const response = await fetch(endpoint, {
+    const response = await appFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reset ? { reset: true, revision: revision.value } : { content: content.value, revision: revision.value, ...(props.session ? { mode: mode.value } : {}) }),

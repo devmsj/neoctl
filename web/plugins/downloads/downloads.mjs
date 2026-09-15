@@ -1,3 +1,4 @@
+import { workspaceFs, openWorkspaceRead } from '../../execution-backend.mjs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,7 +15,7 @@ export class DownloadRegistry {
   async add(entry) {
     const source = entry.absolutePath;
     if (typeof source !== 'string' || !path.isAbsolute(source)) throw new Error('path must be absolute');
-    const before = await fsp.stat(source);
+    const before = await workspaceFs.stat(source);
     if (!before.isFile()) throw new Error('path is not a regular file');
     await fsp.mkdir(this.storageDir, { recursive: true, mode: 0o700 });
     const id = crypto.randomUUID();
@@ -90,7 +91,7 @@ export async function serveDownload(registry, req, res, id) {
   try {
     const entry = await registry.get(id);
     if (!entry) { res.writeHead(404, { 'Cache-Control': 'no-store' }); res.end(req.method === 'HEAD' ? undefined : 'Download not found'); return; }
-    handle = await fsp.open(entry.absolutePath, 'r');
+    handle = await openWorkspaceRead(entry.absolutePath);
     const stat = await handle.stat();
     if (!stat.isFile()) throw Object.assign(new Error('Not a file'), { code: 'ENOENT' });
     res.writeHead(200, {

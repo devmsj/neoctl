@@ -1,3 +1,5 @@
+import { executionLaunch } from "../../execution/process.js";
+import { dockerEnabled } from "../../execution/docker.js";
 import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -697,6 +699,8 @@ function createPtyBackend(
   onOutput: (text: string) => void,
   onExit: (exitCode: number | null, signal: string | number | null, error?: Error) => void,
 ): ProcessBackend {
+  if (dockerEnabled()) return createPipeBackend(options, (_stream, text) => onOutput(text), onExit);
+  const launch = executionLaunch(options.shell.file, [...options.shell.args, shellCommand(options)], options.cwd, options.env, true);
   const hostModule = fileURLToPath(new URL("./exec-pty-host.js", import.meta.url));
   const host = spawnChild(process.execPath, [...process.execArgv, hostModule], {
     stdio: ["ignore", "ignore", "pipe", "ipc"],
@@ -740,10 +744,10 @@ function createPtyBackend(
   });
   host.send({
     type: "start",
-    file: options.shell.file,
-    args: [...options.shell.args, shellCommand(options)],
-    cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    file: launch.file,
+    args: launch.args,
+    cwd: launch.cwd,
+    env: launch.env,
     cols: 120,
     rows: 30,
   });
@@ -760,8 +764,8 @@ function createPtyBackend(
       if (!ready) pendingWrites.push(chars);
       else host.send?.({ type: "write", chars });
     },
-    interrupt: () => host.send?.({ type: "write", chars: "\x03" }),
-    terminate: (force) => host.send?.({ type: "terminate", force }),
+    interrupt: () => launch.signal ? launch.signal("SIGINT") : host.send?.({ type: "write", chars: "\x03" }),
+    terminate: (force) => launch.signal ? launch.signal(force ? "SIGKILL" : "SIGTERM") : host.send?.({ type: "terminate", force }),
     dispose,
   };
 }
@@ -771,9 +775,10 @@ function createPipeBackend(
   onOutput: (stream: ExecOutputStream, text: string) => void,
   onExit: (exitCode: number | null, signal: string | number | null, error?: Error) => void,
 ): ProcessBackend {
-  const child = spawnChild(options.shell.file, [...options.shell.args, shellCommand(options)], {
-    cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+  const launch = executionLaunch(options.shell.file, [...options.shell.args, shellCommand(options)], options.cwd, options.env, options.tty);
+  const child = spawnChild(launch.file, launch.args, {
+    cwd: launch.cwd,
+    env: launch.env,
     windowsHide: true,
     detached: os.platform() !== "win32",
     stdio: "pipe",
@@ -787,8 +792,8 @@ function createPipeBackend(
   return {
     pid: child.pid && child.pid > 0 ? child.pid : null,
     write: (data) => child.stdin.write(data),
-    interrupt: () => interruptPipe(child),
-    terminate: (force) => terminatePipe(child, force),
+    interrupt: () => launch.signal ? launch.signal("SIGINT") : interruptPipe(child),
+    terminate: (force) => launch.signal ? launch.signal(force ? "SIGKILL" : "SIGTERM") : terminatePipe(child, force),
     dispose: () => {
       child.stdin.destroy();
       child.stdout.destroy();

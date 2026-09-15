@@ -1,0 +1,21 @@
+[Unit]
+Description=neoctl Docker workspace
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=NEO_ENV_FILE=/etc/neoctl-docker/model.env
+EnvironmentFile=/etc/neoctl-docker/deploy.env
+ExecStartPre=/bin/bash /opt/neoctl/docker_deploy/network.sh
+ExecStartPre=/usr/bin/docker start neo-workspace
+ExecStart=/bin/bash /opt/neoctl/docker_deploy/start-service.sh
+Restart=on-failure
+RestartSec=5
+UMask=0077
+MemoryLimit=4G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

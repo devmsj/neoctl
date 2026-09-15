@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch } from './app-url.mjs'
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { acceptsPreview, contentUrl, contentViews, defaultContentView, emptyContent, isRunning, mergeContent, sameIdentity, validIdentity } from './agent-content-reader.mjs'
 
@@ -49,7 +50,7 @@ async function readPage(t, mode) {
   const prior = state.content
   const cursor = mode === 'next' ? prior.page?.nextCursor : mode === 'refresh' ? prior.page?.refreshCursor : undefined
   if (mode !== 'start' && !cursor) throw new Error('未提供继续读取游标，请重新读取')
-  const response = await fetch(contentUrl(t, t.view, cursor, mode === 'refresh'), { method: 'GET', signal: t.signal, cache: 'no-store' })
+  const response = await appFetch(contentUrl(t, t.view, cursor, mode === 'refresh'), { method: 'GET', signal: t.signal, cache: 'no-store' })
   if (!current(t)) return false
   if (!response.ok) throw new Error(`内容读取失败（HTTP ${response.status}），可重试`)
   const data = await response.json()

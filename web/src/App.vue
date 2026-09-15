@@ -1,4 +1,5 @@
 <script setup>
+import { appFetch, appUrl } from './app-url.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
 import TerminalOutputReader from './TerminalOutputReader.vue'
@@ -200,7 +201,7 @@ function runtimeUrl(url) {
   const target = new URL(url, window.location.origin)
   target.searchParams.set('tabId', runtimeTabId)
   if (runtimeSessionId) target.searchParams.set('sessionId', runtimeSessionId)
-  return `${target.pathname}${target.search}${target.hash}`
+  return appUrl(`${target.pathname}${target.search}${target.hash}`)
 }
 
 function rememberRuntimeSession(session, force = false) {
@@ -661,7 +662,7 @@ onBeforeUnmount(() => {
 
 async function fetchState(options = {}) {
   try {
-    const res = await fetch(runtimeUrl('/api/state'))
+    const res = await appFetch(runtimeUrl('/api/state'))
     if (!res.ok) throw new Error(`state ${res.status}`)
     applySync(await res.json())
     return true
@@ -673,7 +674,7 @@ async function fetchState(options = {}) {
 
 async function fetchClientInfo() {
   try {
-    const res = await fetch(runtimeUrl('/api/client-info'), { cache: 'no-store' })
+    const res = await appFetch(runtimeUrl('/api/client-info'), { cache: 'no-store' })
     if (!res.ok) return
     handleClientVersion(await res.json())
   } catch {
@@ -684,7 +685,7 @@ async function fetchClientInfo() {
 async function fetchRuntimeContext() {
   state.runtimeContextLoading = true
   try {
-    const res = await fetch(runtimeUrl('/api/runtime-context'))
+    const res = await appFetch(runtimeUrl('/api/runtime-context'))
     const payload = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(payload.error || `runtime-context ${res.status}`)
     applyRuntimeContext(payload)
@@ -700,7 +701,7 @@ async function fetchRuntimeContext() {
 async function fetchGlobalTools() {
   state.globalTools.loading = true
   try {
-    const res = await fetch(runtimeUrl('/api/tools'))
+    const res = await appFetch(runtimeUrl('/api/tools'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `tools ${res.status}`)
     state.globalTools = { items: Array.isArray(body.items) ? body.items.map((item) => ({ ...item })) : [], loading: false }
@@ -727,7 +728,7 @@ async function saveGlobalTools() {
 async function fetchSessionTools() {
   state.sessionTools.loading = true
   try {
-    const res = await fetch(runtimeUrl('/api/session-tools'))
+    const res = await appFetch(runtimeUrl('/api/session-tools'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `session-tools ${res.status}`)
     state.sessionTools = { ...body, items: Array.isArray(body.items) ? body.items : [], loading: false }
@@ -752,7 +753,7 @@ async function updateSessionTool(item, mode) {
 async function fetchGlobalPlugins() {
   state.globalPlugins.loading = true
   try {
-    const res = await fetch(runtimeUrl('/api/plugins'))
+    const res = await appFetch(runtimeUrl('/api/plugins'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `plugins ${res.status}`)
     state.globalPlugins = {
@@ -785,7 +786,7 @@ async function saveGlobalPlugins() {
 async function fetchSessionPlugins() {
   state.sessionPlugins.loading = true
   try {
-    const res = await fetch(runtimeUrl('/api/session-plugins'))
+    const res = await appFetch(runtimeUrl('/api/session-plugins'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `session-plugins ${res.status}`)
     state.sessionPlugins = { ...body, items: Array.isArray(body.items) ? body.items : [], loading: false }
@@ -810,7 +811,7 @@ async function updateSessionPlugin(item, mode) {
 async function fetchPromptLibrary() {
   state.promptLibraryLoading = true
   try {
-    const res = await fetch(runtimeUrl('/api/prompt-library'))
+    const res = await appFetch(runtimeUrl('/api/prompt-library'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(body.error || `prompt-library ${res.status}`)
     syncPromptLibrary(Array.isArray(body.items) ? body.items : DEFAULT_APP_PROMPT_LIBRARY)
@@ -1509,7 +1510,7 @@ async function submit() {
   state.attachments = []
   resetComposerHeight()
   try {
-    const res = await fetch(runtimeUrl('/api/submit'), {
+    const res = await appFetch(runtimeUrl('/api/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: submitText, attachments: [...imageAttachments, ...fileAttachments] }),
@@ -1585,7 +1586,7 @@ async function reconcileSessionSetting(request, isLatest = () => true) {
   try {
     const target = new URL(request.url, window.location.origin)
     target.pathname = '/api/state'
-    const res = await fetch(`${target.pathname}${target.search}`, { cache: 'no-store' })
+    const res = await appFetch(`${target.pathname}${target.search}`, { cache: 'no-store' })
     const snapshot = await res.json()
     if (res.ok && request.isCurrent() && isLatest() && revision === sessionSettingsSyncRevision) applySync(snapshot)
   } catch {
@@ -1778,7 +1779,7 @@ function toggleFastMode() {
       notifyActionError(error, '快速模式切换失败')
       // This refresh is also owner-bound; never apply an old session's response.
       try {
-        const res = await fetch(request.url.replace('/api/fast-mode?', '/api/state?'))
+        const res = await appFetch(request.url.replace('/api/fast-mode?', '/api/state?'))
         const snapshot = await res.json()
         if (res.ok && request.isCurrent() && version === fastModeMutationVersion) applySync(snapshot)
       } catch {}
@@ -1789,7 +1790,7 @@ async function openSessions() {
   state.activePanel = 'sessions'
   state.sessionsLoading = true
   try {
-    const res = await fetch(runtimeUrl('/api/sessions'))
+    const res = await appFetch(runtimeUrl('/api/sessions'))
     const body = await res.json().catch(() => ({}))
     if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
     state.sessions = body.sessions || []
@@ -1820,7 +1821,7 @@ async function resumeSession(sessionId) {
 
 async function fetchCpaState() {
   try {
-    const res = await fetch(runtimeUrl('/api/cpa-quota'))
+    const res = await appFetch(runtimeUrl('/api/cpa-quota'))
     if (!res.ok) throw new Error(`cpa-quota ${res.status}`)
     const body = await res.json()
     state.cpaQuotas = Array.isArray(body?.quotas) ? body.quotas : []
@@ -1841,7 +1842,7 @@ async function fetchCpaState() {
 
 async function fetchMemoryState() {
   try {
-    const res = await fetch(runtimeUrl('/api/memory'))
+    const res = await appFetch(runtimeUrl('/api/memory'))
     if (!res.ok) throw new Error(`memory ${res.status}`)
     const body = await res.json()
     state.memory = {
@@ -1918,7 +1919,7 @@ async function openLogin(provider) {
   state.settingsPage = ''
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
-    const res = await fetch(runtimeUrl(`/api/login${query}`))
+    const res = await appFetch(runtimeUrl(`/api/login${query}`))
     const body = await res.json().catch(() => ({}))
     if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
     state.login = body
@@ -2045,7 +2046,7 @@ function clearMemoryHover() {
 }
 
 async function postJson(url, body, scoped = false) {
-  const res = await fetch(scoped ? url : runtimeUrl(url), {
+  const res = await appFetch(scoped ? url : runtimeUrl(url), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -2276,7 +2277,7 @@ async function handleDocumentResourceClick(event) {
     return
   }
   try {
-    const response = await fetch(anchor.href)
+    const response = await appFetch(anchor.href)
     if (!response.ok) {
       notify(response.status === 404 || response.status === 410 ? '下载链接已过期，请重新生成' : `下载失败（${response.status}）`)
       return
@@ -2689,7 +2690,7 @@ async function browseCwd(path = state.cwdPicker.input) {
   try {
     const target = new URL('/api/cwd', window.location.origin)
     if (String(path || '').trim()) target.searchParams.set('path', String(path).trim())
-    const res = await fetch(runtimeUrl(`${target.pathname}${target.search}`))
+    const res = await appFetch(runtimeUrl(`${target.pathname}${target.search}`))
     const result = await res.json().catch(() => ({}))
     if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
     applyCwdBrowseResult(result)
@@ -2724,7 +2725,7 @@ function applyCwdBrowseResult(result) {
 async function fetchCwdBranch(path) {
   const target = new URL('/api/cwd', window.location.origin)
   target.searchParams.set('path', path)
-  const res = await fetch(runtimeUrl(`${target.pathname}${target.search}`))
+  const res = await appFetch(runtimeUrl(`${target.pathname}${target.search}`))
   const result = await res.json().catch(() => ({}))
   if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
   if (Array.isArray(result.locations)) state.cwdPicker.locations = result.locations
@@ -3079,7 +3080,7 @@ function linkedLineResources(line) {
 function pluginResourceUrl(item) {
   const url = new URL(item.url, window.location.origin)
   url.searchParams.set('theme', theme.value)
-  return url.origin === window.location.origin ? `${url.pathname}${url.search}${url.hash}` : url.href
+  return url.origin === window.location.origin ? appUrl(`${url.pathname}${url.search}${url.hash}`) : url.href
 }
 
 function pluginResourceHeight(item) {
@@ -3092,7 +3093,7 @@ function renderLineResources(line) {
   if (!resources.length) return linkify(escapeHtml(stripAnsi(lineText(line))))
   const items = resources.map((item, index) => {
     const label = escapeHtml(item.label || item.downloadName || `资源 ${index + 1}`)
-    const href = escapeHtml(item.url)
+    const href = escapeHtml(appUrl(item.url))
     const size = item.sizeBytes ? formatBytes(item.sizeBytes) : ''
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
     const meta = [size, expires].filter(Boolean).join(' · ')
@@ -3138,7 +3139,7 @@ function enhanceExposedResourceLinks(html, resources) {
     const item = allowed.get(href)
     if (!item) continue
     anchor.classList.add('inline-resource-link', `inline-resource-${item.kind || 'link'}`)
-    anchor.setAttribute('href', item.url)
+    anchor.setAttribute('href', appUrl(item.url))
     if (item.kind === 'download' || item.downloadName) {
       anchor.setAttribute('download', item.downloadName || item.label || '')
       anchor.removeAttribute('target')
@@ -4555,13 +4556,13 @@ function createMobileSession() {
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-image2-images`">
                     <div v-if="images.length" class="message-image-attachments image2-output-images">
                       <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
-                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
-                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
+                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="appUrl(item.originalUrl || item.previewUrl)" :aria-label="`预览 ${imageCaption(item, index)}`">
+                          <img :src="appUrl(item.previewUrl)" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
                         </button>
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <div class="image-card-actions">
-                          <a v-if="item.available && item.previewUrl" class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
+                          <a v-if="item.available && item.previewUrl" class="image-download" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)">下载</a>
                           <button v-if="index === 0 && isImageCreateResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                         </div>
                       </figure>
@@ -4635,12 +4636,12 @@ function createMobileSession() {
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">
                       <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
-                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="item.originalUrl || item.previewUrl" :aria-label="`预览 ${imageCaption(item, index)}`">
-                          <img :src="item.previewUrl" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
+                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="appUrl(item.originalUrl || item.previewUrl)" :aria-label="`预览 ${imageCaption(item, index)}`">
+                          <img :src="appUrl(item.previewUrl)" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
                         </button>
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
-                        <a v-if="item.available && item.previewUrl" class="image-download" :href="item.originalUrl || item.previewUrl" :download="imageDownloadName(item, index)">下载</a>
+                        <a v-if="item.available && item.previewUrl" class="image-download" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)">下载</a>
                       </figure>
                     </div>
                   </template>
@@ -4692,7 +4693,7 @@ function createMobileSession() {
             </div>
             <div v-if="imageAttachments().length" class="attachments image-attachments">
               <figure v-for="(item, index) in imageAttachments()" :key="item.label" class="image-attachment">
-                <img :src="item.previewUrl" :alt="item.name || `图片 ${index + 1}`" />
+                <img :src="appUrl(item.previewUrl)" :alt="item.name || `图片 ${index + 1}`" />
                 <figcaption>图片 {{ index + 1 }}</figcaption>
                 <button type="button" aria-label="移除图片" @click="removeAttachment(item.label)">×</button>
               </figure>
@@ -5015,7 +5016,7 @@ function createMobileSession() {
                 <h2>提示词配置</h2>
               </div>
             </div>
-            <PromptConfigEditor endpoint="/api/prompt-config" @saved="onPromptConfigSaved" />
+            <PromptConfigEditor :endpoint="appUrl('/api/prompt-config')" @saved="onPromptConfigSaved" />
           </template>
           <template v-else>
           <div class="page-head settings-page-head">
