@@ -59,7 +59,6 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
   const globalPlugins = pluginSettings || await createWebPluginSettings(path.join(dataRoot, 'plugins.json'));
   const globalTools = toolSettings || await createWebToolSettings(path.join(dataRoot, 'tools.json'));
   const startupPlugins = process.env.NEO_WEB_PLUGINS?.trim() || globalPlugins.globalEnabledIds();
-  const auth = createIsolationAuth(config);
   const users = new Map();
   let modelConfigQueue = Promise.resolve();
   const withModelConfigLock = operation => {
@@ -68,6 +67,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
     return result;
   };
   const accounts = createIsolationAccounts(config, { dataRoot, onDelete: username => auth.revokeUser(username) });
+  const auth = createIsolationAuth(config, accounts);
   const allOwners = () => [...config.users, ...config.retiredUsernames.map(username => ({ username, role: 'user', deleted: true }))];
   async function adminRoute(req, res, url) {
     if (url.pathname === '/api/admin/users' && req.method === 'GET') {

@@ -33,7 +33,7 @@ export async function readBoundedJson(req, maxBytes = 1024 * 1024) {
 }
 
 export async function hashPassword(password) {
-  if (typeof password !== 'string' || password.length < 8 || password.length > 1024) throw new Error('密码长度须为 8–1024 字符');
+  if (typeof password !== 'string' || !password.length || /[^A-Za-z0-9]/.test(password)) throw new Error('密码至少 1 位，仅允许字母和数字');
   const salt = randomBytes(16).toString('hex');
   return `scrypt$${salt}$${Buffer.from(await scrypt(password, salt, 64)).toString('hex')}`;
 }
@@ -57,7 +57,7 @@ export async function loadIsolationConfig(dataRoot, configFile = process.env.NEO
   const names = new Set();
   for (const user of users) {
     const key = usernameKey(user?.username);
-    if (!user || !validUsername(user.username) || !HASH.test(user.passwordHash)
+    if (!user || !validUsername(user.username) || (user.passwordHash !== undefined && !HASH.test(user.passwordHash))
       || (user.role !== undefined && !['user', 'admin'].includes(user.role)) || names.has(key)) {
       throw new Error('用户名、角色或密码哈希无效或重复');
     }
@@ -102,18 +102,27 @@ export function createIsolationAccounts(config, { dataRoot, onDelete = () => {} 
   return {
     list: () => config.users.map(publicUser),
     create: body => serial(async () => {
-      const { username, password, role } = body || {};
+      const { username, role } = body || {};
+      if (body && (Object.hasOwn(body, 'password') || Object.hasOwn(body, 'passwordHash'))) throw httpError(400, '创建用户只需用户名，不可设置密码');
       if (!validUsername(username) || (role !== undefined && role !== 'user')) throw httpError(400, '账号信息无效，只能创建普通用户');
       if (config.users.length >= 1000) throw httpError(400, '用户数量已达上限');
       const key = usernameKey(username);
       if (config.users.some(user => usernameKey(user.username) === key) || config.retiredUsernames.some(value => usernameKey(value) === key)) throw httpError(409, '用户名已使用');
       try { await fs.lstat(path.join(dataRoot, 'isolated-users', username)); throw httpError(409, '该用户名已有历史数据'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      let passwordHash;
-      try { passwordHash = await hashPassword(password); } catch (error) { throw httpError(400, error.message); }
-      const user = { username, role: 'user', passwordHash };
+      const user = { username, role: 'user' };
       await persist([...config.users, user], config.retiredUsernames);
       return publicUser(user);
+    }),
+    claim: (user, password) => serial(async () => {
+      const current = config.users.find(value => value.username === user.username);
+      if (!current) return;
+      if (current.passwordHash !== undefined) return current;
+      let passwordHash;
+      try { passwordHash = await hashPassword(password); } catch (error) { throw httpError(400, error.message); }
+      const claimed = { ...current, passwordHash };
+      await persist(config.users.map(value => value === current ? claimed : value), config.retiredUsernames);
+      return claimed;
     }),
     remove: username => serial(async () => {
       if (!validUsername(username)) throw httpError(400, '用户名无效');
@@ -127,7 +136,7 @@ export function createIsolationAccounts(config, { dataRoot, onDelete = () => {} 
   };
 }
 
-export function createIsolationAuth(config) {
+export function createIsolationAuth(config, accounts) {
   const sessions = new Map(), attempts = new Map();
   let activeLogins = 0;
   const digest = value => createHash('sha256').update(value).digest('hex');
@@ -181,7 +190,7 @@ export function createIsolationAuth(config) {
         return true;
       }
       if (url.pathname === '/api/auth/login' && req.method === 'POST') {
-        const body = await readBoundedJson(req, 4096);
+        const body = await readBoundedJson(req);
         const username = typeof body?.username === 'string' ? body.username : '';
         const password = typeof body?.password === 'string' ? body.password : '';
         const rateKey = `${req.socket.remoteAddress}`;
@@ -191,13 +200,14 @@ export function createIsolationAuth(config) {
           res.setHeader('Retry-After', '60'); jsonReply(res, { error: '尝试过多，请稍后重试' }, 429); return true;
         }
         attempt.count++; attempts.set(rateKey, attempt);
-        const user = config.users.find(value => value.username === username);
-        const parts = HASH.exec(user?.passwordHash || '') || ['', '0'.repeat(32), '0'.repeat(128)];
+        let user = config.users.find(value => value.username === username);
         activeLogins++;
         let valid = false;
         try {
-          const derived = await scrypt(password.slice(0, 1024), parts[1], 64);
-          valid = !!user && config.users.includes(user) && password.length <= 1024 && timingSafeEqual(derived, Buffer.from(parts[2], 'hex'));
+          if (user && user.passwordHash === undefined) user = await accounts.claim(user, password);
+          const parts = HASH.exec(user?.passwordHash || '') || ['', '0'.repeat(32), '0'.repeat(128)];
+          const derived = await scrypt(password, parts[1], 64);
+          valid = !!user && config.users.includes(user) && timingSafeEqual(derived, Buffer.from(parts[2], 'hex'));
         } finally { activeLogins--; }
         if (!valid) { jsonReply(res, { error: '用户名或密码错误' }, 401); return true; }
         attempts.delete(rateKey);

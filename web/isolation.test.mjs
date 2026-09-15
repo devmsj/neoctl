@@ -16,7 +16,7 @@ process.env.NEO_EXECUTION_BACKEND = 'local';
 async function fixture(t, enabled = true, configOverrides = {}, plugins = false) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-isolation-'));
   const configFile = path.join(root, 'isolation.json');
-  const passwordHash = await hashPassword('test-password-only');
+  const passwordHash = await hashPassword('TestPasswordOnly');
   await fs.writeFile(configFile, JSON.stringify({ enabled, users: [{ username: 'Alice', passwordHash }, { username: 'Bob', passwordHash }, { username: 'Admin', passwordHash, role: 'admin' }], ...configOverrides }));
   let mode;
   let cpaConfig = { url: '', password: '' };
@@ -39,7 +39,7 @@ async function fixture(t, enabled = true, configOverrides = {}, plugins = false)
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...extra,
   });
   const login = async username => {
-    const result = await request('/api/auth/login', '', { username, password: 'test-password-only' });
+    const result = await request('/api/auth/login', '', { username, password: 'TestPasswordOnly' });
     assert.equal(result.status, 200);
     assert.match(result.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
     return result.headers.get('set-cookie').split(';')[0];
@@ -61,7 +61,7 @@ test('disabled defaults preserve unauthenticated legacy routes; invalid configs 
 test('username is the only account identifier and is safe as a data directory', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-isolation-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const passwordHash = await hashPassword('test-password-only');
+  const passwordHash = await hashPassword('TestPasswordOnly');
   const configFile = path.join(root, 'isolation.json');
   await fs.writeFile(configFile, JSON.stringify({ enabled: true, users: [{ username: '中文 用户', passwordHash }] }));
   const config = await loadIsolationConfig(root, configFile);
@@ -80,7 +80,7 @@ test('admin manages regular accounts and reads all owners without an extra write
   assert.equal((await (await f.request('/api/auth/status', admin)).json()).user.role, 'admin');
   assert.equal((await (await f.request('/api/auth/status', alice)).json()).user.role, 'user');
   for (const route of ['/api/admin/users', '/api/admin/sessions']) assert.equal((await f.request(route, alice)).status, 403);
-  assert.equal((await f.request('/api/admin/users', alice, { username: 'Evil', password: 'test-password-only' })).status, 403);
+  assert.equal((await f.request('/api/admin/users', alice, { username: 'Evil', password: 'TestPasswordOnly' })).status, 403);
   assert.equal((await f.request('/api/admin/users/delete', alice, { username: 'Bob' })).status, 403);
   const ids = {};
   for (const [username, cookie] of [['Alice', alice], ['Bob', bob]]) {
@@ -96,26 +96,80 @@ test('admin manages regular accounts and reads all owners without an extra write
   assert.equal((await f.request(`/api/state?ownerUsername=Bob&sessionId=${ids.Bob}`, alice)).status, 403);
   assert.equal((await f.request(`/api/state?ownerUsername=Alice&sessionId=${ids.Bob}`, admin)).status, 404);
   assert.equal((await f.request('/api/state?ownerUsername=Bob&ownerUsername=Alice', admin)).status, 400);
-  assert.equal((await f.request('/api/admin/users', admin, { username: 'New', password: 'test-password-only', role: 'admin' })).status, 400);
-  const created = await f.request('/api/admin/users', admin, { username: 'New', password: 'test-password-only' });
+  assert.equal((await f.request('/api/admin/users', admin, { username: 'New', role: 'admin' })).status, 400);
+  const created = await f.request('/api/admin/users', admin, { username: 'New' });
   assert.equal(created.status, 201);
   assert.deepEqual((await created.json()).user, { username: 'New', role: 'user' });
   const newCookie = await f.login('New');
   assert.equal((await f.request('/api/admin/users/delete', admin, { username: 'Admin' })).status, 403);
-  const duplicate = { username: 'Race', password: 'test-password-only' };
+  const duplicate = { username: 'Race' };
   assert.deepEqual((await Promise.all([f.request('/api/admin/users', admin, duplicate), f.request('/api/admin/users', admin, duplicate)])).map(r => r.status).sort(), [201, 409]);
   assert.equal((await f.request('/api/admin/users/delete', admin, { username: 'New' })).status, 200);
   assert.equal((await f.request('/api/state', newCookie)).status, 401);
-  assert.equal((await f.request('/api/admin/users', admin, { username: 'new', password: 'test-password-only' })).status, 409);
+  assert.equal((await f.request('/api/admin/users', admin, { username: 'new' })).status, 409);
   assert.equal((await f.request('/api/admin/users/delete', admin, { username: 'Bob' })).status, 200);
   assert.equal((await f.request(`/api/state?ownerUsername=Bob&sessionId=${ids.Bob}`, admin)).status, 200);
   const disk = await fs.readFile(path.join(f.root, 'isolation.json'), 'utf8');
-  assert.ok(!disk.includes('test-password-only'));
+  assert.ok(!disk.includes('TestPasswordOnly'));
   assert.ok(!JSON.stringify(await (await f.request('/api/admin/users', admin)).json()).includes('passwordHash'));
   await f.restart();
   const nextAdmin = await f.login('Admin');
   assert.equal((await f.request(`/api/state?ownerUsername=Bob&sessionId=${ids.Bob}`, nextAdmin)).status, 200);
-  assert.equal((await f.request('/api/auth/login', '', { username: 'New', password: 'test-password-only' })).status, 401);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'New', password: 'TestPasswordOnly' })).status, 401);
+});
+
+test('first login claims a preallocated username once and persists across restarts', async t => {
+  const f = await fixture(t), admin = await f.login('Admin');
+  const readUsers = async () => JSON.parse(await fs.readFile(path.join(f.root, 'isolation.json'), 'utf8')).users;
+  assert.equal((await f.request('/api/admin/users', admin, { username: 'First', password: 'a' })).status, 400);
+  assert.equal((await f.request('/api/admin/users', admin, { username: 'First', passwordHash: 'anything' })).status, 400);
+  assert.equal((await f.request('/api/admin/users', admin, { username: 'First' })).status, 201);
+  assert.equal((await readUsers()).find(u => u.username === 'First').passwordHash, undefined);
+  for (const password of ['', 'a b', 'a!', 'a_', '中文', 'a\n']) {
+    assert.equal((await f.request('/api/auth/login', '', { username: 'First', password })).status, 400);
+    assert.equal((await readUsers()).find(u => u.username === 'First').passwordHash, undefined);
+  }
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Unknown', password: 'a' })).status, 401);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'first', password: 'a' })).status, 401);
+  const first = await f.request('/api/auth/login', '', { username: 'First', password: 'a' });
+  assert.equal(first.status, 200);
+  const hash = (await readUsers()).find(u => u.username === 'First').passwordHash;
+  assert.match(hash, /^scrypt\$/);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'First', password: 'b' })).status, 401);
+  await f.restart();
+  assert.equal((await f.request('/api/auth/login', '', { username: 'First', password: 'a' })).status, 200);
+  assert.equal((await readUsers()).find(u => u.username === 'First').passwordHash, hash);
+});
+
+test('concurrent first logins cannot replace the winning password', async t => {
+  const f = await fixture(t), admin = await f.login('Admin');
+  await f.request('/api/admin/users', admin, { username: 'ClaimRace' });
+  const responses = await Promise.all(['a', 'b'].map(password => f.request('/api/auth/login', '', { username: 'ClaimRace', password })));
+  assert.deepEqual(responses.map(r => r.status).sort(), [200, 401]);
+  const winner = responses[0].status === 200 ? 'a' : 'b';
+  await f.restart();
+  assert.equal((await f.request('/api/auth/login', '', { username: 'ClaimRace', password: winner })).status, 200);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'ClaimRace', password: winner === 'a' ? 'b' : 'a' })).status, 401);
+});
+
+test('long alphanumeric passwords are not truncated and failed writes never claim accounts', async t => {
+  const f = await fixture(t), admin = await f.login('Admin');
+  await f.request('/api/admin/users', admin, { username: 'Long' });
+  const password = 'aB9'.repeat(2000);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Long', password })).status, 200);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Long', password: password + 'X' })).status, 401);
+  await f.request('/api/admin/users', admin, { username: 'DiskFailure' });
+  const file = path.join(f.root, 'isolation.json');
+  await fs.rename(file, file + '.saved');
+  await fs.mkdir(file);
+  const failed = await f.request('/api/auth/login', '', { username: 'DiskFailure', password: 'a' });
+  assert.equal(failed.status, 500);
+  assert.equal(failed.headers.get('set-cookie'), null);
+  await fs.rmdir(file);
+  await fs.rename(file + '.saved', file);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'DiskFailure', password: 'b' })).status, 200);
+  await f.restart();
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Long', password })).status, 200);
 });
 
 test('login, bad password, forged identity, CSRF and logout', async t => {
@@ -123,7 +177,7 @@ test('login, bad password, forged identity, CSRF and logout', async t => {
   for (const route of ['/api/state', '/events', '/api/sessions', '/api/uploads/test', '/api/downloads/test']) assert.equal((await f.request(route)).status, 401);
   assert.equal((await f.request('/api/auth/login', '', { username: 'Alice', password: 'wrong' })).status, 401);
   assert.equal((await f.request('/api/auth/login', '', { username: 'missing', password: 'wrong' })).status, 401);
-  assert.equal((await f.request('/api/auth/login', '', { username: 'Alice', password: 'test-password-only' }, { headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Alice', password: 'TestPasswordOnly' }, { headers: { origin: 'https://evil.example' } })).status, 403);
   assert.equal((await f.request('/api/state', 'neo_isolation=' + 'a'.repeat(64), undefined, { headers: { 'x-user-id': 'alice' } })).status, 401);
   const cookie = await f.login('Alice');
   assert.deepEqual((await (await f.request('/api/auth/status', cookie)).json()).user, { username: 'Alice', role: 'user' });
@@ -273,11 +327,11 @@ test('SSE is authenticated and closes on logout', async t => {
 
 test('login attempts are rate limited; secure subpath cookies are configurable', async t => {
   const f = await fixture(t, true, { secureCookie: true, cookiePath: '/neo/' });
-  const success = await f.request('/api/auth/login', '', { username: 'Alice', password: 'test-password-only' });
+  const success = await f.request('/api/auth/login', '', { username: 'Alice', password: 'TestPasswordOnly' });
   assert.match(success.headers.get('set-cookie'), /Path=\/neo\//);
   assert.match(success.headers.get('set-cookie'), /; Secure/);
   for (let i = 0; i < 10; i++) assert.equal((await f.request('/api/auth/login', '', { username: 'missing-' + i, password: 'wrong' })).status, 401);
-  assert.equal((await f.request('/api/auth/login', '', { username: 'Alice', password: 'test-password-only' })).status, 429);
+  assert.equal((await f.request('/api/auth/login', '', { username: 'Alice', password: 'TestPasswordOnly' })).status, 429);
 });
 
 test('built-in download mappings use user-owned storage, not globally configured paths', async t => {

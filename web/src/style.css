@@ -3656,7 +3656,7 @@ button.metric-chip {
   align-self: center;
 }
 .sessions-page .empty-state { min-height: 140px; display: grid; place-items: center; background: var(--panel-soft); }
-.admin-user-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 12px; margin-bottom: 18px; }
+.admin-user-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 18px; }
 .admin-user-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .admin-user-form input { width: 100%; min-height: 40px; padding: 8px 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); }
 .admin-user-error { margin-bottom: 14px !important; color: var(--danger, #c43150) !important; }

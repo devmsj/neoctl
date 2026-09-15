@@ -28,7 +28,7 @@ test('production startup embeds protected runtime without opening an unguarded c
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-isolation-startup-'));
   const port = await freePort(), upstream = await freePort();
   const configFile = path.join(root, 'isolation.json');
-  await fs.writeFile(configFile, JSON.stringify({ enabled: true, users: [{ username: 'Tester', passwordHash: await hashPassword('startup-test-only') }] }));
+  await fs.writeFile(configFile, JSON.stringify({ enabled: true, users: [{ username: 'Tester', passwordHash: await hashPassword('StartupTestOnly') }] }));
   const child = spawn(process.execPath, ['server.mjs', '--core', 'local'], {
     cwd: fileURLToPath(new URL('.', import.meta.url)), env: { ...process.env, NEO_EXECUTION_BACKEND: 'local', NEO_CORE_SOURCE: 'local', APP_HOST: '127.0.0.1', APP_PORT: String(port), NEO_RUNTIME_TARGET: `http://127.0.0.1:${upstream}`, NEO_WEB_DATA_DIR: root, NEO_WORKSPACE_ROOT: path.join(root, 'work'), NEO_ISOLATION_CONFIG: configFile, NEO_WEB_PLUGINS: 'none' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -49,7 +49,7 @@ test('production startup embeds protected runtime without opening an unguarded c
   assert.equal((await fetch(base)).status, 200);
   assert.equal((await fetch(base + '/api/state')).status, 401);
   assert.equal(await listening(upstream), false);
-  const response = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'Tester', password: 'startup-test-only' }) });
+  const response = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'Tester', password: 'StartupTestOnly' }) });
   assert.equal(response.status, 200);
   const cookie = response.headers.get('set-cookie').split(';')[0];
   const memory = await (await fetch(base + '/api/memory', { headers: { cookie } })).json();

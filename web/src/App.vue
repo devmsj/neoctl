@@ -339,7 +339,6 @@ const input = ref('')
 const sessionSearch = ref('')
 const sessionPage = ref(1)
 const adminUsername = ref('')
-const adminPassword = ref('')
 const theme = ref(resolveInitialTheme())
 const composer = ref(null)
 const fileInput = ref(null)
@@ -1878,10 +1877,10 @@ async function createManagedUser() {
   state.adminUserBusy = true
   state.adminUserError = ''
   try {
-    const res = await appFetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: adminUsername.value, password: adminPassword.value }) })
+    const res = await appFetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: adminUsername.value }) })
     const body = await res.json().catch(() => ({}))
     if (!res.ok || body?.error) throw requestError(body, res.status)
-    adminUsername.value = ''; adminPassword.value = ''
+    adminUsername.value = ''
     notify('普通用户已创建')
     await openUserManagement()
   } catch (error) {
@@ -5078,7 +5077,6 @@ function createMobileSession() {
           </div>
           <form class="admin-user-form" @submit.prevent="createManagedUser">
             <label>用户名<input v-model="adminUsername" maxlength="100" autocomplete="off" required /></label>
-            <label>密码<input v-model="adminPassword" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required /></label>
             <button class="primary" :disabled="state.adminUserBusy">创建普通用户</button>
           </form>
           <p v-if="state.adminUserError" class="admin-user-error" role="alert">{{ state.adminUserError }}</p>

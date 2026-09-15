@@ -17,14 +17,14 @@ neow
 
 默认关闭，仅通过文件配置。配置文件为用户数据目录下的 `isolation.json`，或由 `NEO_ISOLATION_CONFIG` 指定绝对路径；指定文件缺失或格式错误时拒绝启动。
 
-在 `web` 目录执行，交互输入密码，不写入命令历史：
+在 `web` 目录执行。超管交互设密，普通用户仅分配用户名：
 
 ```bash
 node scripts/isolation-user.mjs /absolute/path/isolation.json admin admin
 node scripts/isolation-user.mjs /absolute/path/isolation.json alice user
 ```
 
-脚本以唯一用户名创建或更新用户并保存 scrypt 哈希。用户名同时用于数据目录，不应改名或复用。编辑文件：
+普通用户首次登录输入的密码保存为后续密码，仅保存 scrypt 哈希。新密码至少 1 位，仅允许英文字母和数字，不设业务长度上限。已有密码保持有效。用户名同时用于数据目录，不应改名或复用。编辑文件：
 
 ```json
 {
@@ -35,7 +35,7 @@ node scripts/isolation-user.mjs /absolute/path/isolation.json alice user
   "retiredUsernames": [],
   "users": [
     { "username": "admin", "role": "admin", "passwordHash": "保留脚本生成的哈希" },
-    { "username": "alice", "role": "user", "passwordHash": "保留脚本生成的哈希" }
+    { "username": "alice", "role": "user" }
   ]
 }
 ```

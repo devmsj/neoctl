@@ -72,7 +72,7 @@ onBeforeUnmount(() => {
             <i class="field-line" aria-hidden="true"></i>
           </div>
           <div class="icon-field">
-            <input id="auth-password" v-model="password" aria-label="密码" name="password" :type="passwordVisible ? 'text' : 'password'" autocomplete="current-password" maxlength="1024" enterkeyhint="go" required :aria-invalid="!!error" :aria-describedby="error ? 'auth-error' : undefined" />
+            <input id="auth-password" v-model="password" aria-label="密码" name="password" :type="passwordVisible ? 'text' : 'password'" autocomplete="current-password" enterkeyhint="go" required :aria-invalid="!!error" :aria-describedby="error ? 'auth-error' : undefined" />
             <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></svg>
             <i class="field-line" aria-hidden="true"></i>
             <button class="password-toggle" type="button" :aria-label="passwordVisible ? '隐藏密码' : '显示密码'" :aria-pressed="passwordVisible" @click="passwordVisible = !passwordVisible">

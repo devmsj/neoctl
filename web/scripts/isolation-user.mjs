@@ -47,8 +47,10 @@ if (config.users.some(user => user.id !== undefined && user.id !== user.username
 if (config.retiredUserIds?.length) throw new Error('请先将 retiredUserIds 迁移为 retiredUsernames');
 if (config.retiredUsernames.some(value => usernameKey(value) === key)) throw new Error('已删除的用户名不可复用');
 const existing = config.users.find(user => usernameKey(user.username) === key);
-const passwordHash = await hashPassword(await readPassword());
-const next = { username, passwordHash, role: role || existing?.role || 'user' };
+const nextRole = role || existing?.role || 'user';
+const next = { username, role: nextRole };
+if (nextRole === 'admin') next.passwordHash = await hashPassword(await readPassword());
+else if (existing?.passwordHash) next.passwordHash = existing.passwordHash;
 const users = config.users.map(user => {
   const { id: _oldId, ...account } = user;
   return account;
