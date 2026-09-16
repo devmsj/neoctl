@@ -1,290 +1,62 @@
-# maker
+# Neo Web
 
-Web 仅提供普通本地运行时与可选隔离模式；不再包含设备注册、远程心跳、配置下发、会话上报或控制端专用查看器。模型配置仍通过原有配置页与 `/api/login` 保存，聊天和隔离账户功能保持不变。旧控制功能的用户数据不会自动删除。
+基于 Vue 3 和 Vite 的浏览器工作台，使用 Neo Engine 处理对话和工具调用。提供会话管理、图片上传、运行状态查看和插件功能。
 
-一个 Render 风格的 Vue 3 + Vite 单页应用，面向设计人员和工作流用户封装 `neoctl` 本地 AI Agent 运行时。
+## 安装使用
 
-## 全局安装
+需要 Node.js 20+。
 
-```bash
+```sh
 npm install -g neoctl-web
 neow
 ```
 
-`neow` 会启动内置核心、Web 后台和已构建的 Vue 页面；默认使用 `5173` 与 `3101`，端口被占用时自动顺延。运行 `neow --help` 查看全部选项。
+`neow` 自动打开浏览器，默认地址为 `http://127.0.0.1:5173`，端口占用时自动顺延。在页面中填写模型 API 地址、密钥和模型名称即可开始对话。
 
-当前版本目标：先复刻 `neo web` 的能力；绘图工具等待后续 `neoctl` 更新后再接入。
+## 源码开发
 
-## 隔离模式
+在仓库根目录执行：
 
-默认关闭，仅通过文件配置。配置文件为用户数据目录下的 `isolation.json`，或由 `NEO_ISOLATION_CONFIG` 指定绝对路径；指定文件缺失或格式错误时拒绝启动。
-
-在 `web` 目录执行。超管交互设密，普通用户仅分配用户名：
-
-```bash
-node scripts/isolation-user.mjs /absolute/path/isolation.json admin admin
-node scripts/isolation-user.mjs /absolute/path/isolation.json alice user
+```sh
+npm ci --prefix engine
+npm ci --prefix web
+npm --prefix web run dev
 ```
 
-普通用户首次登录输入的密码保存为后续密码，仅保存 scrypt 哈希。新密码至少 1 位，仅允许英文字母和数字，不设业务长度上限。已有密码保持有效。用户名同时用于数据目录，不应改名或复用。编辑文件：
+打开 `http://localhost:5173`。`dev` 会构建并使用本地 Engine；`dev:package` 改用 npm 安装的核心。
 
-```json
-{
-  "enabled": true,
-  "secureCookie": true,
-  "cookiePath": "/neo/",
-  "sessionHours": 12,
-  "retiredUsernames": [],
-  "users": [
-    { "username": "admin", "role": "admin", "passwordHash": "保留脚本生成的哈希" },
-    { "username": "alice", "role": "user" }
-  ]
-}
-```
+## 生产启动
 
-本地 HTTP 使用 `secureCookie: false`、`cookiePath: "/"`。HTTPS 部署使用 `secureCookie: true`，反向代理保留原始 `Host`。修改配置或账号后重启 Web；重启会清除全部登录态。关闭时改为 `enabled: false`，无需前端操作。
+在 `web/` 目录执行：
 
-- 后台按用户分组会话，列表、恢复、删除、SSE 和详情均校验归属；不向新用户分配原有公共会话。
-- 超管可在页面创建、删除普通用户并读取全部用户会话。超管查看会话时前端隐藏输入、新建和删除入口；底层会话接口不额外限制。删除账号不删除历史数据，用户名不可复用。
-- 会话、上传及内置插件记录保存在 `isolated-users/<用户名>/`，工作目录位于 `workspaces/users/<用户名>/`。旧模式数据不迁移、不删除。
-- 登录前不创建用户运行时；开启时直接嵌入运行时路由，不另开无认证 core HTTP 端口。
-- 超管显示完整模型配置页：模型、CPA、工具、插件、系统提示词。模型和工具保存后同步全部用户；插件按原逻辑重启生效，系统提示词按原逻辑在后续请求生效。
-- 普通用户不显示模型配置、提示词管理，配置接口拒绝访问。所有用户显示服务端内存，有有效额度时显示 CPA 额度卡片。
-- Cookie 使用 HttpOnly、SameSite=Strict、过期时间；登录有限流，退出或过期关闭对应 SSE。凭据文件不放工程公开目录或挂进工作容器。
-- 此处隔离的是 Web 账号和会话访问，不是 OS 沙箱。唯一 root 工作容器仍共享文件与进程；恶意 Agent 的跨用户文件访问需要额外执行层隔离。本地执行同样继承运行服务的系统权限。
-
-源码部署先运行 `npm --prefix ../engine run build`，生产页面运行 `npm run build`。`npm run dev` 和 `server.mjs` 均支持该配置。第三方插件需自行遵守传入的用户专属 `appDataDir`，不要使用共享数据目录。
-
-## 开发启动
-
-```bash
-npm run dev
-```
-
-该命令会同时启动：
-
-- Neo 运行时：`http://127.0.0.1:3101`（仅本机）
-- Vue 单页应用：`http://0.0.0.0:5173`（本机及局域网）
-
-局域网设备可通过 `http://<本机局域网 IP>:5173` 访问。Windows 防火墙需要允许本地子网访问 TCP 5173；不要将该端口直接映射到公网，因为应用内 Agent 具备文件读写和命令执行能力。若只允许本机访问，可设置 `VITE_HOST=127.0.0.1`。
-
-每个新建对话会在用户数据目录的 `workspaces/YYMMDDHHMMSS` 下创建独立工作目录，不会向启动 `neow` 的当前目录写入数据。默认用户数据目录遵循各平台约定：
-
-- Windows：`%LOCALAPPDATA%\neoctl-web`
-- macOS：`~/Library/Application Support/neoctl-web`
-- Linux：`${XDG_DATA_HOME:-~/.local/share}/neoctl-web`
-
-可通过 `NEO_WEB_DATA_DIR` 覆盖整个数据目录，或通过 `NEO_WORKSPACE_ROOT` 单独覆盖 workspace 根目录；会话恢复时会自动回到该会话原有的工作目录。
-
-同一个 `sessionId` 只保留一个运行时。多个浏览器标签页或用户打开同一会话时会共享实时输出和输入队列，不会各自启动一份并发 Agent。会话运行时在无人连接且没有前台或后台任务后自动回收。
-
-可通过以下环境变量限制常驻内存和旁观连接：
-
-```env
-# 空闲运行时回收时间，默认 15 分钟，最小 60 秒
-NEO_RUNTIME_IDLE_MS=900000
-
-# 最多保留的空闲 session 运行时，默认 64；活跃运行时不会被强制驱逐
-NEO_RUNTIME_MAX_SESSIONS=64
-
-# 每个 session 最多同时连接的 SSE 客户端，默认 32
-NEO_SESSION_MAX_SUBSCRIBERS=32
-```
-
-右侧栏会显示 Neo 服务进程的内存使用趋势。默认每分钟采样一次，接口单次最多返回最近 60 个点；落盘数据默认最多保留 1440 个点且不超过 256 KiB，并原子写入用户数据目录的 `memory-monitor.json`。可通过 `NEO_MEMORY_MAX_PERSISTED_SAMPLES` 和 `NEO_MEMORY_MAX_PERSISTED_BYTES` 进一步收紧限制；该功能仅观测和展示，不会自动回收会话或重启进程。
-
-```env
-# 可选：内存采样间隔与落盘保留窗口（毫秒）
-NEO_MEMORY_SAMPLE_MS=60000
-NEO_MEMORY_RETENTION_MS=86400000
-```
-
-模型配置页可填写 CPA 管理地址和密码；配置成功后，右侧栏显示 Codex 凭据的周额度。配置默认保存在用户数据目录的 `cpa-config.json`，也可通过 `NEO_CPA_CONFIG_FILE` 指定路径。
-
-Vite 会把以下路径代理到 Neo 运行时，确保本应用使用与 `neo web` 相同的后端能力：
-
-- `/events`：SSE 流式同步
-- `/api/state`：运行时状态
-- `/api/runtime-context`：当前 Agent 的完整系统提示词、上下文和工具协议快照
-- `/api/submit`：提交用户消息和附件
-- `/api/interrupt`：中断当前任务
-- `/api/sessions/*`：会话列表、恢复、新建、删除
-- `/api/login`：模型供应商配置
-- `/vendor/*`：neo web 运行时静态资源
-
-`expose_downloads` 可暴露任意现有绝对文件路径，不受当前工作目录限制；下载链接无自动过期，仅持久保存原始路径映射、不复制文件；原文件移动、删除或不可读后链接失效。详见 `plugins/downloads/README.md`。独立视频播放插件见 `plugins/video-share/README.md`。
-
-如果只想启动纯前端 Vite：
-
-```bash
-npm run dev:ui
-```
-
-## 构建
-
-```bash
-npm run build
-```
-
-## 生产部署
-
-请使用 Node.js 20 或更高版本。
-
-```bash
+```sh
 npm ci
 npm start
 ```
 
-`npm start` 会先自动执行 `npm run build`，再启动 `server.mjs`。请不要直接复用旧 `dist` 目录或只执行 `node server.mjs`，否则部署版可能继续运行旧的前端构建产物。
+`npm start` 会先构建前端，再启动服务，默认监听 `0.0.0.0:5173`，使用 npm 核心。已有本地 Engine 构建时，可运行 `npm start -- --core local`。
 
-WSL/PM2 服务器可使用 `bin/` 下的运维脚本：
+常用环境变量：
 
-```bash
-./bin/deploy.sh   # 拉取、安装、构建并重启
-./bin/start.sh    # 启动生产服务
-./bin/stop.sh     # 停止服务
-./bin/restart.sh  # 重启服务
-./bin/status.sh   # 查看进程与 HTTP 健康状态
+| 变量 | 用途 |
+| --- | --- |
+| `APP_HOST` / `APP_PORT` | 生产服务监听地址和端口 |
+| `VITE_HOST` / `VITE_PORT` | 开发服务监听地址和端口 |
+| `NEO_WEB_DATA_DIR` | Web 数据目录 |
+| `NEO_WORKSPACE_ROOT` | 会话工作目录的根路径 |
+
+默认 Web 数据目录为 Windows 的 `%LOCALAPPDATA%\neoctl-web`、macOS 的 `~/Library/Application Support/neoctl-web`、Linux 的 `${XDG_DATA_HOME:-~/.local/share}/neoctl-web`。
+
+## 开发命令
+
+以下命令在 `web/` 目录执行：
+
+```sh
+npm run build          # 构建前端
+npm test               # 非浏览器测试，需先构建本地 Engine
+npm run test:server    # 服务启动与模型配置回归
 ```
 
-WSL 开机入口为 `bin/wsl-boot.sh`，它会恢复生产进程，并按当前 WSL IP 刷新 Windows 的 `22` 和 `5173` 端口转发。
+页面源码在 `src/`，服务入口为 `server.mjs`，插件在 `plugins/`，测试在 `tests/`。
 
-## 单页应用能力
-
-已实现：
-
-- 用户与模型聊天
-- 复用 `neoctl` Web API/SSE 协议
-- 流式助手输出
-- 推理过程、工具、系统、用户消息展示
-- 工具调用输出折叠/展开
-- 状态栏：模型、上下文占用、输入/输出 token、运行阶段
-- 后台任务摘要
-- 会话列表、恢复、新建、删除
-- 模型登录/配置表单
-- 图片粘贴附件，沿用 neo web 的 `[img#N]` 协议
-- Render.com 风格的侧边栏、顶部栏、卡片和工作台布局
-
-### 运行上下文订阅协议
-
-浏览器连接 `/events` 后，除会话用的 `sync` / `delta` 事件外，还会收到 `runtime.context` 事件。事件数据为 JSON，当前 `protocolVersion` 为 `1`，主要字段如下：
-
-```json
-{
-  "protocolVersion": 1,
-  "revision": 1,
-  "sessionId": "...",
-  "model": "gpt-5.6-sol",
-  "prompt": {
-    "systemPrompt": "合成后的完整系统提示词",
-    "sections": [
-      { "name": "Agent Scaffold", "content": "...", "cacheStable": true, "chars": 123 }
-    ],
-    "appPrompt": {},
-    "userContext": {},
-    "systemContext": {}
-  },
-  "tools": [
-    { "name": "read", "description": "...", "inputSchema": {}, "strict": false }
-  ],
-  "capabilities": {
-    "commands": [], "agents": [], "skills": [], "plugins": []
-  }
-}
-```
-
-首次订阅、切换/新建会话、修改模型、保存模型配置或切换应用提示词时会发布新 revision。客户端读取速度较慢时，服务端会在 SSE drain 后补发最新上下文，不会用普通 `sync` 事件替代。`GET /api/runtime-context` 提供相同结构的即时快照，可用于首次加载或断线恢复。
-
-### Web 插件
-
-下载和小红书编辑器以目录资源插件提供，不再由 core 或 Web 后台写死。插件协议由 core 的 `neo-plugin/v1` 定义，core 负责读取清单、动态导入入口、校验工具/提示词/HTTP 路由能力；Web 后台只指定插件目录并托管已加载资源。插件按 id 固定排序。
-
-默认扫描 `plugins/*/neo-plugin.json`。每个插件目录结构如下：
-
-```text
-plugins/example/
-  neo-plugin.json
-  index.mjs
-```
-
-```json
-{
-  "protocol": "neo-plugin/v1",
-  "id": "example",
-  "name": "Example",
-  "version": "1.0.0",
-  "entry": "index.mjs",
-  "defaultEnabled": true
-}
-```
-
-入口需导出 `createPlugin(context)` 或默认工厂函数，并返回 `{ tools, promptSections, route }` 中的一项或多项。`NEO_WEB_PLUGIN_DIR` 可指定其他插件根目录，`NEO_WEB_PLUGIN_DATA_DIR` 可指定传给插件的通用数据目录；插件专属配置由插件自行从 `context.env` 读取。
-
-- 全局开关位于“模型配置”，保存到用户数据目录的 `plugins.json`，重启后生效。
-- 会话开关位于“运行上下文 → 插件”，支持跟随全局、启用和关闭，从下一轮请求生效并随会话持久化。
-- `NEO_WEB_PLUGINS` 可作为部署级强制白名单；设置后全局界面只读。
-
-`NEO_WEB_PLUGINS` 支持以下值：
-
-```bash
-# 默认启用所有标记为默认启用的插件
-npm run dev
-
-# 关闭全部 Web 插件
-NEO_WEB_PLUGINS=none npm run dev
-
-# 仅启用指定插件
-NEO_WEB_PLUGINS=downloads,xhs-artifact npm run dev
-```
-
-仓库自带的插件资源为 `downloads` 和 `xhs-artifact`。新增或移除符合协议的插件目录后重启后台即可更新目录。`GET /api/plugins` 返回全局状态，`GET/POST /api/session-plugins` 管理当前会话状态。
-
-### 消息排队
-
-模型运行中继续发送的消息会自动排队，多次发送按换行合并为下一条消息。当前轮结束后自动发送；排队内容可以取消，也可以打断当前回答后立即发送。
-
-暂未实现：
-
-- 绘图工具/画布能力。等待 `neoctl` 后续提供绘图运行时后再接。
-
-## neoctl 集成
-
-本项目已安装 npm 依赖：
-
-```bash
-neoctl@^0.2.3
-```
-
-可用脚本：
-
-```bash
-npm run neo:help   # 查看 neoctl 命令帮助
-npm run neo        # 启动 neo 命令行 REPL
-npm run neo:web    # 启动 neoctl 原生 Web UI，默认 127.0.0.1:3000
-npm run neo:login  # 交互式配置模型供应商
-```
-
-也可以直接使用：
-
-```bash
-npx neo -help
-npx neo -web --port 3001
-```
-
-## 配置
-
-`neoctl` 会读取当前目录 `.env`、用户级配置或 `NEO_ENV_FILE` 指定的配置文件。
-
-项目提供 `.env.neo.example` 作为示例。需要项目级配置时：
-
-```bash
-copy .env.neo.example .env
-```
-
-然后编辑 `.env` 中的模型供应商、API Key、Base URL 和模型名，也可以在单页应用的“模型配置”页面中配置。
-
-> 注意：`neoctl` 是 Node.js/CLI 运行时依赖，包含文件系统、命令执行、终端/本地 Web UI 等能力，不应直接 import 到 Vue 浏览器端组件。本项目通过“本地运行时 + Vite 代理”的方式集成。
-
-## Tests
-
-All web tests and fixtures live in [`tests/`](tests/README.md). From the repository root, build Engine with `npm --prefix engine run build`, then run `npm --prefix web test` for the explicit non-browser suite. Browser regressions and the full observability gate are opt-in; see the tests README for commands and prerequisites.
+测试说明见 [tests/README.md](tests/README.md)；多用户配置见 [isolation.example.json](isolation.example.json) 和 [用户管理脚本](scripts/isolation-user.mjs)。
