@@ -457,7 +457,7 @@ async function main(): Promise<void> {
     webSearchPromptUsesOpenAIDefault: searchToolPrompt.includes("OpenAI Responses web search is the default provider"),
     webSearchPromptFallsBackToExa: searchToolPrompt.includes("Exa") && searchToolPrompt.includes("unavailable") && searchToolPrompt.includes("partially unavailable"),
     imageCreateOnlyToolName: imageTool.name === "image_create" && !imageToolPrompt.includes("draw_image") && !imageToolPrompt.includes("generate_image") && !imageToolPrompt.includes("image2"),
-    imageCreateDefaultsToGptImage2: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2" && imageToolPrompt.includes("gpt-image-2"),
+    imageCreateDefaultsToGptImage25: imageDefaultValidation?.ok === true && imageDefaultValidation.value.model === "gpt-image-2.5-sunburst" && imageDefaultValidation.value.quality === "auto" && imageToolPrompt.includes("gpt-image-2"),
     imageCreateDefaultTimeoutIsSixMinutes: DEFAULT_IMAGE_TIMEOUT_MS === 360_000,
     imageCreateRejectsGptImage1: imageLegacyModelValidation?.ok === false && imageLegacyModelValidation.message.includes("gpt-image-2") && !imageToolPrompt.includes("gpt-image-1"),
     imageCreateEditAcceptsStableImageId:

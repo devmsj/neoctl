@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { imageResultMetadata, type ImageResultMetadata } from "./image-result-metadata.js";
 import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
 import { handlePromptConfigRequest } from "./prompt-config-protocol.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
@@ -172,6 +173,7 @@ function sumUsageTokens(left: number | undefined, right: number | undefined): nu
 
 interface UiLineImage {
   src?: string;
+  originalSrc?: string;
   imageId?: string;
   label?: string;
   mimeType: string;
@@ -283,6 +285,7 @@ interface UiLine {
   live?: boolean;
   collapsible?: boolean;
   image?: UiLineImage;
+  imageResult?: ImageResultMetadata;
   compaction?: UiCompactionReport;
 }
 
@@ -3193,6 +3196,7 @@ function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, {
     text: block.label ?? `[image ${block.mimeType}]`,
     image: {
       src: resolution.available ? (block.imageId ? `/api/images/by-id/${encodeURIComponent(block.imageId)}` : `/api/images/${encodeURIComponent(messageId)}/${blockIndex}`) : undefined,
+      originalSrc: resolution.available ? (block.imageId ? `/api/images/by-id/${encodeURIComponent(block.imageId)}` : `/api/images/${encodeURIComponent(messageId)}/${blockIndex}`) : undefined,
       imageId: block.imageId,
       label: block.label,
       mimeType: block.mimeType,
@@ -3329,6 +3333,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean, pr
     title: presentation?.title ?? toolTitle(toolName, "finished"),
     bodyTitle: presentation?.bodyTitle ?? formatted.bodyTitle,
     titleStatus: ok ? "success" : "failure",
+    imageResult: toolName === "image_create" ? imageResultMetadata(output) : undefined,
     text: presentation?.text ?? formatted.text,
     toolDisplay: resources?.length ? undefined : buildToolResultDisplay(toolName, output, ok),
     format: formatted.format,
@@ -3809,7 +3814,16 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
     : undefined;
   const lines = [`${mode === "edit" ? "edited" : "generated"} ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
-  if (details.length > 0) lines.push(details.join(" · "));
+  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join(" · ")}`);
+  if (isRecord(output.actual)) {
+    lines.push(`upstream-reported quality: ${String(output.actual.quality ?? "unreported")}`);
+    if (Array.isArray(output.images)) for (const image of output.images.filter(isRecord)) {
+      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height} · ${String(image.mimeType ?? "")}`);
+    }
+  }
+  if (Array.isArray(output.warnings)) for (const warning of output.warnings.filter(isRecord)) {
+    lines.push(`warning [${String(warning.code ?? "IMAGE_WARNING")}]: ${String(warning.message ?? "")}`);
+  }
   if (sourceImages !== undefined) lines.push(`source images: ${sourceImages}`);
   const duration = imageGenerationDuration(output);
   if (duration !== undefined) lines.push(`duration: ${duration}ms`);

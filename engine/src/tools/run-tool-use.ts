@@ -1,3 +1,4 @@
+import { DEFAULT_OPENAI_IMAGE_MODEL, imageValidationError } from "./builtins/image-capabilities.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
 import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
 import { validateJsonSchema } from "./schema.js";
@@ -112,6 +113,10 @@ function parseAndValidateInput<TInput>(
     const hint = tool.metadata.shouldDefer
       ? ` ${buildSchemaNotSentHint(tool.name)}`
       : "";
+    if (tool.name === "image_create") {
+      const model = input && typeof input === "object" && "model" in input && typeof input.model === "string" ? input.model : String(tool.inputSchema.properties?.model?.default || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_OPENAI_IMAGE_MODEL);
+      return { ok: false, message: imageValidationError(model, "input", schemaResult.message) };
+    }
     return { ok: false, message: `${schemaResult.message}.${hint}`.trim() };
   }
 

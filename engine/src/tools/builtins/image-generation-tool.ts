@@ -8,14 +8,17 @@ import { resolveImageBlockDataSync } from "../../core/image-storage.js";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
+import { DEFAULT_OPENAI_IMAGE_MODEL, IMAGE_INPUT_SCHEMA, IMAGE_SELECTION_GUIDE, normalizeImageInput, imageInputWarnings, imageValidationError, type ImageWarning } from "./image-capabilities.js";
+import { decodeImageBase64, inspectImageBytes, outputWarnings, type ImageByteMetadata } from "./image-output-verification.js";
+export { DEFAULT_OPENAI_IMAGE_MODEL } from "./image-capabilities.js";
+export type { OpenAIImageModel } from "./image-capabilities.js";
 
-export type ImageGenerationSize = "auto" | "1024x1024" | "1536x1024" | "1024x1536";
-export type ImageGenerationQuality = "auto" | "low" | "medium" | "high";
+export type ImageGenerationSize = "auto" | `${number}x${number}`;
+export type ImageGenerationQuality = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ImageGenerationFormat = "png" | "jpeg" | "webp";
 export type OpenAIImageGenerationResponseFormat = ImageGenerationFormat | "jpg";
 export type ImageGenerationBackground = "auto" | "transparent" | "opaque";
 export type ImageGenerationModeration = "auto" | "low";
-export type OpenAIImageModel = "gpt-image-2";
 export type ImageToolMode = "generate" | "edit";
 
 export interface ImageEditInputImage {
@@ -56,13 +59,12 @@ export interface ImageGenerationToolInput {
   useLatestImage?: boolean;
   /** Directory where generated image files should be saved. Defaults to a session/agent image directory. */
   outputDir?: string;
-  /** Exact file path for a single generated image. For multiple images, outputDir is used instead. */
+  /** Single-image path hint; semanticName and verified format determine the filename. Requires n=1. */
   outputPath?: string;
 }
 
-export interface ImageGenerationResult {
+export interface ImageGenerationResult extends ImageByteMetadata {
   index: number;
-  mimeType: string;
   base64: string;
   dataUrl: string;
   revisedPrompt?: string;
@@ -106,6 +108,11 @@ export interface ImageGenerationToolOutput extends ImageGenerationToolTiming {
   sourceImages?: number;
   imageRefs?: string[];
   images: ImageGenerationResult[];
+  /** Explicit request, never confused with actual image properties. */
+  requested: Record<string, unknown>;
+  /** Upstream report, not independent proof of model/compute. */
+  actual: Record<string, unknown>;
+  warnings: ImageWarning[];
   raw?: unknown;
 }
 
@@ -117,12 +124,8 @@ export interface CreateOpenAIImageGenerationToolOptions {
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
-export const DEFAULT_OPENAI_IMAGE_MODEL: OpenAIImageModel = "gpt-image-2";
 const DEFAULT_IMAGE_MODEL = DEFAULT_OPENAI_IMAGE_MODEL;
 export const DEFAULT_IMAGE_TIMEOUT_MS = 360_000;
-const MAX_IMAGES = 4;
-const SUPPORTED_IMAGE_MODELS: readonly OpenAIImageModel[] = [DEFAULT_OPENAI_IMAGE_MODEL];
-const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
 
 /**
  * OpenAI-only image generation tool backed by the Images API.
@@ -132,32 +135,20 @@ const SUPPORTED_MODEL_LIST = SUPPORTED_IMAGE_MODELS.join(", ");
  * model that image generation is unavailable in that configuration.
  */
 export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenerationToolOptions = {}): Tool<ImageGenerationToolInput> {
+  const normalize = (value: unknown): ImageGenerationToolInput => {
+    const input = normalizeImageInput(value, options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim()) as unknown as ImageGenerationToolInput;
+    const slug = semanticNameSlug(input.semanticName);
+    if (!slug) throw new Error(imageValidationError(input.model!, "semanticName", "must be a meaningful non-generic Chinese or English name"));
+    for (const [index, source] of [input.image, ...(input.images ?? [])].filter((v): v is ImageEditInputImage => v !== undefined).entries()) {
+      try { resolveInputImage(source, index); }
+      catch (error) { throw new Error(imageValidationError(input.model!, `images[${index}]`, error instanceof Error ? error.message : String(error))); }
+    }
+    return { ...input, semanticName: slug };
+  };
   return {
     name: "image_create",
-    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image_create. Defaults to model ${DEFAULT_IMAGE_MODEL}. Use mode=generate for new images and mode=edit to modify existing images. Edit mode accepts explicit image/image(s), imageRefs for prior conversation images, or falls back to the latest prior image. Return generated/edited image data URLs in the tool result for the UI to display. This tool is available only when MODEL_PROVIDER=openai; with other providers, state that this model does not have a drawing/editing tool.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["generate", "edit"], description: "Operation mode. generate creates a new image; edit modifies existing image(s). Defaults to generate." },
-        semanticName: { type: "string", description: "Required short semantic image name used as the conversation label and default output filename. Chinese and English names are supported, e.g. 下班后30分钟重启仪式, realistic-blue-kitten, hero-banner. Must describe the image meaning; do not use generic names like image, 图片, output, result, gen, or img." },
-        prompt: { type: "string", description: "Detailed image prompt/instruction. For edit mode, describe exactly how to modify the source image(s)." },
-        model: { type: "string", enum: [...SUPPORTED_IMAGE_MODELS], description: `Optional OpenAI Images API model. Defaults to OPENAI_IMAGE_MODEL or ${DEFAULT_IMAGE_MODEL}. Supported by this tool: ${SUPPORTED_MODEL_LIST}.` },
-        size: { type: "string", enum: ["auto", "1024x1024", "1536x1024", "1024x1536"], description: `${DEFAULT_IMAGE_MODEL} output image size. Supported values: auto, 1024x1024, 1536x1024, 1024x1536. Defaults to auto.` },
-        quality: { type: "string", enum: ["auto", "low", "medium", "high"], description: `${DEFAULT_IMAGE_MODEL} rendering quality. Supported values: auto, low, medium, high. Defaults to auto.` },
-        outputFormat: { type: "string", enum: ["png", "jpeg", "webp"], description: `${DEFAULT_IMAGE_MODEL} returned image format. Supported values: png, jpeg, webp. Defaults to png.` },
-        background: { type: "string", enum: ["auto", "transparent", "opaque"], description: `${DEFAULT_IMAGE_MODEL} background handling. Supported values: auto, transparent, opaque. Defaults to auto.` },
-        moderation: { type: "string", enum: ["auto", "low"], description: `${DEFAULT_IMAGE_MODEL} moderation setting. Supported values: auto, low. Defaults to auto.` },
-        n: { type: "integer", description: `${DEFAULT_IMAGE_MODEL} number of output images, 1-${MAX_IMAGES}. Defaults to 1.` },
-        image: { type: "object", description: "Single source image for mode=edit. Provide base64/data/dataUrl plus mimeType when not using a dataUrl.", additionalProperties: true },
-        images: { type: "array", description: "Multiple source images for mode=edit.", items: { type: "object", additionalProperties: true } },
-        imageRefs: { type: "array", description: "Labels of prior conversation image blocks to edit, e.g. gen#1, Generated image 1, or [img#1].", items: { type: "string" } },
-        useLatestImage: { type: "boolean", description: "In edit mode, use the latest prior conversation image when no explicit source image or imageRefs are provided. Defaults to true." },
-        outputDir: { type: "string", description: "Optional directory where generated image files should be saved. Defaults to the current session/agent image directory." },
-        outputPath: { type: "string", description: "Optional target directory/file hint for a single generated image. The final filename is derived from semanticName and adjusted to avoid collisions. For n > 1, use outputDir instead." },
-      },
-      required: ["semanticName", "prompt"],
-      additionalProperties: false,
-    },
+    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image_create. ${IMAGE_SELECTION_GUIDE} Use mode=generate for new images; mode=edit for changes to attached/prior images. Edit accepts image/images/imageRefs or falls back to the latest prior image. Valid but imperfect results succeed with structured warnings; invalid inputs fail with model, field, and correction guidance. Available only when MODEL_PROVIDER=openai.`,
+    inputSchema: { ...IMAGE_INPUT_SCHEMA, properties: { ...IMAGE_INPUT_SCHEMA.properties, model: { ...IMAGE_INPUT_SCHEMA.properties!.model, default: options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL } } },
     metadata: {
       readOnly: false,
       concurrent: true,
@@ -165,51 +156,25 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       maxResultSizeChars: 24000,
     },
     validate(input) {
-      const record = input as Partial<ImageGenerationToolInput>;
-      return {
-        mode: record.mode ?? "generate",
-        semanticName: record.semanticName ?? "",
-        prompt: record.prompt ?? "",
-        model: record.model,
-        size: record.size ?? "auto",
-        quality: record.quality ?? "auto",
-        outputFormat: record.outputFormat ?? "png",
-        background: record.background ?? "auto",
-        moderation: record.moderation ?? "auto",
-        n: record.n ?? 1,
-        image: record.image,
-        images: record.images,
-        imageRefs: record.imageRefs,
-        useLatestImage: record.useLatestImage ?? true,
-        outputDir: record.outputDir,
-        outputPath: record.outputPath,
-      };
+      // Full model-aware validation belongs in validateInput so callers get a structured failure.
+      return input as ImageGenerationToolInput;
     },
-    validateInput(input) {
-      const model = input.model?.trim() || options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL;
-      if (!isImageToolMode(input.mode)) return { ok: false, message: imageCreateValidationError(model, "mode", "must be generate or edit") };
-      const semanticSlug = semanticNameSlug(input.semanticName);
-      if (!semanticSlug) return { ok: false, message: imageCreateValidationError(model, "semanticName", "is required and must be a meaningful non-generic Chinese or English image name, e.g. 下班后30分钟重启仪式 or realistic-blue-kitten") };
-      if (!input.prompt.trim()) return { ok: false, message: imageCreateValidationError(model, "prompt", "cannot be empty") };
-      if (!isSupportedImageModel(model)) return { ok: false, message: imageCreateValidationError(model, "model", `is not supported by image_create. Supported OpenAI Images API models: ${SUPPORTED_MODEL_LIST}`) };
-      if (!isImageSize(input.size)) return { ok: false, message: imageCreateValidationError(model, "size", "must be auto, 1024x1024, 1536x1024, or 1024x1536") };
-      if (!isImageQuality(input.quality)) return { ok: false, message: imageCreateValidationError(model, "quality", "must be auto, low, medium, or high") };
-      if (!isImageFormat(input.outputFormat)) return { ok: false, message: imageCreateValidationError(model, "outputFormat", "must be png, jpeg, or webp") };
-      if (!isImageBackground(input.background)) return { ok: false, message: imageCreateValidationError(model, "background", "must be auto, transparent, or opaque") };
-      if (!isImageModeration(input.moderation)) return { ok: false, message: imageCreateValidationError(model, "moderation", "must be auto or low") };
-      const count = input.n ?? 1;
-      if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGES) return { ok: false, message: imageCreateValidationError(model, "n", `must be between 1 and ${MAX_IMAGES}`) };
-      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length === 0)) return { ok: false, message: imageCreateValidationError(model, "images", "must be a non-empty array when provided") };
-      if (input.imageRefs !== undefined && (!Array.isArray(input.imageRefs) || input.imageRefs.some((ref) => !ref.trim()))) return { ok: false, message: imageCreateValidationError(model, "imageRefs", "must contain non-empty strings") };
-      if (input.outputDir !== undefined && !input.outputDir.trim()) return { ok: false, message: imageCreateValidationError(model, "outputDir", "must be a non-empty string when provided") };
-      if (input.outputPath !== undefined && !input.outputPath.trim()) return { ok: false, message: imageCreateValidationError(model, "outputPath", "must be a non-empty string when provided") };
-      if (input.outputPath !== undefined && count > 1) return { ok: false, message: imageCreateValidationError(model, "outputPath", "can only be used when n is 1; use outputDir for multiple images") };
-      return { ok: true, value: { ...input, model, n: count, semanticName: semanticSlug } };
+    validateInput(input, context) {
+      try {
+        const normalized = normalize(input);
+        if (normalized.mode === "edit") validateEditSources(normalized, context.messages);
+        return { ok: true, value: normalized };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
     },
     isConcurrencySafe() {
       return true;
     },
     async call(input, context, callOptions): Promise<ToolResult> {
+      try { input = normalize(input); }
+      catch (error) { return { ok: false, output: { provider: "openai", error: error instanceof Error ? error.message : String(error) } }; }
+      const warnings = imageInputWarnings(input as unknown as Record<string, unknown>);
       const apiKey = resolveApiKey(options.apiKey);
       if (!apiKey) {
         return {
@@ -221,7 +186,6 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         };
       }
 
-      const baseUrl = stripTrailingSlash(options.baseUrl?.trim() || process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL);
       const model = input.model?.trim() || DEFAULT_IMAGE_MODEL;
       const timeoutMs = options.timeoutMs ?? parsePositiveNumber(process.env.OPENAI_IMAGE_TIMEOUT_MS) ?? parsePositiveNumber(process.env.MODEL_TIMEOUT_MS) ?? DEFAULT_IMAGE_TIMEOUT_MS;
 
@@ -229,7 +193,10 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       callOptions.onProgress?.({ toolName: "image_create", message: `${mode === "edit" ? "Editing" : "Generating"} image with OpenAI ${model}` });
       const startedAt = Date.now();
       try {
-        const editSources = mode === "edit" ? resolveImageEditSources(input, context.messages) : [];
+        const baseUrl = normalizeImageBaseUrl(options.baseUrl?.trim() || process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL);
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw new Error("Image timeoutMs must be positive and <=2147483647");
+        if (context.abortSignal?.aborted) throw new Error("Image request aborted before execution");
+        const editSources = mode === "edit" ? validateEditSources(input, context.messages) : [];
         if (mode === "edit" && editSources.length === 0) {
           throw new Error("image_create mode=edit requires a source image. Provide image/images/imageRefs, attach an image, or keep useLatestImage enabled with a prior image in the conversation.");
         }
@@ -249,11 +216,13 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
             signal: context.abortSignal,
             input: { ...input, model },
           });
-        const images = await persistGeneratedImages(
-          extractGeneratedImages(response, input.outputFormat ?? "png"),
-          input,
-          context,
-        );
+        const extracted = extractGeneratedImages(response, warnings);
+        if (!extracted.length) throw new Error(`OpenAI returned no usable image data. ${openAIErrorMessage(response) ?? "Expected data[].b64_json containing PNG/JPEG/WebP."}`);
+        warnings.push(...outputWarnings(input as unknown as Record<string, unknown>, response, extracted));
+        if (input.outputPath && path.extname(input.outputPath).toLowerCase() && path.extname(input.outputPath).toLowerCase() !== `.${extensionForMimeType(extracted[0]!.mimeType)}`) {
+          warnings.push({ code: "OUTPUT_EXTENSION_CORRECTED", field: "outputPath", message: "The filename extension follows actual image bytes, not the filename hint." });
+        }
+        const images = await persistGeneratedImages(extracted, input, context);
         const timing = imageGenerationTiming(startedAt);
         const output: ImageGenerationToolOutput = {
           ...timing,
@@ -270,6 +239,9 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           sourceImages: mode === "edit" ? editSources.length : undefined,
           imageRefs: mode === "edit" ? editSources.map((source) => formatSourceImageRef(source)).filter((label): label is string => Boolean(label)) : undefined,
           images,
+          requested: buildOpenAIImageRequestBody({ ...input, model }),
+          actual: { model: stringFrom(response.model) ?? null, quality: stringFrom(response.quality) ?? null, background: stringFrom(response.background) ?? null, returnedImages: images.length, images: images.map(({ width, height, mimeType, hasAlphaChannel, hasTransparentPixels }) => ({ width, height, mimeType, hasAlphaChannel, hasTransparentPixels })) },
+          warnings,
           raw: compactRawResponse(response),
         };
         return {
@@ -284,7 +256,9 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
           mode,
           model,
           prompt: input.prompt,
-          error: error instanceof Error ? error.message : String(error),
+          warnings,
+          requested: buildOpenAIImageRequestBody({ ...input, model }),
+          error: (error instanceof Error ? error.message : String(error)).split(apiKey).join("[REDACTED]"),
         };
         return {
           ok: false,
@@ -329,10 +303,11 @@ async function callOpenAIImageGeneration(options: OpenAIImageGenerationRequestOp
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal?.reason);
   const timeout = setTimeout(() => controller.abort(new Error(`Image generation request timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
-  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
 
   try {
-    const response = await fetch(`${options.baseUrl}/v1/images/generations`, {
+    const response = await fetch(`${options.baseUrl}/images/generations`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -345,7 +320,7 @@ async function callOpenAIImageGeneration(options: OpenAIImageGenerationRequestOp
 
     const text = await response.text();
     const body = text ? parseJsonObject(text) : {};
-    if (!response.ok) {
+    if (!response.ok || body.error) {
       throw new Error(`OpenAI image generation HTTP ${response.status}: ${openAIErrorMessage(body) ?? text.slice(0, 1000)}`);
     }
     return body;
@@ -359,7 +334,8 @@ async function callOpenAIImageEdit(options: OpenAIImageEditRequestOptions): Prom
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal?.reason);
   const timeout = setTimeout(() => controller.abort(new Error(`Image edit request timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
-  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
 
   try {
     const form = new FormData();
@@ -370,7 +346,7 @@ async function callOpenAIImageEdit(options: OpenAIImageEditRequestOptions): Prom
       if (value !== undefined) form.append(key, String(value));
     }
 
-    const response = await fetch(`${options.baseUrl}/v1/images/edits`, {
+    const response = await fetch(`${options.baseUrl}/images/edits`, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -382,7 +358,7 @@ async function callOpenAIImageEdit(options: OpenAIImageEditRequestOptions): Prom
 
     const text = await response.text();
     const body = text ? parseJsonObject(text) : {};
-    if (!response.ok) {
+    if (!response.ok || body.error) {
       throw new Error(`OpenAI image edit HTTP ${response.status}: ${openAIErrorMessage(body) ?? text.slice(0, 1000)}`);
     }
     return body;
@@ -400,8 +376,8 @@ function buildOpenAIImageRequestBody(input: ImageGenerationToolInput & { model: 
     size: input.size ?? "auto",
     quality: input.quality ?? "auto",
     output_format: input.outputFormat ?? "png",
-    background: input.background === "auto" ? undefined : input.background,
-    moderation: input.moderation === "auto" ? undefined : input.moderation,
+    background: input.background ?? "auto",
+    moderation: input.moderation ?? "auto",
   });
 }
 
@@ -419,6 +395,19 @@ function imageGenerationTiming(startedAt: number, finishedAt = Date.now()): Imag
   };
 }
 
+function validateEditSources(input: ImageGenerationToolInput, messages: readonly Message[] | undefined): ResolvedEditImage[] {
+  try {
+    const sources = resolveImageEditSources(input, messages);
+    if (!sources.length) throw new Error("requires a source image; provide image/images/imageRefs or a prior conversation image with useLatestImage=true");
+    if (sources.length > 16) throw new Error("maximum 16 edit sources");
+    for (const [index, source] of sources.entries()) {
+      const meta = inspectImageBytes(decodeImageBase64(source.base64));
+      if (meta.mimeType !== source.mimeType) throw new Error(`source ${index + 1} MIME does not match image bytes (${meta.mimeType})`);
+    }
+    return sources;
+  } catch (error) { throw new Error(imageValidationError(input.model!, "edit sources", error instanceof Error ? error.message : String(error))); }
+}
+
 function resolveImageEditSources(input: ImageGenerationToolInput, messages: readonly Message[] | undefined): ResolvedEditImage[] {
   const explicit = [input.image, ...(input.images ?? [])].filter((image): image is ImageEditInputImage => !!image);
   const fromInput = explicit.map((image, index) => resolveInputImage(image, index));
@@ -429,13 +418,18 @@ function resolveImageEditSources(input: ImageGenerationToolInput, messages: read
 }
 
 function resolveInputImage(image: ImageEditInputImage, index: number): ResolvedEditImage {
+  if ([image.dataUrl, image.base64, image.data].filter(v => v !== undefined).length !== 1) throw new Error("provide exactly one of base64, data, or dataUrl");
+  if (image.dataUrl !== undefined && !/^data:image\/(?:png|jpeg|webp);base64,/u.test(image.dataUrl)) throw new Error("dataUrl must be a PNG/JPEG/WebP base64 data URL");
   const parsed = parseImageData(image.dataUrl ?? image.base64 ?? image.data);
   const mimeType = image.mimeType?.trim() || parsed.mimeType;
   if (!parsed.base64) throw new Error(`image_create edit source image ${index + 1} is missing base64/data/dataUrl`);
   if (!mimeType) throw new Error(`image_create edit source image ${index + 1} is missing mimeType`);
+  const bytes = decodeImageBase64(parsed.base64);
+  const actual = inspectImageBytes(bytes);
+  if (mimeType !== actual.mimeType || (parsed.mimeType && parsed.mimeType !== actual.mimeType)) throw new Error(`mimeType must match actual bytes (${actual.mimeType})`);
   return {
     index,
-    base64: normalizeBase64ImageData(parsed.base64),
+    base64: bytes.toString("base64"),
     mimeType,
     filename: image.name?.trim() || imageFilename(mimeType, index),
     label: image.label,
@@ -443,7 +437,7 @@ function resolveInputImage(image: ImageEditInputImage, index: number): ResolvedE
 }
 
 function resolveReferencedImages(messages: readonly Message[] | undefined, refs: readonly string[]): ResolvedEditImage[] {
-  if (!messages || refs.length === 0) return [];
+  if (refs.length === 0) return [];
   const imageBlocks = collectConversationImages(messages);
   return refs.map((ref, index) => {
     const found = findReferencedImage(imageBlocks, ref);
@@ -578,13 +572,22 @@ async function persistGeneratedImages(
     const extension = extensionForMimeType(image.mimeType);
     const requestedBase = images.length === 1 ? input.semanticName : `${input.semanticName}-${offset + 1}`;
     const label = uniqueGeneratedImageLabel(requestedBase, context.messages, allocatedLabels);
-    const binaryPath = path.resolve(
+    let binaryPath = path.resolve(
       input.outputPath && images.length === 1
         ? uniqueOutputPath(dockerEnabled() ? path.posix.resolve(executionCwd(context.appState.snapshot().cwd), input.outputPath) : input.outputPath, label, extension)
-        : path.join(outputDir, `${sanitizeFilename(label)}.${extension}`),
+        : uniqueOutputPath(path.join(outputDir, `${sanitizeFilename(label)}.${extension}`), label, extension),
     );
     await outputFs.mkdir(path.dirname(binaryPath), { recursive: true });
-    await outputFs.writeFile(binaryPath, Buffer.from(normalizeBase64ImageData(image.base64), "base64"));
+    // Exclusive creation also prevents collisions between concurrently running tool calls.
+    for (;;) {
+      try {
+        await outputFs.writeFile(binaryPath, Buffer.from(normalizeBase64ImageData(image.base64), "base64"), { flag: "wx" });
+        break;
+      } catch (error) {
+        if (!isRecord(error) || error.code !== "EEXIST") throw error;
+        binaryPath = uniqueOutputPath(binaryPath, label, extension);
+      }
+    }
 
     const storagePath = dockerEnabled()
       ? path.join(context.session?.sessionDir || getNeoctlHome(), "generated", "images", `${randomUUID()}.base64.txt`)
@@ -604,10 +607,10 @@ async function persistGeneratedImages(
 function resolveGeneratedImageOutputDir(input: ImageGenerationToolInput, context: ToolUseContext): string {
   if (dockerEnabled()) {
     const cwd = executionCwd(context.appState.snapshot().cwd);
-    return input.outputDir?.trim() ? path.posix.resolve(cwd, input.outputDir) : input.outputPath?.trim() ? path.posix.dirname(path.posix.resolve(cwd, input.outputPath)) : path.posix.join(cwd, "generated", "images");
+    return input.outputPath?.trim() ? path.posix.dirname(path.posix.resolve(cwd, input.outputPath)) : input.outputDir?.trim() ? path.posix.resolve(cwd, input.outputDir) : path.posix.join(cwd, "generated", "images");
   }
-  if (input.outputDir?.trim()) return path.resolve(input.outputDir.trim());
   if (input.outputPath?.trim()) return path.dirname(path.resolve(input.outputPath.trim()));
+  if (input.outputDir?.trim()) return path.resolve(input.outputDir.trim());
   if (context.session?.sessionDir) return path.join(context.session.sessionDir, "generated", "images");
   return path.join(getNeoctlHome(), "generated", context.agentId || "main", "images");
 }
@@ -639,7 +642,7 @@ function collectExistingImageLabels(messages: readonly Message[] | undefined): S
 function uniqueOutputPath(requestedPath: string, label: string, extension: string): string {
   const resolved = path.resolve(requestedPath.trim());
   const directory = path.dirname(resolved);
-  const ext = path.extname(resolved) || `.${extension}`;
+  const ext = `.${extension}`;
   const base = sanitizeFilename(label);
   let candidate = path.join(directory, `${base}${ext}`);
   let suffix = 2;
@@ -675,7 +678,7 @@ function semanticNameSlug(value: string | undefined): string {
     .replace(/^-+|-+$/gu, "")
     .replace(/-{2,}/gu, "-");
   const slug = [...normalized].slice(0, 80).join("");
-  if (!slug || isGenericImageName(slug)) return "";
+  if (!slug || isGenericImageName(slug) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(slug)) return "";
   return slug;
 }
 
@@ -730,20 +733,21 @@ function isImageGenerationToolOutput(value: unknown): value is ImageGenerationTo
   return isRecord(value) && value.provider === "openai" && Array.isArray(value.images);
 }
 
-function extractGeneratedImages(response: Record<string, unknown>, format: OpenAIImageGenerationResponseFormat): ImageGenerationResult[] {
+function extractGeneratedImages(response: Record<string, unknown>, warnings: ImageWarning[]): ImageGenerationResult[] {
   const data = Array.isArray(response.data) ? response.data : [];
   return data.flatMap((item, index): ImageGenerationResult[] => {
-    if (!isRecord(item)) return [];
-    const base64 = stringFrom(item.b64_json ?? item.image_base64 ?? item.base64_json ?? item.base64);
-    if (!base64) return [];
-    const mimeType = `image/${format === "jpg" ? "jpeg" : format}`;
-    return [{
-      index,
-      mimeType,
-      base64,
-      dataUrl: `data:${mimeType};base64,${base64}`,
-      revisedPrompt: stringFrom(item.revised_prompt),
-    }];
+    try {
+      if (!isRecord(item)) throw new Error("Expected an image object");
+      const encoded = stringFrom(item.b64_json ?? item.image_base64 ?? item.base64_json ?? item.base64);
+      if (!encoded) throw new Error("Missing base64 payload; URL-only responses are not supported");
+      const bytes = decodeImageBase64(encoded);
+      const metadata = inspectImageBytes(bytes);
+      const base64 = bytes.toString("base64");
+      return [{ index, ...metadata, base64, dataUrl: `data:${metadata.mimeType};base64,${base64}`, revisedPrompt: stringFrom(item.revised_prompt) }];
+    } catch (error) {
+      warnings.push({ code: "INVALID_OUTPUT_IMAGE", field: `data[${index}]`, message: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
   });
 }
 
@@ -751,8 +755,11 @@ function resolveApiKey(configured?: string): string | undefined {
   return configured?.trim() || process.env.OPENAI_IMAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined;
 }
 
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
+export function normalizeImageBaseUrl(value: string): string {
+  const url = new URL(value);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Image base URL must be an HTTP(S) base URL without credentials, query, or fragment");
+  const base = value.replace(/\/+$/, "");
+  return base.endsWith("/v1") ? base : `${base}/v1`;
 }
 
 function parsePositiveNumber(value: string | undefined): number | undefined {
@@ -802,36 +809,4 @@ function stringFrom(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isImageToolMode(value: unknown): value is ImageToolMode {
-  return value === "generate" || value === "edit";
-}
-
-function isSupportedImageModel(value: string): value is OpenAIImageModel {
-  return (SUPPORTED_IMAGE_MODELS as readonly string[]).includes(value);
-}
-
-function imageCreateValidationError(model: string, field: string, reason: string): string {
-  return `image_create validation failed for model ${model}: ${field} ${reason}.`;
-}
-
-function isImageSize(value: unknown): value is ImageGenerationSize {
-  return value === "auto" || value === "1024x1024" || value === "1536x1024" || value === "1024x1536";
-}
-
-function isImageQuality(value: unknown): value is ImageGenerationQuality {
-  return value === "auto" || value === "low" || value === "medium" || value === "high";
-}
-
-function isImageFormat(value: unknown): value is ImageGenerationFormat {
-  return value === "png" || value === "jpeg" || value === "webp";
-}
-
-function isImageBackground(value: unknown): value is ImageGenerationBackground {
-  return value === "auto" || value === "transparent" || value === "opaque";
-}
-
-function isImageModeration(value: unknown): value is ImageGenerationModeration {
-  return value === "auto" || value === "low";
 }

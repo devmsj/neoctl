@@ -1,3 +1,4 @@
+import { IMAGE_SELECTION_GUIDE } from "../tools/builtins/image-capabilities.js";
 import { readBundledSystemPrompt } from "./prompt-config.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
 import type { ToolUseContext } from "../tools/tool.js";
@@ -47,7 +48,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
           ? "When you need to inspect, describe, OCR, or answer questions about a historical image that is no longer directly present in the active prompt, use the image_inspect tool with its image id (e.g. img_1) or label. The image registry in compact boundary messages lists all available historical images; compacted images are not text-summarized into visual facts, so load the pixels when visual details matter."
           : "This runtime has no image loading tool. Do not pretend to visually inspect stored image paths; ask the user to enable image inspection or select a compatible runtime if visual analysis is required.",
         hasImageGenerationTool
-          ? "When the user asks for drawing/image generation or image editing/modification, use the image_create tool. It is backed by OpenAI's Images API, defaults to OpenAI model gpt-image-2, and supports mode=generate for new images and mode=edit for modifying existing images. If image_create validation fails, tell the user the model and exact parameter reason from the tool result."
+          ? `When the user asks for drawing/image generation or image editing/modification, use the image_create tool. ${IMAGE_SELECTION_GUIDE} It supports mode=generate and mode=edit. If image_create validation fails, report the model and exact parameter reason. Successful results may carry warnings: distinguish requested, upstream-reported and byte-verified properties, and clearly disclose material output mismatches.`
           : "This runtime has no drawing/image generation/editing tool. If the user asks you to draw, create, render, generate, or edit an image, say that image generation is unavailable in the current runtime configuration instead of pretending to generate one.",
         hasSecretTools
           ? `Secrets: you may inspect secret keys, statuses, and value lengths, but secret values are never shown to you. ${secretRequestInstruction} Do not ask users to paste secret values into the conversation; pass secret keys to enabled tools that accept secret references.`

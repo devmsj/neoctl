@@ -4624,7 +4624,16 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
   const sourceImages = typeof output.sourceImages === "number" ? output.sourceImages : undefined;
   const lines = [`${mode === "edit" ? "edited" : "generated"} ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
-  if (details.length > 0) lines.push(details.join(" · "));
+  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join(" · ")}`);
+  if (isRecord(output.actual)) {
+    lines.push(`upstream-reported quality: ${String(output.actual.quality ?? "unreported")}`);
+    if (Array.isArray(output.images)) for (const image of output.images.filter(isRecord)) {
+      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height} · ${String(image.mimeType ?? "")}`);
+    }
+  }
+  if (Array.isArray(output.warnings)) for (const warning of output.warnings.filter(isRecord)) {
+    lines.push(`warning [${String(warning.code ?? "IMAGE_WARNING")}]: ${String(warning.message ?? "")}`);
+  }
   if (sourceImages !== undefined) lines.push(`source images: ${sourceImages}`);
   const duration = imageGenerationDuration(output);
   if (duration !== undefined) lines.push(dimAnsi(`duration: ${duration}ms`));

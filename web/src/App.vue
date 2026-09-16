@@ -26,6 +26,7 @@ import { formatModelDisplay } from './composer-presentation.mjs'
 import { createUploadProgress } from './upload-progress.mjs'
 import { uploadFileChunks } from './chunk-upload.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
+import { originalImageResource, generatedImageMetadata, alphaChannelLabel } from './image-result-metadata.mjs'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('js', javascript)
@@ -3374,9 +3375,10 @@ function renderImageGrid(images) {
 }
 
 function renderImageCreateResult(line) {
-  const parsed = parseImageCreateResult(line.text || '')
+  const parsed = parseImageCreateResult(line.text || '', line.imageResult)
   const text = String(line.text || '')
-  const status = /\bfail(?:ed)?\b|failed/i.test(text) ? '生成失败' : /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
+  const failed = line.titleStatus ? line.titleStatus === 'failure' : /^(?:image_create\s+)?(?:failed|failure|error)\b/i.test(text.trim())
+  const status = failed ? '生成失败' : parsed.mode === 'edit' || /^edited\b/i.test(text.trim()) ? '修改完成' : '生成完成'
   const chips = [parsed.count ? `${parsed.count} 张` : '', parsed.model, `请求尺寸 ${originalDimensionFacts(parsed.size).requested}`, parsed.quality, parsed.outputFormat, parsed.sourceImages ? `源图 ${parsed.sourceImages} 张` : '', parsed.duration].filter(Boolean)
   return `<div class="image2-result"><div class="image2-summary"><strong>${escapeHtml(status)}</strong>${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div></div>`
 }
@@ -3415,12 +3417,14 @@ function renderImageDimensionDetails(line, requested) {
     const result = imageDimensionResults.value[index]
     const facts = originalDimensionFacts(requested, item.available ? result : { state: 'unavailable' })
     const actual = result?.state === 'loading' && item.available ? '加载中…' : facts.actual
-    return `<section class="image2-detail-prompt" data-original-dimensions="${index}"><span>${escapeHtml(imageCaption(item, index))}</span><dl class="image2-detail-grid"><div><dt>请求尺寸</dt><dd>${escapeHtml(facts.requested)}</dd></div><div><dt>实际尺寸</dt><dd>${escapeHtml(actual)}</dd></div></dl>${facts.mismatch ? '<p>实际尺寸与请求尺寸不同（保留原图）</p>' : ''}</section>`
+    const metadata = generatedImageMetadata(line, item)
+    const alpha = `<div><dt>Alpha 通道</dt><dd>${alphaChannelLabel(metadata?.hasAlphaChannel)}</dd></div><div><dt>透明像素</dt><dd>${alphaChannelLabel(metadata?.hasTransparentPixels)}</dd></div>`
+    return `<section class="image2-detail-prompt" data-original-dimensions="${index}"><span>${escapeHtml(imageCaption(item, index))}</span><dl class="image2-detail-grid"><div><dt>请求尺寸</dt><dd>${escapeHtml(facts.requested)}</dd></div><div><dt>实际尺寸</dt><dd>${escapeHtml(actual)}</dd></div>${alpha}</dl>${facts.mismatch ? '<p>实际尺寸与请求尺寸不同（保留原图）</p>' : ''}</section>`
   }).join('')
 }
 
 function renderImageCreateDetail(line) {
-  const parsed = parseImageCreateResult(line?.text || '')
+  const parsed = parseImageCreateResult(line?.text || '', line?.imageResult)
   const fields = [
     ['模型', parsed.model],
     ['模式', parsed.mode],
@@ -3447,12 +3451,12 @@ function renderImageCreateDetail(line) {
   return `<div class="image2-detail-view">${metadata}${renderImageDimensionDetails(line, parsed.size)}${prompt}${revisedPrompt}</div>`
 }
 
-function parseImageCreateResult(text) {
+function parseImageCreateResult(text, metadata) {
   const raw = String(text || '')
   const compact = raw.replace(/\s+/g, ' ').trim()
   const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   const generated = /^(generated|edited)\s+(\d+)\s+images?/i.exec(lines[0] || compact)
-  const detailsLine = lines.find((line) => line.includes(' · ')) || ''
+  const detailsLine = (lines.find((line) => line.includes(' · ')) || '').replace(/^requested:\s*/i, '')
   const detailParts = detailsLine.split(' · ').map((part) => part.trim()).filter(Boolean)
   const durationMs = numberField(compact, ['duration', 'durationMs', 'elapsed', 'elapsedMs'])
   return {
@@ -3461,8 +3465,8 @@ function parseImageCreateResult(text) {
     prompt: matchImageCreateField(compact, 'prompt', ['revisedPrompt', 'mode', 'semanticName', 'size', 'quality', 'outputFormat', 'background', 'returnedImages', 'startedAt', 'finishedAt', 'duration']),
     mode: matchImageCreateField(compact, 'mode', ['semanticName', 'prompt', 'size', 'quality']),
     semanticName: matchImageCreateField(compact, 'semanticName', ['prompt', 'size', 'quality', 'outputFormat']),
-    size: matchImageCreateField(compact, 'size', ['quality', 'outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => /^\d+x\d+$/i.test(part)) || '',
-    quality: matchImageCreateField(compact, 'quality', ['outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => ['low', 'medium', 'high'].includes(part.toLowerCase())) || '',
+    size: matchImageCreateField(compact, 'size', ['quality', 'outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => part === 'auto' || /^\d+x\d+$/i.test(part)) || '',
+    quality: matchImageCreateField(compact, 'quality', ['outputFormat', 'background', 'returnedImages', 'duration']) || detailParts.find((part) => ['auto', 'low', 'medium', 'high', 'xhigh', 'max'].includes(part.toLowerCase())) || '',
     outputFormat: matchImageCreateField(compact, 'outputFormat', ['background', 'returnedImages', 'images', 'duration']) || detailParts.find((part) => ['png', 'jpeg', 'jpg', 'webp'].includes(part.toLowerCase())) || '',
     background: matchImageCreateField(compact, 'background', ['returnedImages', 'images', 'startedAt', 'finishedAt', 'duration']),
     sourceImages: matchImageCreateField(compact, 'source images', ['prompt', 'mode', 'semanticName', 'duration']),
@@ -3472,6 +3476,7 @@ function parseImageCreateResult(text) {
     startedAt: matchImageCreateField(compact, 'startedAt', ['finishedAt', 'duration']),
     finishedAt: matchImageCreateField(compact, 'finishedAt', ['duration']),
     duration: durationMs === undefined ? '' : formatDuration(durationMs),
+    ...Object.fromEntries(Object.entries(metadata || {}).filter(([key, value]) => ['model', 'size', 'quality', 'outputFormat', 'background', 'prompt', 'mode', 'semanticName'].includes(key) && typeof value === 'string')),
   }
 }
 
@@ -3931,10 +3936,10 @@ function collectLineImageItems(line, images) {
 function normalizeImagePreview(item) {
   if (!item || typeof item !== 'object') return undefined
   const mimeType = item.mimeType || item.thumbnail?.mimeType || item.original?.mimeType || 'image/png'
-  const rawPreviewUrl = item.thumbnailSrc || item.thumbnail?.src || item.previewUrl || item.src || item.originalSrc || item.original?.src || dataToImageSrc(item.data, mimeType)
+  const rawPreviewUrl = item.thumbnailSrc || item.thumbnail?.src || item.previewUrl || item.src || item.originalSrc || item.original?.src || item.originalUrl || dataToImageSrc(item.data, mimeType)
   if (!rawPreviewUrl && item.available !== false) return undefined
   const previewUrl = rawPreviewUrl ? scopedImageUrl(rawPreviewUrl) : ''
-  const originalRawUrl = item.originalSrc || item.original?.src || item.src || item.previewUrl || rawPreviewUrl
+  const originalRawUrl = originalImageResource(item, dataToImageSrc(item.data, mimeType)) || item.src || item.previewUrl || rawPreviewUrl
   return {
     sessionId: String(item.sessionId || state.session?.sessionId || runtimeSessionId || ''),
     messageId: item.messageId,
@@ -3947,8 +3952,8 @@ function normalizeImagePreview(item) {
     previewUrl,
     originalUrl: originalRawUrl ? scopedImageUrl(originalRawUrl) : '',
     // Only explicit original resources qualify for pixel measurement; never preview fallback.
-    originalDecodeUrl: (item.originalSrc || item.original?.src || item.originalUrl || dataToImageSrc(item.data, mimeType))
-      ? scopedImageUrl(item.originalSrc || item.original?.src || item.originalUrl || dataToImageSrc(item.data, mimeType)) : '',
+    originalDecodeUrl: originalImageResource(item, dataToImageSrc(item.data, mimeType))
+      ? scopedImageUrl(originalImageResource(item, dataToImageSrc(item.data, mimeType))) : '',
     name: item.name || item.filename || item.label,
     sizeBytes: item.sizeBytes,
     pending: item.pending === true,
