@@ -1,6 +1,6 @@
 {
   "name": "neoctl",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "description": "TypeScript scaffold for a streaming agent runtime with a REPL UI layer.",
   "type": "module",
   "main": "./dist/index.js",
