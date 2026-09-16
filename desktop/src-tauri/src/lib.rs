@@ -1,6 +1,3 @@
-mod control_config;
-#[path = "../control_config.rs"]
-mod control_config_validation;
 mod downloads;
 mod install_path;
 mod install_storage;
@@ -593,7 +590,6 @@ fn launch_runtime_blocking(
         .env("AGENT_VENDOR_DIR", &agent_vendor)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    control_config::configure(&mut command)?;
     hide_window(&mut command);
     let mut child = command
         .spawn()

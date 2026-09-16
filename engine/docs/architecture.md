@@ -12,25 +12,25 @@ This map translates the parent README into source modules without implementing e
 | Batch tool orchestration | `src/tools/tool-orchestration.ts` |
 | Streaming tool execution | `src/tools/streaming-tool-executor.ts` |
 | Built-in grep tool | `src/tools/builtins/grep-tool.ts`, `src/tools/builtins/ripgrep-binary.ts`, `scripts/install-ripgrep.cjs` |
-| Tool system smoke test | `src/tools/smoke-tool-system.ts` |
+| Tool system smoke test | `tests/tools/smoke-tool-system.ts` |
 | Main query loop | `src/core/query.ts` |
 | Loop state and terminal reasons | `src/core/state.ts` |
 | Pre-model message pipeline | `src/core/message-pipeline.ts` |
 | Query engine / headless entry | `src/core/query-engine.ts` |
-| Core loop smoke test | `src/core/smoke-core-loop.ts` |
+| Core loop smoke test | `tests/core/smoke-core-loop.ts` |
 | System prompt sections and cache boundary | `src/context/prompts.ts` |
 | Runtime user/system context | `src/context/context-manager.ts` |
 | Session transcripts and resume | `src/session/session-store.ts`, `src/session/tool-result-memory.ts` |
 | Snip/micro/model-auto/reactive compaction | `src/context/compaction.ts` |
-| Context smoke test | `src/context/smoke-context.ts` |
+| Context smoke test | `tests/context/smoke-context.ts` |
 | Agent definitions and fork rules | `src/agents/agent-definition.ts` |
 | Sub-agent runner | `src/core/run-agent.ts` |
 | AgentTool | `src/agents/agent-tool.ts` |
 | Background task state | `src/agents/local-agent-task.ts`, `src/tasks/task-store.ts` |
 | Task control tools | `src/tasks/task-tools.ts` |
-| Agent/task smoke test | `src/agents/smoke-agents.ts` |
+| Agent/task smoke test | `tests/agents/smoke-agents.ts` |
 | SkillTool | `src/skills/skill-tool.ts` |
-| Skill smoke test | `src/skills/smoke-skills.ts` |
+| Skill smoke test | `tests/skills/smoke-skills.ts` |
 | Prompt and context assembly | `src/context/context-manager.ts`, `src/context/prompts.ts` |
 | Compaction boundary | `src/context/compaction.ts` |
 | Model gateway contract | `src/model/model-gateway.ts` |
@@ -46,7 +46,7 @@ This map translates the parent README into source modules without implementing e
 | Retry runner | `src/model/retry-runner.ts` |
 | Error normalization | `src/model/errors.ts` |
 | Credential provider | `src/model/credentials.ts` |
-| API smoke test | `src/model/smoke-openai.ts` |
+| API smoke test | `tests/model/smoke-openai.ts` |
 | Optional safety layer | `src/safety/*` |
 | REPL UI layer | `src/repl/*` |
 

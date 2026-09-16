@@ -158,5 +158,5 @@ pub(super) fn configure(
 }
 
 #[cfg(all(test, windows))]
-#[path = "node_isolation_tests.rs"]
+#[path = "../../tests/rust/node_isolation_tests.rs"]
 mod tests;

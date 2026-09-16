@@ -1,5 +1,7 @@
 # maker
 
+Web 仅提供普通本地运行时与可选隔离模式；不再包含设备注册、远程心跳、配置下发、会话上报或控制端专用查看器。模型配置仍通过原有配置页与 `/api/login` 保存，聊天和隔离账户功能保持不变。旧控制功能的用户数据不会自动删除。
+
 一个 Render 风格的 Vue 3 + Vite 单页应用，面向设计人员和工作流用户封装 `neoctl` 本地 AI Agent 运行时。
 
 ## 全局安装
@@ -282,3 +284,7 @@ copy .env.neo.example .env
 然后编辑 `.env` 中的模型供应商、API Key、Base URL 和模型名，也可以在单页应用的“模型配置”页面中配置。
 
 > 注意：`neoctl` 是 Node.js/CLI 运行时依赖，包含文件系统、命令执行、终端/本地 Web UI 等能力，不应直接 import 到 Vue 浏览器端组件。本项目通过“本地运行时 + Vite 代理”的方式集成。
+
+## Tests
+
+All web tests and fixtures live in [`tests/`](tests/README.md). From the repository root, build Engine with `npm --prefix engine run build`, then run `npm --prefix web test` for the explicit non-browser suite. Browser regressions and the full observability gate are opt-in; see the tests README for commands and prerequisites.

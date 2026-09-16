@@ -34,7 +34,7 @@
 
 ```powershell
 cd C:\Users\qyq\Desktop\work\neoctl\web\plugins\downloads
-node --test downloads.test.mjs
+node --test ../../tests/plugins/downloads/downloads.test.mjs
 ```
 
 测试覆盖跨工作区文件、无副本、无 TTL、跨进程映射恢复、原文件移动/删除、内容更新、HEAD、无效输入、路径穿越和并发暴露。

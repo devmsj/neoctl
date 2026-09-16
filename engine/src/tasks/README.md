@@ -43,10 +43,10 @@ The existing visual style is retained. Task details distinguish the current run 
 From `engine`:
 
 ```
-node --import tsx --test src/tasks/subagent-tools.test.ts src/tasks/task-persistence.test.ts src/tasks/task-ack-size.test.ts src/core/run-agent-persistence.test.ts src/core/run-agent-pause.test.ts src/agents/agent-tool-persistence.test.ts src/agents/no-nested-delegation.test.ts src/session/session-store-safety.test.ts
-node node_modules/tsx/dist/cli.mjs src/web/smoke-task-session-entrypoints.ts
-node node_modules/tsx/dist/cli.mjs src/agents/smoke-agent-lifecycle.ts
-node node_modules/tsx/dist/cli.mjs src/web/smoke-web-agent-tasks.ts
+node --import tsx --test tests/tasks/subagent-tools.test.ts tests/tasks/task-persistence.test.ts tests/tasks/task-ack-size.test.ts tests/core/run-agent-persistence.test.ts tests/core/run-agent-pause.test.ts tests/agents/agent-tool-persistence.test.ts tests/agents/no-nested-delegation.test.ts tests/session/session-store-safety.test.ts
+node node_modules/tsx/dist/cli.mjs tests/web/smoke-task-session-entrypoints.ts
+node node_modules/tsx/dist/cli.mjs tests/agents/smoke-agent-lifecycle.ts
+node node_modules/tsx/dist/cli.mjs tests/web/smoke-web-agent-tasks.ts
 npm run typecheck
 npm run smoke:agents
 ```

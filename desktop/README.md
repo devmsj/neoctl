@@ -103,13 +103,29 @@ npm run runtime
 
 ## 安装回归测试
 
-无需网络的来源和启动页回归测试：
+测试文件统一位于 `tests/`：`scripts/` 保存来源/更新检查和后端按钮测试，`ui/` 保存启动页单元测试与浏览器布局测试，`smoke/` 保存真实安装/启动检查，`rust/` 保存外置 Rust 单元测试。`ui/` 只包含随 Tauri 打包的前端资源，不包含测试。
+
+在仓库根目录运行默认非浏览器回归测试（不访问网络、不调用模型；更新检查使用已准备好的 `desktop/resources/node` 内置 npm 的 semver）。来源回归同时检查构建不再读取或生成远程控制配置、启动不再注入远程控制配置，以及本机后台启停、托盘和更新入口仍然保留：
 
 ```powershell
-node --test desktop/ui/app.test.cjs desktop/scripts/runtime-source.test.cjs desktop/scripts/check-updates.test.cjs
+npm --prefix desktop test
+# 等价于：
+node --test desktop/tests/ui/app.test.cjs desktop/tests/scripts/runtime-source.test.cjs desktop/tests/scripts/check-updates.test.cjs
+npm --prefix desktop run check
 ```
 
-在仓库根目录运行 `node desktop/scripts/smoke-runtime-install.mjs` 可实际安装 registry latest Web 及其兼容 Core，并用内置 npm 的 semver 检查 Core 满足 Web 的依赖范围。仅验证内置快照时显式传入 `--bundled`；该模式不代表桌面默认安装行为。Smoke 使用临时目录并写入 `desktop/.smoke-runtime-path` 供启动测试使用，需要已准备好的内置 Node/npm；bundled 模式还需要 payload。
+浏览器和 Rust 测试独立运行，不包含在默认 `npm test` 中：
+
+```powershell
+npm --prefix desktop run test:browser
+npm --prefix desktop run test:rust -- --locked
+```
+
+浏览器入口依次运行 `tests/ui/browser.test.cjs`（Windows Edge，可用 `EDGE_PATH` 指定路径，需要支持全局 WebSocket 的 Node）和 `tests/scripts/backend-ui.test.cjs`（还需要 `desktop/.cache/ui-test/node_modules/playwright` 及 Edge），不会自动安装依赖。也可以直接运行其中一个文件。Rust 入口需要 Rust/MSVC/Tauri 构建依赖；Windows Node 隔离测试还需要内置 Node/npm。`tests/rust/node_isolation_tests.rs` 由原 `node_isolation` 模块通过 `#[path]` 引入，仍是受 `cfg(all(test, windows))` 控制、可访问父模块私有成员的单元测试，不是 Cargo 集成测试。其他内联 Rust 单元测试保留在原模块。
+
+`npm --prefix desktop run smoke:runtime` 依次执行下面的安装与启动 smoke。它会访问 npm registry、安装真实运行时并启动本地 Web/Core，仅在需要集成验证时显式运行，不属于默认测试。
+
+在仓库根目录运行 `node desktop/tests/smoke/smoke-runtime-install.mjs` 可实际安装 registry latest Web 及其兼容 Core，并用内置 npm 的 semver 检查 Core 满足 Web 的依赖范围。仅验证内置快照时显式传入 `--bundled`；该模式不代表桌面默认安装行为。Smoke 使用临时目录并写入 `desktop/.smoke-runtime-path` 供启动测试使用，需要已准备好的内置 Node/npm；bundled 模式还需要 payload。
 
 ## 本地桌面调试（无需发布）
 
@@ -148,45 +164,6 @@ Neo Desktop 菜单可“返回启动页”，保留后台进程，手动返回�
 ## 窗口与托盘
 
 主程序使用 Windows GUI 子系统，双击不分配控制台。关闭窗口时可选择“最小化到托盘”“退出应用”或“取消”。托盘模式保留后台服务，左键托盘图标恢复窗口，右键菜单提供打开与退出。退出会停止托管服务及其任务；没有默认记住选择。
-
-## 可选 Control 自动连接（编译期内置）
-
-私有桌面 EXE 在编译时内置 Control 服务地址和共享设备密钥，启动后台时自动连接，不导入外部配对文件、不弹同意对话框。普通构建未指定配置时内置 `null`，不会注入 Control 配置或连接服务。旧 `data/control-pairing.json` 不再读取；也不能通过宿主环境覆盖内置配置。
-
-`src-tauri/build.rs` 读取可选环境变量 `NEO_CONTROL_BUILD_CONFIG` 指向的私有 JSON，校验后序列化到 `OUT_DIR/control-config.json`，由 `include_str!` 编入 EXE。Cargo 跟踪环境变量和配置文件变化；移除变量会重新生成 `null`。运行时只向直接托管的 Node 注入 `NEO_DESKTOP_CONTROL_CONFIG` JSON，Node 读取后立即删除该环境变量，避免传给后续子进程。桌面不会将内置配置另写到数据目录。
-
-私有 JSON 的字段格式（下列是不可直接构建的占位说明，不是真实凭据）：
-
-```json
-{"enabled":true,"url":"https://control.example.com","allowHttp":false,"key":"<服务端生成的32字节标准base64共享设备密钥>"}
-```
-
-- 仅接受 `enabled`、`url`、`allowHttp`、`key` 四个字段；`enabled` 必须为 `true`，`allowHttp` 可省略（默认 false）。拒绝 `root`、用户名、管理员密码等未知字段；`key` 必须为规范的 32 字节 base64 设备密钥，不能用登录密码替代。结构校验不能判断一串符合格式的密钥是否确为服务端授权密钥。
-- URL 必须是 HTTP(S) origin（可含端口和末尾 `/`，不含用户名、密码、路径、查询或片段）。默认要求 HTTPS，仅 localhost、127.0.0.1、::1 允许 HTTP；远程 HTTP 必须显式 `allowHttp:true`。HTTP 即使使用消息体 AES-256-GCM，也不保护元信息或管理端 HTTP 登录，优先 HTTPS 或安全隧道。
-- 配置限制 16 KiB；配置缺失、字段错误或无法读取会使指定配置的构建失败，错误不包含原始配置、密钥或解析输入。未指定环境变量才是普通禁用构建。
-
-私有构建命令（先由管理员在忽略目录安全准备配置，不把密钥写到命令行）：
-
-```powershell
-cd desktop
-$env:NEO_CONTROL_BUILD_CONFIG = (Resolve-Path .cache/control/build-config.json).Path
-try {
-  npm run build
-} finally {
-  Remove-Item Env:NEO_CONTROL_BUILD_CONFIG -ErrorAction SilentlyContinue
-}
-```
-
-无需完整 EXE 的 Rust 验证：在 `desktop/src-tauri` 执行 `cargo test --lib --locked`。普通公开构建前清除 `NEO_CONTROL_BUILD_CONFIG`，建议使用干净独立构建目录，避免混淆私有制品与公共制品。不需要额外 Tauri resources 覆盖文件。
-
-同步范围与行为：
-
-- 只同步该桌面数据目录 `session-workspaces.json` 登记的会话；会话来源为 Engine 的 `AGENT_SESSION_DIR` 或默认 `~/.neoctl/sessions`。不会遍历未登记的 CLI 历史、任意工作区文件、上传图片或工具输出附件。登记表缺失/损坏时不上传会话。
-- 自动连接后会补传登记的已有会话历史，并约每秒同步已持久化 `transcript.jsonl` 的新增字节；会发送机器标识、主机名和机型。不是逐 token 上传，积压和网络故障会延迟同步。
-- 接收并应用 Control 下发的模型配置（包括 API 连接配置），沿用现有登录配置与活跃实例更新机制；不打断已发出的模型请求。请求/响应采用共享 AES-256-GCM 协议，认证响应确认后才推进游标。网络重试和诊断不应包含正文、密钥或原始错误。
-- `control-sync-state.json` 保存确认游标和命令状态；`control-device.json` 保存机器标识。要停用或更换内置配置，使用无配置/新配置重新构建替换程序并重启后台；泄露时需在服务端撤销或轮换相应共享设备密钥。
-
-**这是自动上传并允许远程应用模型配置的私有发行版。发布者必须事先获得设备使用者授权并明确告知同步范围。内置密钥可从 EXE、内存、构建输出或调试产物提取，不是安全密钥库；同一共享密钥制品泄露会影响使用该密钥的设备。严禁公开分发或上传公共制品库、npm、版本库及构建日志。** 私有 JSON 只放 `desktop/.cache/` 或仓库外受限目录；构建 `src-tauri/target/` 和拷贝制品 `desktop/artifacts/` 已被桌面 `.gitignore` 排除，但忽略不等于访问控制。不要把私有配置放入 payload 或 npm 包，也不要上传包含内置配置的构建缓存/符号文件。仓库根 `artifacts/` 不受该忽略规则保护。
 
 ## 检查更新
 

@@ -60,8 +60,8 @@ NEO_ENV_FILE=/etc/neoctl/model.env bash start-service.sh
 ## 验证
 
 ```bash
-NEO_EXECUTION_BACKEND=docker node smoke-backend.mjs
-NEO_EXECUTION_BACKEND=docker node smoke-web.mjs
+NEO_EXECUTION_BACKEND=docker node tests/smoke-backend.mjs
+NEO_EXECUTION_BACKEND=docker node tests/smoke-web.mjs
 ```
 
-`smoke-web.mjs` 使用临时配置启动回环服务，运行前确保 6666 和 3109 未占用。代理函数及地址映射不等于代理服务已连通，需另配获批端口转发及对应放行规则。
+`tests/smoke-web.mjs` 使用临时配置启动回环服务，运行前确保 6666 和 3109 未占用。代理函数及地址映射不等于代理服务已连通，需另配获批端口转发及对应放行规则。

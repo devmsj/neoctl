@@ -49,7 +49,7 @@ $env:NEO_VIDEO_SHARE_PUBLIC_ORIGIN = 'https://videos.example.com'
 
 ```powershell
 cd C:\Users\qyq\Desktop\work\neoctl\web\plugins\video-share
-node --test video-share.test.mjs
+node --test ../../tests/plugins/video-share/video-share.test.mjs
 ```
 
 测试使用带容器头的合成字节验证 HTTP、Range、HEAD、零复制、移动/删除失效、原文件更新、持久性、撤销安全、旧版边界、输入校验、转义、并发和独立进程恢复；它不是浏览器真实视频解码测试。

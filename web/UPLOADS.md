@@ -16,4 +16,4 @@ Protocol (query parameters such as workspace selection are preserved):
 4. `POST /api/uploads/chunks/:id/complete` returns the existing `{ok, file}` attachment response.
 5. `DELETE /api/uploads/chunks/:id` cancels an incomplete upload.
 
-Validation: `node --test chunk-uploads.test.mjs upload-progress.test.mjs`.
+Validation: `node --test tests/chunk-uploads.test.mjs tests/upload-progress.test.mjs`.

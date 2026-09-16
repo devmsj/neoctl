@@ -69,7 +69,7 @@ jobs:
 
       - name: Run Desktop unit tests
         working-directory: desktop
-        run: node --test scripts/check-updates.test.cjs ui/app.test.cjs
+        run: node --test tests/scripts/check-updates.test.cjs tests/ui/app.test.cjs
 
       - name: Check Desktop layout
         run: npm run check --prefix desktop

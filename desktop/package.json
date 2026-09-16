@@ -8,10 +8,13 @@
     "runtime": "powershell -ExecutionPolicy Bypass -File scripts/prepare-node-runtime.ps1",
     "bundle:prepare": "npm run payload && npm run runtime",
     "check": "node scripts/check-layout.mjs",
-    "smoke:runtime": "node scripts/smoke-runtime-install.mjs && node scripts/smoke-runtime-launch.mjs",
+    "smoke:runtime": "node tests/smoke/smoke-runtime-install.mjs && node tests/smoke/smoke-runtime-launch.mjs",
     "dev": "tauri dev",
     "dev:local": "node scripts/dev-local.mjs",
-    "build": "npm run bundle:prepare && tauri build"
+    "build": "npm run bundle:prepare && tauri build",
+    "test": "node --test tests/ui/app.test.cjs tests/scripts/runtime-source.test.cjs tests/scripts/check-updates.test.cjs",
+    "test:browser": "node tests/ui/browser.test.cjs && node tests/scripts/backend-ui.test.cjs",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4"

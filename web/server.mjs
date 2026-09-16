@@ -4,15 +4,6 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-// Consume the private launcher secret before importing application/runtime modules.
-// Imports can initialize plugins or spawn children; none may inherit this value.
-let desktopControlConfig;
-{
-  const raw = process.env.NEO_DESKTOP_CONTROL_CONFIG;
-  delete process.env.NEO_DESKTOP_CONTROL_CONFIG;
-  try { desktopControlConfig = raw ? JSON.parse(raw) : undefined; } catch {}
-}
-
 const { containerMode, workspaceFs, deliverUpload, verifyExecutionBackend } = await import('./execution-backend.mjs');
 await verifyExecutionBackend();
 const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } = await import('./core-runtime.mjs');
@@ -24,12 +15,6 @@ const { installRuntimeRouterIdleCleanup } = await import('./runtime-router-clean
 const { createCpaQuotaMonitor } = await import('./cpa-quota.mjs');
 const { createMemoryMonitor } = await import('./memory-monitor.mjs');
 const { resolveWebStorage } = await import('./platform-paths.mjs');
-const { createControlSync, createLoginApplier, validateControlConfig } = await import('./control-sync.mjs');
-
-const controlConfig = validateControlConfig(desktopControlConfig);
-desktopControlConfig = undefined;
-const controlEnabled = Boolean(controlConfig);
-
 installRuntimeRouterIdleCleanup();
 console.log(`neo core: ${coreRuntimeInfo.source} ${coreRuntimeInfo.version} (${coreRuntimeInfo.location})`);
 process.env.NEO_CORE_VERSION = coreRuntimeInfo.version;
@@ -72,17 +57,6 @@ const memoryMonitor = createMemoryMonitor({
   maxPersistedSamples: process.env.NEO_MEMORY_MAX_PERSISTED_SAMPLES,
   maxPersistedBytes: process.env.NEO_MEMORY_MAX_PERSISTED_BYTES,
 });
-// Weak references do not defeat the existing router's idle-session cleanup.
-const controlRepls = new Set();
-function activeControlRepls() {
-  const active = [];
-  for (const reference of controlRepls) {
-    const repl = reference.deref();
-    if (repl) active.push(repl);
-    else controlRepls.delete(reference);
-  }
-  return active;
-}
 const workspaceRuntime = createWorkspaceRuntimeManager({
   projectRoot: process.cwd(),
   workspaceRoot,
@@ -101,7 +75,6 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
 
 const { createIsolationMode } = await import('./isolation.mjs');
 const isolation = await createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginSettings, toolSettings, cpaQuotaMonitor, memoryState: () => memoryMonitor.getPublicState() });
-if (isolation.enabled && controlEnabled) throw new Error('Isolation mode cannot use desktop control sync');
 
 const DEFAULT_APP_PROMPT_LIBRARY = [];
 
@@ -142,26 +115,12 @@ await new Promise((resolve, reject) => {
   });
 });
 
-// Optional Desktop-only background work starts after HTTP listen and never delays UI.
-if (controlEnabled) {
-  const controlSync = createControlSync({
-    config: controlConfig,
-    dataDir: dataRoot,
-    applyProfile: embedRuntime ? createLoginApplier({ runtimeUrl: runtimeTarget, getActiveRepls: activeControlRepls }) : undefined,
-  }).start();
-  server.once('close', () => { void controlSync.stop(); });
-}
-
 async function startEmbeddedRuntime() {
   const runtimeHost = runtimeTarget.hostname || '127.0.0.1';
   const runtimePort = runtimeTarget.port || '3101';
   await runWebServer(['--host', runtimeHost, '--port', runtimePort], {
     createRuntime: workspaceRuntime.createRuntime,
-    createRepl(runtime) {
-      const repl = workspaceRuntime.createRepl(runtime);
-      if (controlEnabled) controlRepls.add(new WeakRef(repl));
-      return repl;
-    },
+    createRepl: workspaceRuntime.createRepl,
   });
 }
 

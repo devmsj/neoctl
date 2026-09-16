@@ -78,7 +78,7 @@ Web hosts provide `resolveGlobalToolOverrides` alongside persistence. Existing r
 All tests use OS temporary directories and never touch real user configuration:
 
 ```sh
-node --import tsx --test src/context/prompt-config.test.ts src/web/prompt-config-protocol.test.ts
+node --import tsx --test tests/context/prompt-config.test.ts tests/web/prompt-config-protocol.test.ts
 npm run typecheck
 npm run build
 ```
