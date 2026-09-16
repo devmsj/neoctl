@@ -34,6 +34,10 @@ export async function createObservabilityBrowser(snapshot, handleApi) {
     await page.route('**/api/**', async route => {
       requests.push({ url: route.request().url(), method: route.request().method() })
       if (handleApi && await handleApi(route)) return
+      if (new URL(route.request().url()).pathname === '/api/auth/status') {
+        await route.fulfill({ json: { isolation: false, user: null } })
+        return
+      }
       await route.fulfill({ json: route.request().url().includes('/api/state') ? (typeof snapshot === 'function' ? snapshot() : snapshot) : {} })
     })
     await page.route('**/events', route => route.fulfill({ contentType: 'text/event-stream', body: '' }))

@@ -53,6 +53,7 @@ const jobs = [
   ['engine-build-assets', 'engine', ['scripts/copy-model-metadata.mjs'], unitTimeout],
   ['engine-build-prompts', 'engine', ['scripts/copy-prompt-resources.mjs'], unitTimeout],
   ['web-build', 'web', ['node_modules/vite/bin/vite.js', 'build'], buildTimeout],
+  ['virtual-message-anchor-browser', 'web', ['--test', 'tests/virtual-message-anchor-browser.test.mjs']],
   ['details', 'engine', [tsx, 'tests/web/smoke-tool-call-detail.ts']],
   ['details-http', 'engine', [tsx, 'tests/web/smoke-tool-call-http.ts']],
   ['status', 'engine', [tsx, 'tests/web/smoke-status-semantics.ts']],

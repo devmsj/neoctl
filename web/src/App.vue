@@ -536,6 +536,7 @@ const visibleLines = computed(() => {
   if (state.sessionResumeLoading) return []
   return groupVisibleToolLines((state.lines || []).filter((line) => !shouldHideLine(line)))
 })
+const pendingMessageResizes = ref(0)
 const messageVirtualizer = useVirtualizer(computed(() => ({
   count: visibleLines.value.length,
   getScrollElement: () => transcript.value,
@@ -550,7 +551,7 @@ const messageVirtualizer = useVirtualizer(computed(() => ({
   },
   overscan: 8,
   scrollMargin: virtualScrollMargin.value,
-  anchorTo: 'end',
+  anchorTo: pendingMessageResizes.value ? 'start' : 'end',
   followOnAppend: true,
   scrollEndThreshold: 96,
   useAnimationFrameWithResizeObserver: true,
@@ -2325,11 +2326,11 @@ function toolGroupExpanded(group) {
   return state.expandedToolGroups[group?.id] === true
 }
 
-async function toggleToolGroup(group) {
+function toggleToolGroup(group, event) {
   if (!isToolGroup(group)) return
-  state.expandedToolGroups[group.id] = !toolGroupExpanded(group)
-  await nextTick()
-  resetVirtualMessages()
+  return resizeMessageFromInteraction(event, () => {
+    state.expandedToolGroups[group.id] = !toolGroupExpanded(group)
+  })
 }
 
 function toolGroupLabels(group) {
@@ -2510,11 +2511,11 @@ function agentToolExpanded(line) {
   return state.expandedToolGroups[`agent:${line?.id}`] === true
 }
 
-async function toggleAgentTool(line) {
-  const key = `agent:${line?.id}`
-  state.expandedToolGroups[key] = !state.expandedToolGroups[key]
-  await nextTick()
-  resetVirtualMessages()
+function toggleAgentTool(line, event) {
+  return resizeMessageFromInteraction(event, () => {
+    const key = `agent:${line?.id}`
+    state.expandedToolGroups[key] = !state.expandedToolGroups[key]
+  })
 }
 
 function hasToolStream(line) {
@@ -4249,6 +4250,25 @@ function measureVirtualMessageElement(element) {
   if (element instanceof Element) messageVirtualizer.value.measureElement(element)
 }
 
+async function resizeMessageFromInteraction(event, update) {
+  const row = event?.currentTarget?.closest('.virtual-message-row')
+  // Manual expansion anchors the header, not the bottom of the transcript.
+  // Keep measured history: measure() would replace offscreen sizes with estimates.
+  pendingMessageResizes.value++
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
+  scrollRaf = 0
+  try {
+    update()
+    await nextTick()
+    if (row?.isConnected) {
+      messageVirtualizer.value.resizeItem(Number(row.dataset.index), row.getBoundingClientRect().height)
+    }
+    await nextTick()
+  } finally {
+    pendingMessageResizes.value--
+  }
+}
+
 function resetVirtualMessages() {
   messageVirtualizer.value.measure()
 }
@@ -4571,7 +4591,7 @@ function createMobileSession() {
               <template v-for="line in [visibleLines[virtualRow.index]]" :key="line.id">
               <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
-                  <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line)">
+                  <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line, $event)">
                     <span class="tool-group-label">
                       <template v-for="(label, labelIndex) in toolGroupLabels(line)" :key="label.name">
                         <span class="tool-group-label-name">{{ label.name }}</span><span v-if="label.count > 1" class="tool-group-label-count">×{{ label.count }}</span><span v-if="labelIndex < toolGroupLabels(line).length - 1" class="tool-group-label-separator">、</span>
@@ -4623,7 +4643,7 @@ function createMobileSession() {
                           <p v-if="item.toolDisplay?.purpose || item.toolDisplay?.subject" class="tool-result-primary">{{ item.toolDisplay?.purpose || item.toolDisplay?.subject }}</p>
                           <p v-if="item.toolError">{{ item.toolError }}</p>
                           <div v-if="isAgentToolLine(item) && toolStreamSteps(item).length" class="tool-group-shell">
-                            <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(item)" @click="toggleAgentTool(item)">
+                            <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(item)" @click="toggleAgentTool(item, $event)">
                               <span class="tool-group-label">
                                 <template v-for="(tool, toolIndex) in agentToolSummary(item)" :key="tool.name">
                                   <span class="tool-group-label-name">{{ tool.label }}</span><span v-if="tool.count > 1" class="tool-group-label-count">×{{ tool.count }}</span><span v-if="toolIndex < agentToolSummary(item).length - 1" class="tool-group-label-separator">、</span>
@@ -4731,7 +4751,7 @@ function createMobileSession() {
                     </p>
                     <p v-if="line.toolError">{{ line.toolError }}</p>
                     <div v-if="isAgentToolLine(line) && toolStreamSteps(line).length" class="tool-group-shell">
-                      <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(line)" @click="toggleAgentTool(line)">
+                      <button type="button" class="tool-group-trigger" :aria-expanded="agentToolExpanded(line)" @click="toggleAgentTool(line, $event)">
                         <span class="tool-group-label">
                           <template v-for="(tool, toolIndex) in agentToolSummary(line)" :key="tool.name">
                             <span class="tool-group-label-name">{{ tool.label }}</span><span v-if="tool.count > 1" class="tool-group-label-count">×{{ tool.count }}</span><span v-if="toolIndex < agentToolSummary(line).length - 1" class="tool-group-label-separator">、</span>
