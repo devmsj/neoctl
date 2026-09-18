@@ -25,7 +25,7 @@ impl Fixture {
             source.join("node.exe").is_file(),
             "Tests require bundled desktop/resources/node"
         );
-        crate::copy_dir_recursive(&source, &staging.join("node")).unwrap();
+        copy_fixture(&source, &staging.join("node")).unwrap();
         fs::write(
             base.join(".npmrc"),
             "tag=HOST_ANCESTOR\nignore-scripts=true\n",
@@ -232,4 +232,17 @@ fn mixed_case_environment_filter() {
     ] {
         assert!(!injected(key), "{key}");
     }
+}
+
+fn copy_fixture(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            copy_fixture(&entry.path(), &target.join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), target.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }

@@ -40,7 +40,22 @@ fn restore(app: &AppHandle) {
 }
 fn exit(app: &AppHandle) {
     if let Some(state) = app.try_state::<crate::DesktopState>() {
-        crate::stop_existing_child(&state.child);
+        let Ok(_operation) = state.operation.try_lock() else {
+            rfd::MessageDialog::new()
+                .set_title("操作尚未完成")
+                .set_description("正在安装、更新或清理，请完成后退出；可以最小化到托盘。")
+                .show();
+            return;
+        };
+        if let Err(error) = crate::stop_existing_child(&state.child) {
+            rfd::MessageDialog::new()
+                .set_title("后台尚未停止")
+                .set_description(error)
+                .show();
+            return;
+        }
+        app.exit(0);
+        return;
     }
     app.exit(0);
 }
@@ -164,7 +179,7 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         });
     } else if matches!(event, tauri::WindowEvent::Destroyed) {
         if let Some(state) = window.try_state::<crate::DesktopState>() {
-            crate::stop_existing_child(&state.child);
+            let _ = crate::stop_existing_child(&state.child);
         }
     }
 }

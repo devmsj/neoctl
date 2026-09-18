@@ -2168,13 +2168,14 @@ dependencies = [
 
 [[package]]
 name = "neoctl-desktop"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rfd",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

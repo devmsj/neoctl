@@ -12,6 +12,8 @@ test('all child agent definitions exclude run/resume, even explicit or wildcard 
   const parent = new ToolRegistry();
   parent.register(createAgentTool());
   parent.register(createSubagentResumeTool());
+  parent.setEnabled("subagent_run", true);
+  parent.setEnabled("subagent_resume", true);
   for (const agent of [GENERAL_PURPOSE_AGENT, FORK_AGENT, EXPLORE_AGENT, { ...GENERAL_PURPOSE_AGENT, tools: ['*'], disallowedTools: [] }, { ...GENERAL_PURPOSE_AGENT, tools: ['subagent_run', 'subagent_resume'] }]) {
     const child = resolveAgentTools(parent, agent);
     assert.equal(child.get('subagent_run'), undefined);

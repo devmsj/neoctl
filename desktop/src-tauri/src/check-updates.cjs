@@ -3,10 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const semver = require(path.join(path.dirname(process.execPath), 'node_modules/npm/node_modules/semver'));
 const root = process.argv[1];
-const webPath = root ? path.join(root, 'runtime/node_modules/neoctl-web/package.json') : '';
+const pointer = root ? read(path.join(root, '.neo-updater/current.json')) : null;
+const release = pointer?.schema === 1 && /^r-[a-zA-Z0-9-]+$/.test(pointer.release) ? path.join('releases', pointer.release) : 'runtime';
+const webPath = root ? path.join(root, release, 'node_modules/neoctl-web/package.json') : '';
 function read(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 async function metadata(name, suffix = '') {
-  const response = await fetch(`https://registry.npmmirror.com/${name}${suffix}`, { signal: AbortSignal.timeout(12000) });
+  const response = await fetch(`https://registry.npmjs.org/${name}${suffix}`, { signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }

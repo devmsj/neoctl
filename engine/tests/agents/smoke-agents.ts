@@ -216,6 +216,8 @@ async function main(): Promise<void> {
     taskStore,
     agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]),
   }));
+  // This smoke explicitly exercises delegation, which is disabled by default.
+  for (const name of tools.names({ includeDisabled: true })) tools.setEnabled(name, true);
   const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
   const exploreToolsOk =
     ["file_list", "file_read", "file_search", "web_search", "terminal_run", "terminal_control", "subagent_report"].every((name) => exploreToolNames.has(name)) &&

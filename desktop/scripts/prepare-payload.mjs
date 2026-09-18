@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyReleaseVersions } from './verify-release-versions.mjs';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(desktopRoot, '..');
@@ -12,8 +13,10 @@ const output = path.join(payloadDir, 'neoctl-web.tgz');
 
 await mkdir(payloadDir, { recursive: true });
 const packageJson = JSON.parse(await readFile(path.join(webRoot, 'package.json'), 'utf8'));
-console.log(`[payload] building ${packageJson.name}@${packageJson.version}`);
-const filename = await npmPack(webRoot);
+const published = process.env.NEO_RELEASE_PAYLOAD === 'registry';
+if (published) await verifyReleaseVersions();
+console.log(`[payload] ${published ? 'fetching published' : 'building'} ${packageJson.name}@${packageJson.version}`);
+const filename = await npmPack(webRoot, published ? `neoctl-web@${packageJson.version}` : '');
 await rm(output, { force: true });
 await copyFile(path.join(webRoot, filename), output);
 await rm(path.join(webRoot, filename), { force: true });
@@ -27,9 +30,10 @@ await writeFile(path.join(payloadDir, 'payload-manifest.json'), `${JSON.stringif
 }, null, 2)}\n`, 'utf8');
 console.log(`[payload] wrote ${path.relative(desktopRoot, output)}`);
 
-function npmPack(cwd) {
+function npmPack(cwd, specifier) {
+  if (specifier && !/^neoctl-web@\d+\.\d+\.\d+$/.test(specifier)) throw new Error('invalid release version');
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm pack --json'], { cwd, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+    const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `npm pack ${specifier} --json --registry=https://registry.npmjs.org`], { cwd, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });

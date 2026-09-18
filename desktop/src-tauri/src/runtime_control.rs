@@ -2,18 +2,14 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager, WebviewWindow};
 fn running(app: &AppHandle) -> bool {
     let state = app.state::<crate::DesktopState>();
-    let alive = state
-        .child
-        .lock()
-        .ok()
-        .and_then(|mut c| c.as_mut().map(|c| matches!(c.try_wait(), Ok(None))))
-        .unwrap_or(false);
+    let alive = match state.child.lock() {
+        Ok(mut slot) => slot
+            .as_mut()
+            .map(|c| !matches!(c.try_wait(), Ok(Some(_))))
+            .unwrap_or(false),
+        Err(_) => true, // Unknown is not permission to replace a runtime.
+    };
     alive
-        && state
-            .runtime_url
-            .lock()
-            .map(|u| u.is_some())
-            .unwrap_or(false)
 }
 #[tauri::command]
 pub fn runtime_status(app: AppHandle) -> bool {
@@ -44,7 +40,7 @@ pub async fn stop_backend(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<crate::DesktopState>();
         let _guard = state.operation.lock().map_err(|_| "操作锁错误")?;
-        crate::stop_existing_child(&state.child);
+        crate::stop_existing_child(&state.child)?;
         *state.runtime_url.lock().map_err(|_| "状态锁错误")? = None;
         state
             .manual_start

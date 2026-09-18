@@ -10,7 +10,7 @@ async function run({ webLatest = '1.0.0', requirement = '^2.0.0', coreVersions =
   let reads = 0;
   const context = {
     require(name) {
-      if (name === 'node:fs') return { readFileSync() { if (!currentWeb) throw Error('missing'); reads += 1; return JSON.stringify({ version: reads === 1 ? currentWeb : currentCore }); } };
+      if (name === 'node:fs') return { readFileSync(file) { if (String(file).endsWith('current.json')) throw Error('no version pointer'); if (!currentWeb) throw Error('missing'); reads += 1; return JSON.stringify({ version: reads === 1 ? currentWeb : currentCore }); } };
       if (name === 'node:path') return path;
       return semver;
     },

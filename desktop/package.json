@@ -1,6 +1,6 @@
 {
   "name": "neoctl-desktop",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "description": "Independent Tauri 2 Windows shell for neoctl-web.",
   "scripts": {
@@ -9,12 +9,14 @@
     "bundle:prepare": "npm run payload && npm run runtime",
     "check": "node scripts/check-layout.mjs",
     "smoke:runtime": "node tests/smoke/smoke-runtime-install.mjs && node tests/smoke/smoke-runtime-launch.mjs",
-    "dev": "tauri dev",
-    "dev:local": "node scripts/dev-local.mjs",
-    "build": "npm run bundle:prepare && tauri build",
+    "dev": "npm run updater && tauri dev",
+    "dev:local": "npm run updater && node scripts/dev-local.mjs",
+    "build": "npm run bundle:prepare && npm run updater && tauri build",
     "test": "node --test tests/ui/app.test.cjs tests/scripts/runtime-source.test.cjs tests/scripts/check-updates.test.cjs",
     "test:browser": "node tests/ui/browser.test.cjs && node tests/scripts/backend-ui.test.cjs",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --bins --locked",
+    "updater": "node scripts/prepare-updater.mjs",
+    "test:updater": "cargo build --manifest-path src-tauri/Cargo.toml --bin neoctl-updater --locked && node tests/smoke/smoke-versioned-updater.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4"

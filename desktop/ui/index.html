@@ -41,10 +41,13 @@
             </div>
           </details>
           <p id="readyMessage" class="status-message" role="status" aria-live="polite">正在读取安装位置…</p>
-          <button id="installButton" class="primary-button" type="submit" disabled>安装并启动<span aria-hidden="true">↗</span></button>
+          <button id="clearInstallDirectory" class="secondary-button" type="button" hidden>清空此目录（删除全部内容）</button>
+            <button id="installButton" class="primary-button" type="submit" disabled>安装并启动<span aria-hidden="true">↗</span></button>
           <div id="backendControls" hidden>
             <p id="versionStatus" class="version-status" role="status" aria-live="polite">正在读取 Web / Core 版本…</p>
             <button id="updateRuntime" class="primary-button update-button" type="button" disabled>更新 Web 和 Core<span aria-hidden="true">↗</span></button>
+            <p id="cleanupStatus" class="status-message" role="status" hidden></p>
+            <button id="cleanupRuntime" class="secondary-button" type="button" hidden>重试清理旧版本</button>
             <p id="backendStatus" role="status">后台已关闭</p>
             <button id="startBackend" class="secondary-button" type="button">启动核心和后台</button>
             <button id="stopBackend" class="secondary-button" type="button" disabled>关闭核心和后台</button>

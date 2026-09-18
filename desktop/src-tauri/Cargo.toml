@@ -1,9 +1,10 @@
 [package]
 name = "neoctl-desktop"
-version = "0.1.15"
+version = "0.1.16"
 description = "Windows desktop shell for neoctl-web"
 authors = ["neoctl contributors"]
 edition = "2021"
+default-run = "neoctl-desktop"
 license = "Apache-2.0"
 
 [lib]
@@ -18,3 +19,6 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = { version = "0.15", features = ["common-controls-v6"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_System_Memory"] }

@@ -2,6 +2,8 @@
 
 Neo 的 TypeScript 核心运行时，提供 `neo` 命令行、模型调用、工具执行、会话管理和子代理任务。Web 和 Desktop 共用这套核心。
 
+子代理调度及管理工具（`subagent_run/output/list/get/stop/message/resume`）默认关闭：未配置时不会向模型暴露，也不能通过工具别名调用。Web/Desktop 可在工具设置中显式开启，会话设置可覆盖全局设置；已有明确保存的设置保留。SDK 使用者可通过 `ToolRegistry.setEnabled(name, true)` 显式开启。子代理内部的 `subagent_report` 汇报通道不受此默认开关影响。
+
 ## 安装使用
 
 需要 Node.js 20+。

@@ -19,7 +19,7 @@ import { findModelMetadata, loadModelCatalog, reasoningEffortsForModel, resolveC
 import { CommunicationLogger, LoggingModelGateway } from "../model/communication-logger.js";
 import { createModelGatewayFromConfig, createModelGatewayFromProcessEnv } from "../model/provider-factory.js";
 import type { ModelUsage, ReasoningConfig, ReasoningEffort } from "../model/model-gateway.js";
-import { ToolRegistry } from "../tools/registry.js";
+import { ToolRegistry, isToolEnabledByDefault } from "../tools/registry.js";
 import type { Tool, ToolUseContext } from "../tools/tool.js";
 import { builtinToolPresentation, toolPresentationForSource, type ToolPresentation } from "../tools/tool-catalog.js";
 import { editTool, writeTool } from "../tools/builtins/edit-tool.js";
@@ -352,7 +352,7 @@ export interface CreateWebRuntimeOptions {
   sessionPluginOverrides?: Readonly<Record<string, boolean>>;
   persistSessionPluginOverrides?: WebRuntimePluginSupport["persist"];
   resolveSessionPluginOverrides?: WebRuntimePluginSupport["resolve"];
-  /** Global tool defaults. Missing names default to enabled. */
+  /** Global tool overrides. Missing names use registry defaults (delegation tools are opt-in). */
   globalToolOverrides?: Readonly<Record<string, boolean>>;
   /** Per-session tool overrides. Missing names inherit their global default. */
   sessionToolOverrides?: Readonly<Record<string, boolean>>;
@@ -637,7 +637,7 @@ function applyToolOverrides(
   globalOverrides: Readonly<Record<string, boolean>>,
   sessionOverrides: Readonly<Record<string, boolean>>,
 ): void {
-  for (const tool of catalog) registry.setEnabled(tool.name, sessionOverrides[tool.name] ?? globalOverrides[tool.name] ?? true);
+  for (const tool of catalog) registry.setEnabled(tool.name, sessionOverrides[tool.name] ?? globalOverrides[tool.name] ?? isToolEnabledByDefault(tool.name));
 }
 
 /** Called only at a safe turn boundary or while idle, never during tool execution. */
@@ -975,7 +975,7 @@ export class WebRepl {
     return {
       items: support.catalog.map((tool) => ({
         ...tool,
-        configuredEnabled: support.globalOverrides[tool.name] ?? true,
+        configuredEnabled: support.globalOverrides[tool.name] ?? isToolEnabledByDefault(tool.name),
       })),
     };
   }
@@ -993,7 +993,7 @@ export class WebRepl {
       busy: this.busy,
       items: support.catalog.map((tool) => {
         const override = support.sessionOverrides[tool.name];
-        const globallyEnabled = support.globalOverrides[tool.name] ?? true;
+        const globallyEnabled = support.globalOverrides[tool.name] ?? isToolEnabledByDefault(tool.name);
         const available = tool.source !== "plugin" || Boolean(tool.pluginId && activePluginIds.has(tool.pluginId));
         return {
           ...tool,

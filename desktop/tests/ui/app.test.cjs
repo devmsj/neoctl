@@ -5,6 +5,12 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const source = readFileSync(`${__dirname}/../../ui/app.js`, 'utf8');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+test('all literal UI id selectors exist in the actual HTML', () => {
+  const html = readFileSync(`${__dirname}/../../ui/index.html`, 'utf8');
+  for (const [, id] of source.matchAll(/\$\(['"]#([\w-]+)['"]\)/g)) {
+    assert.ok(html.includes(`id="${id}"`), `missing actual DOM element: ${id}`);
+  }
+});
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 function harness(options = {}) {
   const elements = new Map();
@@ -147,7 +153,7 @@ test('late install completion after exit cannot launch runtime', async () => {
   assert.equal(h.calls.some((call) => call.name === 'launch_runtime'), false);
   assert.equal(h.removals, 2);
 });
-test('installed startup page updates Web and Core only while backend is stopped', async () => {
+test('installed startup page updates Web and Core with backend stopped', async () => {
   const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo', web_version: '0.1.10', core_version: '0.2.36' }, invoke(name) {
     if (name === 'update_runtime') return { web_version: '0.1.11', core_version: '0.2.37' };
   } }); await tick();
@@ -160,11 +166,40 @@ test('installed startup page updates Web and Core only while backend is stopped'
   assert.equal(h.document.body.dataset.state, 'ready');
   assert.match(h.element('versionStatus').textContent, /Web 0\.1\.11 \/ Core 0\.2\.37/);
 });
-test('running backend disables startup page update', async () => {
-  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo' }, invoke(name) { if (name === 'runtime_status') return true; } }); await tick();
-  assert.equal(h.element('updateRuntime').disabled, true);
+test('running backend can request update; native command owns confirmation and restart', async () => {
+  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing' }, invoke(name) {
+    if (name === 'runtime_status') return true;
+    if (name === 'update_runtime') return { web_version: '1.0.0', core_version: '2.0.0', cleanup_pending: [] };
+  } }); await tick();
+  assert.equal(h.element('updateRuntime').disabled, false);
   await h.element('updateRuntime').emit('click');
-  assert.equal(h.calls.some((call) => call.name === 'update_runtime'), false);
+  assert.equal(h.calls.filter(c => c.name === 'update_runtime').length, 1);
+  assert.equal(h.element('enterButton').disabled, false);
+  assert.match(h.element('readyMessage').textContent, /旧版本已删除/);
+});
+
+test('cleanup warning is update success and retry never reinstalls', async () => {
+  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing' }, invoke(name) {
+    if (name === 'update_runtime') return { web_version: '1.0.0', core_version: '2.0.0', cleanup_pending: ['旧 node.exe 被开发服务占用'] };
+    if (name === 'cleanup_runtime') return [];
+  } }); await tick();
+  await h.element('updateRuntime').emit('click');
+  assert.equal(h.document.body.dataset.state, 'ready');
+  assert.equal(h.element('cleanupRuntime').hidden, false);
+  assert.match(h.element('cleanupStatus').textContent, /被开发服务占用/);
+  await h.element('cleanupRuntime').emit('click');
+  assert.equal(h.element('cleanupRuntime').hidden, true);
+  assert.equal(h.calls.filter(c => c.name === 'update_runtime').length, 1);
+  assert.equal(h.calls.filter(c => c.name === 'cleanup_runtime').length, 1);
+});
+
+test('startup retries interrupted cleanup without invoking install or update', async () => {
+  const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', cleanup_pending: true }, invoke(name) {
+    if (name === 'cleanup_runtime') return ['仍被占用'];
+  } }); await tick();
+  assert.equal(h.calls.filter(c => c.name === 'cleanup_runtime').length, 1);
+  assert.equal(h.calls.some(c => ['install_runtime', 'update_runtime'].includes(c.name)), false);
+  assert.equal(h.element('cleanupRuntime').hidden, false);
 });
 
 test('first install explains latest Web and compatible Core before invoking installation', async () => {
@@ -176,6 +211,7 @@ test('first install explains latest Web and compatible Core before invoking inst
   assert.equal(h.document.body.dataset.state, 'installing');
   assert.equal(h.element('progressMessage').textContent, '正在准备安装…');
   assert.match(h.element('installLog').textContent, /联网获取最新 Web 与其兼容的 Core/);
+  await tick(); // install now waits for the directory preflight IPC
   assert.equal(h.calls.filter((call) => call.name === 'install_runtime').length, 1);
   assert.equal(h.calls.some((call) => call.name === 'update_runtime'), false);
   job.resolve(); await pending;
@@ -257,4 +293,31 @@ test('native directory disclosure starts closed and submit needs no explicit sel
   assert.ok(html.indexOf('id="pathDisplay"') < html.indexOf('id="pathOptions"'));
   assert.doesNotMatch(html.match(/<input id="installPath"[^>]+>/)[0], /required/);
   assert.match(html, /安装并启动/);
+});
+
+
+test('nonempty default directory requires explicit clearing and verifies empty before enabling install', async () => {
+  let nonempty = true;
+  const h = harness({ invoke(name) {
+    if (name === 'inspect_install_directory') return { nonempty, entries: nonempty ? ['data'] : [] };
+    if (name === 'clear_install_directory') { nonempty = false; return true; }
+  } }); await tick();
+  assert.equal(h.element('installButton').disabled, true);
+  assert.equal(h.element('clearInstallDirectory').hidden, false);
+  assert.equal(h.calls.some(c => c.name === 'install_runtime'), false);
+  await h.element('clearInstallDirectory').emit('click');
+  assert.equal(h.element('installButton').disabled, false);
+  assert.match(h.element('readyMessage').textContent, /已验证目录为空且可写/);
+});
+test('cancelled or failed clear never enables installation or reports success', async () => {
+  for (const failure of [false, Promise.reject.bind(Promise, '文件被占用')]) {
+    const h = harness({ invoke(name) {
+      if (name === 'inspect_install_directory') return { nonempty: true, entries: ['node.exe'] };
+      if (name === 'clear_install_directory') return typeof failure === 'function' ? failure() : failure;
+    } }); await tick();
+    await h.element('clearInstallDirectory').emit('click');
+    assert.equal(h.element('installButton').disabled, true);
+    assert.equal(h.calls.some(c => c.name === 'install_runtime'), false);
+    assert.doesNotMatch(h.element('readyMessage').textContent, /已验证目录为空/);
+  }
 });

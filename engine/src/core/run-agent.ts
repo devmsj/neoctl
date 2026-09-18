@@ -197,6 +197,8 @@ export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinit
     if (disallowed.has(tool.name)) continue;
     if (allowed && !allowed.includes("*") && !allowed.includes(tool.name)) continue;
     registry.register(tool);
+    // Preserve explicit parent opt-ins after applying the child allow/deny lists.
+    registry.setEnabled(tool.name, true);
   }
 
   if (!registry.get(AGENT_REPORT_TOOL_NAME)) {

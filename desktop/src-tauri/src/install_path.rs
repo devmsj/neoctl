@@ -231,7 +231,7 @@ fn receipt_owned(dir: &Path) -> Result<bool, String> {
         == Some(1))
 }
 
-fn reject_tree_links(dir: &Path) -> Result<(), String> {
+pub(super) fn reject_tree_links(dir: &Path) -> Result<(), String> {
     let mut pending = vec![dir.to_path_buf()];
     while let Some(path) = pending.pop() {
         let meta = metadata(&path)?
@@ -319,6 +319,19 @@ fn validate_data(root: &Path) -> Result<(), String> {
     reject_ancestor_shims(&data)
 }
 
+// Location shape and existing ancestors only; no session-directory deny list.
+pub(super) fn validate_location(path: &Path) -> Result<(), String> {
+    check_syntax(path)?;
+    for ancestor in path.ancestors() {
+        if let Some(meta) = metadata(ancestor)? {
+            if is_link(&meta) || !meta.is_dir() {
+                return Err(invalid(ancestor, "location must be an ordinary directory"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_with_protected(path: &Path, protected: &[PathBuf]) -> Result<(), String> {
     check_syntax(path)?;
     for ancestor in path.ancestors() {
@@ -333,6 +346,7 @@ fn validate_with_protected(path: &Path, protected: &[PathBuf]) -> Result<(), Str
         }
     }
     validate_data(path)?;
+    super::runtime_store::validate(path)?;
     let target = resolved(path)?;
     for root in protected {
         if within(&target, &resolved(root)?) {
@@ -367,9 +381,11 @@ fn validate_with_protected(path: &Path, protected: &[PathBuf]) -> Result<(), Str
             package_owned(&dir)?
                 && (receipt_owned(&dir)?
                     || (package_owned(&path.join("runtime"))?
-                        && receipt_owned(&path.join("runtime"))?))
+                        && receipt_owned(&path.join("runtime"))?)
+                    || super::runtime_store::current_id(path)?.is_some())
         } else {
-            package_owned(&dir)? && receipt_owned(&dir)?
+            package_owned(&dir)?
+                && (receipt_owned(&dir)? || super::runtime_store::current_id(path)?.is_some())
         };
         if !owned {
             return Err(invalid(
@@ -534,7 +550,11 @@ mod tests {
         fs::write(runtime.join("neo-desktop-runtime.json"), r#"{"schema":1}"#).unwrap();
         assert!(valid(&temp.0));
 
-        fs::write(previous.join("package.json"), r#"{"name":"some-other-package"}"#).unwrap();
+        fs::write(
+            previous.join("package.json"),
+            r#"{"name":"some-other-package"}"#,
+        )
+        .unwrap();
         assert!(!valid(&temp.0));
     }
 

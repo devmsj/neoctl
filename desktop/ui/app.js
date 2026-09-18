@@ -20,6 +20,8 @@ let defaultDir = '';
 let backendRunning = false;
 let retryAction = 'initialize';
 let phase = 'booting';
+let cleanupPending = false;
+let directoryNeedsCleanup = false;
 let estimate = 0;
 
 function on(target, event, handler) {
@@ -37,13 +39,15 @@ function showView(id, state, focus = true) {
 
 function setBusy(value) {
   busy = value;
-  installButton.disabled = value || !initialized || backendRunning;
+  installButton.disabled = value || !initialized || backendRunning || directoryNeedsCleanup;
+  $('#clearInstallDirectory').disabled = value || Boolean(installedDir);
   browseButton.disabled = value || !initialized || Boolean(installedDir);
   pathInput.disabled = value || !initialized;
   enterButton.disabled = value || !backendRunning;
   $('#startBackend').disabled = value || !installedDir || backendRunning;
   $('#stopBackend').disabled = value || !backendRunning;
-  updateButton.disabled = value || !installedDir || backendRunning;
+  updateButton.disabled = value || !installedDir;
+  $('#cleanupRuntime').disabled = value || !installedDir;
   retryButton.disabled = value;
 }
 
@@ -94,7 +98,7 @@ async function subscribe(event, handler) {
 function updatePathDisplay() {
   $('#pathDisplay').textContent = `${installedDir ? '数据位置' : '安装位置'}：${pathInput.value.trim() || defaultDir}`;
 }
-on(pathInput, 'input', updatePathDisplay);
+on(pathInput, 'input', () => { directoryNeedsCleanup = false; $('#clearInstallDirectory').hidden = true; updatePathDisplay(); setBusy(busy); });
 
 function applyBootstrap(state) {
   // Any configured path is existing data, even if runtime validation failed.
@@ -116,6 +120,7 @@ function applyBootstrap(state) {
     ? `当前 Web ${state.web_version || '未知'} / Core ${state.core_version || '未知'}。`
     : '';
   $('#backendControls').hidden = !installedDir;
+  setCleanup(state.cleanup_pending ? ['检测到上次更新的清理或恢复任务，将重试删除非当前版本。'] : []);
 }
 
 async function finishInstall() {
@@ -165,6 +170,8 @@ async function initialize() {
     await refreshBackend();
     setBusy(false);
     showView('readyView', 'ready', false);
+    if (!installedDir) await checkInstallDirectory();
+    if (cleanupPending) await retryCleanup();
   } catch (error) {
     autoLaunch = false;
     initialized = false;
@@ -209,6 +216,9 @@ on($('#installForm'), 'submit', async (event) => {
   applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在准备安装…', log: '正在准备内置 Node.js，将联网获取最新 Web 与其兼容的 Core…' });
   let completed = false;
   try {
+    const inspection = await api.core.invoke('inspect_install_directory', { installDir });
+    if (disposed) return;
+    if (inspection?.nonempty) { showDirectoryContents(inspection); showView('readyView', 'ready'); return; }
     await api.core.invoke('install_runtime', { installDir });
     if (disposed) return;
     completed = true;
@@ -221,7 +231,7 @@ on($('#installForm'), 'submit', async (event) => {
 });
 
 on(updateButton, 'click', async () => {
-  if (busy || disposed || !installedDir || backendRunning) return;
+  if (busy || disposed || !installedDir) return;
   setBusy(true);
   installLog.textContent = '';
   $('#logDetails').open = false;
@@ -232,9 +242,14 @@ on(updateButton, 'click', async () => {
     const versions = await api.core.invoke('update_runtime');
     if (disposed) return;
     $('#versionStatus').textContent = `当前 Web ${versions.web_version} / Core ${versions.core_version}。`;
-    $('#readyMessage').textContent = '更新完成。';
+    setCleanup(versions.cleanup_pending || []);
+    $('#readyMessage').textContent = cleanupPending ? '新版本已启用，旧版本清理未完成。' : '更新完成，旧版本已删除。';
+    await refreshBackend();
+    if (disposed) return;
     showView('readyView', 'ready');
   } catch (error) {
+    try { const state = await api.core.invoke('bootstrap_state'); if (!disposed) applyBootstrap(state); } catch { /* retain original update error */ }
+    await refreshBackend();
     fail(error, 'update');
   } finally {
     if (!disposed) setBusy(false);
@@ -246,7 +261,7 @@ on(browseButton, 'click', async () => {
   setBusy(true);
   try {
     const selected = await api.core.invoke('choose_install_directory', { initial: pathInput.value });
-    if (!disposed && selected) { pathInput.value = selected; updatePathDisplay(); }
+    if (!disposed && selected) { pathInput.value = selected; updatePathDisplay(); await checkInstallDirectory(); }
   } catch (error) {
     if (!disposed) { appendLog(error); $('#readyMessage').textContent = '无法选择目录，请重试或手动输入。'; }
   } finally {
@@ -301,3 +316,54 @@ for (const [id, command] of [['#startBackend','start_backend'],['#stopBackend','
 }
 const statusTimer = setInterval(() => { if (!busy && !disposed && initialized && phase === 'ready') refreshBackend(); }, 2000);
 cleanups.push(() => clearInterval(statusTimer));
+
+
+function setCleanup(warnings) {
+  cleanupPending = warnings.length > 0;
+  $('#cleanupRuntime').hidden = !cleanupPending;
+  $('#cleanupStatus').hidden = !cleanupPending;
+  $('#cleanupStatus').textContent = warnings.join('\n');
+}
+async function retryCleanup() {
+  if (busy || disposed || !installedDir) return;
+  setBusy(true);
+  try {
+    const warnings = await api.core.invoke('cleanup_runtime');
+    if (disposed) return;
+    setCleanup(warnings || []);
+    if (!cleanupPending) $('#readyMessage').textContent = '旧版本已删除，仅保留当前版本。';
+  } catch (error) {
+    if (!disposed) setCleanup([String(error)]);
+  } finally { if (!disposed) setBusy(false); }
+}
+on($('#cleanupRuntime'), 'click', retryCleanup);
+
+
+function showDirectoryContents(info) {
+  directoryNeedsCleanup = Boolean(info?.nonempty);
+  $('#clearInstallDirectory').hidden = !directoryNeedsCleanup;
+  if (directoryNeedsCleanup) $('#readyMessage').textContent = `此目录已有内容：${(info.entries || []).slice(0, 8).join('、')}。请先备份，再选择清空，或更换目录；不会自动覆盖。`;
+  setBusy(busy);
+}
+async function checkInstallDirectory() {
+  if (disposed || installedDir) return;
+  const installDir = pathInput.value.trim() || defaultDir;
+  const info = await api.core.invoke('inspect_install_directory', { installDir });
+  if (!disposed) showDirectoryContents(info);
+}
+on($('#clearInstallDirectory'), 'click', async () => {
+  if (busy || disposed || installedDir) return;
+  setBusy(true);
+  try {
+    const installDir = pathInput.value.trim() || defaultDir;
+    const cleared = await api.core.invoke('clear_install_directory', { installDir });
+    if (disposed || !cleared) return;
+    const info = await api.core.invoke('inspect_install_directory', { installDir });
+    if (disposed) return;
+    showDirectoryContents(info);
+    if (info?.nonempty) throw new Error('目录仍有内容，清理未完成，不允许安装。');
+    $('#readyMessage').textContent = '已验证目录为空且可写，可以安装。';
+  } catch (error) {
+    if (!disposed) { directoryNeedsCleanup = true; $('#clearInstallDirectory').hidden = false; $('#readyMessage').textContent = String(error); }
+  } finally { if (!disposed) setBusy(false); }
+});

@@ -61,12 +61,15 @@ test('startup-page update retains latest source and both registry sources resolv
   assert.match(rust, /let updating = source\.is_update\(\);/);
 });
 
-test('installer uses source specifier and leaves Core resolution to Web dependencies', () => {
-  const install = section('fn install_runtime_blocking(', 'fn launch_runtime_blocking(');
-  assert.match(install, /let web_specifier = source\.web_specifier\(\);/);
-  assert.match(install, /"dependencies": \{\s*"neoctl-web": web_specifier\s*\}/);
-  assert.match(install, /if matches!\(source, RuntimeSource::Bundled\) && !payload_source\.exists\(\)/);
-  assert.match(install, /if matches!\(source, RuntimeSource::Bundled\) \{\s*fs::copy/);
+test('independent updater owns npm installation and commit follows health check', () => {
+  const updater = read('src-tauri/src/bin/neoctl-updater.rs');
+  assert.match(rust, /Command::new\(updater_path\(app\)\?\)/);
+  assert.doesNotMatch(rust, /fn run_npm_install/);
+  assert.match(updater, /--install-strategy=nested/);
+  assert.match(updater, /semver\.satisfies/);
+  assert.match(updater, /runtime_store::commit/);
+  assert.ok(rust.indexOf('launch_version(app, &window') < rust.indexOf('write_all(b"commit'));
+  assert.doesNotMatch(rust, /fs::rename\(&runtime, &backup\)/);
 });
 
 test('smoke installation defaults to latest with an explicit bundled option and compatibility check', () => {

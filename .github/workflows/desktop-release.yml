@@ -4,33 +4,46 @@ on:
   push:
     tags:
       - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing desktop-vX.Y.Z tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build-and-release:
-    name: Build Windows NSIS installer
+    name: Build and verify Windows NSIS installer
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      NEO_RELEASE_PAYLOAD: registry
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     defaults:
       run:
         shell: pwsh
 
     steps:
-      - name: Check out source
+      - name: Check out release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22.12.0"
+          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: |
+            engine/package-lock.json
             web/package-lock.json
             desktop/package-lock.json
 
@@ -46,57 +59,96 @@ jobs:
 
       - name: Verify tag and desktop versions
         run: |
-          $tagVersion = "${{ github.ref_name }}" -replace '^desktop-v', ''
+          if ($env:RELEASE_TAG -notmatch '^desktop-v(\d+\.\d+\.\d+)$') { throw 'Invalid desktop release tag' }
+          $tagVersion = $Matches[1]
           $packageVersion = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
           $tauriVersion = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $cargoVersion = (Select-String -Path desktop/src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          if ($tagVersion -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
-            throw "Invalid desktop release tag version: $tagVersion"
-          }
           if ($packageVersion -ne $tagVersion -or $tauriVersion -ne $tagVersion -or $cargoVersion -ne $tagVersion) {
             throw "Version mismatch: tag=$tagVersion package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion"
           }
           "VERSION=$tagVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Verify npm latest Web and Core match source
+        run: node desktop/scripts/verify-release-versions.mjs
+
+      - name: Install Core dependencies
+        run: npm ci --prefix engine --registry=https://registry.npmjs.org
+
+      - name: Core typecheck
+        run: npm run typecheck --prefix engine
+
+      # The existing full Core suite has baseline failures. Do not hide them by
+      # continue-on-error: these release-specific regression tests must pass.
+      - name: Verify delegation defaults and nested-delegation regression
+        working-directory: engine
+        run: node --import tsx --test tests/web/subagent-tool-defaults.test.ts tests/agents/no-nested-delegation.test.ts
+
       - name: Install Web dependencies
-        run: npm ci --prefix web
+        run: npm ci --prefix web --registry=https://registry.npmjs.org
+
+      - name: Verify Web CLI and tool settings
+        working-directory: web
+        run: node --test tests/neow.test.mjs tests/tool-settings.test.mjs tests/plugin-settings.test.mjs
 
       - name: Install Desktop dependencies
-        run: npm ci --prefix desktop
+        run: npm ci --prefix desktop --registry=https://registry.npmjs.org
 
-      - name: Prepare bundled runtime and Web payload
+      - name: Prepare published Web payload and bundled Node
         run: npm run bundle:prepare --prefix desktop
 
       - name: Run Desktop unit tests
         working-directory: desktop
-        run: node --test tests/scripts/check-updates.test.cjs tests/ui/app.test.cjs
+        run: npm test
+
+      - name: Prepare independent updater
+        run: npm run updater --prefix desktop
 
       - name: Check Desktop layout
         run: npm run check --prefix desktop
 
       - name: Test Rust
         working-directory: desktop/src-tauri
-        run: cargo test --lib --locked
+        run: cargo test --lib --bins --locked
 
-      - name: Build NSIS installer
-        run: npm run build --prefix desktop
+      - name: Test release updater protocol (offline)
+        run: |
+          $env:NEO_TEST_UPDATER = (Resolve-Path desktop/resources/updater/neoctl-updater.exe).Path
+          node desktop/tests/smoke/smoke-versioned-updater.mjs
 
-      - name: Verify Windows GUI subsystem
-        run: node desktop/scripts/check-windows-subsystem.cjs desktop/src-tauri/target/release/neoctl-desktop.exe
+      - name: Test actual published install and upgrade
+        timeout-minutes: 30
+        run: node desktop/tests/smoke/smoke-updater-network.mjs
 
-      - name: Collect release installer
+      - name: Build NSIS installer from verified payload
+        working-directory: desktop
+        run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis --ci
+
+      - name: Verify GUI subsystem and packaged updater identity
+        run: |
+          node desktop/scripts/check-windows-subsystem.cjs desktop/src-tauri/target/release/neoctl-desktop.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node desktop/scripts/check-windows-subsystem.cjs desktop/resources/updater/neoctl-updater.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $built = (Get-FileHash desktop/src-tauri/target/release/neoctl-updater.exe).Hash
+          $bundled = (Get-FileHash desktop/resources/updater/neoctl-updater.exe).Hash
+          if ($built -ne $bundled) { throw 'Bundled updater differs from release executable' }
+
+      - name: Collect installer and reverify npm latest versions
         run: |
           $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
-          if ($installers.Count -ne 1) {
-            throw "Expected exactly one NSIS installer, found $($installers.Count)"
-          }
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)" }
           New-Item -ItemType Directory -Force desktop/artifacts | Out-Null
           $releaseName = "Neo-Desktop-$env:VERSION-x64-setup.exe"
           Copy-Item $installers[0].FullName "desktop/artifacts/$releaseName"
           (Get-FileHash "desktop/artifacts/$releaseName" -Algorithm SHA256).Hash.ToLowerInvariant() + "  $releaseName" |
             Set-Content "desktop/artifacts/$releaseName.sha256" -Encoding ascii
+          node desktop/scripts/verify-release-versions.mjs desktop/artifacts/release-versions.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item desktop/resources/payload/payload-manifest.json desktop/artifacts/payload-manifest.json
+          git rev-parse HEAD | Set-Content desktop/artifacts/source-commit.txt -Encoding ascii
 
-      - name: Upload workflow artifact
+      - name: Upload verified workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: neo-desktop-${{ env.VERSION }}-windows-x64
@@ -108,10 +160,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $installer = "desktop/artifacts/Neo-Desktop-$env:VERSION-x64-setup.exe"
-          $checksum = "$installer.sha256"
-          gh release create "${{ github.ref_name }}" $installer $checksum `
-            --repo "${{ github.repository }}" `
-            --title "Neo Desktop $env:VERSION" `
-            --generate-notes `
-            --verify-tag
+          $assets = @(Get-ChildItem desktop/artifacts -File | ForEach-Object { $_.FullName })
+          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
+          } else {
+            gh release create $env:RELEASE_TAG @assets --repo "${{ github.repository }}" `
+              --title "Neo Desktop $env:VERSION" --generate-notes --verify-tag
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

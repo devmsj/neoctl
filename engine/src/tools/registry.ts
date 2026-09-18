@@ -2,6 +2,11 @@ import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "
 import type { JsonSchema, Tool, ToolDefinition, ToolUseContext } from "./tool.js";
 import { resolveToolDescription } from "./tool.js";
 
+/** Delegation is opt-in. The child-only report tool is not a delegation switch. */
+export function isToolEnabledByDefault(name: string): boolean {
+  return !name.startsWith("subagent_") || name === "subagent_report";
+}
+
 export interface ToolPoolOptions {
   mode?: "default" | "simple" | "repl";
   denyTools?: readonly string[];
@@ -18,6 +23,7 @@ export class ToolRegistry {
       throw new Error(`Tool already registered: ${tool.name}`);
     }
     this.tools.set(tool.name, tool);
+    if (!isToolEnabledByDefault(tool.name)) this.disabledTools.add(tool.name);
     for (const alias of tool.aliases ?? []) {
       if (!this.aliases.has(alias)) this.aliases.set(alias, tool.name);
     }

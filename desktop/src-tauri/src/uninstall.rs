@@ -54,6 +54,11 @@ fn confirm_and_uninstall(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    let state = app.state::<crate::DesktopState>();
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| "正在安装、更新或清理，请完成后再卸载")?;
     let executable =
         std::env::current_exe().map_err(|error| format!("无法定位当前程序：{error}"))?;
     let uninstaller = uninstaller_next_to(&executable)?;
@@ -67,7 +72,7 @@ fn confirm_and_uninstall(app: &AppHandle) -> Result<(), String> {
         })?;
 
     if let Some(state) = app.try_state::<crate::DesktopState>() {
-        crate::stop_existing_child(&state.child);
+        let _ = crate::stop_existing_child(&state.child);
     }
     app.exit(0);
     Ok(())

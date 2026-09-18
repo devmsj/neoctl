@@ -1,21 +1,27 @@
+mod directory_gate;
 mod downloads;
+mod health_check;
 mod install_path;
+mod install_preflight;
 mod install_storage;
+mod managed_process;
 mod node_isolation;
 mod runtime_control;
+mod runtime_store;
 mod tray;
 mod uninstall;
 mod updates;
 use install_path::validate_install_dir;
+use managed_process::ManagedChild as Child;
 use node_isolation::{configure as configure_node, Phase};
 
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -27,8 +33,7 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const REGISTRY: &str = "https://registry.npmmirror.com";
-const RECEIPT_FILE: &str = "neo-desktop-runtime.json";
+const REGISTRY: &str = "https://registry.npmjs.org";
 
 #[derive(Default)]
 struct DesktopState {
@@ -37,6 +42,7 @@ struct DesktopState {
     start_url: Mutex<Option<tauri::Url>>,
     manual_start: std::sync::atomic::AtomicBool,
     operation: Mutex<()>,
+    owner: Mutex<Option<(PathBuf, fs::File)>>,
 }
 
 #[derive(Serialize)]
@@ -47,13 +53,16 @@ struct BootstrapState {
     install_dir: Option<String>,
     web_version: Option<String>,
     core_version: Option<String>,
+    cleanup_pending: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct RuntimeVersions {
     web_version: String,
     core_version: String,
     core_requirement: Option<String>,
+    #[serde(default)]
+    cleanup_pending: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,22 +113,6 @@ struct DesktopConfig {
     install_dir: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct InstallReceipt {
-    schema: u8,
-    web_package: String,
-    installed_at: String,
-    registry: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    web_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    core_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    core_requirement: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-}
-
 #[tauri::command]
 fn sync_window_theme(window: WebviewWindow, theme: String) -> Result<(), String> {
     let theme = match theme.as_str() {
@@ -140,9 +133,16 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
         None => default_install_dir()?,
     };
     let install_dir = configured;
-    let versions = install_dir
-        .as_deref()
-        .and_then(|path| read_runtime_versions(&path.join("runtime")).ok());
+    if let Some(root) = &install_dir {
+        validate_install_dir(root)?;
+        runtime_store::current(root)?;
+        ensure_owner(&app, root)?;
+    }
+    let versions = install_dir.as_deref().and_then(|path| {
+        runtime_store::current(path)
+            .ok()
+            .and_then(|p| read_runtime_versions(&p).ok())
+    });
     Ok(BootstrapState {
         default_install_dir: default_dir.to_string_lossy().into_owned(),
         installed: install_dir
@@ -160,7 +160,15 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
         install_dir: install_dir.map(|path| path.to_string_lossy().into_owned()),
         web_version: versions.as_ref().map(|value| value.web_version.clone()),
         core_version: versions.map(|value| value.core_version),
+        cleanup_pending: configured_cleanup_pending(&app)?,
     })
+}
+
+fn configured_cleanup_pending(app: &AppHandle) -> Result<bool, String> {
+    let Some(config) = read_optional_desktop_config(app)? else {
+        return Ok(false);
+    };
+    Ok(runtime_store::transaction(Path::new(&config.install_dir))?.is_some())
 }
 
 #[tauri::command]
@@ -174,6 +182,51 @@ async fn choose_install_directory(initial: String) -> Result<Option<String>, Str
         .pick_folder()
         .await
         .map(|handle| handle.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn inspect_install_directory(
+    app: AppHandle,
+    install_dir: String,
+) -> Result<install_preflight::DirectoryState, String> {
+    if read_optional_desktop_config(&app)?.is_some() {
+        return Err("已有配置，请使用更新；不会清空已有会话目录".into());
+    }
+    let path = PathBuf::from(install_dir);
+    let result = install_preflight::inspect(&path)?;
+    if !result.nonempty {
+        install_storage::probe(&path)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn clear_install_directory(app: AppHandle, install_dir: String) -> Result<bool, String> {
+    if read_optional_desktop_config(&app)?.is_some() {
+        return Err("已有配置，请使用旧版本清理或更新，不清空会话目录".into());
+    }
+    let root = PathBuf::from(&install_dir);
+    let contents = install_preflight::inspect(&root)?;
+    if !contents.nonempty {
+        return Ok(true);
+    }
+    let accepted=rfd::AsyncMessageDialog::new().set_title("清空后重新安装")
+        .set_description(format!("将永久删除此目录内的全部内容：\n{}\n\n包括会话、配置、工作区及其他文件，无法恢复。请先备份。\n现有内容：{}\n\n如需保留内容请选择取消并换一个目录。确认清空？",root.display(),contents.entries.iter().take(12).cloned().collect::<Vec<_>>().join("、")))
+        .set_buttons(rfd::MessageButtons::OkCancel).show().await==rfd::MessageDialogResult::Ok;
+    if !accepted {
+        return Ok(false);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DesktopState>();
+        let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
+        if read_optional_desktop_config(&app)?.is_some() {
+            return Err("安装状态已改变，未清理".into());
+        }
+        install_preflight::clear_confirmed(&root)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -192,6 +245,19 @@ async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), Stri
 
 #[tauri::command]
 async fn update_runtime(app: AppHandle) -> Result<RuntimeVersions, String> {
+    if runtime_control::runtime_status(app.clone())
+        && rfd::AsyncMessageDialog::new()
+            .set_title("更新 Web 和 Core")
+            .set_description(
+                "下载期间后台保持运行。新版本准备完成后将停止后台任务并重启，确认更新？",
+            )
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show()
+            .await
+            != rfd::MessageDialogResult::Ok
+    {
+        return Err("已取消更新，后台未停止".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let config = read_desktop_config(&app)?;
         install_runtime_blocking(
@@ -226,12 +292,18 @@ fn install_runtime_blocking(
 ) -> Result<RuntimeVersions, String> {
     let state = app.state::<DesktopState>();
     let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
-    if runtime_control::runtime_status(app.clone()) {
+    if !source.is_update() && runtime_control::runtime_status(app.clone()) {
         return Err(if source.is_update() {
             "请先关闭核心和后台再更新".into()
         } else {
             "请先关闭核心和后台再安装".into()
         });
+    }
+    if !source.is_update()
+        && read_optional_desktop_config(app)?.is_none()
+        && install_preflight::inspect(&install_dir)?.nonempty
+    {
+        return Err("所选目录已有内容，请先确认清理或更换目录；未开始安装".into());
     }
     validate_install_dir(&install_dir)?;
     let updating = source.is_update();
@@ -285,225 +357,230 @@ fn install_runtime_blocking(
         },
     );
 
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("无法定位应用资源：{error}"))?;
-    let node_source = resource_dir.join("node");
-    let payload_source = resource_dir.join("payload").join("neoctl-web.tgz");
-    if !node_source.join("node.exe").exists() {
-        return Err(format!("内置 Node 运行时缺失：{}", node_source.display()));
+    ensure_owner(app, &install_dir)?;
+    let result = (|| {
+        fs::create_dir_all(install_dir.join("data/workspaces"))
+            .map_err(display_io("无法创建数据目录"))?;
+        write_desktop_config(app, &install_dir)?;
+        run_independent_update(app, &install_dir, source)
+    })();
+    // A failed first install must remain eligible for explicit clear/retry.
+    // Keep the durable config when commit already happened, even if reporting failed.
+    if result.is_err() && configured.is_none() && runtime_store::current_id(&install_dir)?.is_none()
+    {
+        let config_path = desktop_config_path(app)?;
+        if config_path.exists() {
+            fs::remove_file(config_path).map_err(display_io("无法重置首次安装配置"))?;
+        }
+        *state.owner.lock().map_err(|_| "目录所有者状态锁错误")? = None;
     }
-    if matches!(source, RuntimeSource::Bundled) && !payload_source.exists() {
-        return Err(format!("内置 npm 软件包缺失：{}", payload_source.display()));
+    result
+}
+
+fn updater_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let resource = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let bundled = resource.join("updater/neoctl-updater.exe");
+    if bundled.is_file() {
+        return Ok(bundled);
     }
+    let sibling = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("neoctl-updater.exe");
+    if cfg!(debug_assertions) && sibling.is_file() {
+        return Ok(sibling);
+    }
+    Err("独立更新器缺失，请重新安装完整桌面版".into())
+}
 
-    let staging = install_dir.join(".runtime-staging");
-    let runtime = install_dir.join("runtime");
-    remove_dir_if_exists(&staging)?;
-    fs::create_dir_all(staging.join("packages")).map_err(display_io("无法创建临时目录"))?;
-
-    let web_specifier = source.web_specifier();
-    let package_json = serde_json::json!({
-        "name": "neoctl-desktop-runtime",
-        "version": "1.0.0",
-        "private": true,
-        "dependencies": {
-            "neoctl-web": web_specifier
+fn run_independent_update(
+    app: &AppHandle,
+    root: &Path,
+    source: RuntimeSource,
+) -> Result<RuntimeVersions, String> {
+    let resource = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let mut command = Command::new(updater_path(app)?);
+    command
+        .arg("prepare")
+        .arg(root)
+        .arg(resource)
+        .arg(if matches!(source, RuntimeSource::Bundled) {
+            "bundled"
+        } else {
+            "latest"
+        })
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut updater = Child::spawn(&mut command).map_err(|e| format!("无法启动独立更新器：{e}"))?;
+    let output = updater.stdout.take().ok_or("无法读取更新器输出")?;
+    let state = app.state::<DesktopState>();
+    let window = app.get_webview_window("main").ok_or("桌面窗口已关闭")?;
+    let previous = runtime_store::current(root)?;
+    let mut switched = false;
+    let mut activated = None;
+    let (events, received) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            if events.send(line).is_err() {
+                break;
+            }
         }
     });
-    fs::write(
-        staging.join("package.json"),
-        serde_json::to_vec_pretty(&package_json).map_err(|error| error.to_string())?,
-    )
-    .map_err(display_io("无法写入运行时 package.json"))?;
-
-    emit_progress(
-        app,
-        8,
-        "释放基础组件",
-        "正在复制内置 Node.js 与 npm…",
-        "复制运行时",
-        None,
-    );
-    copy_dir_recursive(&node_source, &staging.join("node"))?;
-    if matches!(source, RuntimeSource::Bundled) {
-        fs::copy(
-            &payload_source,
-            staging.join("packages").join("neoctl-web.tgz"),
-        )
-        .map_err(display_io("无法释放 neoctl-web 软件包"))?;
-    }
-
-    emit_progress(
-        app,
-        15,
-        if updating {
-            "更新 Web 与 Core"
-        } else {
-            "安装应用依赖"
-        },
-        if matches!(source, RuntimeSource::Bundled) {
-            "正在通过国内镜像获取 Core 与依赖…"
-        } else {
-            "正在通过国内镜像获取最新 Web 与其兼容的 Core…"
-        },
-        "连接软件源",
-        Some(format!("registry: {REGISTRY}")),
-    );
-    run_npm_install(app, &install_dir, &staging)?;
-
-    let server_entry = staging
-        .join("node_modules")
-        .join("neoctl-web")
-        .join("server.mjs");
-    if !server_entry.exists() {
-        return Err(format!(
-            "安装完成但未找到服务入口：{}",
-            server_entry.display()
-        ));
-    }
-
-    emit_progress(
-        app,
-        90,
-        "校验安装结果",
-        "正在检查 Web 与 Core 版本…",
-        "完整性检查",
-        None,
-    );
-    let versions = read_runtime_versions(&staging)?;
-    let receipt = InstallReceipt {
-        schema: 1,
-        web_package: format!("neoctl-web@{}", versions.web_version),
-        installed_at: unix_timestamp().to_string(),
-        registry: REGISTRY.to_string(),
-        web_version: Some(versions.web_version.clone()),
-        core_version: Some(versions.core_version.clone()),
-        core_requirement: versions.core_requirement.clone(),
-        source: Some(source.label().to_string()),
-    };
-    fs::write(
-        staging.join(RECEIPT_FILE),
-        serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
-    )
-    .map_err(display_io("无法写入安装记录"))?;
-
-    let backup = install_dir.join(".runtime-previous");
-    remove_dir_if_exists(&backup)?;
-    if runtime.exists() {
-        fs::rename(&runtime, &backup).map_err(display_io("无法备份已有运行时"))?;
-    }
-    if let Err(error) = fs::rename(&staging, &runtime) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, &runtime);
+    let deadline = Instant::now() + Duration::from_secs(1800);
+    let result = (|| -> Result<RuntimeVersions, String> {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = received
+                .recv_timeout(remaining)
+                .map_err(|e| format!("更新器等待超时或提前退出：{e}；旧版本指针未主动更改"))?
+                .map_err(|e| e.to_string())?;
+            let event: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| format!("更新器协议错误：{e}"))?;
+            match event["event"].as_str().unwrap_or("") {
+                "log" => emit_progress(
+                    app,
+                    40,
+                    "准备独立版本",
+                    "下载和安装新版本，不覆盖旧文件",
+                    "安装依赖",
+                    event["message"].as_str().map(str::to_string),
+                ),
+                "error" => return Err(event["message"].as_str().unwrap_or("更新器失败").into()),
+                "ready" => {
+                    let id = event["candidate"].as_str().ok_or("候选版本缺失")?;
+                    let tx = runtime_store::transaction(root)?.ok_or("更新事务缺失")?;
+                    if tx.candidate != id {
+                        return Err("候选版本与更新事务不一致".into());
+                    }
+                    let candidate = runtime_store::release(root, id)?;
+                    emit_progress(
+                        app,
+                        90,
+                        "验证新版本",
+                        "正在启动候选后台并检查健康状态",
+                        "健康检查",
+                        None,
+                    );
+                    switched = true;
+                    stop_existing_child(&state.child)?;
+                    *state.runtime_url.lock().map_err(|_| "状态锁错误")? = None;
+                    launch_version(
+                        app,
+                        &window,
+                        state.child.clone(),
+                        root.into(),
+                        false,
+                        Some(candidate),
+                    )?;
+                    activated = Some(id.to_string());
+                    updater
+                        .stdin
+                        .as_mut()
+                        .ok_or("更新器输入已关闭")?
+                        .write_all(b"commit\n")
+                        .map_err(|e| e.to_string())?;
+                }
+                "done" => {
+                    let mut versions: RuntimeVersions =
+                        serde_json::from_value(event["versions"].clone())
+                            .map_err(|e| e.to_string())?;
+                    versions.cleanup_pending =
+                        serde_json::from_value(event["warnings"].clone()).unwrap_or_default();
+                    let status = updater.wait_bounded(Duration::from_secs(15))?;
+                    if !status.success() {
+                        return Err(format!("更新器异常退出：{status}"));
+                    }
+                    emit_progress(
+                        app,
+                        100,
+                        "更新完成",
+                        if versions.cleanup_pending.is_empty() {
+                            "新版本已启动，旧版本已删除。"
+                        } else {
+                            "新版本已启动；部分旧文件被占用，需重试清理。"
+                        },
+                        "完成",
+                        Some(versions.cleanup_pending.join("\n")),
+                    );
+                    return Ok(versions);
+                }
+                _ => return Err("未知更新器事件".into()),
+            }
         }
-        return Err(format!("无法启用新运行时：{error}"));
+    })();
+    if result.is_err() {
+        // Stop updater first so a late commit cannot race rollback.
+        updater.stop()?;
+        if activated
+            .as_ref()
+            .is_some_and(|id| runtime_store::current_id(root).ok().flatten().as_ref() == Some(id))
+        {
+            let mut versions = read_runtime_versions(&runtime_store::current(root)?)?;
+            versions
+                .cleanup_pending
+                .push("新版本已提交，但更新器结束异常；请重试旧版本清理".into());
+            return Ok(versions);
+        }
+        if !switched {
+            return result;
+        }
+        stop_existing_child(&state.child)?;
+        *state.runtime_url.lock().map_err(|_| "状态锁错误")? = None;
+        if runtime_store::complete(&previous) {
+            if let Err(rollback) = launch_version(
+                app,
+                &window,
+                state.child.clone(),
+                root.into(),
+                false,
+                Some(previous),
+            ) {
+                return Err(format!(
+                    "{}；旧版本重新启动也失败：{rollback}",
+                    result.unwrap_err()
+                ));
+            }
+        }
     }
-    remove_dir_if_exists(&backup)?;
-    fs::create_dir_all(install_dir.join("data").join("workspaces"))
-        .map_err(display_io("无法创建数据目录"))?;
-    write_desktop_config(app, &install_dir)?;
-    emit_progress(
-        app,
-        100,
-        if updating {
-            "更新完成"
-        } else {
-            "安装完成"
-        },
-        &format!(
-            "Web {} / Core {} 已准备完成。",
-            versions.web_version, versions.core_version
-        ),
-        "完成",
-        None,
-    );
-    Ok(versions)
+    result
 }
 
-fn run_npm_install(app: &AppHandle, root: &Path, staging: &Path) -> Result<(), String> {
-    let node = staging.join("node").join("node.exe");
-    let npm_cli = staging
-        .join("node")
-        .join("node_modules")
-        .join("npm")
-        .join("bin")
-        .join("npm-cli.js");
-    if !npm_cli.exists() {
-        return Err(format!("内置 npm CLI 缺失：{}", npm_cli.display()));
-    }
-    let mut command = Command::new(node);
-    configure_node(&mut command, root, staging, staging, Phase::Install)?;
-    command
-        .arg(npm_cli)
-        .args([
-            "install",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            "--foreground-scripts",
-            "--install-strategy=nested",
-            "--loglevel=http",
-            "--registry",
-            REGISTRY,
-        ])
-        .current_dir(staging)
-        .env("npm_config_registry", REGISTRY)
-        .env("npm_config_progress", "true")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    hide_window(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("无法启动 npm：{error}"))?;
-    let stdout = child.stdout.take().ok_or("无法读取 npm 标准输出")?;
-    let stderr = child.stderr.take().ok_or("无法读取 npm 错误输出")?;
-    let app_for_stdout = app.clone();
-    let out_thread = thread::spawn(move || stream_install_output(app_for_stdout, stdout, false));
-    let app_for_stderr = app.clone();
-    let err_thread = thread::spawn(move || stream_install_output(app_for_stderr, stderr, true));
-    let status = child
-        .wait()
-        .map_err(|error| format!("等待 npm 结束失败：{error}"))?;
-    let _ = out_thread.join();
-    let _ = err_thread.join();
-    if !status.success() {
-        return Err(format!(
-            "npm install 失败，退出码：{}",
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(())
-}
-
-fn stream_install_output<R: Read>(app: AppHandle, reader: R, is_error: bool) {
-    let mut count = 0u16;
-    for line in BufReader::new(reader).lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+#[tauri::command]
+async fn cleanup_runtime(app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DesktopState>();
+        let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
+        let root = PathBuf::from(read_desktop_config(&app)?.install_dir);
+        validate_install_dir(&root)?;
+        ensure_owner(&app, &root)?;
+        let mut command = Command::new(updater_path(&app)?);
+        command
+            .arg("cleanup")
+            .arg(&root)
+            .arg(app.path().resource_dir().map_err(|e| e.to_string())?)
+            .arg("latest")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = Child::spawn(&mut command).map_err(|e| e.to_string())?;
+        let out = child.stdout.take().ok_or("无法读取清理状态")?;
+        let reader = thread::spawn(move || {
+            let mut s = String::new();
+            BufReader::new(out).read_to_string(&mut s).map(|_| s)
+        });
+        let status = child.wait_bounded(Duration::from_secs(180))?;
+        let text = reader
+            .join()
+            .map_err(|_| "清理输出异常")?
+            .map_err(|e| e.to_string())?;
+        let event: serde_json::Value =
+            serde_json::from_str(text.trim()).map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(event["message"].as_str().unwrap_or("旧版本清理失败").into());
         }
-        count = count.saturating_add(1);
-        let percent = (18 + count / 3).min(84) as u8;
-        let stage = if trimmed.contains("fetch") || trimmed.contains("GET 200") {
-            "下载依赖"
-        } else if trimmed.contains("added") || trimmed.contains("changed") {
-            "整理依赖"
-        } else if is_error {
-            "安装输出"
-        } else {
-            "解析依赖"
-        };
-        emit_progress(
-            &app,
-            percent,
-            "安装应用依赖",
-            "正在安装 core 与前后端运行依赖…",
-            stage,
-            Some(trimmed.to_string()),
-        );
-    }
+        serde_json::from_value(event["warnings"].clone()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn launch_runtime_blocking(
@@ -516,7 +593,32 @@ fn launch_runtime_blocking(
     let desktop_lock = app.state::<DesktopState>();
     let _operation = desktop_lock.operation.lock().map_err(|_| "操作锁错误")?;
     validate_install_dir(&install_dir)?;
-    if !runtime_is_installed(&install_dir) {
+    ensure_owner(app, &install_dir)?;
+    let _update_lock = runtime_store::lock(&install_dir, "update.lock")?;
+    let cleanup = runtime_store::cleanup(&install_dir)?;
+    for warning in cleanup {
+        emit_progress(
+            app,
+            100,
+            "旧版本清理待完成",
+            &warning,
+            "清理",
+            Some(warning.clone()),
+        );
+    }
+    launch_version(app, window, child_slot, install_dir, navigate, None)
+}
+
+fn launch_version(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    child_slot: Arc<Mutex<Option<Child>>>,
+    install_dir: PathBuf,
+    navigate: bool,
+    candidate: Option<PathBuf>,
+) -> Result<(), String> {
+    validate_install_dir(&install_dir)?;
+    if candidate.is_none() && !runtime_is_installed(&install_dir) {
         return Err("所选位置没有完整的 Neo Desktop 运行时，请先安装。".to_string());
     }
     let desktop = app.state::<DesktopState>();
@@ -541,11 +643,12 @@ fn launch_runtime_blocking(
             return Ok(());
         }
     }
-    stop_existing_child(&child_slot);
+    stop_existing_child(&child_slot)?;
     *desktop.runtime_url.lock().map_err(|_| "状态锁错误")? = None;
     let web_port = available_port()?;
     let runtime_port = available_port_excluding(web_port)?;
-    let runtime = install_dir.join("runtime");
+    let runtime = candidate.unwrap_or(runtime_store::current(&install_dir)?);
+    let expected_core = read_runtime_versions(&runtime)?.core_version;
     let node = runtime.join("node").join("node.exe");
     let server = runtime
         .join("node_modules")
@@ -591,9 +694,8 @@ fn launch_runtime_blocking(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     hide_window(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("无法启动 Neo 服务：{error}"))?;
+    let mut child =
+        Child::spawn(&mut command).map_err(|error| format!("无法启动 Neo 服务：{error}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     *child_slot.lock().map_err(|_| "运行时状态锁已损坏")? = Some(child);
@@ -605,7 +707,22 @@ fn launch_runtime_blocking(
     }
 
     let url = format!("http://127.0.0.1:{web_port}");
-    wait_for_http(&url, Duration::from_secs(45))?;
+    if let Err(error) = health_check::wait(&url, &expected_core, Duration::from_secs(45)) {
+        stop_existing_child(&child_slot)?;
+        return Err(error);
+    }
+    if child_slot
+        .lock()
+        .map_err(|_| "状态锁错误")?
+        .as_mut()
+        .ok_or("后台已退出")?
+        .try_wait()
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        stop_existing_child(&child_slot)?;
+        return Err("后台健康检查后意外退出".into());
+    }
     *app.state::<DesktopState>()
         .runtime_url
         .lock()
@@ -639,26 +756,6 @@ fn stream_runtime_output<R: Read + Send + 'static>(app: AppHandle, reader: R, lo
     });
 }
 
-fn wait_for_http(base_url: &str, timeout: Duration) -> Result<(), String> {
-    let address = base_url.trim_start_matches("http://");
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Ok(mut stream) = TcpStream::connect(address) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let _ = stream.write_all(
-                b"GET /api/client-info HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            );
-            let mut response = String::new();
-            if stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200")
-            {
-                return Ok(());
-            }
-        }
-        thread::sleep(Duration::from_millis(350));
-    }
-    Err("Neo 本地服务启动超时，请查看安装目录 logs 文件夹。".to_string())
-}
-
 fn available_port() -> Result<u16, String> {
     TcpListener::bind(("127.0.0.1", 0))
         .and_then(|listener| listener.local_addr())
@@ -677,14 +774,9 @@ fn available_port_excluding(excluded: u16) -> Result<u16, String> {
 }
 
 fn runtime_is_installed(root: &Path) -> bool {
-    root.join("runtime").join(RECEIPT_FILE).exists()
-        && root.join("runtime").join("node").join("node.exe").exists()
-        && root
-            .join("runtime")
-            .join("node_modules")
-            .join("neoctl-web")
-            .join("server.mjs")
-            .exists()
+    runtime_store::current(root)
+        .map(|p| runtime_store::complete(&p))
+        .unwrap_or(false)
 }
 
 fn read_runtime_versions(runtime: &Path) -> Result<RuntimeVersions, String> {
@@ -733,33 +825,28 @@ fn read_runtime_versions(runtime: &Path) -> Result<RuntimeVersions, String> {
         web_version,
         core_version,
         core_requirement,
+        cleanup_pending: Vec::new(),
     })
 }
 
-fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
-    fs::create_dir_all(target).map_err(display_io("无法创建目标目录"))?;
-    for entry in fs::read_dir(source).map_err(display_io("无法读取内置资源"))? {
-        let entry = entry.map_err(display_io("无法读取资源项"))?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        if entry
-            .file_type()
-            .map_err(display_io("无法读取资源类型"))?
-            .is_dir()
-        {
-            copy_dir_recursive(&source_path, &target_path)?;
-        } else {
-            fs::copy(&source_path, &target_path).map_err(display_io("无法复制资源文件"))?;
+fn default_install_dir() -> Result<PathBuf, String> {
+    // OS per-user application storage only. Never derive defaults from cwd,
+    // the current conversation/session directory, or any of its parents.
+    let mut reasons = Vec::new();
+    for path in install_storage::candidates() {
+        match install_preflight::inspect(&path) {
+            Ok(info) if info.nonempty => return Ok(path), // require consent, never auto-delete/fallback
+            Ok(_) => match install_storage::probe(&path) {
+                Ok(()) => return Ok(path),
+                Err(e) => reasons.push(e),
+            },
+            Err(e) => reasons.push(e),
         }
     }
-    Ok(())
-}
-
-fn default_install_dir() -> Result<PathBuf, String> {
-    install_storage::candidates()
-        .into_iter()
-        .find(|path| validate_install_dir(path).is_ok())
-        .ok_or_else(|| "无法确定安全目录，请检查用户目录设置。".into())
+    Err(format!(
+        "默认安装位置不可写，请检查用户应用目录：{}",
+        reasons.join("；")
+    ))
 }
 
 fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -826,28 +913,7 @@ fn write_desktop_config(app: &AppHandle, install_dir: &Path) -> Result<(), Strin
     let value = DesktopConfig {
         install_dir: install_dir.to_string_lossy().into_owned(),
     };
-    fs::write(
-        desktop_config_path(app)?,
-        serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
-    )
-    .map_err(display_io("无法保存桌面壳配置"))
-}
-
-fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
-    const ATTEMPTS: usize = 5;
-    for attempt in 0..ATTEMPTS {
-        match fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) if attempt + 1 < ATTEMPTS => {
-                // Antivirus/indexers can briefly hold freshly stopped Node files on Windows.
-                // Retrying also finishes a prior remove_dir_all that deleted only part of a tree.
-                thread::sleep(Duration::from_millis(150 * (attempt as u64 + 1)));
-            }
-            Err(error) => return Err(display_io("无法清理旧目录")(error)),
-        }
-    }
-    Ok(())
+    runtime_store::atomic_json(&desktop_config_path(app)?, &value)
 }
 
 fn emit_progress(
@@ -871,25 +937,29 @@ fn emit_progress(
     );
 }
 
-fn stop_existing_child(slot: &Arc<Mutex<Option<Child>>>) {
-    if let Ok(mut guard) = slot.lock() {
-        if let Some(child) = guard.as_mut() {
-            #[cfg(windows)]
-            {
-                let mut killer = Command::new("taskkill.exe");
-                killer
-                    .args(["/pid", &child.id().to_string(), "/t", "/f"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                hide_window(&mut killer);
-                let _ = killer.status();
-            }
-            #[cfg(not(windows))]
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        *guard = None;
+fn stop_existing_child(slot: &Arc<Mutex<Option<Child>>>) -> Result<(), String> {
+    let mut guard = slot.lock().map_err(|_| "运行时状态锁错误")?;
+    if let Some(child) = guard.as_mut() {
+        child.stop()?;
     }
+    *guard = None;
+    Ok(())
+}
+
+fn ensure_owner(app: &AppHandle, root: &Path) -> Result<(), String> {
+    let state = app.state::<DesktopState>();
+    let mut owner = state.owner.lock().map_err(|_| "目录所有者状态锁错误")?;
+    if let Some((path, _)) = &*owner {
+        if install_storage::same_path(path, root) {
+            return Ok(());
+        }
+        return Err("当前桌面实例已关联其他数据目录".into());
+    }
+    *owner = Some((
+        root.to_path_buf(),
+        runtime_store::lock(root, "desktop.lock")?,
+    ));
+    Ok(())
 }
 
 fn hide_window(command: &mut Command) {
@@ -901,13 +971,6 @@ fn display_io(context: &'static str) -> impl FnOnce(std::io::Error) -> String {
     move |error| format!("{context}：{error}")
 }
 
-fn unix_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState::default())
@@ -915,8 +978,11 @@ pub fn run() {
             sync_window_theme,
             bootstrap_state,
             choose_install_directory,
+            inspect_install_directory,
+            clear_install_directory,
             install_runtime,
             update_runtime,
+            cleanup_runtime,
             launch_runtime,
             uninstall::uninstall_desktop,
             updates::check_package_updates,

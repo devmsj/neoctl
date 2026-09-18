@@ -7,16 +7,13 @@ use std::{
 };
 
 pub(super) fn candidates() -> Vec<PathBuf> {
-    candidates_from(
-        ["LOCALAPPDATA", "APPDATA", "USERPROFILE"]
-            .map(|key| std::env::var_os(key).map(PathBuf::from)),
-    )
+    candidates_from(["LOCALAPPDATA", "APPDATA"].map(|key| std::env::var_os(key).map(PathBuf::from)))
 }
 
-fn candidates_from(bases: [Option<PathBuf>; 3]) -> Vec<PathBuf> {
+fn candidates_from(bases: [Option<PathBuf>; 2]) -> Vec<PathBuf> {
     let mut result = Vec::new();
     for base in bases.into_iter().flatten().filter(|p| p.is_absolute()) {
-        let path = base.join("Neo Desktop Data");
+        let path = base.join("Neo Desktop Runtime");
         if !result.iter().any(|p: &PathBuf| same_path(p, &path)) {
             result.push(path);
         }
@@ -47,6 +44,8 @@ pub(super) fn same_path(a: &Path, b: &Path) -> bool {
 fn has_existing_state(path: &Path) -> Result<bool, String> {
     for name in [
         "runtime",
+        "releases",
+        ".neo-updater",
         "data",
         ".runtime-staging",
         ".runtime-previous",
@@ -94,8 +93,12 @@ pub(super) fn select(
         }
         seen.push(path.clone());
         let outcome = validate(path).and_then(|_| {
-            if has_existing_state(path)? {
-                Err("候选目录已有运行时或数据，拒绝自动接管".into())
+            if has_existing_state(path)?
+                || fs::read_dir(path)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false)
+            {
+                Err("候选目录已有内容，需用户确认清理，拒绝自动接管".into())
             } else {
                 probe(path)
             }
@@ -374,9 +377,9 @@ mod tests {
     fn candidates_are_persistent_app_specific_and_deduplicated() {
         let t = Temp::new();
         assert_eq!(
-            candidates_from([Some(t.0.clone()), Some(t.0.clone()), None]),
-            vec![t.0.join("Neo Desktop Data")]
+            candidates_from([Some(t.0.clone()), Some(t.0.clone())]),
+            vec![t.0.join("Neo Desktop Runtime")]
         );
-        assert!(candidates_from([None, None, None]).is_empty());
+        assert!(candidates_from([None, None]).is_empty());
     }
 }
