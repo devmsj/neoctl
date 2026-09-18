@@ -4,7 +4,8 @@
   "version": "0.1.16",
   "identifier": "com.neoctl.desktop",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "beforeBundleCommand": "node scripts/sync-updater.mjs"
   },
   "app": {
     "withGlobalTauri": true,

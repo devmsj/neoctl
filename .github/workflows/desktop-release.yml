@@ -111,15 +111,6 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --lib --bins --locked
 
-      - name: Test release updater protocol (offline)
-        run: |
-          $env:NEO_TEST_UPDATER = (Resolve-Path desktop/resources/updater/neoctl-updater.exe).Path
-          node desktop/tests/smoke/smoke-versioned-updater.mjs
-
-      - name: Test actual published install and upgrade
-        timeout-minutes: 30
-        run: node desktop/tests/smoke/smoke-updater-network.mjs
-
       - name: Build NSIS installer from verified payload
         working-directory: desktop
         run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis --ci
@@ -133,6 +124,15 @@ jobs:
           $built = (Get-FileHash desktop/src-tauri/target/release/neoctl-updater.exe).Hash
           $bundled = (Get-FileHash desktop/resources/updater/neoctl-updater.exe).Hash
           if ($built -ne $bundled) { throw 'Bundled updater differs from release executable' }
+
+      - name: Test release updater protocol (offline)
+        run: |
+          $env:NEO_TEST_UPDATER = (Resolve-Path desktop/resources/updater/neoctl-updater.exe).Path
+          node desktop/tests/smoke/smoke-versioned-updater.mjs
+
+      - name: Test actual published install and upgrade
+        timeout-minutes: 30
+        run: node desktop/tests/smoke/smoke-updater-network.mjs
 
       - name: Collect installer and reverify npm latest versions
         run: |

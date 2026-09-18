@@ -12,7 +12,7 @@
 - Core source/test TypeScript checks: passed.
 - Delegation defaults and no-nested-delegation: 7 passed.
 - Web CLI/tool settings/plugin settings: 9 passed.
-- Desktop UI/script unit tests: 33 passed.
+- Desktop UI/script unit tests: 34 passed, including final updater synchronization before bundling.
 - Rust: 54 library + 28 updater tests passed.
 - Release updater offline protocol: passed (commit, occupied old version, cleanup retry, abort recovery, single-version retention, user-data preservation).
 - Desktop browser/keyboard/backend-control checks: passed again during release preparation.

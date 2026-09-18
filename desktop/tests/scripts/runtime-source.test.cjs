@@ -61,6 +61,13 @@ test('startup-page update retains latest source and both registry sources resolv
   assert.match(rust, /let updating = source\.is_update\(\);/);
 });
 
+test('bundling synchronizes the final updater binary after Tauri compilation', () => {
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
+  assert.equal(config.build.beforeBundleCommand, 'node scripts/sync-updater.mjs');
+  assert.match(read('scripts/sync-updater.mjs'), /copyFileSync\(source, destination\)/);
+  assert.match(read('scripts/sync-updater.mjs'), /hash\(source\) !== hash\(destination\)/);
+});
+
 test('independent updater owns npm installation and commit follows health check', () => {
   const updater = read('src-tauri/src/bin/neoctl-updater.rs');
   assert.match(rust, /Command::new\(updater_path\(app\)\?\)/);
