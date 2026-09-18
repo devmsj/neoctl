@@ -15,7 +15,9 @@
 - Desktop UI/script unit tests: 33 passed.
 - Rust: 54 library + 28 updater tests passed.
 - Release updater offline protocol: passed (commit, occupied old version, cleanup retry, abort recovery, single-version retention, user-data preservation).
-- Desktop browser/keyboard/backend-control checks: passed before release preparation.
+- Desktop browser/keyboard/backend-control checks: passed again during release preparation.
+- Published Web 0.1.16 / Core 0.2.42 network integration: passed, including HTTP tool defaults, install + update, old-version deletion and data preservation. First local attempt hit a proxy ECONNRESET; a fresh full test succeeded without disabling TLS or assertions.
+- First remote run exposed Windows PowerShell module discovery incompatibility in Node preparation. SHA256 and ZIP extraction now use .NET directly; no release assets were published by that failed run.
 
 ## Existing baseline failures (not suppressed)
 

@@ -28,12 +28,19 @@ $Checksums = (Invoke-WebRequest -Uri $ChecksumsUrl -UseBasicParsing).Content
 $ChecksumLine = @($Checksums -split "`n" | Where-Object { $_.Trim().EndsWith("  $ZipName") })
 if ($ChecksumLine.Count -ne 1) { throw "Missing official checksum for $ZipName" }
 $ExpectedHash = ($ChecksumLine[0] -split '\s+')[0].ToLowerInvariant()
-if ((Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExpectedHash) {
+# Use .NET directly: nested Windows PowerShell can inherit a pwsh PSModulePath
+# on hosted runners where Get-FileHash/Expand-Archive are not discoverable.
+$Hasher = [System.Security.Cryptography.SHA256]::Create()
+$Stream = [System.IO.File]::OpenRead($ZipPath)
+try { $ActualHash = [BitConverter]::ToString($Hasher.ComputeHash($Stream)).Replace('-', '').ToLowerInvariant() }
+finally { $Stream.Dispose(); $Hasher.Dispose() }
+if ($ActualHash -ne $ExpectedHash) {
   Remove-Item $ZipPath -Force
   throw "Node runtime checksum mismatch for $ZipName"
 }
 Remove-Item -Recurse -Force $ExtractRoot -ErrorAction SilentlyContinue
-Expand-Archive -Path $ZipPath -DestinationPath $ExtractRoot -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractRoot)
 Remove-Item -Recurse -Force $Target -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Target | Out-Null
 Copy-Item -Path (Join-Path $Extracted "*") -Destination $Target -Recurse -Force
