@@ -2,7 +2,7 @@
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { marked } from 'marked'
+import { marked } from './markdown.mjs'
 import TerminalOutputReader from './TerminalOutputReader.vue'
 import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'

@@ -204,19 +204,59 @@ test("soft input issues pass validation and warnings survive the full runner", a
   await assert.rejects(fs.stat(path.join(dir, "unused")));
 });
 
-test("stable refs, ambiguous refs, latest fallback and combined source limit", async () => {
+test("registry refs, immutable IDs, ambiguous refs, latest fallback and combined source limit", async () => {
   const tool = createOpenAIImageGenerationTool();
   const ctx: ToolUseContext = { ...context, messages: [{ id: "prior", role: "user", createdAt: new Date().toISOString(), blocks: [
-    { type: "image", imageId: "img_1", label: "same-label", mimeType: "image/png", data: png },
-    { type: "image", imageId: "img_2", label: "same-label", mimeType: "image/png", data: png },
+    { type: "image", imageId: "image-first", label: "same-label", mimeType: "image/png", data: png },
+    { type: "image", imageId: "image-second", label: "same-label", mimeType: "image/png", data: png },
   ] }] };
-  for (const patch of [{ imageRefs: ["img_2"] }, { imageRefs: ["[img#1]"] }, {}]) {
+  for (const patch of [{ imageRefs: ["img_2"] }, { imageRefs: ["image-second"] }, { imageRefs: ["[img#1]"] }, {}]) {
     assert.equal((await tool.validateInput!({ ...base, mode: "edit", ...patch }, ctx)).ok, true);
   }
   const ambiguous = await tool.validateInput!({ ...base, mode: "edit", imageRefs: ["same-label"] }, ctx);
   assert.ok(!ambiguous.ok && /ambiguous/.test(ambiguous.message));
+  const missing = await tool.validateInput!({ ...base, mode: "edit", imageRefs: ["caption plus C:\\old\\payload.txt"] }, ctx);
+  assert.ok(!missing.ok && /Available imageRefs: img_1, img_2/.test(missing.message));
+  assert.ok(!missing.ok && !missing.message.includes("payload.txt)"));
   const tooMany = await tool.validateInput!({ ...base, mode: "edit", images: Array(16).fill(source), image: source }, ctx);
   assert.equal(tooMany.ok, false);
+});
+
+test("registry aliases select exact source bytes, including compacted history", async (t) => {
+  const { dir, ctx } = await fixture(); t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const otherPng = byteFixtures.find(item => item.format === "png" && item.base64 !== png)!.base64;
+  const stored = path.join(dir, "prior.base64.txt");
+  await fs.writeFile(stored, png);
+  const messages: NonNullable<ToolUseContext["messages"]> = [{
+    id: "boundary", role: "user", createdAt: new Date().toISOString(), blocks: [],
+    metadata: { imageRegistry: { images: [{ id: "img_7", imageId: "historical-image", label: "same-label", mimeType: "image/png", storagePath: stored, storageFormat: "base64", sourceMessageId: "old", sourceBlockIndex: 0, sourceRole: "user", origin: "user", turnIndex: 0 }] } },
+  }, {
+    id: "recent", role: "user", createdAt: new Date().toISOString(), blocks: [
+      { type: "image", imageId: "recent-image", label: "same-label", mimeType: "image/png", data: otherPng },
+    ],
+  }];
+  let expected = png;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (_: string, init: RequestInit) => {
+    requests++;
+    assert.ok(init.body instanceof FormData);
+    const image = init.body.get("image[]");
+    assert.ok(image instanceof Blob);
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from(expected, "base64"));
+    return new Response(JSON.stringify({ data: [{ b64_json: png }] }));
+  });
+  const tool = createOpenAIImageGenerationTool({ apiKey: "test-key" });
+  for (const [ref, bytes] of [["img_7", png], ["historical-image", png], ["img_8", otherPng], ["recent-image", otherPng]]) {
+    expected = bytes!;
+    const result = await tool.call!({ ...base, mode: "edit", imageRefs: [ref!] }, { ...ctx, messages }, {});
+    assert.equal(result.ok, true, JSON.stringify(result.output));
+  }
+  await fs.unlink(stored);
+  for (const ref of ["img_7", "missing", "same-label"]) {
+    const result = await tool.call!({ ...base, mode: "edit", imageRefs: [ref] }, { ...ctx, messages }, {});
+    assert.equal(result.ok, false, "unavailable or ambiguous refs never use the latest image");
+  }
+  assert.equal(requests, 4);
 });
 
 test("concurrent same-name image calls never overwrite a file", async (t) => {

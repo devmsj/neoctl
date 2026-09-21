@@ -242,7 +242,8 @@ function extractImageRegistriesFromMetadata(messages: readonly Message[]): Image
   for (const message of messages) {
     const candidate = message.metadata?.imageRegistry as ImageRegistry | undefined;
     if (!candidate?.images?.length) continue;
-    registry = mergeImageRegistries(registry, candidate);
+    // Seed with persisted aliases; merging into an empty registry renumbers them.
+    registry = registry.images.length > 0 ? mergeImageRegistries(registry, candidate) : candidate;
   }
   return registry;
 }

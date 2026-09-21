@@ -258,10 +258,10 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
   return content;
 }
 
-function imageStorageText(block: { label?: string; storage?: { path: string; format: string } }): string | undefined {
+function imageStorageText(block: { imageId?: string; label?: string; storage?: { path: string; format: string } }): string | undefined {
   if (!block.storage?.path) return undefined;
-  const label = block.label ? `${block.label} ` : "";
-  return `${label}image payload is stored as ${block.storage.format} at ${block.storage.path}; use the load_image tool with this image label/id for visual inspection, or view/read only if you need the stored base64 text.`;
+  const ref = block.imageId?.trim() || block.label?.trim();
+  return ref ? `Image reference: ${ref}. For image_create edits, pass exactly this value in imageRefs; never pass a storage path or surrounding text.` : undefined;
 }
 
 function imageDataUrl(block: { mimeType: string; data: string; storage?: { path: string; format: string } }): string {

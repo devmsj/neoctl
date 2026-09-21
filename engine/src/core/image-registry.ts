@@ -125,7 +125,7 @@ export function formatImageRegistryForContext(registry: ImageRegistry): string {
     return `- ${alias}${entry.id}: ${label}, ${entry.mimeType}${origin}${context}${note}${storage}`;
   });
   return [
-    "Available images from conversation history (use load_image tool with the id to examine any image):",
+    "Available images from conversation history (use the listed img_N ID exactly for image tools; do not copy captions, URIs, paths, or surrounding text):",
     ...lines,
   ].join("\n");
 }

@@ -17,6 +17,7 @@ const files = [
   'isolation-startup.test.mjs',
   'isolation.test.mjs',
   'memory-monitor.test.mjs',
+  'markdown-render.test.mjs',
   'neow.test.mjs',
   'observability-preservation.test.mjs',
   'plugin-settings.test.mjs',

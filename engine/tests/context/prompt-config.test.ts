@@ -101,7 +101,7 @@ test("every ContextManager build reloads the baseline and preserves tool/plugin/
     const after = await manager.build(input);
     assert.match(after.systemPrompt, /MY_EDITED_BASELINE/);
     assert.doesNotMatch(after.systemPrompt, /engineering agent running inside neo/);
-    for (const text of ["PLUGIN_CONTRACT", "APP_CONTRACT", "agentId=session-A", "48000 serialized characters", "within 1-200000", "use the image_create tool", "use the image_inspect tool", "Secrets:"]) assert.ok(after.systemPrompt.includes(text), text);
+    for (const text of ["PLUGIN_CONTRACT", "APP_CONTRACT", "agentId=session-A", "48000 serialized characters", "within 1-200000", "use the image_create tool", "use the image_inspect tool", "exact registry ID", "never copy a caption, URI, storage path", "Secrets:"]) assert.ok(after.systemPrompt.includes(text), text);
   }
   const noTools = await managers[0].build({ ...input, enabledTools: [] });
   assert.match(noTools.systemPrompt, /no drawing\/image generation\/editing tool/);

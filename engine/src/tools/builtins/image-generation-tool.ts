@@ -5,10 +5,12 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveImageBlockDataSync } from "../../core/image-storage.js";
+import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
+import { loadImageData, resolveImageRefResult, type ImageEntry, type ImageRegistry } from "../../core/image-registry.js";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
-import { DEFAULT_OPENAI_IMAGE_MODEL, IMAGE_INPUT_SCHEMA, IMAGE_SELECTION_GUIDE, normalizeImageInput, imageInputWarnings, imageValidationError, type ImageWarning } from "./image-capabilities.js";
+import { DEFAULT_OPENAI_IMAGE_MODEL, IMAGE_EDIT_REFERENCE_GUIDE, IMAGE_INPUT_SCHEMA, IMAGE_SELECTION_GUIDE, normalizeImageInput, imageInputWarnings, imageValidationError, type ImageWarning } from "./image-capabilities.js";
 import { decodeImageBase64, inspectImageBytes, outputWarnings, type ImageByteMetadata } from "./image-output-verification.js";
 export { DEFAULT_OPENAI_IMAGE_MODEL } from "./image-capabilities.js";
 export type { OpenAIImageModel } from "./image-capabilities.js";
@@ -147,7 +149,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
   };
   return {
     name: "image_create",
-    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image_create. ${IMAGE_SELECTION_GUIDE} Use mode=generate for new images; mode=edit for changes to attached/prior images. Edit accepts image/images/imageRefs or falls back to the latest prior image. Valid but imperfect results succeed with structured warnings; invalid inputs fail with model, field, and correction guidance. Available only when MODEL_PROVIDER=openai.`,
+    description: `Generate or edit images with OpenAI's Images API. Stable tool name: image_create. ${IMAGE_SELECTION_GUIDE} Use mode=generate for new images; mode=edit for changes to attached/prior images. ${IMAGE_EDIT_REFERENCE_GUIDE} Valid but imperfect results succeed with structured warnings; invalid inputs fail with model, field, and correction guidance. Available only when MODEL_PROVIDER=openai.`,
     inputSchema: { ...IMAGE_INPUT_SCHEMA, properties: { ...IMAGE_INPUT_SCHEMA.properties, model: { ...IMAGE_INPUT_SCHEMA.properties!.model, default: options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL } } },
     metadata: {
       readOnly: false,
@@ -293,6 +295,8 @@ interface ResolvedEditImage {
   filename: string;
   label?: string;
   storagePath?: string;
+  sourceMessageId?: string;
+  sourceBlockIndex?: number;
 }
 
 interface OpenAIImageEditRequestOptions extends OpenAIImageGenerationRequestOptions {
@@ -439,14 +443,21 @@ function resolveInputImage(image: ImageEditInputImage, index: number): ResolvedE
 function resolveReferencedImages(messages: readonly Message[] | undefined, refs: readonly string[]): ResolvedEditImage[] {
   if (refs.length === 0) return [];
   const imageBlocks = collectConversationImages(messages);
+  const registry = getImageRegistryFromMessages(messages ?? []);
   return refs.map((ref, index) => {
-    const found = findReferencedImage(imageBlocks, ref);
-    if (!found) throw new Error(`image_create could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(imageBlocks)}`);
+    const found = findReferencedImage(imageBlocks, registry, ref);
+    if (!found) throw new Error(`image_create could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(registry)}`);
     return { ...found, filename: found.filename || imageFilename(found.mimeType, index) };
   });
 }
 
-function findReferencedImage(images: readonly ResolvedEditImage[], ref: string): ResolvedEditImage | undefined {
+function findReferencedImage(images: readonly ResolvedEditImage[], registry: ImageRegistry, ref: string): ResolvedEditImage | undefined {
+  const registryResolution = resolveImageRefResult(registry, ref);
+  if (registryResolution.status === "ambiguous") throw new Error(`image_create image reference is ambiguous: ${ref}. Use a registry ID such as img_1.`);
+  if (registryResolution.status === "resolved") {
+    return findCollectedImage(images, registryResolution.entry) ?? resolvedRegistryImage(registryResolution.entry);
+  }
+
   const rawRef = ref.trim().toLowerCase();
   const exactIdentity = images.filter((image) => image.imageId?.toLowerCase() === rawRef);
   if (exactIdentity.length === 1) return exactIdentity[0];
@@ -456,25 +467,42 @@ function findReferencedImage(images: readonly ResolvedEditImage[], ref: string):
   if (!normalizedRef) return undefined;
   const labelMatches = images.filter((image) => canonicalizeImageRef(image.label ?? "") === normalizedRef || canonicalizeImageRef(image.filename) === normalizedRef);
   if (labelMatches.length === 1) return labelMatches[0];
-  if (labelMatches.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}. Use an imageId instead.`);
+  if (labelMatches.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}. Use a registry ID such as img_1.`);
 
   const numericRef = parseImageRefNumber(normalizedRef);
   if (numericRef !== undefined) return images[numericRef - 1];
   return undefined;
 }
 
-function formatSourceImageRef(image: ResolvedEditImage): string | undefined {
-  const ref = image.imageId || image.label?.trim() || image.filename || String(image.index + 1);
-  return image.storagePath ? `${ref} (${image.storagePath})` : ref;
+function findCollectedImage(images: readonly ResolvedEditImage[], entry: ImageEntry): ResolvedEditImage | undefined {
+  if (entry.imageId) return images.find((image) => image.imageId === entry.imageId);
+  return images.find((image) => image.sourceMessageId === entry.sourceMessageId && image.sourceBlockIndex === entry.sourceBlockIndex);
 }
 
-function formatAvailableImageRefs(images: readonly ResolvedEditImage[]): string {
-  if (images.length === 0) return "none";
-  return images
-    .map(formatSourceImageRef)
-    .filter((ref): ref is string => Boolean(ref))
-    .slice(-10)
-    .join(", ");
+function resolvedRegistryImage(entry: ImageEntry): ResolvedEditImage | undefined {
+  const storedData = loadImageData(entry);
+  const parsed = parseImageData(storedData);
+  if (!parsed.base64) return undefined;
+  return {
+    index: entry.sourceBlockIndex ?? 0,
+    imageId: entry.imageId,
+    base64: normalizeBase64ImageData(parsed.base64),
+    mimeType: entry.mimeType || parsed.mimeType || "image/png",
+    filename: imageFilename(entry.mimeType || parsed.mimeType || "image/png", entry.sourceBlockIndex ?? 0),
+    label: entry.label,
+    storagePath: entry.storagePath,
+    sourceMessageId: entry.sourceMessageId,
+    sourceBlockIndex: entry.sourceBlockIndex,
+  };
+}
+
+function formatSourceImageRef(image: ResolvedEditImage): string {
+  return image.imageId || image.label?.trim() || image.filename || String(image.index + 1);
+}
+
+function formatAvailableImageRefs(registry: ImageRegistry): string {
+  const refs = registry.images.map((entry) => entry.id).slice(-10);
+  return refs.length > 0 ? refs.join(", ") : "none";
 }
 
 function latestConversationImage(messages: readonly Message[] | undefined): ResolvedEditImage | undefined {
@@ -486,7 +514,7 @@ function collectConversationImages(messages: readonly Message[] | undefined): Re
   if (!messages) return [];
   const images: ResolvedEditImage[] = [];
   for (const message of messages) {
-    for (const block of message.blocks) {
+    for (const [sourceBlockIndex, block] of message.blocks.entries()) {
       if (block.type !== "image") continue;
       const resolvedData = resolveImageBlockDataSync(block);
       const parsed = parseImageData(resolvedData);
@@ -501,6 +529,8 @@ function collectConversationImages(messages: readonly Message[] | undefined): Re
         filename: imageFilename(mimeType, images.length),
         label: block.label,
         storagePath: block.storage?.path,
+        sourceMessageId: message.id,
+        sourceBlockIndex,
       });
     }
   }

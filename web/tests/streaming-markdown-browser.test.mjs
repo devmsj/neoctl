@@ -2,6 +2,10 @@
 // disappear when parent renders produce a new, equivalent resources array.
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { marked } from '../src/markdown.mjs'
+
+const lianhuSample = JSON.parse(readFileSync(new URL('./fixtures/lianhu-markdown.json', import.meta.url), 'utf8'))
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -93,6 +97,30 @@ try {
   await settle()
   assert.equal(await content.textContent(), '加粗，完成。')
   assert.equal(await content.locator('strong').textContent(), '加粗')
+
+  // Replay the actual response one character at a time, including split **.
+  await update({ text: '' })
+  for (let end = 1; end <= lianhuSample.length; end++) {
+    await update({ text: lianhuSample.slice(0, end) })
+  }
+  await settle()
+  const expectedStrong = ['莲湖区在西安主城区内，可以先参考刚才的西安城区预报。', '在莲湖区出门：']
+  assert.deepEqual(await content.locator('strong').allTextContents(), expectedStrong)
+  assert.equal(await content.locator('tr').count(), 6)
+  assert.equal((await content.textContent()).includes('**'), false)
+  // Completed/history rendering uses marked instead of the streaming parser.
+  const completedHtml = marked.parse(lianhuSample)
+  const completedStrong = await page.evaluate(html => {
+    const node = document.createElement('div')
+    node.innerHTML = html
+    return [...node.querySelectorAll('strong')].map(item => item.textContent)
+  }, completedHtml)
+  assert.deepEqual(completedStrong, expectedStrong)
+
+  await update({ text: '`**代码内 **保持`' })
+  await settle()
+  assert.equal(await content.textContent(), '**代码内 **保持')
+  assert.equal(await content.locator('code').textContent(), '**代码内 **保持')
 
   await update({ text: '替换。', resources: [] })
   await settle()
