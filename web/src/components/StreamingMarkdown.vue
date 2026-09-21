@@ -119,7 +119,14 @@ onMounted(() => {
 })
 
 watch(() => props.text, appendText, { flush: 'post' })
-watch(() => props.exposedResources, () => rebuild(), { deep: true, flush: 'post' })
+// App derives a fresh resources array on every render, including tool/status
+// updates. Compare its contents so equivalent arrays do not rebuild the parser
+// and put an already visible trailing character back into its pending buffer.
+watch(() => JSON.stringify(props.exposedResources), () => {
+  rebuild()
+  // A resource-only change has no text watcher to flush the new parser's tail.
+  schedulePendingCommit()
+}, { flush: 'post' })
 
 onBeforeUnmount(() => {
   cancelPendingCommit()

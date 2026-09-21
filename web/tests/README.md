@@ -47,6 +47,7 @@ These tests require a real local browser (usually Microsoft Edge) and separately
 - `image-create-browser.test.mjs` and `isolation-browser.test.mjs` support `NEO_PLAYWRIGHT_MODULE`; `agent-task-browser.test.mjs` directly uses the desktop cache.
 - `xhs-version-browser.test.mjs` uses the temporary-directory Playwright installation and a fixed Windows Edge executable path.
 - `agent-content-reader-browser.test.mjs` runs Vite against the real web root instead of serving `dist`.
+- `node web/tests/streaming-markdown-browser.test.mjs` (from the repository root) also runs Vite against the real component. It checks trailing punctuation after parent-only renders, equivalent and changed resource lists, continued Markdown, text replacement and unmount cleanup; it supports `PLAYWRIGHT_CORE_PATH` and `BROWSER_CHANNEL`.
 - `isolation-browser.test.mjs` also needs the local Engine build.
 - `status-semantics-browser.test.mjs` reads the temporary file `obs08-browser-lines.json`, produced by the Engine status-semantics smoke check.
 
