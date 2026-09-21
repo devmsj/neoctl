@@ -77,6 +77,7 @@ export async function* normalizeResponsesStream(
   const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
+  const announcedToolCalls = new Set<number>();
   let responseId: string | undefined;
   let reasoningPartKey: string | undefined;
   const outputItems = new Map<string | number, Record<string, unknown>>();
@@ -140,6 +141,11 @@ export async function* normalizeResponsesStream(
           name: asString(item.name) ?? "unknown_tool",
           argumentsBuffer: asString(item.arguments) ?? "",
         });
+        const buffer = toolBuffers.get(outputIndex)!;
+        if (!announcedToolCalls.has(outputIndex) && asString(item.name)) {
+          announcedToolCalls.add(outputIndex);
+          yield { type: "tool_call_started", callId: buffer.callId, name: buffer.name };
+        }
       }
     }
 

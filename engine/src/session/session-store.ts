@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isTimingRecord, restoredTiming, type TimingRecord } from "../core/query-timing.js";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,7 @@ import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMem
 export type SessionTitleKind = "initial" | "refinement";
 
 export type SessionTranscriptEntry =
+  | { type: "timing"; sessionId: string; agentId: string; timing: TimingRecord; runGeneration?: number }
   | { type: "message"; sessionId: string; agentId: string; message: Message; runGeneration?: number }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
@@ -124,12 +126,15 @@ export class SessionStore {
   private previousWindowId?: string;
   private windowId: string;
 
+  private readonly timings = new Map<string, TimingRecord>();
+
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
     this.sessionId = sessionId;
     this.sessionDir = path.join(resolveSessionRoot(options), sessionId);
     this.transcriptPath = path.join(this.sessionDir, "transcript.jsonl");
     this.resumedMessages = loaded.messages;
+    for (const record of loaded.timings.values()) this.timings.set(record.id, restoredTiming(record));
     this.displayEntries = loaded.displayEntries;
     this.contentReplacements = loaded.replacements;
     this.title = loaded.title;
@@ -230,6 +235,19 @@ export class SessionStore {
 
   getDisplayEntries(): SessionDisplayEntry[] {
     return this.displayEntries.map(cloneDisplayEntry);
+  }
+
+  /** Separate transcript facts: never part of resumedMessages or the model context. */
+  recordTiming(record: TimingRecord, runGeneration?: number): void {
+    if (!isTimingRecord(record)) throw new Error("Invalid timing record");
+    const timing = { ...record };
+    this.appendEntry({ type: "timing", sessionId: this.sessionId, agentId: this.agentId, timing,
+      ...(Number.isSafeInteger(runGeneration) && runGeneration! > 0 ? { runGeneration } : {}) });
+    this.timings.set(timing.id, timing);
+  }
+
+  getTimings(): TimingRecord[] {
+    return [...this.timings.values()].map(record => ({ ...record }));
   }
 
   recordMessage(message: Message, provenance?: { runGeneration?: number }): void {
@@ -393,6 +411,7 @@ export class SessionStore {
     this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
     this.resumedMessages.length = 0;
     this.displayEntries.length = 0;
+    this.timings.clear();
     this.contentReplacements.length = 0;
     this.title = undefined;
     this.titleKind = undefined;
@@ -455,6 +474,7 @@ export class SessionStore {
 }
 
 interface LoadedTranscript {
+  timings: Map<string, TimingRecord>;
   messages: Message[];
   displayEntries: SessionDisplayEntry[];
   replacements: ContentReplacementRecord[];
@@ -502,6 +522,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
     if (entry.type === "reset") {
       loaded.messages.length = 0;
       loaded.displayEntries.length = 0;
+      loaded.timings.clear();
       loaded.replacements.length = 0;
       loaded.title = undefined;
       loaded.titleKind = undefined;
@@ -535,6 +556,10 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       if (entry.firstWindowId) loaded.firstWindowId = entry.firstWindowId;
       loaded.previousWindowId = entry.previousWindowId;
       if (entry.windowId) loaded.windowId = entry.windowId;
+    }
+    if (entry.type === "timing") {
+      if (!isTimingRecord(entry.timing)) throw new Error("Invalid persisted timing record");
+      loaded.timings.set(entry.timing.id, { ...entry.timing });
     }
     if (entry.type === "message") {
       const message = cloneMessage(entry.message);
@@ -657,6 +682,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 function createEmptyLoadedTranscript(): LoadedTranscript {
   return {
     messages: [],
+    timings: new Map(),
     displayEntries: [],
     replacements: [],
     entries: 0,

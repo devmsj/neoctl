@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { TimingRecord } from "../core/query-timing.js";
 import { imageResultMetadata, type ImageResultMetadata } from "./image-result-metadata.js";
 import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
 import { handlePromptConfigRequest } from "./prompt-config-protocol.js";
@@ -270,6 +271,7 @@ interface UiLine {
   toolPresentation?: ToolPresentation;
   parentToolName?: string;
   toolUseId?: string;
+  timing?: TimingRecord;
   parentToolUseId?: string;
   title?: string;
   bodyTitle?: string;
@@ -299,6 +301,10 @@ function actionFailure(errorCode: string, error: string): WebActionFailure {
 }
 
 interface UiStatus {
+  // Transient observation only: never part of messages or model requests.
+  modelOutput?: { kind: "text" } | { kind: "tool_call"; callId: string; name?: string };
+  queryTiming?: TimingRecord;
+  toolTimings?: TimingRecord[];
   phase: string;
   detail?: string;
   currentTool?: {
@@ -922,7 +928,7 @@ export class WebRepl {
     }
     return {
       lines: this.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
-      status: this.status,
+      status: this.timedStatus(),
       busy: this.busy,
       queuedInput: this.queuedInput,
       backgroundTaskCount: backgroundTasks.length,
@@ -1740,6 +1746,14 @@ export class WebRepl {
     this.setStatus({ ...this.status, phase: "running", detail: "working" });
   }
 
+  private timedStatus(): UiStatus {
+    const records = this.runtime.engine.getTimingRecords?.() ?? [];
+    if (records.length === 0) return this.status;
+    const queryTiming = records.filter(record => record.kind === "query").at(-1);
+    return { ...this.status, queryTiming,
+      toolTimings: records.filter(record => record.kind === "tool" && record.runId === queryTiming?.runId) };
+  }
+
   private reduce(event: AgentEvent): void {
     this.status = reduceStatus(this.status, event);
     if (event.type === "usage") this.runtime.usage.add(event.usage);
@@ -1885,6 +1899,18 @@ export class WebRepl {
 
   private handleEvent(event: AgentEvent): void {
     this.reduce(event);
+    if (event.type === "timing.updated") {
+      if (event.timing.kind === "tool") {
+        const line = this.lines.find(item => item.timing?.id === event.timing.id)
+          ?? this.lines.find(item => item.id === this.liveToolLineIds.get(event.timing.toolUseId!));
+        if (line) {
+          this.lines = this.lines.map(item => item.id === line.id ? { ...item, timing: event.timing } : item);
+          this.queueDeltaOperation({ type: "line.patch", id: line.id, patch: { timing: event.timing } });
+        }
+      }
+      this.queueDeltaStatus();
+      return;
+    }
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
       const messageId = this.pendingUserImageEchoMessageId;
       this.pendingUserImageEchoIds = undefined;
@@ -1893,7 +1919,7 @@ export class WebRepl {
       this.broadcastSync();
       return;
     }
-    if (event.type === "tool_call.delta") {
+    if (event.type === "tool_call.started" || event.type === "tool_call.delta") {
       this.queueDeltaStatus();
       return;
     }
@@ -2131,7 +2157,7 @@ export class WebRepl {
     this.activeAbortController = abortController;
     this.interruptArmed = false;
     this.setBusy(true);
-    this.setStatus({ ...this.status, phase: "running", detail: "working", usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
+    this.setStatus({ ...this.status, phase: "running", detail: "working", modelOutput: undefined, usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
     const engine = this.runtime.engine;
     try {
       for await (const event of engine.sendUserText(promptPayload.text, {
@@ -2143,7 +2169,7 @@ export class WebRepl {
         if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {
-          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage") {
+          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage" || event.type === "timing.updated") {
             if (event.type === "message" || event.type === "terminal" || event.type === "error") this.suppressReattachedStreaming.delete(engine);
             this.handleEvent(event);
           }
@@ -2295,7 +2321,7 @@ export class WebRepl {
       protocolVersion: 2,
       sessionId: this.runtime.engine.snapshot().session?.sessionId,
       operations,
-      status: this.status,
+      status: this.timedStatus(),
     };
     for (const subscriber of this.subscribers) this.send(subscriber, "delta", payload);
   }
@@ -2650,6 +2676,13 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     if (line.toolUseId && !line.titleStatus) historyToolLineIndexes.set(line.toolUseId, lines.length - 1);
     return lines.length;
   };
+  const toolTimings = new Map<string, TimingRecord[]>();
+  for (const record of runtime.engine.getTimingRecords?.() ?? []) {
+    if (record.kind !== "tool" || !record.toolUseId) continue;
+    const matches = toolTimings.get(record.toolUseId) ?? [];
+    matches.push(record);
+    toolTimings.set(record.toolUseId, matches);
+  }
   const entries = runtime.engine.getDisplayEntries();
   let lastCompactionIndex = -1;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -2669,6 +2702,11 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     }
     const report = entry.report ?? legacyCompactionReport(entry.reason);
     append(compactionLine(report, entry.createdAt, entryIndex === lastCompactionIndex));
+  }
+  // Legacy histories can reuse call IDs. Ambiguous associations stay unknown.
+  for (const line of lines) {
+    const matches = line.toolUseId ? toolTimings.get(line.toolUseId) : undefined;
+    if (matches?.length === 1) line.timing = matches[0];
   }
   return lines;
 }
@@ -2819,18 +2857,19 @@ function toolStreamStepStatus(phase: string | undefined): UiToolStreamStep["stat
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
-  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
+  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, modelOutput: undefined, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
   if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "usage") return { ...status, usage: event.usage, inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt, activityTick: status.activityTick + 1 };
-  if (event.type === "assistant.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "thinking.delta") return { ...status, phase: "thinking", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "retrying") return { ...status, phase: "calling_model", detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
-  if (event.type === "tool.started") return { ...status, phase: "running_tools", currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
+  if (event.type === "assistant.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "text" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "thinking.delta") return { ...status, phase: "thinking", modelOutput: undefined, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "tool_call.started") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
+  if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name ?? (status.modelOutput?.kind === "tool_call" && status.modelOutput.callId === event.callId ? status.modelOutput.name : undefined) }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "retrying") return { ...status, phase: "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
+  if (event.type === "tool.started") return { ...status, phase: "running_tools", modelOutput: undefined, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.progress") return { ...status, phase: "running_tools", detail: event.progress.message || status.detail, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: status.currentTool?.id === event.toolUse.id ? status.currentTool.startedAt : Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.result.available" || event.type === "tool.finished" || event.type === "tool.batch.completed") return { ...status, currentTool: "toolUse" in event && status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };
-  if (event.type === "terminal") return { ...status, phase: "stopped", detail: event.reason, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined, activityTick: status.activityTick + 1 };
+  if (event.type === "terminal") return { ...status, phase: "stopped", modelOutput: undefined, detail: event.reason, currentTool: undefined, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined, activityTick: status.activityTick + 1 };
   if (event.type === "message" || event.type === "error") return { ...status, activityTick: status.activityTick + 1 };
   return status;
 }

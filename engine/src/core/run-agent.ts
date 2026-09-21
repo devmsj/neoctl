@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { TimingRecord, TimingClock } from "./query-timing.js";
 import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import type { ModelGateway, ModelUsage } from "../model/model-gateway.js";
@@ -15,6 +16,7 @@ import { query, type QueryOptions } from "./query.js";
 import { ensureToolResultPairing } from "./message-pipeline.js";
 
 export interface RunAgentDependencies {
+  timingClock?: TimingClock;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
@@ -94,6 +96,8 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   let totalToolUseCount = 0;
 
   const dependencies = {
+    timingClock: options.dependencies.timingClock,
+    onTiming: (record: TimingRecord) => childSession?.recordTiming(record, options.runGeneration),
     modelGateway: options.dependencies.modelGateway,
     tools: resolveAgentTools(options.dependencies.tools, options.agent),
     contextManager: createAgentContextManager(options),

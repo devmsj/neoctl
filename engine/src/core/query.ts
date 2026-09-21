@@ -1,3 +1,4 @@
+import { QueryTimingState, type TimingClock, type TimingRecord } from "./query-timing.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
@@ -84,6 +85,10 @@ export interface QueryOptions {
 }
 
 export interface QueryDependencies {
+  /** Observability sink only; never included in prompt/context construction. */
+  onTiming?: (record: TimingRecord) => void;
+  onTimingState?: (state: QueryTimingState) => void;
+  timingClock?: TimingClock;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
@@ -130,15 +135,34 @@ export async function* query(
   });
   initialState.maxOutputTokensOverride = options.maxOutputTokensOverride;
 
-  const terminal = yield* queryLoop(initialState, dependencies, options);
-  yield { type: "terminal", reason: terminal };
-  return terminal;
+  const timing = new QueryTimingState(dependencies.timingClock, messages.slice().reverse().find(message => message.role === "user" && !message.isMeta)?.id);
+  let outcome = "consumer_closed";
+  try {
+    dependencies.onTimingState?.(timing);
+    const started = timing.snapshot();
+    dependencies.onTiming?.(started);
+    yield { type: "timing.updated", timing: started };
+    const terminal = yield* queryLoop(initialState, dependencies, options, timing);
+    outcome = terminal;
+    const completed = timing.finish(terminal);
+    for (const record of completed) dependencies.onTiming?.(record);
+    for (const record of completed) yield { type: "timing.updated", timing: record };
+    yield { type: "terminal", reason: terminal };
+    return terminal;
+  } catch (error) {
+    outcome = options.abortSignal?.aborted ? "aborted" : "error";
+    throw error;
+  } finally {
+    // Never yield here: a consumer calling return() may never resume us.
+    for (const record of timing.finish(outcome)) dependencies.onTiming?.(record);
+  }
 }
 
 async function* queryLoop(
   initialState: QueryState,
   dependencies: QueryDependencies,
   options: QueryOptions,
+  timing: QueryTimingState,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const contextManager = dependencies.contextManager ?? new DefaultContextManager();
   const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
@@ -244,7 +268,7 @@ async function* queryLoop(
       systemPrompt,
       toolDefinitions,
       metrics: prepared.metrics,
-    });
+    }, timing);
     if (requestContextForTurn) options.requestContext = undefined;
     if (modelOutput.reactiveCompact) {
       state = modelOutput.reactiveCompact;
@@ -264,7 +288,7 @@ async function* queryLoop(
       return "completed";
     }
 
-    const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, toolContext);
+    const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, toolContext, timing);
     if (toolResult.terminal) return toolResult.terminal;
     toolContext = toolResult.context;
 
@@ -396,6 +420,7 @@ async function* callModelForTurn(
   options: QueryOptions,
   toolContext: ToolUseContext,
   telemetry: { systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; metrics: ReturnType<typeof buildContextMetrics> },
+  timing: QueryTimingState,
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput; reactiveCompact?: QueryState }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
@@ -439,6 +464,10 @@ async function* callModelForTurn(
         yield* outputFilter.finishVisibleMessage(assistantMessages);
         return { terminal: "aborted_streaming" };
       }
+      if (((event.type === "assistant_delta" || event.type === "thinking_delta") && event.text.length > 0)
+        || (event.type === "tool_call_delta" && event.argumentsDelta.length > 0)
+        || event.type === "tool_use"
+        || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) timing.firstOutput();
       const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
@@ -590,6 +619,11 @@ async function* handleModelEvent(
     return {};
   }
 
+  if (event.type === "tool_call_started") {
+    yield { type: "tool_call.started", callId: event.callId, name: event.name };
+    return {};
+  }
+
   if (event.type === "tool_call_delta") {
     yield {
       type: "tool_call.delta",
@@ -650,25 +684,40 @@ async function* executeToolsForTurn(
   dependencies: QueryDependencies,
   options: QueryOptions,
   context: ToolUseContext,
+  timing: QueryTimingState,
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; messages: Message[]; context: ToolUseContext }, void> {
   yield { type: "state", phase: "running_tools", detail: `${toolUses.length} tool call(s)` };
-  for (const [index, toolUse] of toolUses.entries()) yield { type: "tool.started", toolUse, index, total: toolUses.length };
+  // Preserve legacy card creation order; timing distinguishes queued from executing.
+  const queued = toolUses.map(toolUse => timing.queueTool(toolUse.id));
+  for (const record of queued) dependencies.onTiming?.(record);
+  for (const [index, toolUse] of toolUses.entries()) {
+    yield { type: "tool.started", toolUse, index, total: toolUses.length };
+    yield { type: "timing.updated", timing: queued[index] };
+  }
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
-  const events = new AsyncEventQueue<RunToolsEvent>(2048, compactRunToolsQueue);
+  const events = new AsyncEventQueue<RunToolsEvent & { timing?: TimingRecord }>(2048, compactRunToolsQueue);
   const closeOnAbort = () => events.close();
   options.abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
   const running = abortable(
     runTools(toolUses, context, {
       canUseTool: dependencies.canUseTool,
-      onEvent: (event) => events.push(event),
+      onEvent: (event) => {
+        // Timestamp at dispatch/settlement, not when a UI drains the event queue.
+        const record = event.type === "started" ? timing.startTool(event.request.id)
+          : event.type === "settled" ? timing.finishTool(event.request.id, event.ok) : undefined;
+        if (record) dependencies.onTiming?.(record);
+        events.push({ ...event, ...(record ? { timing: record } : {}) });
+      },
     }).finally(() => events.close()),
     options.abortSignal,
   );
 
   try {
     for await (const event of events) {
+      if (event.timing) yield { type: "timing.updated", timing: event.timing };
+      if (event.type === "started") continue;
       if (event.type === "progress") {
         yield { type: "tool.progress", toolUse: event.request, progress: event.progress, index: event.index, total: event.total };
         continue;

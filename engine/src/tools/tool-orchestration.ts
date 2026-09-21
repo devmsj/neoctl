@@ -8,6 +8,7 @@ export interface RunToolsResult {
 }
 
 export type RunToolsEvent =
+  | { type: "started"; index: number; total: number; request: ToolUseRequest }
   | { type: "progress"; index: number; total: number; request: ToolUseRequest; progress: ToolProgressEvent }
   | { type: "settled"; index: number; total: number; request: ToolUseRequest; updates: ToolMessageUpdate[]; ok: boolean };
 
@@ -117,6 +118,7 @@ async function runToolUseWithEvents(
   index: number,
   total: number,
 ): Promise<ToolMessageUpdate[]> {
+  options.onEvent?.({ type: "started", index, total, request: item.request });
   let sequence = 0;
   const contextWithEvents: ToolUseContext = {
     ...context,

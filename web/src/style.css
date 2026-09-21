@@ -1012,6 +1012,9 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   overflow: auto;
   padding: 20px;
   overflow-anchor: none;
+  scroll-behavior: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 .virtual-message-list {
   position: relative;

@@ -10,6 +10,7 @@ const files = [
   'artifacts.test.mjs',
   'chunk-uploads.test.mjs',
   'composer-presentation.test.mjs',
+  'core-timing.test.mjs',
   'cpa-quota.test.mjs',
   'image-original-dimensions.test.mjs',
   'interrupt-regression.test.mjs',
@@ -29,6 +30,7 @@ const files = [
   'runtime-workspaces.test.mjs',
   'server-startup.test.mjs',
   'tool-settings.test.mjs',
+  'transcript-follow.test.mjs',
   'upload-progress.test.mjs',
 ].map(file => `tests/${file}`);
 

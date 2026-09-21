@@ -2,6 +2,8 @@ export * from "./core/query-engine.js";
 export { readSessionPrompt, updateSessionPrompt, SessionPromptError, MAX_SESSION_PROMPT_CHARS } from "./web/session-prompt-protocol.js";
 export type { SessionPromptSnapshot, SessionPromptUpdate, SessionPromptUpdateResult } from "./web/session-prompt-protocol.js";
 export * from "./core/query.js";
+export { QueryTimingState } from "./core/query-timing.js";
+export type { TimingClock, TimingRecord } from "./core/query-timing.js";
 export * from "./core/state.js";
 export * from "./core/message-pipeline.js";
 export * from "./core/run-agent.js";

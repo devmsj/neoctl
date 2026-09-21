@@ -51,12 +51,17 @@ export interface ContextMetrics {
   };
 }
 
+import type { TimingRecord } from "../core/query-timing.js";
+
 export type AgentEvent =
+  | { type: "timing.updated"; timing: TimingRecord }
   | { type: "state"; phase: string; detail?: string }
   | { type: "context.metrics"; metrics: ContextMetrics }
   | { type: "context.compacted"; compaction: CompactionReport }
   | { type: "assistant.delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking.delta"; text: string }
+  /** Provider announced a tool call. No complete input, approval or execution implied. */
+  | { type: "tool_call.started"; callId: string; name: string }
   | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "message"; message: Message }
   | { type: "tool.started"; toolUse: ToolUseRequest; index?: number; total?: number }

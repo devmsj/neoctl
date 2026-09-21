@@ -20,6 +20,12 @@ import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
 import PromptConfigEditor from './components/PromptConfigEditor.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
+import ElapsedClock from './components/ElapsedClock.vue'
+import FlipStatusText from './components/FlipStatusText.vue'
+// 撒粉暂时停用，组件源码保留以便恢复。
+// import DustStatusText from './components/DustStatusText.vue'
+import { createTranscriptFollow } from './transcript-follow.mjs'
+import { formatDuration, receiveTimings, timingElapsedMs } from './core-timing.mjs'
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
@@ -326,7 +332,9 @@ const state = reactive({
   uploadingFiles: false,
   uploadProgress: 0,
   messageImagePreviews: [],
-  liveToolStartedAt: {},
+  coreToolTimings: [],
+  coreQueryTiming: undefined,
+  timingTick: performance.now(),
   clockTick: Date.now(),
   composerMetrics: {
     context: { display: 0, target: 0, bump: 0, initialized: false },
@@ -374,7 +382,7 @@ const promptSortPosition = ref('before')
 const memoryHoverIndex = ref(-1)
 let es
 let toastTimer
-let scrollRaf = 0
+const transcriptFollow = createTranscriptFollow({ getElement: () => transcript.value })
 let syncRaf = 0
 let lineTextRaf = 0
 let pendingSyncPayload
@@ -421,9 +429,23 @@ const transcriptLoadingLabel = computed(() => {
   if (liveImageCreateLine.value) {
     const elapsed = lineElapsedText(liveImageCreateLine.value)
     const title = isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '正在载入图片结果' : '图片模型正在生成'
-    return elapsed ? `${title} · 已用时 ${elapsed}` : title
+    return elapsed === '排队中' ? `${title} · 排队中` : title
+  }
+  if (state.status?.phase === 'calling_model') {
+    const output = state.status.modelOutput
+    if (output?.kind === 'text') return '正在生成回复'
+    if (output?.kind === 'tool_call') return output.name ? `正在准备调用 ${output.name}` : '正在准备工具调用'
   }
   return `正在${exactPhaseLabel.value}`
+})
+const transcriptElapsedMs = computed(() => {
+  if (state.sessionResumeLoading) return undefined
+  if (liveImageCreateLine.value) {
+    const line = liveImageCreateLine.value
+    const timing = state.coreToolTimings.find(item => item.id === line.timing?.id) ?? line.timing
+    return timingElapsedMs(timing, state.timingTick, state.connected)
+  }
+  return timingElapsedMs(state.coreQueryTiming, state.timingTick, state.connected)
 })
 const cleanSessionTitle = (value) => String(value || '').replace(/设计/g, '').trim()
 const displaySessionTitle = (session) => cleanSessionTitle(session?.title) || '未命名会话'
@@ -552,11 +574,18 @@ const messageVirtualizer = useVirtualizer(computed(() => ({
   },
   overscan: 8,
   scrollMargin: virtualScrollMargin.value,
-  anchorTo: pendingMessageResizes.value ? 'start' : 'end',
-  followOnAppend: true,
-  scrollEndThreshold: 96,
+  // A single controller owns bottom following; virtualizer only anchors history.
+  anchorTo: 'start',
+  followOnAppend: false,
   useAnimationFrameWithResizeObserver: true,
 })))
+messageVirtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+  if (transcriptFollow.following || transcriptFollow.interacting || pendingMessageResizes.value) return false
+  const offset = (instance.scrollOffset || 0) + instance.scrollAdjustments
+  return !instance.itemSizeCache.has(item.key)
+    ? item.start < offset
+    : item.end <= offset && instance.scrollDirection !== 'backward'
+}
 const virtualMessageRows = computed(() => messageVirtualizer.value.getVirtualItems().filter((item) => visibleLines.value[item.index]))
 const virtualMessageTotalHeight = computed(() => messageVirtualizer.value.getTotalSize())
 const runtimePromptSections = computed(() => Array.isArray(state.runtimeContext?.prompt?.sections) ? state.runtimeContext.prompt.sections : [])
@@ -623,6 +652,8 @@ watch(() => state.backgroundTaskDetail?.output, async () => {
   if (output) output.scrollTop = output.scrollHeight
 })
 
+watch(transcript, (el) => transcriptFollow.attach(el), { flush: 'post' })
+
 watch(() => visibleLines.value.length, async () => {
   await nextTick()
   observeVirtualLayout()
@@ -644,13 +675,16 @@ async function logoutUser() {
 
 onMounted(async () => {
   if (typeof ResizeObserver !== 'undefined') {
-    virtualLayoutResizeObserver = new ResizeObserver(updateVirtualScrollMargin)
+    virtualLayoutResizeObserver = new ResizeObserver(() => {
+      updateVirtualScrollMargin()
+      transcriptFollow.schedule()
+    })
     observeVirtualLayout()
   }
   updateVirtualScrollMargin()
   await Promise.all([fetchState(), fetchClientInfo(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
-  clockTimer = setInterval(() => { state.clockTick = Date.now() }, 1000)
+  clockTimer = setInterval(() => { state.clockTick = Date.now(); state.timingTick = performance.now() }, 1000)
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
   memoryStateTimer = setInterval(fetchMemoryState, 60_000)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -666,7 +700,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (es) es.close()
-  if (scrollRaf) cancelAnimationFrame(scrollRaf)
+  transcriptFollow.dispose()
   if (syncRaf) cancelAnimationFrame(syncRaf)
   resetLineTextScheduler()
   pendingSyncPayload = undefined
@@ -1055,7 +1089,7 @@ function scheduleLineTextPaint() {
 
 function paintLineText() {
   lineTextRaf = 0
-  const shouldFollow = isTranscriptNearBottom()
+  const shouldFollow = transcriptFollow.following
   const updates = [...pendingLineText]
   pendingLineText.clear()
   for (const [id, buffered] of updates) {
@@ -1091,7 +1125,7 @@ function applyDelta(payload) {
     repairRuntimeSessionBinding()
     return
   }
-  const shouldFollow = isTranscriptNearBottom()
+  const shouldFollow = transcriptFollow.following
   for (const operation of payload.operations || []) {
     if (operation.type === 'line.append') {
       if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
@@ -1110,7 +1144,7 @@ function applyDelta(payload) {
       state.lines[index] = { ...patchedLine, ...(operation.patch || {}) }
     }
   }
-  if (payload.status) state.status = payload.status
+  if (payload.status) { state.status = payload.status; syncCoreTimings(payload.status) }
   updateComposerMetricTargets()
   state.connected = true
   state.connecting = false
@@ -1156,8 +1190,9 @@ function applySync(payload) {
     return
   }
   sessionSettingsSyncRevision += 1
-  const shouldFollow = isTranscriptNearBottom()
+  const shouldFollow = transcriptFollow.following
   if (incomingSessionId !== previousSessionId) {
+    transcriptFollow.reset()
     resetSessionSettingsUi()
     resetVirtualMessages()
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
@@ -1167,8 +1202,8 @@ function applySync(payload) {
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
   syncMessageImagePreviewsFromLines(state.lines)
-  syncLiveToolTimers(state.lines)
   state.status = payload.status || state.status
+  syncCoreTimings(payload.status)
   updateComposerMetricTargets()
   state.busy = !!payload.busy
   state.queuedInput = payload.queuedInput
@@ -2570,25 +2605,19 @@ function shouldHideLine(line) {
     && imageLabelsFromText(line?.text).length === 0
 }
 
-function syncLiveToolTimers(lines) {
-  const activeIds = new Set()
-  const now = Date.now()
-  for (const line of lines || []) {
-    if (!isImageCreateLiveLine(line)) continue
-    const id = String(line.id)
-    activeIds.add(id)
-    if (!state.liveToolStartedAt[id]) state.liveToolStartedAt[id] = now
-  }
-  for (const id of Object.keys(state.liveToolStartedAt)) {
-    if (!activeIds.has(id)) delete state.liveToolStartedAt[id]
-  }
+function syncCoreTimings(status) {
+  const now = performance.now()
+  state.coreToolTimings = receiveTimings(status?.toolTimings, now)
+  state.coreQueryTiming = receiveTimings(status?.queryTiming ? [status.queryTiming] : [], now)[0]
+  state.timingTick = now
 }
 
 function lineElapsedText(line) {
-  if (!isImageCreateLiveLine(line)) return ''
-  const startedAt = state.liveToolStartedAt[String(line.id)]
-  if (!startedAt) return ''
-  return formatDuration(state.clockTick - startedAt)
+  if (!line?.toolUseId) return ''
+  const timing = state.coreToolTimings.find(item => item.id === line.timing?.id) ?? line.timing
+  if (timing?.status === 'queued') return '排队中'
+  const elapsed = timingElapsedMs(timing, state.timingTick, state.connected)
+  return elapsed === undefined ? '' : formatDuration(elapsed)
 }
 
 function updateComposerMetricTargets() {
@@ -3330,7 +3359,8 @@ function formatDownloadExpiry(value) {
   if (!Number.isFinite(time)) return ''
   const remaining = time - Date.now()
   if (remaining <= 0) return '已过期'
-  return `${formatDuration(remaining)} 后过期`
+  const duration = formatDuration(remaining)
+  return duration ? `${duration} 后过期` : '即将过期'
 }
 
 function renderImageCreateStage(line) {
@@ -3493,15 +3523,6 @@ function numberField(text, fields) {
     if (match) return Number(match[1])
   }
   return undefined
-}
-
-function formatDuration(ms) {
-  const value = Math.max(0, Number(ms) || 0)
-  if (value < 1000) return `${Math.round(value)}ms`
-  if (value < 60_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0).replace(/\.0$/, '')}s`
-  const minutes = Math.floor(value / 60_000)
-  const seconds = Math.round((value % 60_000) / 1000)
-  return `${minutes}m ${seconds}s`
 }
 
 function escapeRegExp(value) {
@@ -4197,12 +4218,6 @@ function autosize() {
   el.style.height = `${Math.max(composerMinimumHeight(), Math.min(el.scrollHeight, maxHeight))}px`
 }
 
-function isTranscriptNearBottom(threshold = 96) {
-  const el = transcript.value
-  if (!el) return true
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
-}
-
 function virtualMessageKey(line) {
   return String(line?.id ?? '')
 }
@@ -4249,6 +4264,7 @@ function observeVirtualLayout() {
   virtualLayoutResizeObserver.disconnect()
   if (transcript.value) virtualLayoutResizeObserver.observe(transcript.value)
   if (messageList.value) virtualLayoutResizeObserver.observe(messageList.value)
+  for (const child of transcript.value?.children || []) virtualLayoutResizeObserver.observe(child)
 }
 
 function measureVirtualMessageElement(element) {
@@ -4260,8 +4276,7 @@ async function resizeMessageFromInteraction(event, update) {
   // Manual expansion anchors the header, not the bottom of the transcript.
   // Keep measured history: measure() would replace offscreen sizes with estimates.
   pendingMessageResizes.value++
-  if (scrollRaf) cancelAnimationFrame(scrollRaf)
-  scrollRaf = 0
+  transcriptFollow.pause()
   try {
     update()
     await nextTick()
@@ -4279,17 +4294,7 @@ function resetVirtualMessages() {
 }
 
 function scheduleTranscriptScrollBottom() {
-  if (scrollRaf) return
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = 0
-    scrollTranscriptBottom()
-  })
-}
-
-function scrollTranscriptBottom() {
-  const el = transcript.value
-  if (!el) return
-  el.scrollTop = el.scrollHeight
+  transcriptFollow.schedule()
 }
 
 function pruneRenderedLineCache() {
@@ -4565,7 +4570,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" class="transcript">
+          <div ref="transcript" class="transcript" tabindex="0" aria-label="对话记录">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <strong>运行上下文</strong>
@@ -4641,6 +4646,7 @@ function createMobileSession() {
                             <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
                           </svg>
                           <strong class="tool-result-name">{{ lineTitle(item) }}</strong>
+                          <span v-if="lineElapsedText(item)" class="elapsed-pill">{{ lineElapsedText(item) }}</span>
                           <span v-if="toolResultStatus(item).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
 
                         </div>
@@ -4747,6 +4753,7 @@ function createMobileSession() {
                       <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
                     </svg>
                     <strong class="tool-result-name">{{ lineTitle(line) }}</strong>
+                    <span v-if="lineElapsedText(line)" class="elapsed-pill">{{ lineElapsedText(line) }}</span>
                     <span v-if="toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
 
                   </div>
@@ -4823,13 +4830,22 @@ function createMobileSession() {
               </div>
             </template>
             </div>
+            <div v-if="!state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(state.coreQueryTiming.durationMs)" class="message-loading" role="status">
+              <div class="message-loading-body">
+                <ElapsedClock :elapsed-ms="state.coreQueryTiming.durationMs" />
+              </div>
+            </div>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
-                <span class="message-loading-label">{{ transcriptLoadingLabel }}</span>
+                <FlipStatusText class="message-loading-label" :text="transcriptLoadingLabel" />
+                <!-- 撒粉暂时停用：<DustStatusText class="message-loading-label" :text="transcriptLoadingLabel" /> -->
+                <ElapsedClock :elapsed-ms="transcriptElapsedMs" style="margin-inline-start: 10px" />
               </div>
+              <!-- 彩色旋转方块暂时停用，保留模板和样式以便恢复。
               <span class="message-loading-emblem" aria-hidden="true">
                 <i></i><i></i><i></i>
               </span>
+              -->
             </div>
           </div>
 

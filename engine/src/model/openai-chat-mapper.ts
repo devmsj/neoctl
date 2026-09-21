@@ -60,6 +60,7 @@ export async function* normalizeChatStream(
   const textParts: string[] = [];
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
+  const announcedToolCalls = new Set<number>();
   let responseId: string | undefined;
   let usage = undefined as ReturnType<typeof normalizeUsage>;
 
@@ -104,6 +105,11 @@ export async function* normalizeChatStream(
         const argsDelta = asString(fn?.arguments) ?? "";
         buffer.argumentsBuffer += argsDelta;
         toolBuffers.set(index, buffer);
+        // Header-only chunks already identify the call; do not wait for JSON input.
+        if (!announcedToolCalls.has(index) && asString(fn?.name)) {
+          announcedToolCalls.add(index);
+          yield { type: "tool_call_started", callId: buffer.callId, name: buffer.name };
+        }
         if (argsDelta) yield { type: "tool_call_delta", callId: buffer.callId, name: buffer.name, argumentsDelta: argsDelta };
       }
 

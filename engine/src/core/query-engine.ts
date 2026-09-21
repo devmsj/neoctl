@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { QueryTimingState, TimingRecord, TimingClock } from "./query-timing.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
 import { AppPromptContextManager, DefaultContextManager, readProjectMemoryDocuments, type ContextManager } from "../context/context-manager.js";
@@ -33,6 +34,7 @@ export type { SessionSettingsPatch } from "./query.js";
 const DEFAULT_SESSION_TITLE_DELAY_MS = 5000;
 
 export interface QueryEngineOptions {
+  timingClock?: TimingClock;
   agentId?: string;
   cwd?: string;
   model?: string;
@@ -76,6 +78,8 @@ export class QueryEngine {
   private readonly history: Message[] = [];
   private readonly titleTimers = new Set<ReturnType<typeof setTimeout>>();
   private lastTerminalReason?: TerminalReason;
+  private queryTiming?: QueryTimingState;
+  private readonly timingRecords = new Map<string, TimingRecord>();
   private sessionStore?: SessionStore;
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
@@ -278,6 +282,11 @@ export class QueryEngine {
         this.history,
         {
           ...this.options,
+          onTimingState: timing => { this.queryTiming = timing; },
+          onTiming: record => {
+            this.timingRecords.set(record.id, { ...record });
+            this.sessionStore?.recordTiming(record);
+          },
           contextManager: this.contextManager,
           modelGateway: this.currentModelGateway,
           taskNotificationSource: this.options.taskNotificationSource,
@@ -511,6 +520,8 @@ export class QueryEngine {
     this.lastTerminalReason = undefined;
     this.cancelPendingTitleWork();
     this.sessionStore?.reset();
+    this.queryTiming = undefined;
+    this.timingRecords.clear();
     this.notifySessionTitleChange(this.sessionStore?.snapshot());
   }
 
@@ -557,6 +568,15 @@ export class QueryEngine {
   /** User-facing read-only detail boundaries must also redact secrets registered at runtime. */
   redactDisplayValue<T>(value: T): T {
     return this.options.secretRedactions?.redact(value) ?? value;
+  }
+
+  /** Read-only live snapshots from the core monotonic clock, independent of subscribers. */
+  getTimingRecords(): TimingRecord[] {
+    const records = new Map(this.timingRecords);
+    if (this.queryTiming) {
+      for (const record of [this.queryTiming.snapshot(), ...this.queryTiming.toolSnapshots()]) records.set(record.id, record);
+    }
+    return [...records.values()].map(record => ({ ...record }));
   }
 
   getDisplayEntries(): SessionDisplayEntry[] {
@@ -727,6 +747,9 @@ export class QueryEngine {
     this.currentFastMode = this.sessionStore.getFastMode();
     this.currentContextWindowTokens = this.sessionStore.getContextWindowTokens()
       ?? normalizePositiveInteger(this.options.contextWindowTokensOverride);
+    this.queryTiming = undefined;
+    this.timingRecords.clear();
+    for (const record of this.sessionStore.getTimings()) this.timingRecords.set(record.id, record);
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 

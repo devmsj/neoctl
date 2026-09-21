@@ -50,6 +50,8 @@ export type ModelStreamEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "assistant_message"; message: Message }
   | { type: "tool_use"; toolUse: ToolUseRequest }
+  /** Tool-call generation has begun; arguments may be absent. Not tool execution. */
+  | { type: "tool_call_started"; callId: string; name: string }
   | { type: "tool_call_delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "response_started"; responseId: string }
   | { type: "response_completed"; responseId?: string; stopReason?: string; usage?: ModelUsage }
