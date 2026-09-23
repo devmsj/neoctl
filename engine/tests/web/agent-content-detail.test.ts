@@ -85,13 +85,37 @@ test('real task/transcript: visible exact run only; >24/8 entries; multi-block/e
   assert.equal(items.find(i => i.kind === 'tool_result')?.status, 'failed');
   assert.equal(items.find(i => i.kind === 'tool_result')?.content.state, 'truncated');
   const serialized = JSON.stringify(pages);
-  for (const denied of ['OLD', 'INHERITED', 'UNKNOWN', 'HIDDEN', 'SYSTEM_CONTEXT', 'COMPACT', 'CROSS_OWNER', 'FORBIDDEN_LAST_TEXT', 'STRUCT_SECRET', 'NESTED_SECRET', 'RUNTIME_CREDENTIAL']) assert.ok(!serialized.includes(denied), denied);
-  assert.ok(serialized.includes('ACTUAL_RESULT'));
+  for (const denied of ['OLD', 'INHERITED', 'UNKNOWN', 'HIDDEN', 'COMPACT', 'CROSS_OWNER', 'FORBIDDEN_LAST_TEXT']) assert.ok(!serialized.includes(denied), denied);
+  // Payload values are original data, unlike excluded system/other-run messages.
+  for (const retained of ['SYSTEM_CONTEXT', 'STRUCT_SECRET', 'NESTED_SECRET', 'RUNTIME_CREDENTIAL', 'ACTUAL_RESULT'])
+    assert.ok(strings.some(text => text.includes(retained)), retained);
   await f.resolver.delegation(f.owner, f.request); await f.resolver.report(f.owner, f.request);
   assert.deepEqual(await diskSnapshot(f.root), before); assert.equal(JSON.stringify(f.task), live);
 });
 
-test('long single JSONL entry fragments after redaction, UTF-8/emoji, idempotent retry', async t => {
+test('detail reasons describe original full content and distinguish truncated sources', async t => {
+  const f = await fixture(t);
+  const delegation = await f.resolver.delegation(f.owner, f.request);
+  assert.equal(delegation.delegation?.prompt.text, f.task.prompt);
+  assert.equal(delegation.delegation?.prompt.reason, '已保存内容的原始全文');
+  const report = await f.resolver.report(f.owner, f.request);
+  assert.equal(report.report?.content.text, 'CURRENT REPORT');
+  assert.equal(report.report?.content.reason, '已保存内容的原始全文');
+  await f.write([
+    f.visible('RUNTIME_CREDENTIAL'),
+    f.entry([{ type: 'tool_result', toolUseId: 'call_one', name: 'file_read', ok: true, output: { content: 'preview', truncated: true } }], 'tool_result'),
+  ]);
+  const timeline = await f.resolver.timeline(f.owner, { ...f.request, pageChars: 4096 });
+  const visible = timeline.items?.find(i => i.kind === 'assistant')?.content;
+  assert.equal(visible?.text, 'RUNTIME_CREDENTIAL');
+  assert.equal(visible?.state, 'complete');
+  assert.equal(visible?.reason, '已保存内容的原始全文');
+  const truncated = timeline.items?.find(i => i.kind === 'tool_result')?.content;
+  assert.equal(truncated?.state, 'truncated');
+  assert.equal(truncated?.reason, '保存的源数据已截断，不是全文');
+});
+
+test('long original JSONL entry fragments without rewriting, UTF-8/emoji, idempotent retry', async t => {
   const f = await fixture(t);
   const long = ('汉字😀' + 'x'.repeat(301) + 'RUNTIME_CREDENTIAL Bearer topsecret\n').repeat(700);
   await f.write([f.visible(long), f.visible('AFTER')]);
@@ -102,7 +126,7 @@ test('long single JSONL entry fragments after redaction, UTF-8/emoji, idempotent
   assert.deepEqual(a.items, b.items);
   const pages = await drain(r => f.resolver.timeline(f.owner, r), req);
   const strings = joined(pages.flatMap(p => p.items ?? []));
-  assert.equal(strings[0], long.replaceAll('RUNTIME_CREDENTIAL', '[runtime-redacted]').replaceAll('Bearer topsecret', 'Bearer [已脱敏]'));
+  assert.equal(strings[0], long);
   assert.equal(strings[1], 'AFTER');
   for (const p of pages) for (const i of p.items ?? []) assert.ok(!/[\uD800-\uDBFF]$/.test(i.content.text));
 });
@@ -139,14 +163,14 @@ test('owner/task/run/method/tampered cursor isolation and stale file identity', 
   assert.equal((await f.resolver.timeline(f.owner, { ...f.request, cursor })).state, 'unavailable');
 });
 
-test('report exact archive/current/evicted/duplicate/missing/empty and safe task delegation pagination', async t => {
+test('report exact archive/current/evicted/duplicate/missing/empty and verbatim delegation pagination', async t => {
   const f = await fixture(t);
   f.task.prompt = '委派 RUNTIME_CREDENTIAL '.repeat(100); f.task.description = 'd'.repeat(3000);
   let pages = await drain(r => f.resolver.delegation(f.owner, r), f.request);
-  assert.equal(pages.map(p => p.delegation?.prompt.text).join(''), f.task.prompt.replaceAll('RUNTIME_CREDENTIAL', '[runtime-redacted]'));
+  assert.equal(pages.map(p => p.delegation?.prompt.text).join(''), f.task.prompt);
   assert.equal(pages[0]?.delegation?.description.state, 'truncated');
   let p = await f.resolver.report(f.owner, { ...f.request, runGeneration: 1 });
-  assert.equal(p.report?.content.text, 'OLD REPORT'); assert.equal(p.report?.source, 'runHistory'); assert.equal(p.report?.taskStatus, 'failed'); assert.equal(p.report?.error.text, 'actual failure [runtime-redacted]');
+  assert.equal(p.report?.content.text, 'OLD REPORT'); assert.equal(p.report?.source, 'runHistory'); assert.equal(p.report?.taskStatus, 'failed'); assert.equal(p.report?.error.text, 'actual failure RUNTIME_CREDENTIAL');
   p = await f.resolver.report(f.owner, f.request); assert.equal(p.report?.reportStatus, 'incomplete');
   f.task.result!.content = 'report😀'.repeat(1000);
   pages = await drain(r => f.resolver.report(f.owner, r), f.request);
@@ -189,7 +213,7 @@ test('tool-result child-only refs, real full output, hardlinks, collisions, old-
   const use = () => f.entry([{ type: 'tool_use', id: 'call_one', name: 'file_read', input: { path: '/object' } }]);
   const result = (file: string) => f.entry([{ type: 'tool_result', toolUseId: 'call_one', name: 'file_read', ok: true, output: `<persisted-output>\nFull output saved to: ${file}\nPRIVATE_PREVIEW` }], 'tool_result');
   const readResult = async () => (await f.resolver.timeline(f.owner, { ...f.request, pageChars: 4096 })).items?.find(i => i.kind === 'tool_result')?.content;
-  await f.write([use(), result(ref)]); let content = await readResult(); assert.equal(content?.state, 'complete'); assert.match(content!.text, /REAL STORED RESULT/); assert.ok(!content!.text.includes('REF_SECRET')); assert.ok(!content!.text.includes('RUNTIME_CREDENTIAL'));
+  await f.write([use(), result(ref)]); let content = await readResult(); assert.equal(content?.state, 'complete'); assert.match(content!.text, /REAL STORED RESULT/); assert.deepEqual(JSON.parse(content!.text), { content: 'REAL STORED RESULT', password: 'REF_SECRET', value: 'RUNTIME_CREDENTIAL' });
   await fs.link(ref, path.join(f.root, 'ref-link')); assert.equal((await readResult())?.state, 'unavailable'); await fs.unlink(path.join(f.root, 'ref-link'));
   await f.write([use(), result(path.join(f.root, 'foreign.json'))]); assert.equal((await readResult())?.state, 'unavailable');
   await f.write([use(), result(ref), f.entry([{ type: 'tool_use', id: 'call/one', name: 'file_read', input: {} }])]); assert.equal((await readResult())?.state, 'unavailable');
@@ -205,13 +229,18 @@ test('fresh preloaded TaskStore reads disk report without reader recovery/write;
   const p = await f.resolver.report({ ...f.owner, taskStore: fresh }, { ...f.request, runGeneration: 1 });
   assert.equal(p.report?.content.text, 'OLD REPORT');
   assert.deepEqual(await diskSnapshot(f.root), before);
+  // Mutate at the real async transcript-open boundary, not the retired redact callback.
   let changed = false;
-  const owner = { ...f.owner, redact: (v: unknown) => {
-    if (!changed) { changed = true; f.task.runGeneration++; }
-    return runtimeRedact(v);
-  } };
-  const late = await f.resolver.timeline(owner, f.request);
+  const open = fs.open.bind(fs);
+  t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    const handle = await open(...args);
+    if (args[0] === f.transcript && !changed) { changed = true; f.task.runGeneration++; }
+    return handle;
+  });
+  const late = await f.resolver.timeline(f.owner, f.request);
+  assert.equal(changed, true, 'fixture must actually change generation during read');
   assert.equal(late.state, 'unavailable'); assert.equal(late.items, undefined);
+  assert.match(late.reason, /当前轮次改变/);
 });
 
 test('corrupt and oversized JSONL fail explicitly; filtered scan yields without skipping', async t => {

@@ -73,7 +73,7 @@ function sourceTruncated(value: unknown): boolean {
 function part(value: unknown): DetailPart {
   if (value === undefined) return missing('未提供');
   const truncated = sourceTruncated(value);
-  return { state: truncated ? 'truncated' : 'complete', text: serialize(redactToolDetail(value)), reason: truncated ? '数据源已截断；当前为预览，不是完整结果' : '已保存数据的脱敏全文' };
+  return { state: truncated ? 'truncated' : 'complete', text: serialize(redactToolDetail(value)), reason: truncated ? '数据源已截断；当前为预览，不是完整结果' : '已保存数据的原始全文' };
 }
 export function toolErrorText(output: unknown, ok: boolean): string {
   if (ok) return '';

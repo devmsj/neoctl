@@ -293,7 +293,9 @@ export class QueryEngine {
           toolResultMemory: this.sessionStore?.toolResultMemory,
           session: this.sessionStore ? { sessionId: this.sessionStore.sessionId, sessionDir: this.sessionStore.sessionDir, rootDir: this.options.session?.rootDir } : undefined,
           recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
-          exportToolCalls: (calls) => this.recordSyntheticToolCalls(calls),
+          // query owns synthetic tool-use messages; persist them only via the message event below.
+          // The export callback is an observer, not a second history writer.
+          exportToolCalls: this.options.exportToolCalls,
           applyCompaction: (result) => this.applyCompactionResult(result),
         },
         queryOptions,
@@ -690,26 +692,6 @@ export class QueryEngine {
       plugins: [...(this.options.plugins ?? [])],
       appPrompt: this.appPromptStore.getAppPrompt(),
     };
-  }
-
-  private recordSyntheticToolCalls(calls: Array<{ id: string; name: string; input: unknown }>): void {
-    const missing = calls.filter((call) =>
-      !this.history.some((message) =>
-        message.blocks.some((block) => block.type === "tool_use" && block.id === call.id),
-      ),
-    );
-    if (!missing.length) return;
-    const message: Message = {
-      id: `tool-use-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      role: "assistant",
-      createdAt: new Date().toISOString(),
-      blocks: missing.map((call) => ({ type: "tool_use", id: call.id, name: call.name, input: call.input })),
-      isMeta: true,
-      metadata: { syntheticToolUse: true },
-    };
-    this.history.push(message);
-    this.sessionStore?.recordMessage(message);
-    this.options.exportToolCalls?.(missing);
   }
 
   private async persistMessageImages(message: Message): Promise<Message> {

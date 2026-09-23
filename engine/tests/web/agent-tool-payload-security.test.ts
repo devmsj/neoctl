@@ -57,8 +57,19 @@ test('control-tool failure reason and delivery facts are not report prose', asyn
   const d = await detail('subagent_message', output, false);
   assert.equal(d.error.text, output.error); assert.deepEqual(JSON.parse(d.result.text), redactToolDetail(output));
 });
-test('non-agent tools retain ordinary content', async () => {
-  const d = await detail('file_read', { content: hidden }); assert.ok(d.result.text.includes(hidden)); assert.equal(d.result.state, 'complete');
+test('non-agent tool details describe original full data and distinguish truncated previews', async () => {
+  const output = { content: 'Bearer original-value', error: 'original failure' };
+  const d = await detail('file_read', output, false);
+  assert.deepEqual(JSON.parse(d.input.text), input);
+  assert.deepEqual(JSON.parse(d.result.text), output);
+  assert.equal(d.error.text, output.error);
+  for (const part of [d.input, d.result, d.error]) {
+    assert.equal(part.state, 'complete');
+    assert.equal(part.reason, '已保存数据的原始全文');
+  }
+  const truncated = await detail('file_read', { content: 'preview', truncated: true });
+  assert.equal(truncated.result.state, 'truncated');
+  assert.equal(truncated.result.reason, '数据源已截断；当前为预览，不是完整结果');
 });
 test('persisted result is filtered after reference restoration', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-payload-'));

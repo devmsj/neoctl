@@ -121,8 +121,10 @@ for (const background of [false, true]) test(`late ${background ? "async" : "syn
   } finally { old.release(); await tick(); await f.close(); }
 });
 
-for (const background of [false, true]) for (const finalized of [false, true]) test(`secret prefixes stay private in ${background ? "async" : "sync"} ${finalized ? "finalized" : "interrupted"} visible output`, async () => {
+for (const background of [false, true]) for (const finalized of [false, true]) test(`registered values stay verbatim in ${background ? "async" : "sync"} ${finalized ? "finalized" : "interrupted"} visible output`, async () => {
+  // Since 15e7654, user-owned output is preserved; registration is a compatibility no-op.
   const secret = "CREDENTIAL_SYNTHETIC_0123456789";
+  const expected = "SAFE " + secret + " END " + secret.slice(0, 10);
   const registry = new InMemorySecretRedactionRegistry(); registry.record("test", secret);
   const f = await fixture({ async *stream() {
     for (const text of ["SAFE ", secret.slice(0, 13), secret.slice(13), " END ", secret.slice(0, 10)])
@@ -135,11 +137,11 @@ for (const background of [false, true]) for (const finalized of [false, true]) t
     await createAgentTool(f.rt).call!({ prompt: "synthetic", run_in_background: background }, f.parent, {});
     await until(() => f.store.list().some(t => t.status === "failed"));
     const task = f.store.list()[0]!;
-    assert.equal(task.result?.content, "SAFE [secret:test] END [secret:incomplete]");
-    assert(!JSON.stringify(task.result).includes(secret.slice(0, 10)));
+    assert.equal(task.result?.content, expected);
+    assert.equal(task.result?.displaySource, "visible_text");
     const entries = (await fs.readFile(path.join(f.root, "subagents", task.agentId, "transcript.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const saved = entries.filter(e => e.runGeneration === 1).flatMap(e => e.message?.blocks ?? []).filter((b: any) => b.displayChannel === "visible").map((b: any) => b.text).join("");
-    assert.equal(saved, "SAFE [secret:test] END [secret:incomplete]");
+    assert.equal(saved, expected);
   } finally { await f.close(); }
 });
 
@@ -157,7 +159,7 @@ test("incomplete stream saves visible body once and keeps report incomplete", as
   } finally { await f.close(); }
 });
 
-for (const background of [false, true]) test(`only half-credential then failure never reappears in ${background ? "async" : "sync"} partial`, async () => {
+for (const background of [false, true]) test(`registered prefix survives ${background ? "async" : "sync"} failure without rewriting visible partial`, async () => {
   const registry = new InMemorySecretRedactionRegistry(); const secret = "HALF_CREDENTIAL_SYNTHETIC_012345";
   registry.record("half", secret);
   const prefix = secret.slice(0, 15);
@@ -167,11 +169,14 @@ for (const background of [false, true]) test(`only half-credential then failure 
     await createAgentTool(f.rt).call!({ prompt: "synthetic", run_in_background: background }, f.parent, {});
     await until(() => f.store.list().some(task => task.status === "failed"));
     const task = f.store.list()[0]!;
-    assert.equal(task.result?.content, "[secret:incomplete]");
+    assert.equal(task.result?.content, prefix);
     assert.equal(task.result?.displaySource, "visible_text");
     const transcript = await fs.readFile(path.join(f.root, "subagents", task.agentId, "transcript.jsonl"), "utf8");
-    assert(!transcript.includes(prefix));
-    assert(!JSON.stringify(task.progress.visibleText).includes(prefix));
+    const saved = transcript.trim().split("\n").map(line => JSON.parse(line))
+      .filter(e => e.runGeneration === 1).flatMap(e => e.message?.blocks ?? [])
+      .filter((b: any) => b.type === "text" && b.displayChannel === "visible").map((b: any) => b.text).join("");
+    assert.equal(saved, prefix);
+    assert.equal(task.progress.visibleText?.text, prefix);
   } finally { await f.close(); }
 });
 

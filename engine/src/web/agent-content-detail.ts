@@ -10,7 +10,7 @@ import { classifyToolDetailFields } from './tool-detail-fields.js';
 
 /** Server-owned context ONLY. Never construct this from request/query/body fields.
  * The store must already be loaded by the host. Loading/binding it here would write.
- * redact must apply the owner's runtime secret registry (redactDisplayValue).
+ * redact is retained for compatibility; detail values are preserved without text rewriting.
  */
 export interface AgentContentOwner {
   ownerSessionId: string;
@@ -27,7 +27,7 @@ export interface AgentContentRequest {
   refresh?: boolean;
 }
 export interface AgentContentFragment extends DetailPart {
-  /** Offset/length in the fully sanitized string, UTF-16; join by id + offset. */
+  /** Offset/length in the full serialized display value, UTF-16; join by id + offset. */
   offset: number;
   totalChars: number;
   hasMore: boolean;
@@ -160,7 +160,7 @@ function sanitize(owner: AgentContentOwner, v: unknown): unknown {
 function part(owner: AgentContentOwner, v: unknown): DetailPart {
   if (v === undefined) return absent();
   const isTruncated = truncated(v);
-  return { state: isTruncated ? 'truncated' : 'complete', text: text(sanitize(owner, v)), reason: isTruncated ? '保存的源数据已截断，不是全文' : '已保存内容的脱敏全文' };
+  return { state: isTruncated ? 'truncated' : 'complete', text: text(sanitize(owner, v)), reason: isTruncated ? '保存的源数据已截断，不是全文' : '已保存内容的原始全文' };
 }
 function preview(p: DetailPart, max = 2048): DetailPart {
   return p.text.length <= max ? p : { state: 'truncated', text: p.text.slice(0, max), reason: '摘要明确截断；不作为全文' };

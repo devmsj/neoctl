@@ -126,7 +126,7 @@ test("terminal facts preserve 0/nonzero/null/signal/reason without guessed statu
   assert.equal(ok(f.store.listHistory("A", { offset: 2 })).records.length, 2);
 });
 
-test("readable until terminal +5min, exact boundary denies without timer and facts survive", (t) => {
+test("terminal output survives the former 5min boundary, sweep and clock rollback", (t) => {
   const f = fixture(t); f.start();
   ok(f.store.append("A", "r", chunk("stdout", 0, "retain")));
   f.time(1000 + 10 * TERMINAL_OUTPUT_RETENTION_MS);
@@ -136,14 +136,17 @@ test("readable until terminal +5min, exact boundary denies without timer and fac
   assert.equal(ok(f.store.read("A", "r", { stream: "stdout" })).text, "retain");
   f.time(2000 + TERMINAL_OUTPUT_RETENTION_MS);
   const page = ok(f.store.read("A", "r", { stream: "stdout" }));
-  assert.equal(page.text, null); assert.equal(page.record.availability, "expired");
-  assert.equal(fs.existsSync(path.join(f.dir(), "stdout.txt")), false);
+  assert.equal(page.text, "retain"); assert.equal(page.record.availability, "available");
+  assert.equal(page.record.expiresAt, null);
+  assert.equal(fs.readFileSync(path.join(f.dir(), "stdout.txt"), "utf8"), "retain");
   assert.deepEqual(ok(f.store.listHistory("A")).records[0]!.record.exit, f.exit());
-  f.time(1000); // expiry is sticky even if wall clock moves backwards
-  assert.equal(ok(f.store.read("A", "r", { stream: "stdout" })).text, null);
+  f.time(2000 + 100 * TERMINAL_OUTPUT_RETENTION_MS); ok(f.store.sweep());
+  assert.equal(ok(f.store.read("A", "r", { stream: "stdout" })).text, "retain");
+  f.time(1000); // Clock rollback does not change durable output.
+  assert.equal(ok(f.store.read("A", "r", { stream: "stdout" })).text, "retain");
 });
 
-test("fresh instance restores terminal before TTL and rejects/cleans expired output on startup", (t) => {
+test("fresh instances restore terminal output before and after the former TTL without deleting files", (t) => {
   const f = fixture(t); f.start(); ok(f.store.append("A", "r", chunk("stdout", 0, "persisted")));
   ok(f.store.finalize("A", "r", f.exit()));
   const second = f.make();
@@ -152,13 +155,14 @@ test("fresh instance restores terminal before TTL and rejects/cleans expired out
   f.time(302000);
   const third = f.make();
   const restored = ok(third.restoreSession("A", path.join(f.root, "A")));
-  assert.equal(restored.records[0]!.record.availability, "expired");
-  assert.equal(ok(third.read("A", "r", { stream: "stdout" })).text, null);
-  assert.equal(fs.existsSync(path.join(f.dir(), "stdout.txt")), false);
+  assert.equal(restored.records[0]!.record.availability, "available");
+  assert.equal(restored.records[0]!.record.expiresAt, null);
+  assert.equal(ok(third.read("A", "r", { stream: "stdout" })).text, "persisted");
+  assert.equal(fs.readFileSync(path.join(f.dir(), "stdout.txt"), "utf8"), "persisted");
   assert.deepEqual(restored.records[0]!.record.exit, f.exit());
 });
 
-test("restart running becomes lost, never fabricated exit/finishedAt/completion, no renewed output TTL", (t) => {
+test("restart running becomes lost without fabricated exit facts or destructive output cleanup", (t) => {
   const f = fixture(t); f.start(); ok(f.store.append("A", "r", chunk("stdout", 0, "uncheckpointed")));
   f.time(9000);
   const next = f.make();
@@ -166,19 +170,27 @@ test("restart running becomes lost, never fabricated exit/finishedAt/completion,
   assert.equal(record.lifecycle, "lost"); assert.equal(record.exit, null); assert.equal(record.expiresAt, null); assert.equal(record.lostAt, 9000);
   assert.equal(record.availability, "lost"); assert.equal(ok(next.read("A", "r", { stream: "stdout" })).text, null);
   no(next.finalize("A", "r", f.exit()), "conflict");
-  assert.equal(fs.existsSync(path.join(f.dir(), "stdout.txt")), false);
+  // Revoked API access is distinct from deleting uncheckpointed original bytes.
+  assert.equal(fs.readFileSync(path.join(f.dir(), "stdout.txt"), "utf8"), "uncheckpointed");
   const again = f.make(); f.time(20000);
   assert.equal(ok(again.restoreSession("A", path.join(f.root, "A"))).records[0]!.record.lostAt, 9000);
 });
 
-test("explicit evict only; no per-owner/global slot policy in store; facts retained after restart", (t) => {
+test("slot eviction preserves durable output and all history records across restart", (t) => {
   const f = fixture(t, 4);
-  for (let i = 0; i < 65; i++) { f.start("A", String(i)); ok(f.store.finalize("A", String(i), f.exit())); }
+  for (let i = 0; i < 65; i++) {
+    f.start("A", String(i));
+    ok(f.store.append("A", String(i), chunk("stdout", 0, "keep")));
+    ok(f.store.finalize("A", String(i), f.exit()));
+  }
   assert.equal(ok(f.store.listHistory("A", { limit: 100 })).records.length, 65);
   assert.equal(ok(f.store.read("A", "0", { stream: "stdout" })).record.availability, "available");
   ok(f.store.evict("A", "0"));
   const next = f.make(); ok(next.restoreSession("A", path.join(f.root, "A")));
-  assert.equal(ok(next.read("A", "0", { stream: "stdout" })).record.availability, "evicted");
+  const page = ok(next.read("A", "0", { stream: "stdout" }));
+  assert.equal(page.record.availability, "available");
+  assert.equal(page.text, "keep");
+  assert.deepEqual(page.record.exit, f.exit());
   assert.equal(ok(next.listHistory("A", { limit: 100 })).records.length, 65);
 });
 

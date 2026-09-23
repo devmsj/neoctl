@@ -66,11 +66,11 @@ test('subagent real task identity, target, prompt, directive and controls; no st
   assert.equal(param(out, 'block').value, false); assert.equal(param(out, 'timeout_ms').value, 0);
   assert.equal(param(classify({ toolName: 'subagent_get', output: { prompt } }), 'prompt').source, 'result');
 });
-test('OBS01 structural contract, redacted fields, completeness and reasons preserved', () => {
+test('OBS01 structural contract, original fields, completeness and reasons preserved', () => {
   const detail: ToolCallDetail = { sessionId: 's', toolUseId: 't', toolName: 'edit', input: part(redactToolDetail({ path: '/file', oldString: '', newString: 'Bearer secret-value' })), result: part({ path: '/file' }), error: part('') };
   const before = JSON.stringify(detail); const f = adapt(detail);
   assert.equal(JSON.stringify(detail), before); assert.equal(f.actualPath.copyValue, '/file');
-  assert.equal(String(param(f, 'newString').value).includes('secret-value'), false); assert.equal(f.input.reason, 'complete');
+  assert.equal(param(f, 'newString').value, 'Bearer secret-value'); assert.equal(f.input.reason, 'complete');
   const truncated = adapt({ ...detail, input: part({ path: '/preview' }, 'truncated'), result: part({}, 'missing') });
   assert.equal(truncated.actualPath.value, '/preview'); assert.equal(truncated.actualPath.copyValue, undefined);
   assert.equal(param(truncated, 'replaceAll').state, 'not-provided'); assert.equal(truncated.input.completeness, 'truncated');

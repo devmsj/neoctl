@@ -76,7 +76,12 @@ test("HTTP storage errors are non-2xx structured failures, not false success", a
 
 test("engine global route is dispatched before session runtime construction", async () => {
   const source = await fs.readFile(new URL("../../src/web/index.ts", import.meta.url), "utf8");
-  const route = source.slice(source.indexOf("async function route("));
+  const handler = /export\s+async\s+function\s+handleWebRequest\s*\(/.exec(source);
+  assert.ok(handler, "exported HTTP request handler must exist");
+  const route = source.slice(handler.index);
   const global = route.indexOf('if (url.pathname === "/api/prompt-config") return handlePromptConfigRequest(req, res);');
-  assert.ok(global >= 0 && global < route.indexOf("await router.get(scope)"));
+  const sessionRuntime = route.indexOf("await router.get(scope)");
+  assert.ok(global >= 0, "global prompt-config route must exist");
+  assert.ok(sessionRuntime >= 0, "session runtime construction must exist");
+  assert.ok(global < sessionRuntime, "global route must precede session runtime construction");
 });
