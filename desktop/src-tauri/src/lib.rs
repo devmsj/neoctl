@@ -5,6 +5,7 @@ mod install_path;
 mod install_preflight;
 mod install_storage;
 mod local_resources;
+mod local_file_drop;
 mod managed_process;
 mod node_isolation;
 mod runtime_control;

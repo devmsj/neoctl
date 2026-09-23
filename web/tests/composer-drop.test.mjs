@@ -7,12 +7,13 @@ const source = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
 const start = source.indexOf('function handleComposerDragOver(');
 const end = source.indexOf('\n}', source.indexOf('function filesFromDataTransfer(')) + 2;
 assert.ok(start >= 0 && end > start);
-function fixture() {
+function fixture(desktop = false) {
   const uploaded = [], applied = [];
   let focused = 0;
   const context = vm.createContext({
     state: { composerDropActive: false, composerDropMode: 'prompt', promptLibrary: [{ id: 'prompt-one' }] },
     draggingPromptId: { value: '' }, composer: { value: { focus() { focused++; } } },
+    isDesktop: () => desktop,
     uploadFiles: async files => uploaded.push(...files), applyPromptItem: async item => applied.push(item.id), notify: () => {},
   });
   vm.runInContext(source.slice(start, end), context);
@@ -47,6 +48,15 @@ test('DataTransfer.items fallback accepts files without turning text or director
   f.context.handleComposerDragOver(e);
   await f.context.handleComposerDrop(e);
   assert.deepEqual(f.uploaded, [file]);
+});
+
+test('desktop HTML5 file drops never fall back to uploading, including images', async () => {
+  const f = fixture(true);
+  const e = event({ types: ['Files'], files: [{ name: 'photo.png' }, { name: 'report.txt' }] });
+  await f.context.handleComposerDrop(e);
+  assert.equal(e.prevented, true);
+  assert.equal(f.uploaded.length, 0);
+  assert.equal(f.context.state.composerDropActive, false);
 });
 
 test('internal prompt drag still works and unrelated text is not swallowed', async () => {

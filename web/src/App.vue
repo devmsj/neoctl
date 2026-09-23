@@ -2,6 +2,7 @@
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
 import { isDesktop, resourceActionTitle, revealResource } from './local-resources.mjs'
+import { connectDesktopFileDrops } from './desktop-file-drop.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from './markdown.mjs'
 import TerminalOutputReader from './TerminalOutputReader.vue'
@@ -351,6 +352,8 @@ const sessionPage = ref(1)
 const adminUsername = ref('')
 const theme = ref(resolveInitialTheme())
 const composer = ref(null)
+const composerForm = ref(null)
+let disconnectDesktopFileDrops
 const fileInput = ref(null)
 const transcript = ref(null)
 const messageList = ref(null)
@@ -675,6 +678,16 @@ async function logoutUser() {
 }
 
 onMounted(async () => {
+  disconnectDesktopFileDrops = connectDesktopFileDrops({
+    getTarget: () => composerForm.value,
+    onHover: (active) => { state.composerDropActive = active; state.composerDropMode = active ? 'files' : 'prompt' },
+    onFiles: (files) => {
+      for (const file of files) state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
+      composer.value?.focus()
+      notify(`已引用 ${files.length} 个本地文件（未上传）`)
+    },
+    onError: (error) => notify(String(error?.message || error)),
+  })
   if (typeof ResizeObserver !== 'undefined') {
     virtualLayoutResizeObserver = new ResizeObserver(() => {
       updateVirtualScrollMargin()
@@ -700,6 +713,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disconnectDesktopFileDrops?.()
   if (es) es.close()
   transcriptFollow.dispose()
   if (syncRaf) cancelAnimationFrame(syncRaf)
@@ -1480,6 +1494,10 @@ async function handleComposerDrop(event) {
     state.composerDropActive = false
     state.composerDropMode = 'prompt'
     draggingPromptId.value = ''
+    if (isDesktop()) {
+      notify('桌面拖拽仅引用原路径；请更新桌面端以启用原生拖拽，不会上传文件')
+      return
+    }
     await uploadFiles(files)
     composer.value?.focus()
     return
@@ -4075,7 +4093,7 @@ function fileAttachmentLabel(item, index) {
 }
 
 function fileAttachmentMeta(item) {
-  return `${fileAttachmentType(item)} · ${formatBytes(item?.size)}`
+  return `${item?.localReference ? '原路径引用 · ' : ''}${fileAttachmentType(item)} · ${formatBytes(item?.size)}`
 }
 
 function fileAttachmentType(item) {
@@ -4890,6 +4908,7 @@ function createMobileSession() {
           </div>
 
           <form
+            ref="composerForm"
             v-if="!adminViewing"
             :class="['composer', { 'drop-active': state.composerDropActive }]"
             @submit.prevent="submit"
@@ -4905,7 +4924,7 @@ function createMobileSession() {
             <div v-if="fileAttachments().length" class="attachments file-attachments">
               <figure v-for="(item, index) in fileAttachments()" :key="item.label" class="file-attachment">
                 <figcaption>
-                  <strong>{{ fileAttachmentLabel(item, index) }}</strong>
+                  <strong :title="item.localReference ? item.absolutePath : undefined">{{ fileAttachmentLabel(item, index) }}</strong>
                   <span>{{ fileAttachmentMeta(item) }}</span>
                 </figcaption>
                 <button type="button" aria-label="移除附件" @click="removeAttachment(item.label)">×</button>

@@ -5,5 +5,5 @@
   "windows": ["main"],
   "local": false,
   "remote": { "urls": ["http://127.0.0.1:*"] },
-  "permissions": ["local-resources:allow-reveal-file"]
+  "permissions": ["local-resources:allow-reveal-file", "local-resources:allow-watch-file-drops", "local-resources:allow-unwatch-file-drops", "local-resources:allow-take-file-drop"]
 }

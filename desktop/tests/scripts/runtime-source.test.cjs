@@ -7,10 +7,21 @@ const section = (start, end) => rust.slice(rust.indexOf(start), rust.indexOf(end
 const root = path.resolve(__dirname, '../..');
 const read = (file) => readFileSync(path.join(root, file), 'utf8');
 
-test('Windows uses HTML5 file drops instead of swallowing them in the native handler', () => {
+test('Windows uses native file drops to preserve original paths', () => {
   const config = JSON.parse(read('src-tauri/tauri.conf.json'));
-  assert.equal(config.app.windows.find(w => w.label === 'main').dragDropEnabled, false);
+  assert.equal(config.app.windows.find(w => w.label === 'main').dragDropEnabled, true);
   assert.match(read('src-tauri/src/downloads.rs'), /WebviewWindowBuilder::from_config\(app, config\)/);
+});
+
+test('native drops use WindowContent event dispatch and never read or copy file contents', () => {
+  const adapter = read('src-tauri/src/local_resources.rs');
+  const drop = read('src-tauri/src/local_file_drop.rs');
+  assert.match(adapter, /tauri::RunEvent::WindowEvent/);
+  assert.match(adapter, /tauri::WindowEvent::DragDrop/);
+  assert.doesNotMatch(adapter, /tauri::RunEvent::WebviewEvent/);
+  assert.match(adapter, /PageLoadEvent::Started/);
+  assert.match(drop, /super::local_resources::authorize\(&window\)/);
+  assert.doesNotMatch(drop, /std::fs::(?:read|write|copy|rename)|reqwest|\/api\/uploads|expose_downloads/);
 });
 
 test('local resource adapter has no dependency on web plugins, routes or mapping storage', () => {
@@ -19,7 +30,7 @@ test('local resource adapter has no dependency on web plugins, routes or mapping
   assert.match(adapter, /SHOpenFolderAndSelectItems/);
   assert.doesNotMatch(adapter, /Command::new|cmd\.exe|powershell/);
   const capability = JSON.parse(read('src-tauri/capabilities/local-resources.json'));
-  assert.deepEqual(capability.permissions, ['local-resources:allow-reveal-file']);
+  assert.deepEqual(capability.permissions, ['local-resources:allow-reveal-file', 'local-resources:allow-watch-file-drops', 'local-resources:allow-unwatch-file-drops', 'local-resources:allow-take-file-drop']);
   assert.equal(capability.local, false);
   assert.deepEqual(capability.remote.urls, ['http://127.0.0.1:*']);
   assert.match(adapter, /trusted_runtime_origin\(&current, &url\)/);
@@ -32,7 +43,7 @@ test('desktop build no longer reads or emits an embedded remote-control configur
   assert.equal(existsSync(path.join(root, 'src-tauri/src/control_config.rs')), false);
   const build = read('src-tauri/build.rs');
   assert.match(build, /tauri_build::try_build/);
-  assert.match(build, /InlinedPlugin::new\(\)\.commands\(&\["reveal_file"\]\)/);
+  assert.match(build, /InlinedPlugin::new\(\)\.commands\(&\[\s*"reveal_file",\s*"watch_file_drops",\s*"unwatch_file_drops",\s*"take_file_drop",?\s*\]\)/);
   assert.doesNotMatch(build, /std::(?:env|fs)|serde_json|control_config/);
   const manifest = read('src-tauri/Cargo.toml');
   const buildDependencies = manifest.split('[build-dependencies]')[1].split('[dependencies]')[0];

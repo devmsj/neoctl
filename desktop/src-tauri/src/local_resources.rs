@@ -10,7 +10,7 @@ fn trusted_runtime_origin(current: &tauri::Url, runtime: &str) -> bool {
     })
 }
 
-fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
     // Reject URLs, relative paths, UNC shares and device namespaces before touching the filesystem.
     #[cfg(windows)]
     {
@@ -31,8 +31,7 @@ fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-#[tauri::command]
-async fn reveal_file(window: WebviewWindow, path: String) -> Result<(), String> {
+pub(crate) fn authorize(window: &WebviewWindow) -> Result<(), String> {
     let runtime = window
         .state::<crate::DesktopState>()
         .runtime_url
@@ -43,8 +42,14 @@ async fn reveal_file(window: WebviewWindow, path: String) -> Result<(), String> 
     if window.label() != "main"
         || !runtime.is_some_and(|(_, url)| trusted_runtime_origin(&current, &url))
     {
-        return Err("仅允许当前桌面运行时定位本地文件".into());
+        return Err("仅允许当前桌面运行时访问本地文件".into());
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn reveal_file(window: WebviewWindow, path: String) -> Result<(), String> {
+    authorize(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let file = existing_local_file(Path::new(&path))?;
         reveal(&file)
@@ -98,7 +103,35 @@ fn reveal(_path: &Path) -> Result<(), String> {
 
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("local-resources")
-        .invoke_handler(tauri::generate_handler![reveal_file])
+        .setup(|app, _| {
+            app.manage(crate::local_file_drop::FileDrops::default());
+            Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                crate::local_file_drop::clear(webview.app_handle());
+            }
+        })
+        .on_event(|app, event| {
+            // A WebviewWindow (WindowContent) dispatches native drops as WindowEvent.
+            // Do not also subscribe to WebviewEvent and risk duplicate delivery.
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::DragDrop(drop),
+                ..
+            } = event
+            {
+                crate::local_file_drop::forward(app, label, drop);
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            reveal_file,
+            crate::local_file_drop::watch_file_drops,
+            crate::local_file_drop::unwatch_file_drops,
+            crate::local_file_drop::take_file_drop
+        ])
         .build()
 }
 

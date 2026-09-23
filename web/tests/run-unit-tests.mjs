@@ -11,6 +11,7 @@ const files = [
   'chunk-uploads.test.mjs',
   'composer-presentation.test.mjs',
   'composer-drop.test.mjs',
+  'desktop-file-drop.test.mjs',
   'core-timing.test.mjs',
   'cpa-quota.test.mjs',
   'image-original-dimensions.test.mjs',
