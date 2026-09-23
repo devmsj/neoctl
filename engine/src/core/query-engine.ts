@@ -49,7 +49,8 @@ export interface QueryEngineOptions {
   contextManagerFactory?: (cwd?: string) => ContextManager;
   additionalPromptSections?: readonly PromptSection[];
   /** Synchronous refresh at a safe model-turn boundary or idle preview. */
-  refreshTools?: () => void;
+  refreshTools?: (engine: QueryEngine) => void;
+  acquireTurnResources?: (engine: QueryEngine) => import("./query.js").TurnResources;
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   canUseTool?: CanUseTool;
@@ -273,7 +274,7 @@ export class QueryEngine {
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
         beforeTurn: (messages) => {
-          this.options.refreshTools?.();
+          this.options.refreshTools?.(this);
           return this.consumeSessionSettings(messages);
         },
       };
@@ -282,6 +283,7 @@ export class QueryEngine {
         this.history,
         {
           ...this.options,
+          acquireTurnResources: this.options.acquireTurnResources ? () => this.options.acquireTurnResources!(this) : undefined,
           onTimingState: timing => { this.queryTiming = timing; },
           onTiming: record => {
             this.timingRecords.set(record.id, { ...record });
@@ -623,7 +625,7 @@ export class QueryEngine {
   }
 
   refreshToolsIfIdle(): void {
-    if (!this.running) this.options.refreshTools?.();
+    if (!this.running) this.options.refreshTools?.(this);
   }
 
   private async buildPromptExportSnapshot(messages: Message[], desiredState = this.sessionPromptState): Promise<SessionPromptExportSnapshot> {

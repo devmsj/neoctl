@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const { containerMode, workspaceFs, deliverUpload, verifyExecutionBackend } = await import('./execution-backend.mjs');
 await verifyExecutionBackend();
 const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } = await import('./core-runtime.mjs');
-const { createWebPluginHost } = await import('./plugins.mjs');
+const { createPluginManager } = await import('./plugin-manager.mjs');
 const { createWebPluginSettings } = await import('./plugin-settings.mjs');
 const { createWebToolSettings } = await import('./tool-settings.mjs');
 const { createWorkspaceRuntimeManager } = await import('./runtime-workspaces.mjs');
@@ -45,13 +45,11 @@ const chunkUploads = createChunkUploadHandler({ uploadsDir, baseDir: __dirname, 
 const pluginSettings = await createWebPluginSettings(pluginSettingsFile);
 const toolSettings = await createWebToolSettings(toolSettingsFile);
 const pluginEnv = process.env.NEO_WEB_PLUGINS;
-const pluginResources = await loadNeoPlugins({ directories: pluginDir, appDataDir: pluginDataDir });
-const pluginHost = createWebPluginHost({
-  plugins: pluginResources,
+const pluginManager = await createPluginManager({ directory: path.join(dataRoot, 'installed-plugins'), builtInDirectory: pluginDir, loadPlugins: loadNeoPlugins });
+const pluginHost = await pluginManager.createHost({
   enabled: pluginEnv?.trim() ? pluginEnv : pluginSettings.globalEnabledIds(),
-  locked: Boolean(pluginEnv?.trim()),
-  settings: pluginSettings,
-});
+  locked: Boolean(pluginEnv?.trim()), settings: pluginSettings,
+}, { appDataDir: pluginDataDir });
 const embedRuntime = process.env.NEO_EMBED_RUNTIME !== 'false';
 const cpaQuotaMonitor = createCpaQuotaMonitor({ configFile: cpaConfigFile });
 const memoryMonitor = createMemoryMonitor({
@@ -79,7 +77,7 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
 });
 
 const { createIsolationMode } = await import('./isolation.mjs');
-const isolation = await createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginSettings, toolSettings, cpaQuotaMonitor, memoryState: () => memoryMonitor.getPublicState() });
+const isolation = await createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginManager, pluginSettings, toolSettings, cpaQuotaMonitor, memoryState: () => memoryMonitor.getPublicState() });
 
 const DEFAULT_APP_PROMPT_LIBRARY = [];
 

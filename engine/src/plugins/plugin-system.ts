@@ -27,6 +27,7 @@ export interface NeoPluginFactoryContext {
 
 export interface NeoPluginRouteHelpers {
   readJsonBody?: (request: IncomingMessage) => Promise<unknown>;
+  localResourceHeaders?: (request: IncomingMessage, absolutePath: string) => Record<string, string>;
   sendJson?: (response: ServerResponse, payload: unknown, status?: number) => unknown;
 }
 
@@ -40,6 +41,8 @@ export interface NeoPluginToolResultPresentationContext {
 export type NeoPluginToolResultPresenter = (context: NeoPluginToolResultPresentationContext) => unknown;
 
 export interface NeoPluginCapabilities {
+  /** Release instance-owned resources after removal and all in-flight leases finish. */
+  dispose?: () => void | Promise<void>;
   tools?: readonly Tool[];
   promptSections?: readonly PromptSection[];
   presentToolResult?: NeoPluginToolResultPresenter;
@@ -63,6 +66,7 @@ export interface NeoPluginResource {
   promptSections: readonly PromptSection[];
   presentToolResult?: NeoPluginToolResultPresenter;
   route?: NeoPluginCapabilities["route"];
+  dispose?: NeoPluginCapabilities["dispose"];
 }
 
 export type NeoPluginFactory = (
@@ -72,6 +76,8 @@ export type NeoPluginFactory = (
 export interface LoadNeoPluginsOptions {
   /** One or more directories whose direct children are plugin resource directories. */
   directories: string | readonly string[];
+  /** Exact immutable plugin directories, without scanning their siblings. */
+  pluginDirectories?: readonly string[];
   /** Generic application data directory exposed to plugin factories. */
   appDataDir?: string;
   /** Environment made available to plugin factories. Defaults to process.env. */
@@ -81,14 +87,22 @@ export interface LoadNeoPluginsOptions {
 export async function loadNeoPlugins(options: LoadNeoPluginsOptions): Promise<NeoPluginResource[]> {
   const roots = normalizeRoots(options.directories);
   const plugins: NeoPluginResource[] = [];
-  for (const root of roots) plugins.push(...await loadPluginRoot(root, options));
-  plugins.sort((left, right) => left.id.localeCompare(right.id));
-  assertUnique(plugins.map((plugin) => plugin.id), "duplicate plugin id");
-  assertUnique(
-    plugins.flatMap((plugin) => plugin.tools ?? []).map((tool) => tool.name),
-    "duplicate tool name across plugins",
-  );
-  return plugins;
+  try {
+    for (const root of roots) plugins.push(...await loadPluginRoot(root, options));
+    for (const directory of options.pluginDirectories ?? []) {
+      plugins.push(...await loadPluginRoot(path.dirname(directory), options, path.basename(directory)));
+    }
+    plugins.sort((left, right) => left.id.localeCompare(right.id));
+    assertUnique(plugins.map((plugin) => plugin.id), "duplicate plugin id");
+    assertUnique(
+      plugins.flatMap((plugin) => plugin.tools ?? []).map((tool) => tool.name),
+      "duplicate tool name across plugins",
+    );
+    return plugins;
+  } catch (error) {
+    await disposePlugins(plugins);
+    throw error;
+  }
 }
 
 export function validateNeoPluginManifest(value: unknown, manifestPath = NEO_PLUGIN_MANIFEST): NeoPluginManifest {
@@ -113,7 +127,7 @@ export function validateNeoPluginManifest(value: unknown, manifestPath = NEO_PLU
   };
 }
 
-async function loadPluginRoot(root: string, options: LoadNeoPluginsOptions): Promise<NeoPluginResource[]> {
+async function loadPluginRoot(root: string, options: LoadNeoPluginsOptions, only?: string): Promise<NeoPluginResource[]> {
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -121,53 +135,68 @@ async function loadPluginRoot(root: string, options: LoadNeoPluginsOptions): Pro
     if (isNodeError(error) && error.code === "ENOENT") return [];
     throw error;
   }
-  const directories = entries.filter((entry) => entry.isDirectory()).sort((left, right) => left.name.localeCompare(right.name));
+  const directories = entries.filter((entry) => entry.isDirectory() && (!only || entry.name === only)).sort((left, right) => left.name.localeCompare(right.name));
   const plugins: NeoPluginResource[] = [];
-  for (const entry of directories) {
-    const pluginDir = path.resolve(root, entry.name);
-    const manifestPath = path.join(pluginDir, NEO_PLUGIN_MANIFEST);
-    let rawManifest: string;
-    try {
-      rawManifest = await readFile(manifestPath, "utf8");
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") continue;
-      throw error;
+  try {
+    for (const entry of directories) {
+      const pluginDir = path.resolve(root, entry.name);
+      const manifestPath = path.join(pluginDir, NEO_PLUGIN_MANIFEST);
+      let rawManifest: string;
+      try {
+        rawManifest = await readFile(manifestPath, "utf8");
+      } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") continue;
+        throw error;
+      }
+      let parsedManifest: unknown;
+      try {
+        parsedManifest = JSON.parse(rawManifest);
+      } catch (error) {
+        throw new Error(`invalid plugin manifest ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+      const manifest = validateNeoPluginManifest(parsedManifest, manifestPath);
+      const entryPath = resolveContainedEntry(pluginDir, manifest.entry, manifestPath);
+      const module = await import(pathToFileURL(entryPath).href);
+      const factory = module.createPlugin ?? module.default;
+      if (typeof factory !== "function") {
+        throw new Error(`invalid plugin module ${entryPath}: export createPlugin(context) or a default factory`);
+      }
+      const context: NeoPluginFactoryContext = Object.freeze({
+        manifest: Object.freeze({ ...manifest }),
+        pluginDir,
+        ...(options.appDataDir ? { appDataDir: path.resolve(options.appDataDir) } : {}),
+        env: Object.freeze({ ...(options.env ?? process.env) }),
+      });
+      const rawCapabilities = await (factory as NeoPluginFactory)(context);
+      let capabilities;
+      try { capabilities = normalizeCapabilities(rawCapabilities, entryPath); }
+      catch (error) {
+        if (typeof rawCapabilities?.dispose === "function") await Promise.resolve().then(() => rawCapabilities.dispose!()).catch(() => {});
+        throw error;
+      }
+      plugins.push({
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        defaultEnabled: manifest.defaultEnabled !== false,
+        sourceDir: pluginDir,
+        manifestPath,
+        ...capabilities,
+      });
     }
-    let parsedManifest: unknown;
-    try {
-      parsedManifest = JSON.parse(rawManifest);
-    } catch (error) {
-      throw new Error(`invalid plugin manifest ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
-    }
-    const manifest = validateNeoPluginManifest(parsedManifest, manifestPath);
-    const entryPath = resolveContainedEntry(pluginDir, manifest.entry, manifestPath);
-    const module = await import(pathToFileURL(entryPath).href);
-    const factory = module.createPlugin ?? module.default;
-    if (typeof factory !== "function") {
-      throw new Error(`invalid plugin module ${entryPath}: export createPlugin(context) or a default factory`);
-    }
-    const context: NeoPluginFactoryContext = Object.freeze({
-      manifest: Object.freeze({ ...manifest }),
-      pluginDir,
-      ...(options.appDataDir ? { appDataDir: path.resolve(options.appDataDir) } : {}),
-      env: Object.freeze({ ...(options.env ?? process.env) }),
-    });
-    const capabilities = normalizeCapabilities(await (factory as NeoPluginFactory)(context), entryPath);
-    plugins.push({
-      id: manifest.id,
-      name: manifest.name,
-      version: manifest.version,
-      description: manifest.description,
-      defaultEnabled: manifest.defaultEnabled !== false,
-      sourceDir: pluginDir,
-      manifestPath,
-      ...capabilities,
-    });
+    return plugins;
+  } catch (error) {
+    await disposePlugins(plugins);
+    throw error;
   }
-  return plugins;
 }
 
-function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPluginResource, "tools" | "promptSections" | "presentToolResult" | "route"> {
+async function disposePlugins(plugins: readonly NeoPluginResource[]): Promise<void> {
+  await Promise.allSettled(plugins.map(plugin => Promise.resolve().then(() => plugin.dispose?.())));
+}
+
+function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPluginResource, "tools" | "promptSections" | "presentToolResult" | "route" | "dispose"> {
   if (!isRecord(value)) throw new Error(`invalid plugin module ${entryPath}: factory must return an object`);
   const tools = value.tools === undefined ? [] : requireArray<unknown>(value.tools, "tools", entryPath);
   const promptSections = value.promptSections === undefined ? [] : requireArray<unknown>(value.promptSections, "promptSections", entryPath);
@@ -179,10 +208,12 @@ function normalizeCapabilities(value: unknown, entryPath: string): Pick<NeoPlugi
   if (value.presentToolResult !== undefined && typeof value.presentToolResult !== "function") {
     throw new Error(`invalid plugin module ${entryPath}: presentToolResult must be a function`);
   }
+  if (value.dispose !== undefined && typeof value.dispose !== "function") throw new Error(`invalid plugin module ${entryPath}: dispose must be a function`);
   const normalizedTools = tools as Tool[];
   const normalizedSections = promptSections as PromptSection[];
   assertUnique(normalizedTools.map((tool) => tool.name), `duplicate tool name in plugin module ${entryPath}`);
   return {
+    ...(typeof value.dispose === "function" ? { dispose: value.dispose as NeoPluginCapabilities["dispose"] } : {}),
     tools: [...normalizedTools],
     promptSections: normalizedSections.map((section) => ({ ...section })),
     ...(typeof value.presentToolResult === "function" ? { presentToolResult: value.presentToolResult as NeoPluginCapabilities["presentToolResult"] } : {}),

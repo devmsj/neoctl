@@ -34,7 +34,8 @@ test('queued for resume and unknown are never green completed', () => {
  const line={toolName:'subagent_message', toolDisplay:{facts:[{label:'任务状态',value:'queued_for_resume'}]}}
  assert.equal(agentToolStatus(line).label, '未提供')
  assert.equal(agentToolStatus(line).key, 'unknown')
- assert.equal(agentToolStatus({...line,titleStatus:'failure'}).label,'调用失败')
+ // The shared callStatus contract uses the compact label for all tool calls.
+ assert.deepEqual(agentToolStatus({...line,titleStatus:'failure'}), { key: 'failed', label: '失败' })
  assert.equal(agentToolStatus({toolName:'subagent_run'}).key,'unknown')
  assert.equal(agentToolStatus({...line,toolDisplay:{facts:[{label:'任务状态',value:'future_status'}]}}).key,'unknown')
 })

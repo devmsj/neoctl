@@ -3,7 +3,8 @@ import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
-import { DefaultContextManager } from "../context/context-manager.js";
+import type { PromptSection } from "../context/prompts.js";
+import { AdditionalPromptContextManager, DefaultContextManager } from "../context/context-manager.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
 import { AGENT_REPORT_TOOL_NAME } from "../agents/agent-report-tool.js";
@@ -84,7 +85,15 @@ export interface QueryOptions {
   stopAfterTurn?: (state: QueryState) => boolean;
 }
 
+export interface TurnResources {
+  tools: ToolRegistry;
+  promptSections?: readonly PromptSection[];
+  release: () => void;
+}
+
 export interface QueryDependencies {
+  /** Acquired synchronously at each model-turn boundary, held through its tool batch. */
+  acquireTurnResources?: () => TurnResources;
   /** Observability sink only; never included in prompt/context construction. */
   onTiming?: (record: TimingRecord) => void;
   onTimingState?: (state: QueryTimingState) => void;
@@ -217,94 +226,103 @@ async function* queryLoop(
       yield { type: "state", phase: "compacting", detail: formatCompactionDetail(update.compaction) };
     }
     if (options.abortSignal?.aborted) return "aborted_streaming";
-    state = beginTurn(state);
-    toolContext = {
-      ...toolContext,
-      queryTracking: state.queryTracking,
-      messages: state.messages,
-      options: {
-        ...toolContext.options,
-        mainLoopModel: state.currentModel ?? options.model,
-        modelGateway: dependencies.modelGateway,
-        reasoning: options.reasoning,
-        serviceTier: options.serviceTier,
-        contextWindowTokensOverride: options.contextWindowTokensOverride,
-        maxOutputTokensOverride: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
-      },
-    };
-    yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
+    const turnResources = dependencies.acquireTurnResources?.();
+    try {
+      const turnTools = turnResources?.tools ?? dependencies.tools.clone();
+      state = beginTurn(state);
+      toolContext = {
+        ...toolContext,
+        tools: turnTools,
+        queryTracking: state.queryTracking,
+        messages: state.messages,
+        options: {
+          ...toolContext.options,
+          mainLoopModel: state.currentModel ?? options.model,
+          modelGateway: dependencies.modelGateway,
+          reasoning: options.reasoning,
+          serviceTier: options.serviceTier,
+          contextWindowTokensOverride: options.contextWindowTokensOverride,
+          maxOutputTokensOverride: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
+        },
+      };
+      yield { type: "state", phase: state.phase, detail: `turn ${state.turnCount + 1} started (${state.transition.reason})` };
 
-    const toolDefinitions = dependencies.tools.definitions(toolContext);
-    const context = await contextManager.build({
-      agentId: options.agentId,
-      messages: state.messages,
-      cwd: options.workspaceCwd,
-      enabledTools: toolDefinitions.map((tool) => tool.name),
-      toolUseContext: toolContext,
-    });
-    const systemPrompt = context.systemPrompt;
-    const requestContextForTurn = options.requestContext;
-    const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
-      model: state.currentModel ?? options.model,
-      contextWindowTokensOverride: options.contextWindowTokensOverride,
-      systemPrompt,
-      toolDefinitions,
-      toolUseContext: toolContext,
-      requestContext: requestContextForTurn,
-    });
-    if (prepared.compaction?.changed) {
-      state = { ...state, messages: prepared.compactedMessages };
-      await dependencies.applyCompaction?.(prepared.compaction);
-      if (prepared.compaction.report) yield { type: "context.compacted", compaction: prepared.compaction.report };
-      yield { type: "state", phase: "compacting", detail: formatCompactionDetail(prepared.compaction) };
-      if (!dependencies.applyCompaction) {
-        for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
-          yield { type: "message", message };
+      const toolDefinitions = turnTools.definitions(toolContext);
+      const turnContextManager = turnResources?.promptSections
+        ? new AdditionalPromptContextManager(contextManager, turnResources.promptSections) : contextManager;
+      const context = await turnContextManager.build({
+        agentId: options.agentId,
+        messages: state.messages,
+        cwd: options.workspaceCwd,
+        enabledTools: toolDefinitions.map((tool) => tool.name),
+        toolUseContext: toolContext,
+      });
+      const systemPrompt = context.systemPrompt;
+      const requestContextForTurn = options.requestContext;
+      const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
+        model: state.currentModel ?? options.model,
+        contextWindowTokensOverride: options.contextWindowTokensOverride,
+        systemPrompt,
+        toolDefinitions,
+        toolUseContext: toolContext,
+        requestContext: requestContextForTurn,
+      });
+      if (prepared.compaction?.changed) {
+        state = { ...state, messages: prepared.compactedMessages };
+        await dependencies.applyCompaction?.(prepared.compaction);
+        if (prepared.compaction.report) yield { type: "context.compacted", compaction: prepared.compaction.report };
+        yield { type: "state", phase: "compacting", detail: formatCompactionDetail(prepared.compaction) };
+        if (!dependencies.applyCompaction) {
+          for (const message of prepared.compactedMessages.filter((message) => message.metadata?.compactBoundary === true)) {
+            yield { type: "message", message };
+          }
         }
       }
-    }
 
-    const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
-      systemPrompt,
-      toolDefinitions,
-      metrics: prepared.metrics,
-    }, timing);
-    if (requestContextForTurn) options.requestContext = undefined;
-    if (modelOutput.reactiveCompact) {
-      state = modelOutput.reactiveCompact;
-      continue;
-    }
-    if (modelOutput.terminal) return modelOutput.terminal;
-    if (!modelOutput.output) return "model_error";
-
-    const { assistantMessages, toolUses, previousResponseId, incompleteReason } = modelOutput.output;
-
-    if (toolUses.length === 0) {
-      const recovery = maybeRecoverWithoutTools(state, incompleteReason, assistantMessages, previousResponseId, options);
-      if (recovery) {
-        state = recovery;
+      const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
+        systemPrompt,
+        toolDefinitions,
+        metrics: prepared.metrics,
+      }, timing);
+      if (requestContextForTurn) options.requestContext = undefined;
+      if (modelOutput.reactiveCompact) {
+        state = modelOutput.reactiveCompact;
         continue;
       }
-      return "completed";
+      if (modelOutput.terminal) return modelOutput.terminal;
+      if (!modelOutput.output) return "model_error";
+
+      const { assistantMessages, toolUses, previousResponseId, incompleteReason } = modelOutput.output;
+
+      if (toolUses.length === 0) {
+        const recovery = maybeRecoverWithoutTools(state, incompleteReason, assistantMessages, previousResponseId, options);
+        if (recovery) {
+          state = recovery;
+          continue;
+        }
+        return "completed";
+      }
+
+      const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, toolContext, timing);
+      if (toolResult.terminal) return toolResult.terminal;
+      toolContext = toolResult.context;
+
+      const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource, dependencies.session?.sessionDir);
+      for (const notification of taskNotifications) {
+        yield { type: "message", message: notification };
+      }
+
+      const allToolResults = [...toolResult.messages, ...taskNotifications];
+      state = buildNextTurnState(state, {
+        assistantMessages,
+        toolResults: allToolResults,
+        previousResponseId,
+      });
+      if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults, options.agentReportToolName)) return "completed";
+      if (options.stopAfterTurn?.(state)) return "turn_yielded";
+    } finally {
+      turnResources?.release();
     }
-
-    const toolResult = yield* executeToolsForTurn(toolUses, dependencies, options, toolContext, timing);
-    if (toolResult.terminal) return toolResult.terminal;
-    toolContext = toolResult.context;
-
-    const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource, dependencies.session?.sessionDir);
-    for (const notification of taskNotifications) {
-      yield { type: "message", message: notification };
-    }
-
-    const allToolResults = [...toolResult.messages, ...taskNotifications];
-    state = buildNextTurnState(state, {
-      assistantMessages,
-      toolResults: allToolResults,
-      previousResponseId,
-    });
-    if (options.stopOnAgentReport && hasSuccessfulAgentReport(allToolResults, options.agentReportToolName)) return "completed";
-    if (options.stopAfterTurn?.(state)) return "turn_yielded";
   }
 }
 

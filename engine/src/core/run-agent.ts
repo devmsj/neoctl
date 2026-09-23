@@ -16,6 +16,7 @@ import { query, type QueryOptions } from "./query.js";
 import { ensureToolResultPairing } from "./message-pipeline.js";
 
 export interface RunAgentDependencies {
+  acquireTurnResources?: import("./query.js").QueryDependencies["acquireTurnResources"];
   timingClock?: TimingClock;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
@@ -96,6 +97,11 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   let totalToolUseCount = 0;
 
   const dependencies = {
+    acquireTurnResources: options.dependencies.acquireTurnResources ? () => {
+      const resources = options.dependencies.acquireTurnResources!();
+      try { return { ...resources, tools: resolveAgentTools(resources.tools, options.agent) }; }
+      catch (error) { resources.release(); throw error; }
+    } : undefined,
     timingClock: options.dependencies.timingClock,
     onTiming: (record: TimingRecord) => childSession?.recordTiming(record, options.runGeneration),
     modelGateway: options.dependencies.modelGateway,

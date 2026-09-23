@@ -9,10 +9,14 @@ export async function createWebPluginSettings(storageFile) {
     return structuredClone(state);
   }
 
-  async function update(next) {
-    state = next;
-    writeQueue = writeQueue.catch(() => undefined).then(() => writeState(storageFile, state));
-    await writeQueue;
+  function update(reduce) {
+    const operation = writeQueue.catch(() => undefined).then(async () => {
+      const next = reduce(state);
+      await writeState(storageFile, next);
+      state = next;
+    });
+    writeQueue = operation;
+    return operation;
   }
 
   return {
@@ -25,16 +29,18 @@ export async function createWebPluginSettings(storageFile) {
       return value && typeof value === 'object' ? { ...value } : {};
     },
     async setGlobalEnabled(ids) {
-      await update({ ...state, globalEnabled: [...new Set(ids)].sort() });
+      await update(current => ({ ...current, globalEnabled: [...new Set(ids)].sort() }));
     },
     async setSessionOverrides(sessionId, overrides) {
       const id = String(sessionId || '').trim();
       if (!id) throw new Error('session id is required');
-      const sessions = { ...state.sessions };
+      await update(current => {
+      const sessions = { ...current.sessions };
       const normalized = Object.fromEntries(Object.entries(overrides).filter(([, value]) => typeof value === 'boolean'));
       if (Object.keys(normalized).length) sessions[id] = normalized;
       else delete sessions[id];
-      await update({ ...state, sessions });
+      return { ...current, sessions };
+      });
     },
   };
 }

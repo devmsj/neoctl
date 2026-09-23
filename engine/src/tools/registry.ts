@@ -18,6 +18,15 @@ export class ToolRegistry {
   private readonly aliases = new Map<string, string>();
   private readonly disabledTools = new Set<string>();
 
+  /** Independent registration/enablement state, sharing immutable tool implementations. */
+  clone(): ToolRegistry {
+    const copy = new ToolRegistry();
+    for (const [name, tool] of this.tools) copy.tools.set(name, tool);
+    for (const [name, target] of this.aliases) copy.aliases.set(name, target);
+    for (const name of this.disabledTools) copy.disabledTools.add(name);
+    return copy;
+  }
+
   register(tool: Tool<any>): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool already registered: ${tool.name}`);

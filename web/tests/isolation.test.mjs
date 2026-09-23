@@ -290,7 +290,11 @@ test('admin full settings are global; regular users only read shared quota', asy
   const plugins = await (await f.request('/api/plugins' + globalQuery, admin)).json();
   assert.equal(plugins.locked, false);
   assert.ok(plugins.items.length > 0);
-  assert.equal((await (await f.request('/api/plugins/global' + globalQuery, admin, { enabledIds: [] })).json()).restartRequired, true);
+  assert.equal((await (await f.request('/api/plugins/global' + globalQuery, admin, { enabledIds: [] })).json()).restartRequired, false);
+  for (const cookie of [admin, alice, bob]) {
+    assert.ok((await (await f.request('/api/plugins', cookie)).json()).items.every(item => !item.enabled));
+    assert.ok((await (await f.request('/api/session-plugins?tabId=existing', cookie)).json()).items.every(item => !item.globallyEnabled));
+  }
   await f.restart();
   const nextAdmin = await f.login('Admin'), nextAlice = await f.login('Alice');
   assert.ok((await (await f.request('/api/plugins', nextAdmin)).json()).items.every(item => !item.enabled));

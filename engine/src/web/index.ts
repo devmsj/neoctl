@@ -87,7 +87,15 @@ export interface WebRuntimePluginDefinition extends Pick<NeoPluginResource, "id"
   presentToolResult?: NeoPluginResource["presentToolResult"];
 }
 
+export interface WebPluginSnapshot {
+  plugins: readonly WebRuntimePluginDefinition[];
+  release: () => void;
+}
+
 interface WebRuntimePluginSupport {
+  resolveCatalog?: () => readonly WebRuntimePluginDefinition[];
+  acquire?: (overrides: Readonly<Record<string, boolean>>) => WebPluginSnapshot;
+  pendingOverrides?: Record<string, boolean>;
   catalog: WebRuntimePluginDefinition[];
   overrides: Record<string, boolean>;
   basePromptSections: PromptSection[];
@@ -354,6 +362,9 @@ export interface CreateWebRuntimeOptions {
   plugins?: readonly string[];
   /** Switchable plugins supplied by the embedding application. */
   externalPlugins?: readonly WebRuntimePluginDefinition[];
+  resolveExternalPlugins?: WebRuntimePluginSupport["resolveCatalog"];
+  acquirePluginSnapshot?: WebRuntimePluginSupport["acquire"];
+  reservePluginToolNames?: (names: readonly string[]) => void;
   /** Per-session plugin overrides. Missing ids inherit the global setting. */
   sessionPluginOverrides?: Readonly<Record<string, boolean>>;
   persistSessionPluginOverrides?: WebRuntimePluginSupport["persist"];
@@ -533,6 +544,10 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   };
   for (const tool of createSubagentTools(taskStore, resumeHandler)) registerTool(tool, { source: "builtin" });
 
+  const pluginToolNames = new Set(pluginCatalog.flatMap(plugin => plugin.tools.map(tool => tool.name)));
+  options.reservePluginToolNames?.(tools.list(undefined, { includeDeferred: true }).filter(tool => !pluginToolNames.has(tool.name)).flatMap(tool => [tool.name, ...(tool.aliases ?? [])]).concat(toolCatalog.filter(tool => tool.source !== "plugin").map(tool => tool.name)));
+  agentRuntime.acquireTurnResources = (sessionId) => acquireWebPluginTurn(runtime, false, runtime.engine, sessionId);
+
   const globalToolOverrides = normalizeToolOverrides(options.globalToolOverrides, toolCatalog);
   const sessionToolOverrides = normalizeToolOverrides(options.sessionToolOverrides, toolCatalog);
   applyToolOverrides(tools, toolCatalog, globalToolOverrides, sessionToolOverrides);
@@ -547,7 +562,9 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     modelGateway,
     tools,
     contextManagerFactory: (cwd) => new DefaultContextManager({ cwd }),
-    refreshTools: () => {
+    acquireTurnResources: (engine) => acquireWebPluginTurn(runtime, true, engine),
+    refreshTools: (engine) => {
+      if (runtime) refreshRuntimePlugins(runtime, engine);
       if (!options.resolveGlobalToolOverrides) return;
       if (runtime) refreshGlobalToolOverrides(runtime);
       else applyToolOverrides(tools, toolCatalog, normalizeToolOverrides(options.resolveGlobalToolOverrides(), toolCatalog), sessionToolOverrides);
@@ -587,14 +604,16 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     defaultReasoning: modelConfig?.defaultReasoning,
     envPath: process.env.NEO_ENV_FILE?.trim() ? path.resolve(process.env.NEO_ENV_FILE.trim()) : envLoad.userDotEnvPath,
     envNotice: envLoad.createdUserDotEnv ? formatCreatedEnvNotice(envLoad.userDotEnvPath) : undefined,
-    pluginSupport: pluginCatalog.length ? {
+    pluginSupport: {
+      resolveCatalog: options.resolveExternalPlugins,
+      acquire: options.acquirePluginSnapshot,
       catalog: pluginCatalog,
       overrides: pluginOverrides,
       basePromptSections: [...(options.externalPromptSections ?? [])],
       basePluginIds: [...(options.plugins ?? [])],
       persist: options.persistSessionPluginOverrides,
       resolve: options.resolveSessionPluginOverrides,
-    } : undefined,
+    },
     toolSupport: {
       catalog: toolCatalog,
       globalOverrides: globalToolOverrides,
@@ -606,6 +625,74 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     },
   };
   return runtime;
+}
+
+/** Build first, publish only after all registrations validate. Never called by a child on the parent registry. */
+function buildPluginRegistry(runtime: WebRuntime, catalog: readonly WebRuntimePluginDefinition[], overrides: Readonly<Record<string, boolean>>): ToolRegistry {
+  const registry = runtime.tools.clone();
+  for (const plugin of runtime.pluginSupport?.catalog ?? []) for (const tool of plugin.tools) registry.unregister(tool.name);
+  const names = new Set(registry.names({ includeDisabled: true }));
+  for (const plugin of catalog) for (const tool of plugin.tools) {
+    if (names.has(tool.name)) throw new Error(`duplicate plugin/host tool: ${tool.name}`);
+    names.add(tool.name);
+  }
+  for (const plugin of activeWebRuntimePlugins(catalog, overrides)) for (const tool of plugin.tools) registry.register(tool);
+  const support = runtime.toolSupport;
+  if (support) {
+    const global = support.resolveGlobal?.() ?? support.globalOverrides;
+    const all = [...support.catalog.filter(tool => tool.source !== "plugin"), ...catalog.flatMap(plugin => plugin.tools.map(tool => ({ name: tool.name })))];
+    for (const tool of all) registry.setEnabled(tool.name, support.sessionOverrides[tool.name] ?? global[tool.name] ?? isToolEnabledByDefault(tool.name));
+  }
+  return registry;
+}
+
+export function refreshRuntimePlugins(runtime: WebRuntime, engine = runtime.engine): void {
+  const support = runtime.pluginSupport;
+  if (!support) return;
+  const catalog = normalizeWebRuntimePlugins(support.resolveCatalog?.() ?? support.catalog);
+  const overrides = normalizePluginOverrides(resolveRuntimePluginOverrides(runtime, engine), catalog);
+  const registry = buildPluginRegistry(runtime, catalog, overrides);
+  // Only plugin registrations change. Built-in objects (including task managers) retain identity.
+  for (const plugin of support.catalog) for (const tool of plugin.tools) runtime.tools.unregister(tool.name);
+  const active = activeWebRuntimePlugins(catalog, overrides);
+  for (const plugin of active) for (const tool of plugin.tools) {
+    runtime.tools.register(tool);
+    runtime.tools.setEnabled(tool.name, registry.isEnabled(tool.name) === true);
+  }
+  support.catalog = catalog;
+  support.overrides = overrides;
+  support.pendingOverrides = undefined;
+  if (runtime.toolSupport) runtime.toolSupport.catalog = [
+    ...runtime.toolSupport.catalog.filter(tool => tool.source !== "plugin"),
+    ...catalog.flatMap(plugin => plugin.tools.map(tool => ({ name: tool.name, source: "plugin" as const, pluginId: plugin.id, pluginName: plugin.name, presentation: toolPresentationForSource(tool.name, "plugin") }))),
+  ];
+  engine.setRuntimePlugins([...support.basePluginIds, ...active.map(plugin => plugin.id)],
+    [...support.basePromptSections, ...active.flatMap(plugin => plugin.promptSections ?? [])]);
+}
+
+function resolveRuntimePluginOverrides(runtime: WebRuntime, engine: QueryEngine, sessionId = engine.snapshot().session?.sessionId): Record<string, boolean> {
+  const support = runtime.pluginSupport;
+  if (!support) return {};
+  if (engine === runtime.engine && sessionId === engine.snapshot().session?.sessionId && support.pendingOverrides) return support.pendingOverrides;
+  const resolved = sessionId ? support.resolve?.(sessionId) : undefined;
+  // Web hosts publish in-memory settings synchronously. Legacy async embedders retain loaded overrides.
+  if (resolved && !(resolved instanceof Promise)) return resolved;
+  if (resolved instanceof Promise) void resolved.catch(() => {});
+  return support.overrides;
+}
+
+/** Children acquire independent tools/prompts; they never refresh the parent's in-flight context. */
+function acquireWebPluginTurn(runtime: WebRuntime, main: boolean, engine = runtime.engine, sessionId?: string): import("../core/query.js").TurnResources {
+  if (main) { refreshRuntimePlugins(runtime, engine); refreshGlobalToolOverrides(runtime); }
+  const support = runtime.pluginSupport;
+  const overrides = resolveRuntimePluginOverrides(runtime, engine, sessionId);
+  const snapshot = support?.acquire?.(overrides);
+  try {
+    const catalog = normalizeWebRuntimePlugins(snapshot?.plugins ?? support?.resolveCatalog?.() ?? support?.catalog);
+    const tools = buildPluginRegistry(runtime, catalog, overrides);
+    return { tools, release: snapshot?.release ?? (() => {}),
+      ...(!main ? { promptSections: [...(support?.basePromptSections ?? []), ...activeWebRuntimePlugins(catalog, overrides).flatMap(plugin => plugin.promptSections ?? [])] } : {}) };
+  } catch (error) { snapshot?.release(); throw error; }
 }
 
 function normalizeWebRuntimePlugins(value: readonly WebRuntimePluginDefinition[] | undefined): WebRuntimePluginDefinition[] {
@@ -952,14 +1039,16 @@ export class WebRepl {
   }
 
   sessionPlugins() {
+    this.runtime.engine.refreshToolsIfIdle();
     const support = this.runtime.pluginSupport;
     const sessionId = this.runtime.engine.snapshot().session?.sessionId;
     if (!support) return { sessionId, busy: this.busy, items: [] };
     return {
       sessionId,
       busy: this.busy,
-      items: support.catalog.map((plugin) => {
-        const override = support.overrides[plugin.id];
+      pending: Boolean(support.pendingOverrides),
+      items: (support.resolveCatalog?.() ?? support.catalog).map((plugin) => {
+        const override = (support.pendingOverrides ?? support.overrides)[plugin.id];
         return {
           id: plugin.id,
           name: plugin.name,
@@ -1060,11 +1149,10 @@ export class WebRepl {
   }
 
   async setSessionPlugins(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionPlugins"]> }>> {
-    if (this.busy) return actionFailure("PLUGIN_UPDATE_BLOCKED", "cannot change session plugins while a response is running");
     if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "plugin overrides must be an object");
     const support = this.runtime.pluginSupport;
     if (!support) return actionFailure("PLUGIN_NOT_CONFIGURED", "web plugins are not configured");
-    const available = new Set(support.catalog.map((plugin) => plugin.id));
+    const available = new Set((support.resolveCatalog?.() ?? support.catalog).map((plugin) => plugin.id));
     const overrides: Record<string, boolean> = {};
     for (const [id, mode] of Object.entries(value)) {
       if (!available.has(id)) return actionFailure("PLUGIN_INVALID", `unknown web plugin: ${id}`);
@@ -1142,19 +1230,14 @@ export class WebRepl {
   private async applySessionPluginOverrides(overrides: Record<string, boolean>, persist: boolean): Promise<void> {
     const support = this.runtime.pluginSupport;
     if (!support) return;
-    const normalized = normalizePluginOverrides(overrides, support.catalog);
-    for (const plugin of support.catalog) for (const tool of plugin.tools) this.runtime.tools.unregister(tool.name);
-    const activePlugins = activeWebRuntimePlugins(support.catalog, normalized);
-    for (const plugin of activePlugins) for (const tool of plugin.tools) this.runtime.tools.register(tool);
-    support.overrides = normalized;
-    const toolSupport = this.runtime.toolSupport;
-    if (toolSupport) applyToolOverrides(this.runtime.tools, toolSupport.catalog, toolSupport.globalOverrides, toolSupport.sessionOverrides);
-    this.runtime.engine.setRuntimePlugins(
-      [...support.basePluginIds, ...activePlugins.map((plugin) => plugin.id)],
-      [...support.basePromptSections, ...activePlugins.flatMap((plugin) => plugin.promptSections ?? [])],
-    );
+    const catalog = normalizeWebRuntimePlugins(support.resolveCatalog?.() ?? support.catalog);
+    const normalized = normalizePluginOverrides(overrides, catalog);
+    buildPluginRegistry(this.runtime, catalog, normalized);
     const sessionId = this.runtime.engine.snapshot().session?.sessionId;
     if (persist && sessionId && support.persist) await support.persist(sessionId, normalized);
+    support.pendingOverrides = normalized;
+    if (this.busy) { this.publishRuntimeContext(); return; }
+    refreshRuntimePlugins(this.runtime);
     const metrics = await this.runtime.engine.contextMetrics();
     this.runtime.initialMetrics = metrics;
     this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });

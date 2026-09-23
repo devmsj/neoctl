@@ -56,6 +56,7 @@ export interface AgentToolInput {
 }
 
 export interface AgentToolRuntime {
+  acquireTurnResources?: (sessionId?: string) => import("../core/query.js").TurnResources;
   modelGateway: ModelGateway;
   /** Optional runner adapter; defaults to the production runAgent lifecycle. */
   runAgent?: typeof runAgent;
@@ -204,7 +205,7 @@ async function runSyncAgent(input: {
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
-      dependencies: buildRunAgentDependencies(input.runtime),
+      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId),
       ...task.executionOptions,
       runGeneration,
       onInitialMessages: (messages) => {
@@ -440,7 +441,7 @@ async function runAsyncAgentLifecycle(input: {
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
-      dependencies: buildRunAgentDependencies(input.runtime),
+      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId),
       ...(task?.executionOptions ?? effectiveExecutionOptions(input.input, input.agent, input.context)),
       runGeneration,
       abortSignal: wall?.signal ?? input.abortController.signal,
@@ -603,10 +604,11 @@ function effectiveExecutionOptions(input: AgentToolInput, agent: AgentDefinition
   };
 }
 
-function buildRunAgentDependencies(runtime: AgentToolRuntime): RunAgentDependencies {
+function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string): RunAgentDependencies {
   return {
     modelGateway: runtime.modelGateway,
     tools: runtime.tools,
+    acquireTurnResources: runtime.acquireTurnResources ? () => runtime.acquireTurnResources!(sessionId) : undefined,
     contextManager: runtime.contextManager,
     compactor: runtime.compactor,
     contextBudget: runtime.contextBudget,

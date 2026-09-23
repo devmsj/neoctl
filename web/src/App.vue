@@ -246,7 +246,7 @@ const state = reactive({
   settingsPage: '',
   projectContextOpen: false,
   projectContextDocument: undefined,
-  globalPlugins: { items: [], locked: false, restartRequired: true, loading: false },
+  globalPlugins: { items: [], locked: false, restartRequired: false, installationSupported: false, loading: false },
   sessionPlugins: { items: [], busy: false, loading: false },
   globalTools: { items: [], loading: false },
   sessionTools: { items: [], busy: false, loading: false },
@@ -820,6 +820,7 @@ async function fetchGlobalPlugins() {
       items: Array.isArray(body.items) ? body.items.map((item) => ({ ...item })) : [],
       locked: body.locked === true,
       restartRequired: body.restartRequired !== false,
+      installationSupported: body.installationSupported === true,
       loading: false,
     }
   } catch (error) {
@@ -835,12 +836,36 @@ async function saveGlobalPlugins() {
     const result = await postJson('/api/plugins/global', { enabledIds })
     const enabled = new Set(result.enabledIds || enabledIds)
     state.globalPlugins.items = state.globalPlugins.items.map((item) => ({ ...item, configuredEnabled: enabled.has(item.id) }))
-    notify('插件配置已保存，重启后生效')
+    await fetchGlobalPlugins()
+    notify('插件配置已生效；运行中的会话在下一次模型调用前更新')
   } catch (error) {
     notifyActionError(error, '插件配置保存失败')
   } finally {
     state.globalPlugins.loading = false
   }
+}
+
+async function installPlugin() {
+  const directory = window.prompt('仅安装可信插件：插件以本机权限运行。输入服务器上的插件目录绝对路径（需含 neo-plugin.json）')
+  if (!directory?.trim()) return
+  state.globalPlugins.loading = true
+  try {
+    await postJson('/api/plugins/install', { directory: directory.trim() })
+    await fetchGlobalPlugins()
+    notify('插件已安装；运行中的会话在下一次模型调用前更新')
+  } catch (error) { notifyActionError(error, '插件安装失败') }
+  finally { state.globalPlugins.loading = false }
+}
+
+async function uninstallPlugin(plugin) {
+  if (!window.confirm(`卸载“${plugin.name}”？历史资源将不可访问，用户数据保留。`)) return
+  state.globalPlugins.loading = true
+  try {
+    await postJson('/api/plugins/uninstall', { id: plugin.id })
+    await fetchGlobalPlugins()
+    notify('插件已卸载，用户数据已保留')
+  } catch (error) { notifyActionError(error, '插件卸载失败') }
+  finally { state.globalPlugins.loading = false }
 }
 
 async function fetchSessionPlugins() {
@@ -862,6 +887,7 @@ async function updateSessionPlugin(item, mode) {
   try {
     const result = await postJson('/api/session-plugins', { overrides })
     state.sessionPlugins = { ...result.state, loading: false, busy: false }
+    if (result.state?.pending) notify('已保存，将在下一次模型调用前生效')
   } catch (error) {
     state.sessionPlugins.busy = false
     notifyActionError(error, '会话插件更新失败')
@@ -5290,16 +5316,18 @@ function createMobileSession() {
             <section v-if="canConfigureModel" class="settings-card settings-plugin-card">
               <header class="settings-card-head">
                 <strong>插件</strong>
+                <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="installPlugin">安装可信插件</button>
                 <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存</button>
               </header>
               <div class="plugin-settings-list">
-                <label v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
+                <div v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
                   <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
                   <span class="plugin-toggle">
                     <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked" :aria-label="plugin.name" />
                     <span aria-hidden="true"></span>
                   </span>
-                </label>
+                <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="uninstallPlugin(plugin)">卸载</button>
+                </div>
               </div>
             </section>
           </form>
@@ -5574,7 +5602,7 @@ function createMobileSession() {
                   class="runtime-plugin-control"
                   :model-value="plugin.mode"
                   :options="SESSION_PLUGIN_MODE_OPTIONS"
-                  :disabled="state.busy || state.sessionPlugins.busy || !plugin.globallyEnabled"
+                  :disabled="state.sessionPlugins.busy || !plugin.globallyEnabled"
                   :aria-label="`${plugin.name}状态`"
                   :data-mode="plugin.mode"
                   @update:model-value="updateSessionPlugin(plugin, $event)"

@@ -78,18 +78,23 @@ jobs:
       - name: Core typecheck
         run: npm run typecheck --prefix engine
 
-      # The existing full Core suite has baseline failures. Do not hide them by
-      # continue-on-error: these release-specific regression tests must pass.
-      - name: Verify delegation defaults and nested-delegation regression
+      - name: Verify Core regressions including plugin turn leases
         working-directory: engine
-        run: node --import tsx --test tests/web/subagent-tool-defaults.test.ts tests/agents/no-nested-delegation.test.ts
+        run: npm test
+
+      - name: Build local Core for Web integration tests
+        run: npm run build --prefix engine
 
       - name: Install Web dependencies
         run: npm ci --prefix web --registry=https://registry.npmjs.org
 
-      - name: Verify Web CLI and tool settings
+      - name: Verify Web regressions including hotplug, isolation and local resources
         working-directory: web
-        run: node --test tests/neow.test.mjs tests/tool-settings.test.mjs tests/plugin-settings.test.mjs
+        run: npm test
+
+      - name: Verify Web CLI
+        working-directory: web
+        run: node --test tests/neow.test.mjs
 
       - name: Install Desktop dependencies
         run: npm ci --prefix desktop --registry=https://registry.npmjs.org

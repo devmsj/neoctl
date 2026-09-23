@@ -33,7 +33,7 @@ export function sanitizeIsolatedSnapshot(value) {
 }
 
 /** Web-only identity boundary. The core receives neither credentials nor user identities. */
-export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, configFile, memoryState = () => ({ current: null, history: [] }), cpaQuotaMonitor, pluginSettings, toolSettings }) {
+export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, pluginManager, configFile, memoryState = () => ({ current: null, history: [] }), cpaQuotaMonitor, pluginSettings, toolSettings }) {
   const config = await loadIsolationConfig(dataRoot, configFile);
   if (!config.enabled) return {
     enabled: false,
@@ -51,14 +51,14 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
   const { installRuntimeRouterIdleCleanup } = await import('./runtime-router-cleanup.mjs');
   installRuntimeRouterIdleCleanup();
   const { createWorkspaceRuntimeManager } = await import('./runtime-workspaces.mjs');
-  const { createWebPluginHost } = await import('./plugins.mjs');
+  const { createPluginManager } = await import('./plugin-manager.mjs');
+  pluginManager ||= await createPluginManager({ directory: path.join(dataRoot, 'installed-plugins'), builtInDirectory: pluginDir, loadPlugins: core.loadNeoPlugins });
   const { createWebPluginSettings } = await import('./plugin-settings.mjs');
   const { createWebToolSettings } = await import('./tool-settings.mjs');
   const { createChunkUploadHandler } = await import('./chunk-uploads.mjs');
   const { workspaceFs, openWorkspaceRead, containerMode } = await import('./execution-backend.mjs');
   const globalPlugins = pluginSettings || await createWebPluginSettings(path.join(dataRoot, 'plugins.json'));
   const globalTools = toolSettings || await createWebToolSettings(path.join(dataRoot, 'tools.json'));
-  const startupPlugins = process.env.NEO_WEB_PLUGINS?.trim() || globalPlugins.globalEnabledIds();
   const users = new Map();
   let modelConfigQueue = Promise.resolve();
   const withModelConfigLock = operation => {
@@ -101,11 +101,10 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
     for (const key of ['NEO_DOWNLOADS_DIR', 'NEO_VIDEO_SHARE_DIR', 'NEO_XHS_ARTIFACTS_DIR']) delete pluginEnv[key];
     const settings = await createWebPluginSettings(path.join(root, 'plugins.json'));
     const tools = await createWebToolSettings(path.join(root, 'tools.json'));
-    const pluginHost = createWebPluginHost({
-      plugins: await core.loadNeoPlugins({ directories: pluginDir, appDataDir: root, env: pluginEnv }),
-      enabled: startupPlugins, locked: Boolean(process.env.NEO_WEB_PLUGINS?.trim()),
+    const pluginHost = await pluginManager.createHost({
+      enabled: process.env.NEO_WEB_PLUGINS?.trim() || globalPlugins.globalEnabledIds(), locked: Boolean(process.env.NEO_WEB_PLUGINS?.trim()),
       settings: { ...settings, globalEnabledIds: () => globalPlugins.globalEnabledIds(), setGlobalEnabled: ids => globalPlugins.setGlobalEnabled(ids) },
-    });
+    }, { appDataDir: root, env: pluginEnv });
     const manager = createWorkspaceRuntimeManager({
       projectRoot: workRoot, workspaceRoot: workRoot, registryFile: path.join(root, 'workspaces.json'),
       createRuntime: options => core.createWebRuntime({
@@ -231,7 +230,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
           const state = cpaQuotaMonitor?.getPublicState() || { config: { url: '', hasPassword: false }, quotas: [] };
           jsonReply(res, isAdmin ? state : { quotas: state.quotas }); return true;
         }
-        if (['/api/cpa-config', '/api/plugins/global', '/api/prompt-config', '/api/tools/global'].includes(url.pathname) || (isAdmin && ['/api/plugins', '/api/tools'].includes(url.pathname))) {
+        if (['/api/cpa-config', '/api/plugins/global', '/api/plugins/install', '/api/plugins/uninstall', '/api/prompt-config', '/api/tools/global'].includes(url.pathname) || (isAdmin && ['/api/plugins', '/api/tools'].includes(url.pathname))) {
           if (!isAdmin) throw httpError(403, '仅超管可修改全局配置');
           if (!['GET', 'POST'].includes(req.method)) throw httpError(405, '请求方法无效');
           if (url.pathname === '/api/cpa-config') {

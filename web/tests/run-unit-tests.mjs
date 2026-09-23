@@ -23,6 +23,7 @@ const files = [
   'neow.test.mjs',
   'observability-preservation.test.mjs',
   'plugin-settings.test.mjs',
+  'plugin-hotplug.test.mjs',
   'plugins.test.mjs',
   'plugins/downloads/downloads.test.mjs',
   'plugins/video-share/video-share.test.mjs',
