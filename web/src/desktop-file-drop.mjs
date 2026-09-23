@@ -18,7 +18,7 @@ export function connectDesktopFileDrops({ getTarget, onHover, onFiles, onError, 
   if (!isDesktop(scope)) return () => {};
   const core = scope.__TAURI__.core;
   if (typeof core.Channel !== 'function') {
-    onError(new Error('请更新桌面端以启用原路径拖拽；不会回退上传'));
+    onError(new Error('请更新桌面端后重试'));
     return () => {};
   }
   let disposed = false;
@@ -41,8 +41,8 @@ export function connectDesktopFileDrops({ getTarget, onHover, onFiles, onError, 
     }
   };
   const registration = Promise.resolve().then(() => core.invoke('plugin:local-resources|watch_file_drops', { channel }));
-  registration.catch((error) => {
-    if (!disposed) onError(new Error(`原路径拖拽不可用，请确认桌面端已更新：${error?.message || error}`));
+  registration.catch(() => {
+    if (!disposed) onError(new Error('拖拽不可用，请更新桌面端后重试'));
   });
   return () => {
     if (disposed) return;

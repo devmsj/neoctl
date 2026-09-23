@@ -684,7 +684,7 @@ onMounted(async () => {
     onFiles: (files) => {
       for (const file of files) state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
       composer.value?.focus()
-      notify(`已引用 ${files.length} 个本地文件（未上传）`)
+      notify(`已添加 ${files.length} 个文件`)
     },
     onError: (error) => notify(String(error?.message || error)),
   })
@@ -1495,7 +1495,7 @@ async function handleComposerDrop(event) {
     state.composerDropMode = 'prompt'
     draggingPromptId.value = ''
     if (isDesktop()) {
-      notify('桌面拖拽仅引用原路径；请更新桌面端以启用原生拖拽，不会上传文件')
+      notify('请更新桌面端后重试')
       return
     }
     await uploadFiles(files)
@@ -4093,7 +4093,7 @@ function fileAttachmentLabel(item, index) {
 }
 
 function fileAttachmentMeta(item) {
-  return `${item?.localReference ? '原路径引用 · ' : ''}${fileAttachmentType(item)} · ${formatBytes(item?.size)}`
+  return `${item?.localReference ? '本地' : ''}${fileAttachmentType(item)} ${formatBytes(item?.size)}`
 }
 
 function fileAttachmentType(item) {
