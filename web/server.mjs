@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { createChunkUploadHandler } from './chunk-uploads.mjs';
+import { createLocalResourceHeaders } from './local-resources.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -23,6 +24,10 @@ process.env.NEO_CLIENT_REVISION ||= `${coreRuntimeInfo.version}-${Date.now().toS
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.env.DIST_DIR || path.join(__dirname, 'dist'));
 const host = process.env.APP_HOST || '0.0.0.0';
+const localResourceHeaders = createLocalResourceHeaders({
+  enabled: process.env.NEO_DESKTOP_LOCAL_RESOURCES === '1' && host === '127.0.0.1'
+    && process.env.NEO_EXECUTION_BACKEND !== 'docker',
+});
 const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
 const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
 const storage = resolveWebStorage();
@@ -128,7 +133,7 @@ async function routeRequest(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   try {
     if (await isolation.route(req, res, url)) return;
-    if (await pluginHost.route(req, res, url, { readJsonBody, sendJson })) return;
+    if (await pluginHost.route(req, res, url, { readJsonBody, sendJson, localResourceHeaders })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });
     }

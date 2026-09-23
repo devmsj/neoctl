@@ -47,6 +47,14 @@ npm start
 
 默认 Web 数据目录为 Windows 的 `%LOCALAPPDATA%\neoctl-web`、macOS 的 `~/Library/Application Support/neoctl-web`、Linux 的 `${XDG_DATA_HOME:-~/.local/share}/neoctl-web`。
 
+## 可选的桌面资源定位协议
+
+资源插件不依赖桌面模块。`route(req, res, url, helpers)` 可在完成自身资源授权、文件存在性与可读性校验后，将 `helpers.localResourceHeaders?.(req, absolutePath)` 合入响应头；没有 helper 时保持原有 GET/HEAD 行为。不得直接信任请求中传入的本地路径。
+
+桌面客户端对原资源 URL 发送 `HEAD` 和 `X-Neo-Resource-Action: reveal`，读取百分号编码的 `X-Neo-Resource-Path`，再调用壳提供的通用定位能力。宿主只在受管桌面本地服务（`NEO_DESKTOP_LOCAL_RESOURCES=1`、监听 `127.0.0.1`、非 Docker）提供路径；普通 GET/HEAD 和浏览器下载不暴露路径。前端拒绝跨源和重定向，壳再次核对当前受管运行时的精确 origin，并验证本机普通文件。不会通过 URL 或命令行执行资源。
+
+协议没有插件专用路由、注册表镜像或缓存；插件缺失、关闭或不支持时不触发本地动作。新增插件只需选择实现协议，无需修改桌面壳。注意：现有全局插件启停仍要求重启；此协议不增加生命周期耦合，也不等于已经实现插件目录的运行时热加载。
+
 ## 开发命令
 
 以下命令在 `web/` 目录执行：

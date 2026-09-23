@@ -4,6 +4,7 @@ mod health_check;
 mod install_path;
 mod install_preflight;
 mod install_storage;
+mod local_resources;
 mod managed_process;
 mod node_isolation;
 mod runtime_control;
@@ -687,6 +688,7 @@ fn launch_version(
             format!("http://127.0.0.1:{runtime_port}"),
         )
         .env("NEO_EMBED_RUNTIME", "true")
+        .env("NEO_DESKTOP_LOCAL_RESOURCES", "1")
         .env("NEO_CORE_SOURCE", "package")
         .env("NEO_WEB_DATA_DIR", &data_dir)
         .env("NEO_WORKSPACE_ROOT", &workspace_dir)
@@ -973,6 +975,7 @@ fn display_io(context: &'static str) -> impl FnOnce(std::io::Error) -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(local_resources::init())
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
             sync_window_theme,

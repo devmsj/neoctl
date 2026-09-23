@@ -6,8 +6,9 @@ import os from 'node:os';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { createPlugin } from '../../../plugins/downloads/index.mjs';
+import { createLocalResourceHeaders } from '../../../local-resources.mjs';
 
-async function setup(t) {
+async function setup(t, helpers = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'downloads-test-'));
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-workspace-'));
   const source = path.join(outside, '中文 [report].txt');
@@ -15,7 +16,7 @@ async function setup(t) {
   const context = { appDataDir: root, env: {} };
   let plugin = createPlugin(context);
   const server = http.createServer(async (req, res) => {
-    try { if (!await plugin.route(req, res, new URL(req.url, 'http://localhost'))) { res.statusCode = 404; res.end(); } }
+    try { if (!await plugin.route(req, res, new URL(req.url, 'http://localhost'), helpers)) { res.statusCode = 404; res.end(); } }
     catch (error) { res.statusCode = 500; res.end(error.message); }
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -72,6 +73,35 @@ test('invalid paths, directories, missing files, malformed URLs and HTTP writes 
     const r = await fetch(f.base + '/api/downloads/' + suffix); assert.equal(r.status, 404); await r.text();
   }
   const post = await fetch(f.base + d.url, { method: 'POST' }); assert.equal(post.status, 405); await post.text();
+});
+
+test('optional host capability resolves existing links without copies and disappears with missing source', async t => {
+  const f = await setup(t, { localResourceHeaders: createLocalResourceHeaders({ enabled: true }) });
+  const d = (await f.plugin.tools[0].execute({ paths: [f.source] })).output.downloads[0];
+  f.restart(); // Also works for links already saved before a runtime restart.
+  const init = { method: 'HEAD', headers: { 'X-Neo-Resource-Action': 'reveal' } };
+  const result = await fetch(f.base + d.url, init);
+  assert.equal(result.status, 200);
+  assert.equal(decodeURIComponent(result.headers.get('x-neo-resource-path')), f.source);
+  assert.equal(await result.text(), '');
+  for (const options of [{ method: 'HEAD' }, { headers: init.headers }]) {
+    const ordinary = await fetch(f.base + d.url, options);
+    assert.equal(ordinary.headers.get('x-neo-resource-path'), null);
+    await ordinary.text();
+  }
+  assert.deepEqual(await fs.readdir(path.join(f.root, 'downloads', d.id)), ['entry.json']);
+  await fs.rm(f.source);
+  const missing = await fetch(f.base + d.url, init);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get('x-neo-resource-path'), null);
+});
+
+test('without the optional helper, the plugin remains independently usable and does not disclose paths', async t => {
+  const f = await setup(t);
+  const d = (await f.plugin.tools[0].execute({ paths: [f.source] })).output.downloads[0];
+  const result = await fetch(f.base + d.url, { method: 'HEAD', headers: { 'X-Neo-Resource-Action': 'reveal' } });
+  assert.equal(result.status, 200);
+  assert.equal(result.headers.get('x-neo-resource-path'), null);
 });
 
 test('concurrent exposure persists separate tiny mappings', async (t) => {

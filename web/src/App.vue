@@ -1,6 +1,7 @@
 <script setup>
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
+import { isDesktop, resourceActionTitle, revealResource } from './local-resources.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from './markdown.mjs'
 import TerminalOutputReader from './TerminalOutputReader.vue'
@@ -2426,6 +2427,11 @@ async function handleDocumentResourceClick(event) {
   if (!(anchor instanceof HTMLAnchorElement)) return
   event.preventDefault()
   event.stopPropagation()
+  if (isDesktop()) {
+    try { await revealResource(anchor.href, { fetch: appFetch }) }
+    catch (error) { notify(error instanceof Error ? error.message : String(error || '无法打开所在文件夹')) }
+    return // Never silently download a second copy after a native reveal failure.
+  }
   const expiresAt = Number(anchor.dataset.resourceExpiresAt)
   if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
     notify('下载链接已过期，请重新生成')
@@ -3253,7 +3259,7 @@ function renderLineResources(line) {
     if (downloadable) {
       const compactSize = escapeHtml(size.replace(/\s+/g, ''))
       const expiresAt = Number(item.expiresAt) || 0
-      return `<a class="resource-file-link" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
+      return `<a class="resource-file-link" title="${escapeHtml(resourceActionTitle(item.label || item.downloadName))}" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
     }
     return `<a class="resource-card resource-${escapeHtml(item.kind || 'link')}" href="${href}"${download}><span class="resource-icon" aria-hidden="true"></span><span class="resource-main"><strong>${label}</strong><span>${escapeHtml(meta || (downloadable ? '文件已就绪' : '资源已就绪'))}</span></span><span class="resource-action"><span>${action}</span><i aria-hidden="true">${downloadable ? '↓' : '↗'}</i></span></a>`
   }).join('')
@@ -3294,7 +3300,7 @@ function enhanceExposedResourceLinks(html, resources) {
       anchor.setAttribute('download', item.downloadName || item.label || '')
       anchor.removeAttribute('target')
       anchor.removeAttribute('rel')
-      anchor.setAttribute('title', `下载 ${item.label || item.downloadName || '资源'}`)
+      anchor.setAttribute('title', resourceActionTitle(item.label || item.downloadName))
       anchor.dataset.resourceDownload = 'true'
       anchor.dataset.resourceExpiresAt = String(Number(item.expiresAt) || 0)
       if (item.sizeBytes) anchor.dataset.resourceSize = `(${formatBytes(item.sizeBytes).replace(/\s+/g, '')})`

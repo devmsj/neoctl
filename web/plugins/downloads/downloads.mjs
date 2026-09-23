@@ -86,7 +86,7 @@ export function createExposeDownloadsTool(options) {
   return tool;
 }
 
-export async function serveDownload(registry, req, res, id) {
+export async function serveDownload(registry, req, res, id, helpers = {}) {
   let handle;
   try {
     const entry = await registry.get(id);
@@ -95,6 +95,7 @@ export async function serveDownload(registry, req, res, id) {
     const stat = await handle.stat();
     if (!stat.isFile()) throw Object.assign(new Error('Not a file'), { code: 'ENOENT' });
     res.writeHead(200, {
+      ...helpers.localResourceHeaders?.(req, entry.absolutePath),
       'Content-Type': 'application/octet-stream', 'Content-Length': stat.size,
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(entry.filename).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))}`,
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',

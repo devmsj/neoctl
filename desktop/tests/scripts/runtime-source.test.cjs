@@ -7,11 +7,33 @@ const section = (start, end) => rust.slice(rust.indexOf(start), rust.indexOf(end
 const root = path.resolve(__dirname, '../..');
 const read = (file) => readFileSync(path.join(root, file), 'utf8');
 
+test('Windows uses HTML5 file drops instead of swallowing them in the native handler', () => {
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
+  assert.equal(config.app.windows.find(w => w.label === 'main').dragDropEnabled, false);
+  assert.match(read('src-tauri/src/downloads.rs'), /WebviewWindowBuilder::from_config\(app, config\)/);
+});
+
+test('local resource adapter has no dependency on web plugins, routes or mapping storage', () => {
+  const adapter = read('src-tauri/src/local_resources.rs');
+  assert.doesNotMatch(adapter, /expose_downloads|\/api\/downloads|DownloadRegistry|entry\.json|\.neoctl-downloads/);
+  assert.match(adapter, /SHOpenFolderAndSelectItems/);
+  assert.doesNotMatch(adapter, /Command::new|cmd\.exe|powershell/);
+  const capability = JSON.parse(read('src-tauri/capabilities/local-resources.json'));
+  assert.deepEqual(capability.permissions, ['local-resources:allow-reveal-file']);
+  assert.equal(capability.local, false);
+  assert.deepEqual(capability.remote.urls, ['http://127.0.0.1:*']);
+  assert.match(adapter, /trusted_runtime_origin\(&current, &url\)/);
+  assert.match(rust, /\.plugin\(local_resources::init\(\)\)/);
+});
+
 // Source-only regression: no build, registry, private config or runtime data access.
 test('desktop build no longer reads or emits an embedded remote-control configuration', () => {
   assert.equal(existsSync(path.join(root, 'src-tauri/control_config.rs')), false);
   assert.equal(existsSync(path.join(root, 'src-tauri/src/control_config.rs')), false);
-  assert.match(read('src-tauri/build.rs'), /^fn main\(\) \{\s*tauri_build::build\(\)\s*\}\s*$/);
+  const build = read('src-tauri/build.rs');
+  assert.match(build, /tauri_build::try_build/);
+  assert.match(build, /InlinedPlugin::new\(\)\.commands\(&\["reveal_file"\]\)/);
+  assert.doesNotMatch(build, /std::(?:env|fs)|serde_json|control_config/);
   const manifest = read('src-tauri/Cargo.toml');
   const buildDependencies = manifest.split('[build-dependencies]')[1].split('[dependencies]')[0];
   assert.doesNotMatch(buildDependencies, /serde_json/);

@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as smd from 'streaming-markdown'
+import { resourceActionTitle } from '../local-resources.mjs'
 
 const props = defineProps({
   text: { type: String, default: '' },
@@ -69,7 +70,7 @@ function createRenderer(element) {
           link.classList.add('inline-resource-link', `inline-resource-${resource.kind || 'link'}`)
           if (resource.kind === 'download' || resource.downloadName) {
             link.setAttribute('download', resource.downloadName || resource.label || '')
-            link.setAttribute('title', `下载 ${resource.label || resource.downloadName || '资源'}`)
+            link.setAttribute('title', resourceActionTitle(resource.label || resource.downloadName))
             link.removeAttribute('target')
             link.removeAttribute('rel')
             link.dataset.resourceDownload = 'true'

@@ -62,6 +62,7 @@
     "plugins.mjs",
     "plugin-settings.mjs",
     "platform-paths.mjs",
+    "local-resources.mjs",
     "tool-settings.mjs",
     "runtime-workspaces.mjs",
     "runtime-router-cleanup.mjs",
