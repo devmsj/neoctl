@@ -446,6 +446,9 @@ async function main(): Promise<void> {
   const manualOnly = new ManualOnlyCompactor(modelCompactor);
   const gpt56WindowOk = resolveContextWindowTokens("gpt-5.6", {}).source === "unknown"
     && resolveContextWindowTokens("gpt-6", {}).source === "unknown"
+    && resolveContextWindowTokens("gpt-6.1", {}).source === "unknown"
+    && resolveContextWindowTokens("gpt-6-sol", {}).tokens === 256000
+    && resolveContextWindowTokens("gpt-6.1-sol", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-6-astra", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-5.6-sol", {}).tokens === 256000
     && resolveContextWindowTokens("gpt-5.6-terra", {}).tokens === 256000
