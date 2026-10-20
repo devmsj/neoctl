@@ -920,6 +920,7 @@ export class WebRepl {
   private lines: UiLine[];
   private status: UiStatus;
   private busy = false;
+  private compactingSession?: QueryEngine;
   private queuedInput: string | undefined;
   private queuedAttachments: WebAttachmentPayload[] | undefined;
   private foregroundRun: Promise<void> | undefined;
@@ -1522,9 +1523,21 @@ export class WebRepl {
 
   async compactSession(): Promise<WebActionResult<{ deferred: boolean }>> {
     const engine = this.runtime.engine;
+    if (this.compactingSession === engine) return actionFailure("COMPACTION_IN_PROGRESS", "Context compaction is already running");
+    const showProgress = !this.busy;
+    const runToken = this.foregroundRunToken;
+    let finishForeground: (() => void) | undefined;
+    const foreground = showProgress ? new Promise<void>(resolve => { finishForeground = resolve; }) : undefined;
+    if (foreground) this.foregroundRun = foreground;
+    if (showProgress) {
+      this.compactingSession = engine;
+      this.busy = true;
+      this.setStatus({ ...this.status, phase: "compacting", detail: "manualcompact: generating context summary", activityTick: this.status.activityTick + 1 });
+    }
     try {
+      // An idle click executes now through the settings barrier, not the chat/input queue.
       const result = await engine.updateSessionSettings({ compact: true });
-      if (this.runtime.engine === engine) {
+      if (this.runtime.engine === engine && this.foregroundRunToken === runToken) {
         if (result.compaction?.report) this.appendCompaction(result.compaction.report);
         if (!result.deferred) await this.refreshSessionSettingMetrics(engine);
         this.broadcastSync();
@@ -1532,6 +1545,21 @@ export class WebRepl {
       return { ok: true, deferred: result.deferred };
     } catch (error) {
       return actionFailure("COMPACTION_FAILED", error instanceof Error ? error.message : String(error));
+    } finally {
+      if (this.compactingSession === engine) this.compactingSession = undefined;
+      if (this.foregroundRun === foreground) this.foregroundRun = undefined;
+      finishForeground?.();
+      if (showProgress && this.runtime.engine === engine && this.foregroundRunToken === runToken) {
+        this.busy = false;
+        this.setStatus({ ...this.status, phase: "ready", detail: undefined, activityTick: this.status.activityTick + 1 });
+        const queued = this.queuedInput;
+        const attachments = this.queuedAttachments ?? [];
+        if (queued !== undefined) {
+          this.queuedInput = undefined;
+          this.queuedAttachments = undefined;
+          this.startRun(queued, attachments);
+        }
+      }
     }
   }
 
@@ -3387,6 +3415,8 @@ function compactionLine(report: CompactionReport, createdAt = new Date().toISOSt
   return {
     kind: "meta",
     title: "Context compaction",
+    presentationLevel: "primary",
+    collapsible: false,
     text: formatCompactionReportSummary(report),
     format: "plain",
     compaction: { ...report, createdAt, current },

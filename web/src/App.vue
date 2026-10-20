@@ -414,7 +414,15 @@ const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
 const liveImageCreateLine = computed(() => [...(state.lines || [])].reverse().find((line) => isImageCreateLiveLine(line)) || null)
 const phaseLabel = computed(() => phaseText(state.status?.phase))
+const compactionLabel = computed(() => {
+  const detail = String(state.status?.detail || '')
+  if (/autocompact/.test(detail)) return '自动压缩上下文'
+  if (/reactive_compact/.test(detail)) return '上下文超限，正在压缩'
+  if (/purecompact|pure compact/.test(detail)) return '精简上下文'
+  return '压缩上下文'
+})
 const exactPhaseLabel = computed(() => {
+  if (state.status?.phase === 'compacting') return compactionLabel.value
   if (liveImageCreateLine.value) {
     return isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '整理图片结果' : '图片生成中'
   }
@@ -427,9 +435,11 @@ const exactPhaseLabel = computed(() => {
 })
 
 const active = computed(() => isActivePhase(state.status?.phase))
-const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading)
+const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading || state.compactSaving)
 const transcriptLoadingLabel = computed(() => {
   if (state.sessionResumeLoading) return '正在加载会话'
+  if (state.status?.phase === 'compacting') return `${compactionLabel.value} · 正在生成续接摘要`
+  if (state.compactSaving && !state.busy) return '正在压缩上下文'
   if (liveImageCreateLine.value) {
     const elapsed = lineElapsedText(liveImageCreateLine.value)
     const title = isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '正在载入图片结果' : '图片模型正在生成'
@@ -1769,7 +1779,7 @@ async function compressSession() {
     const result = await postJson(request.url, {}, true)
     if (!request.isCurrent()) return
     if (result.deferred) state.pendingSessionSettings.compact = true
-    notifySetting('压缩会话', result)
+    notify(result.deferred ? '将在下次调用前压缩上下文' : '上下文压缩完成')
     await reconcileSessionSetting(request)
   } catch (error) {
     if (request.isCurrent()) notifyActionError(error, '压缩上下文失败')
@@ -2361,7 +2371,7 @@ function isToolGroup(line) {
 
 function isPrimaryPresentationLine(line) {
   if (!line) return true
-  if (line.presentationLevel === 'primary' || isPromptUsageLine(line)) return true
+  if (line.presentationLevel === 'primary' || isPromptUsageLine(line) || isCompactionLine(line)) return true
   if (line.kind === 'user' || line.kind === 'assistant') return true
   return isImageCreateLine(line)
 }
@@ -4960,7 +4970,7 @@ function createMobileSession() {
                   <span>快速模式</span>
                 </button>
                 <span class="compress-wrap">
-                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true" @click="compressSession">压缩会话</button>
+                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession">{{ state.status?.phase === 'compacting' ? '正在压缩上下文' : state.compactSaving ? (state.busy ? '正在安排压缩' : '正在压缩上下文') : state.pendingSessionSettings.compact ? '已安排压缩' : '压缩会话' }}</button>
                 </span>
               </div>
               <div class="composer-actions">

@@ -100,6 +100,8 @@ async function persistImageBlock(block: ImageBlock, options: PersistMessageImage
     const parsed = requireValidImagePayload(storedData, block.mimeType);
     const contentHash = hashBytes(parsed.bytes);
     const storedBytes = Buffer.byteLength(storedData, "utf8");
+    if (block.storage.contentHash && block.storage.contentHash !== contentHash) throw new Error(`Stored image content hash mismatch for ${imageId}`);
+    if (block.storage.storedBytes !== undefined && block.storage.storedBytes !== storedBytes) throw new Error(`Stored image size mismatch for ${imageId}`);
     if (inline) {
       const inlineParsed = requireValidImagePayload(inline, block.mimeType);
       if (hashBytes(inlineParsed.bytes) !== contentHash) throw new Error(`Inline and stored image payload differ for ${imageId}`);

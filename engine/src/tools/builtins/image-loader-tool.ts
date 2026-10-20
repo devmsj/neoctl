@@ -2,7 +2,7 @@ import { executionReadFileSync as readFileSync, executionStatSync as statSync } 
 import { dockerEnabled, executionCwd } from "../../execution/docker.js";
 import path from "node:path";
 import { supportsImageInput } from "../../model/context-window.js";
-import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
+import { getContextImageStore, imageRegistryForContext, resolveContextImage } from "../../core/session-images.js";
 import { resolveImageRefResult, formatImageRegistryForContext, loadImageData } from "../../core/image-registry.js";
 import type { Message, MessageBlock } from "../../types/messages.js";
 import type { ImageRetention } from "../../core/image-notes.js";
@@ -10,7 +10,10 @@ import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 
 export interface LoadImageToolInput {
   /** Image references: ids like "img_1", labels, numeric refs like "image 1", storage paths, or external file paths. */
-  imageRefs: string[];
+  imageRefs?: string[];
+  mode?: "inspect" | "list";
+  offset?: number;
+  limit?: number;
   /** Optional question/context about what to look for in the image(s). Included as text alongside images. */
   prompt?: string;
   /** How long the loaded image pixels should remain directly visible in model context. */
@@ -21,6 +24,8 @@ export interface LoadImageToolInput {
 
 interface LoadedImageInfo {
   id: string;
+  imageId?: string;
+  alias?: string;
   label?: string;
   mimeType: string;
   origin: string;
@@ -82,7 +87,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
   return {
     name: "image_inspect",
     description:
-      "Load one or more images into the current context for direct visual inspection by the model. " +
+      "Use mode=list (no imageRefs required) to discover persistent session image IDs with offset/limit pagination. Inspect results return reusable IDs; retention only controls pixel visibility. Load one or more images into the current context for direct visual inspection by the model. " +
       "Supports two sources: (1) conversation history images via ids (img_1), labels, or numeric refs; " +
       "(2) external files via absolute or relative file paths (e.g. ./screenshot.png, C:\\images\\photo.jpg). " +
       "Supported formats: PNG, JPEG, GIF, WebP, BMP, SVG. Max file size: 20MB. " +
@@ -91,6 +96,9 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
     inputSchema: {
       type: "object",
       properties: {
+        mode: { type: "string", enum: ["inspect", "list"], description: "inspect loads pixels; list discovers persistent session references without loading pixels." },
+        offset: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
         imageRefs: {
           type: "array",
           items: { type: "string" },
@@ -110,7 +118,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
           description: "For while_relevant retention, number of assistant turns to keep the image pixels directly visible. Defaults to 4, range 1-12.",
         },
       },
-      required: ["imageRefs"],
+      required: [],
       additionalProperties: false,
     },
     metadata: {
@@ -128,12 +136,17 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       const record = input as Partial<LoadImageToolInput>;
       return {
         imageRefs: record.imageRefs ?? [],
+        mode: record.mode, offset: record.offset, limit: record.limit,
         prompt: record.prompt,
         retention: record.retention,
         ttlTurns: record.ttlTurns,
       };
     },
     validateInput(input, context) {
+      if (input.mode && input.mode !== "inspect" && input.mode !== "list") return { ok: false, message: "mode must be inspect or list" };
+      if (input.offset !== undefined && (!Number.isInteger(input.offset) || input.offset < 0)) return { ok: false, message: "offset must be a non-negative integer" };
+      if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)) return { ok: false, message: "limit must be an integer from 1 to 100" };
+      if (input.mode === "list") return { ok: true, value: input };
       if (!input.imageRefs || input.imageRefs.length === 0) {
         return { ok: false, message: "imageRefs must contain at least one image reference" };
       }
@@ -151,7 +164,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       }
       const model = context.options?.mainLoopModel;
       if (!model || supportsImageInput(model) !== true) {
-        return { ok: false, message: "load_image requires a model that supports image input" };
+        return { ok: false, message: "image_inspect requires a model that supports image input" };
       }
       return { ok: true, value: input };
     },
@@ -159,29 +172,38 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       return true;
     },
     async call(input, context): Promise<ToolResult> {
-      const registry = getImageRegistryFromMessages(context.messages ?? []);
+      const imageStore = await getContextImageStore(context);
+      const registry = imageRegistryForContext(context);
+      if (input.mode === "list") {
+        const offset = input.offset ?? 0;
+        const limit = input.limit ?? 20;
+        const images = registry.images.slice(offset, offset + limit).map(entry => ({
+          id: entry.imageId ?? entry.id, alias: entry.id, label: entry.label, mimeType: entry.mimeType, origin: entry.origin,
+          available: Boolean(loadImageData(entry)),
+        }));
+        return { ok: true, output: { images, total: registry.images.length, offset, nextOffset: offset + images.length < registry.images.length ? offset + images.length : null } };
+      }
       const loadedImages: LoadedImageInfo[] = [];
       const failedRefs: string[] = [];
       const imageBlocks: MessageBlock[] = [];
-      let externalCount = 0;
 
-      for (const ref of input.imageRefs) {
-        const resolution = resolveImageRefResult(registry, ref);
+      for (const ref of input.imageRefs ?? []) {
+        const explicitPath = /[\\/]/u.test(ref) && path.extname(ref).toLowerCase() in SUPPORTED_EXTENSIONS;
+        const resolution = explicitPath ? { status: "not-found" as const } : resolveImageRefResult(registry, ref);
         if (resolution.status === "ambiguous") {
           failedRefs.push(`${ref} (ambiguous; use one of: ${resolution.candidates.map((entry) => entry.imageId ?? entry.id).join(", ")})`);
           continue;
         }
         if (resolution.status === "resolved") {
           const entry = resolution.entry;
-          const base64 = loadImageData(entry);
-          if (!base64) {
-            failedRefs.push(`${ref} (storage unreadable: ${entry.storagePath ?? "no path"})`);
-            continue;
-          }
+          let base64: string;
+          try { base64 = resolveContextImage(context, ref).data; }
+          catch (error) { failedRefs.push(error instanceof Error ? error.message : String(error)); continue; }
           const rawBase64 = base64.replace(/^data:[^;,]+;base64,/su, "").replace(/\s+/gu, "");
           imageBlocks.push({
             type: "image",
             imageId: entry.imageId,
+            imageAlias: entry.id,
             mimeType: entry.mimeType,
             data: rawBase64,
             label: entry.label ?? entry.id,
@@ -190,7 +212,8 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
               : undefined,
           });
           loadedImages.push({
-            id: entry.id,
+            id: entry.imageId ?? entry.id,
+            imageId: entry.imageId, alias: entry.id,
             label: entry.label,
             mimeType: entry.mimeType,
             origin: entry.origin,
@@ -206,20 +229,12 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
             failedRefs.push(`${ref} (${result.error})`);
             continue;
           }
-          externalCount += 1;
           const resolvedPath = path.resolve(externalPath);
-          imageBlocks.push({
-            type: "image",
-            mimeType: result.mimeType,
-            data: result.base64,
-            label: result.label,
-          });
+          const block = await imageStore.importFile(result.base64, result.mimeType, resolvedPath, result.label);
+          imageBlocks.push(block);
           loadedImages.push({
-            id: `ext_${externalCount}`,
-            label: result.label,
-            mimeType: result.mimeType,
-            origin: "external",
-            storagePath: resolvedPath,
+            id: block.imageId!, imageId: block.imageId, alias: block.imageAlias,
+            label: result.label, mimeType: result.mimeType, origin: "external", storagePath: block.storage?.path,
           });
           continue;
         }
@@ -276,14 +291,17 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         ok: true,
         output,
         summary: `Loaded ${loadedImages.length} image(s) into context for direct inspection`,
-        newMessages: [newMessage],
+        newMessages: [await imageStore.persistMessage(newMessage)],
       };
     },
     renderToolResultMessage(result, request) {
       if (!request) return undefined;
+      if (result.ok && typeof result.output === "object" && result.output && "images" in result.output) {
+        return { id: `image-list-${Date.now()}-${Math.random()}`, role: "tool_result", createdAt: new Date().toISOString(), blocks: [{ type: "tool_result", toolUseId: request.id, name: "image_inspect", ok: true, output: result.output }] };
+      }
       const output = result.output as LoadImageToolOutput;
       const text = result.ok
-        ? `Images loaded into context: ${output.loadedImages.map((i) => i.label ?? i.id).join(", ")}. You can now see them directly.${output.failedRefs.length > 0 ? ` Failed: ${output.failedRefs.join(", ")}` : ""}`
+        ? `Images loaded into context: ${output.loadedImages.map((i) => `${i.id}${i.alias ? ` (${i.alias})` : ""}: ${i.label ?? "image"}`).join(", ")}. You can now see them directly.${output.failedRefs.length > 0 ? ` Failed: ${output.failedRefs.join(", ")}` : ""}`
         : `Failed to load images: ${JSON.stringify(result.output)}`;
       return {
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,

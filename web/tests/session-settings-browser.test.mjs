@@ -135,7 +135,7 @@ for (const busy of [false, true]) {
       assert.equal(await compact.isEnabled(), true, 'busy session must allow compaction')
       await compact.click()
       assert.equal(await compact.isDisabled(), true)
-      await toast(page, `压缩会话${suffix}`)
+      await toast(page, busy ? '将在下次调用前压缩上下文' : '上下文压缩完成')
       await sync(page, current)
       assert.equal(await compact.isDisabled(), busy)
       assert.equal(await page.locator('.queued-input').count(), 0)
@@ -148,6 +148,13 @@ for (const busy of [false, true]) {
       assert.equal(fixture.requests.some(({ url, method }) => method === 'POST' && /\/api\/(submit|login)/.test(url)), false)
       assert.deepEqual(current.lines, [])
       if (busy) {
+        // Ending the current call does not execute the compact request or clear its pending state.
+        current.busy = false
+        current.status.phase = 'ready'
+        await sync(page, current)
+        assert.equal(await compact.isDisabled(), true)
+        assert.equal(await compact.textContent(), '已安排压缩')
+        assert.equal(await page.locator('.message-loading-label').count(), 0)
         // Actual next-round snapshot clears pending and supplies effective metrics/settings.
         current.modelSettings = { model: current.pendingSessionSettings.model, reasoning: current.pendingSessionSettings.reasoning }
         current.fastMode = current.pendingSessionSettings.fastMode
@@ -171,8 +178,9 @@ test('model and context dialogs stay minimal, keyboard-operable and within mobil
     const { page } = fixture
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 700 })
-      await page.locator('.mobile-session-options').evaluate(el => { el.open = true })
-      assert.equal(await page.locator('.mobile-session-options .model-trigger').isVisible(), true)
+      const options = page.getByRole('button', { name: '会话选项', exact: true })
+      if (await options.getAttribute('aria-expanded') !== 'true') await options.click()
+      assert.equal(await page.locator('.composer-metrics .model-trigger').isVisible(), true)
       let dialog = await openModel(page)
       await dialog.getByRole('searchbox').fill('plain')
       assert.equal(await dialog.locator('.session-model-option').count(), 1)
@@ -308,4 +316,53 @@ test('queued fast toggles and modal responses keep their originating session acr
     for (const release of releases) release()
     await fixture.close()
   }
+})
+
+
+test('compaction stays outside folded process groups and uses explicit live semantics', async () => {
+  const current = snapshot(false)
+  current.lines = [
+    { id: 1, kind: 'tool', title: 'read', text: 'read one' },
+    { id: 2, kind: 'meta', text: 'older progress' },
+    { id: 3, kind: 'meta', title: 'Context compaction', text: 'compacted', compaction: { current: true, summary: 'Saved state', continuationState: 'Continue here', createdAt: new Date().toISOString() } },
+    { id: 4, kind: 'tool', title: 'read', text: 'read two' },
+    { id: 5, kind: 'meta', text: 'later progress' },
+  ]
+  let release, posted = false
+  const fixture = await mount(() => current, async route => {
+    if (route.request().method() !== 'POST' || new URL(route.request().url()).pathname !== '/api/compact') return false
+    posted = true
+    await new Promise(resolve => { release = resolve })
+    await route.fulfill({ json: { ok: true, deferred: false } })
+    return true
+  })
+  try {
+    const { page } = fixture
+    const bar = page.locator('.message.context-compaction .compaction-context-bar')
+    await bar.waitFor()
+    assert.equal(await bar.isVisible(), true, 'historical compact without primary flag must stay visible')
+    assert.equal(await page.locator('.tool-group .compaction-context-bar').count(), 0)
+    await bar.click()
+    await page.getByRole('dialog', { name: '压缩上下文详情' }).waitFor()
+    await page.keyboard.press('Escape')
+    await page.locator('.compact-button:visible').click()
+    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩上下文'))
+    assert.equal(posted, true)
+    assert.equal(await page.locator('.compact-button:visible').isDisabled(), true)
+    current.busy = true
+    current.status = { ...current.status, phase: 'compacting', detail: 'manualcompact: generating context summary' }
+    await sync(page, current)
+    assert.match(await page.locator('.message-loading-label').textContent(), /正在生成续接摘要/)
+    current.status.detail = 'autocompact: generating context summary'
+    await sync(page, current)
+    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('自动压缩上下文'))
+    assert.doesNotMatch(await page.locator('.message-loading-label').textContent(), /准备中/)
+    current.busy = false
+    current.status.phase = 'ready'
+    release()
+    await toast(page, '上下文压缩完成')
+    await sync(page, current)
+    assert.equal(await bar.isVisible(), true)
+    assert.deepEqual(fixture.errors, [])
+  } finally { release?.(); await fixture.close() }
 })

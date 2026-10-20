@@ -5,10 +5,12 @@ import { readImageNoteForStoragePathSync, type ImageNote } from "./image-notes.j
 export interface ImageEntry {
   /** Stable human-friendly alias persisted in compact boundaries (for example img_3). */
   id: string;
-  /** Immutable image occurrence identity stored on the source message block. */
+  /** Immutable image resource identity stored on the source message block. */
   imageId?: string;
+  persistentAlias?: boolean;
   label?: string;
   mimeType: string;
+  sourcePath?: string;
   storagePath?: string;
   storageFormat?: "base64" | "data-url";
   contentHash?: string;
@@ -35,15 +37,22 @@ export interface ImageRegistry {
 export function buildImageRegistry(messages: readonly Message[], startingTurnIndex = 0): ImageRegistry {
   const images: ImageEntry[] = [];
   let turnIndex = startingTurnIndex;
+  const usedAliases = new Set(messages.flatMap(message => message.blocks.flatMap(block => block.type === "image" && block.imageAlias ? [block.imageAlias.toLowerCase()] : [])));
+  let nextAlias = 1;
 
   for (const message of messages) {
     const sourceTextSnippet = extractMessageTextSnippet(message);
     for (const [sourceBlockIndex, block] of message.blocks.entries()) {
       if (block.type !== "image") continue;
       const storagePath = block.storage?.path;
+      if (block.imageId && images.some(entry => entry.imageId === block.imageId)) continue;
+      while (usedAliases.has(`img_${nextAlias}`)) nextAlias++;
+      const id = block.imageAlias ?? `img_${nextAlias++}`;
+      usedAliases.add(id.toLowerCase());
       images.push({
-        id: `img_${images.length + 1}`,
+        id,
         imageId: block.imageId,
+        persistentAlias: Boolean(block.imageAlias),
         label: block.label,
         mimeType: block.mimeType,
         storagePath,
@@ -66,7 +75,7 @@ export function buildImageRegistry(messages: readonly Message[], startingTurnInd
 
 /**
  * Merge a previous registry (from a compact boundary) with newly extracted entries,
- * deduplicating by storagePath when available.
+ * deduplicating by immutable identity or exact source occurrence.
  */
 export function mergeImageRegistries(previous: ImageRegistry, current: ImageRegistry): ImageRegistry {
   const seen = new Set<string>();
@@ -85,12 +94,20 @@ export function mergeImageRegistries(previous: ImageRegistry, current: ImageRegi
 
   for (const entry of current.images) {
     const key = imageEntryKey(entry);
-    if (seen.has(key)) continue;
+    const existingIndex = merged.findIndex(old => imageEntryKey(old) === key || (old.sourceMessageId === entry.sourceMessageId && old.sourceBlockIndex !== undefined && entry.sourceBlockIndex !== undefined && old.sourceBlockIndex === entry.sourceBlockIndex));
+    if (existingIndex >= 0) {
+      const old = merged[existingIndex];
+      if (old.imageId && entry.imageId && old.imageId !== entry.imageId) throw new Error(`Image occurrence identity conflict: ${entry.id}`);
+      merged[existingIndex] = { ...old, ...Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)), id: old.id };
+      seen.add(key);
+      continue;
+    }
     while (usedAliases.has(`img_${nextAlias}`)) nextAlias += 1;
-    const id = `img_${nextAlias}`;
-    nextAlias += 1;
+    const id = entry.persistentAlias ? entry.id : `img_${nextAlias}`;
+    if (usedAliases.has(id.toLowerCase())) throw new Error(`Duplicate persistent image alias: ${id}`);
+    nextAlias = Math.max(nextAlias + 1, numericImageAlias(id) + 1);
     seen.add(key);
-    usedAliases.add(id);
+    usedAliases.add(id.toLowerCase());
     merged.push({ ...entry, id });
   }
 
@@ -115,7 +132,7 @@ export function extractRegistryFromBoundary(messages: readonly Message[]): Image
  */
 export function formatImageRegistryForContext(registry: ImageRegistry): string {
   if (registry.images.length === 0) return "";
-  const lines = registry.images.map((entry) => {
+  const lines = registry.images.slice(-20).map((entry) => {
     const label = entry.label ? `"${escapeInline(entry.label)}"` : `unlabeled`;
     const origin = entry.origin !== "unknown" ? `, origin=${entry.origin}` : "";
     const alias = entry.label && /^gen#\d+$/iu.test(entry.label.trim()) ? `${entry.label.trim()}: ` : "";
@@ -126,6 +143,7 @@ export function formatImageRegistryForContext(registry: ImageRegistry): string {
   });
   return [
     "Available images from conversation history (use the listed img_N ID exactly for image tools; do not copy captions, URIs, paths, or surrounding text):",
+    ...(registry.images.length > 20 ? [`Showing the latest 20 of ${registry.images.length} images. Use image_inspect mode=list with offset/limit to discover all session images.`] : []),
     ...lines,
   ].join("\n");
 }
@@ -173,6 +191,9 @@ export function resolveImageRefResult(registry: ImageRegistry, ref: string): Ima
   ));
   if (byPath.status !== "not-found") return byPath;
 
+  const bracketed = /^\[img#(\d+)\]$/iu.exec(normalized);
+  if (bracketed) return uniqueResolution(registry.images.filter(entry => entry.id === `img_${Number(bracketed[1])}`));
+
   // Compatibility fallback for old bare numeric references. It is intentionally last.
   const numMatch = /^(?:image\s*)?(\d+)$/i.exec(normalized);
   if (numMatch) {
@@ -189,6 +210,7 @@ export function resolveImageRef(registry: ImageRegistry, ref: string): ImageEntr
 }
 
 function uniqueResolution(candidates: ImageEntry[]): ImageRefResolution {
+  candidates = candidates.filter((entry, index) => !entry.imageId || candidates.findIndex(other => other.imageId === entry.imageId) === index);
   if (candidates.length === 0) return { status: "not-found" };
   if (candidates.length === 1) return { status: "resolved", entry: candidates[0] };
   return { status: "ambiguous", candidates };
@@ -210,6 +232,7 @@ function normalizeImageRefText(value: string | undefined): string {
 }
 
 function inferImageOrigin(message: Message, _block: MessageBlock): ImageEntry["origin"] {
+  if (message.metadata?.loadedImages) return "tool";
   if (message.role === "user") return "user";
   if (message.metadata?.generatedImages || message.metadata?.tool === "image_create") return "generated";
   if (message.role === "tool_result") return "tool";

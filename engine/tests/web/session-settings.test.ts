@@ -273,3 +273,34 @@ test("HTTP source contract: POST routes pass JSON fields directly to session-onl
     assert.ok(!/repl\.(submit|prompt|run)\(/u.test(block), "settings routes must not dispatch chat input");
   }
 });
+
+
+test("idle compact publishes a busy compacting state before awaiting work and blocks duplicate clicks", async t => {
+  const f = fixture(t);
+  const gate = latch<UpdateResult>();
+  f.setUpdate(() => gate.promise);
+  const operation = f.repl.compactSession();
+  assert.deepEqual(f.calls, [{ compact: true }]);
+  assert.equal(f.repl.snapshot().busy, true);
+  assert.equal(f.repl.snapshot().status.phase, "compacting");
+  assert.match(f.repl.snapshot().status.detail!, /manualcompact/);
+  const duplicate = await f.repl.compactSession();
+  assert.equal(duplicate.ok, false);
+  assert.equal(f.calls.length, 1);
+  gate.resolve({ deferred: false, compaction: { changed: true, messages: [], report } });
+  assert.deepEqual(await operation, { ok: true, deferred: false });
+  assert.equal(f.repl.snapshot().busy, false);
+  assert.equal(f.repl.snapshot().status.phase, "ready");
+  assert.equal(f.repl.snapshot().lines[0].presentationLevel, "primary");
+  assert.equal(f.repl.snapshot().lines[0].collapsible, false);
+});
+
+test("idle compact failure clears its in-flight state and permits a retry", async t => {
+  const f = fixture(t);
+  f.setUpdate(async () => { throw new Error("summary failed"); });
+  assert.equal((await f.repl.compactSession()).ok, false);
+  assert.equal(f.repl.snapshot().busy, false);
+  assert.equal(f.repl.snapshot().status.phase, "ready");
+  f.setUpdate(async () => ({ deferred: false }));
+  assert.equal((await f.repl.compactSession()).ok, true);
+});

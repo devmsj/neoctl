@@ -120,6 +120,7 @@ export interface ToolUseContext {
   tools: ToolRegistryLike;
   appState: AppStatePort;
   messages?: readonly Message[];
+  imageStore?: import("../core/session-images.js").SessionImageStore;
   queryTracking?: unknown;
   requestPrompt?: string;
   session?: ToolUseContextSession;

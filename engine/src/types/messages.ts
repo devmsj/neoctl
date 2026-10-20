@@ -14,8 +14,10 @@ export interface ImageStorageRef {
 
 export interface ImageMessageBlock {
   type: "image";
-  /** Immutable identity of this image occurrence. Labels are display aliases only. */
+  /** Immutable identity of this image resource. Labels are display aliases only. */
   imageId?: string;
+  /** Session-allocated alias; never derived from the current context position. */
+  imageAlias?: string;
   mimeType: string;
   data: string;
   label?: string;

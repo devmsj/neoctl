@@ -4,9 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveImageBlockDataSync } from "../../core/image-storage.js";
-import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
-import { loadImageData, resolveImageRefResult, type ImageEntry, type ImageRegistry } from "../../core/image-registry.js";
+import { getContextImageStore, imageRegistryForContext, resolveContextImage } from "../../core/session-images.js";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
 import type { Message } from "../../types/messages.js";
@@ -67,6 +65,8 @@ export interface ImageGenerationToolInput {
 
 export interface ImageGenerationResult extends ImageByteMetadata {
   index: number;
+  imageId?: string;
+  imageAlias?: string;
   base64: string;
   dataUrl: string;
   revisedPrompt?: string;
@@ -164,7 +164,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
     validateInput(input, context) {
       try {
         const normalized = normalize(input);
-        if (normalized.mode === "edit") validateEditSources(normalized, context.messages);
+        if (normalized.mode === "edit") validateEditSources(normalized, context);
         return { ok: true, value: normalized };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -198,7 +198,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
         const baseUrl = normalizeImageBaseUrl(options.baseUrl?.trim() || process.env.OPENAI_IMAGE_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL);
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw new Error("Image timeoutMs must be positive and <=2147483647");
         if (context.abortSignal?.aborted) throw new Error("Image request aborted before execution");
-        const editSources = mode === "edit" ? validateEditSources(input, context.messages) : [];
+        const editSources = mode === "edit" ? validateEditSources(input, context) : [];
         if (mode === "edit" && editSources.length === 0) {
           throw new Error("image_create mode=edit requires a source image. Provide image/images/imageRefs, attach an image, or keep useLatestImage enabled with a prior image in the conversation.");
         }
@@ -399,9 +399,9 @@ function imageGenerationTiming(startedAt: number, finishedAt = Date.now()): Imag
   };
 }
 
-function validateEditSources(input: ImageGenerationToolInput, messages: readonly Message[] | undefined): ResolvedEditImage[] {
+function validateEditSources(input: ImageGenerationToolInput, context: Pick<ToolUseContext, "messages" | "imageStore">): ResolvedEditImage[] {
   try {
-    const sources = resolveImageEditSources(input, messages);
+    const sources = resolveImageEditSources(input, context);
     if (!sources.length) throw new Error("requires a source image; provide image/images/imageRefs or a prior conversation image with useLatestImage=true");
     if (sources.length > 16) throw new Error("maximum 16 edit sources");
     for (const [index, source] of sources.entries()) {
@@ -412,12 +412,21 @@ function validateEditSources(input: ImageGenerationToolInput, messages: readonly
   } catch (error) { throw new Error(imageValidationError(input.model!, "edit sources", error instanceof Error ? error.message : String(error))); }
 }
 
-function resolveImageEditSources(input: ImageGenerationToolInput, messages: readonly Message[] | undefined): ResolvedEditImage[] {
+function resolveImageEditSources(input: ImageGenerationToolInput, context: Pick<ToolUseContext, "messages" | "imageStore">): ResolvedEditImage[] {
   const explicit = [input.image, ...(input.images ?? [])].filter((image): image is ImageEditInputImage => !!image);
   const fromInput = explicit.map((image, index) => resolveInputImage(image, index));
-  const fromRefs = resolveReferencedImages(messages, input.imageRefs ?? []);
+  const registry = imageRegistryForContext(context);
+  const resolveRef = (ref: string): ResolvedEditImage => {
+    const { entry, data } = resolveContextImage(context, ref);
+    const index = Math.max(0, registry.images.findIndex(item => item.id === entry.id));
+    return { index, imageId: entry.imageId, label: entry.label, filename: imageFilename(entry.mimeType, index), base64: normalizeBase64ImageData(data), mimeType: entry.mimeType };
+  };
+  const fromRefs = (input.imageRefs ?? []).map(resolveRef);
   const shouldUseLatest = input.useLatestImage !== false && fromInput.length === 0 && fromRefs.length === 0 && (!input.imageRefs || input.imageRefs.length === 0);
-  const latest = shouldUseLatest ? latestConversationImage(messages) : undefined;
+  const latestBlock = (context.messages ?? []).flatMap(message => message.blocks).filter(block => block.type === "image").at(-1);
+  const latestEntry = registry.images.at(-1);
+  const latestRef = context.imageStore?.latestRef() ?? latestBlock?.imageId ?? latestBlock?.imageAlias ?? latestEntry?.imageId ?? latestEntry?.id;
+  const latest = shouldUseLatest && latestRef ? resolveRef(latestRef) : undefined;
   return [...fromInput, ...fromRefs, ...(latest ? [latest] : [])];
 }
 
@@ -440,101 +449,8 @@ function resolveInputImage(image: ImageEditInputImage, index: number): ResolvedE
   };
 }
 
-function resolveReferencedImages(messages: readonly Message[] | undefined, refs: readonly string[]): ResolvedEditImage[] {
-  if (refs.length === 0) return [];
-  const imageBlocks = collectConversationImages(messages);
-  const registry = getImageRegistryFromMessages(messages ?? []);
-  return refs.map((ref, index) => {
-    const found = findReferencedImage(imageBlocks, registry, ref);
-    if (!found) throw new Error(`image_create could not find referenced image: ${ref}. Available imageRefs: ${formatAvailableImageRefs(registry)}`);
-    return { ...found, filename: found.filename || imageFilename(found.mimeType, index) };
-  });
-}
-
-function findReferencedImage(images: readonly ResolvedEditImage[], registry: ImageRegistry, ref: string): ResolvedEditImage | undefined {
-  const registryResolution = resolveImageRefResult(registry, ref);
-  if (registryResolution.status === "ambiguous") throw new Error(`image_create image reference is ambiguous: ${ref}. Use a registry ID such as img_1.`);
-  if (registryResolution.status === "resolved") {
-    return findCollectedImage(images, registryResolution.entry) ?? resolvedRegistryImage(registryResolution.entry);
-  }
-
-  const rawRef = ref.trim().toLowerCase();
-  const exactIdentity = images.filter((image) => image.imageId?.toLowerCase() === rawRef);
-  if (exactIdentity.length === 1) return exactIdentity[0];
-  if (exactIdentity.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}`);
-
-  const normalizedRef = canonicalizeImageRef(ref);
-  if (!normalizedRef) return undefined;
-  const labelMatches = images.filter((image) => canonicalizeImageRef(image.label ?? "") === normalizedRef || canonicalizeImageRef(image.filename) === normalizedRef);
-  if (labelMatches.length === 1) return labelMatches[0];
-  if (labelMatches.length > 1) throw new Error(`image_create image reference is ambiguous: ${ref}. Use a registry ID such as img_1.`);
-
-  const numericRef = parseImageRefNumber(normalizedRef);
-  if (numericRef !== undefined) return images[numericRef - 1];
-  return undefined;
-}
-
-function findCollectedImage(images: readonly ResolvedEditImage[], entry: ImageEntry): ResolvedEditImage | undefined {
-  if (entry.imageId) return images.find((image) => image.imageId === entry.imageId);
-  return images.find((image) => image.sourceMessageId === entry.sourceMessageId && image.sourceBlockIndex === entry.sourceBlockIndex);
-}
-
-function resolvedRegistryImage(entry: ImageEntry): ResolvedEditImage | undefined {
-  const storedData = loadImageData(entry);
-  const parsed = parseImageData(storedData);
-  if (!parsed.base64) return undefined;
-  return {
-    index: entry.sourceBlockIndex ?? 0,
-    imageId: entry.imageId,
-    base64: normalizeBase64ImageData(parsed.base64),
-    mimeType: entry.mimeType || parsed.mimeType || "image/png",
-    filename: imageFilename(entry.mimeType || parsed.mimeType || "image/png", entry.sourceBlockIndex ?? 0),
-    label: entry.label,
-    storagePath: entry.storagePath,
-    sourceMessageId: entry.sourceMessageId,
-    sourceBlockIndex: entry.sourceBlockIndex,
-  };
-}
-
 function formatSourceImageRef(image: ResolvedEditImage): string {
-  return image.imageId || image.label?.trim() || image.filename || String(image.index + 1);
-}
-
-function formatAvailableImageRefs(registry: ImageRegistry): string {
-  const refs = registry.images.map((entry) => entry.id).slice(-10);
-  return refs.length > 0 ? refs.join(", ") : "none";
-}
-
-function latestConversationImage(messages: readonly Message[] | undefined): ResolvedEditImage | undefined {
-  const images = collectConversationImages(messages);
-  return images[images.length - 1];
-}
-
-function collectConversationImages(messages: readonly Message[] | undefined): ResolvedEditImage[] {
-  if (!messages) return [];
-  const images: ResolvedEditImage[] = [];
-  for (const message of messages) {
-    for (const [sourceBlockIndex, block] of message.blocks.entries()) {
-      if (block.type !== "image") continue;
-      const resolvedData = resolveImageBlockDataSync(block);
-      const parsed = parseImageData(resolvedData);
-      const mimeType = block.mimeType || parsed.mimeType;
-      const base64 = parsed.base64;
-      if (!base64 || !mimeType) continue;
-      images.push({
-        index: images.length,
-        imageId: block.imageId,
-        base64: normalizeBase64ImageData(base64),
-        mimeType,
-        filename: imageFilename(mimeType, images.length),
-        label: block.label,
-        storagePath: block.storage?.path,
-        sourceMessageId: message.id,
-        sourceBlockIndex,
-      });
-    }
-  }
-  return images;
+  return image.imageId || image.label?.trim() || image.filename;
 }
 
 function parseImageData(value: string | undefined): { base64?: string; mimeType?: string } {
@@ -559,29 +475,6 @@ function imageFilename(mimeType: string, index: number): string {
   return `image-${index + 1}.${extension}`;
 }
 
-function normalizeImageRef(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[。.!?]+$/gu, "")
-    .replace(/\s+/gu, " ");
-}
-
-function parseImageRefNumber(normalizedRef: string): number | undefined {
-  const match = /^(?:\[?(?:img|gen)#?|image(?:\s+|-)?)?(\d+)\]?$/iu.exec(normalizedRef);
-  if (!match) return undefined;
-  const value = Number(match[1]);
-  return Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function canonicalizeImageRef(value: string): string {
-  const normalized = normalizeImageRef(value).replace(/[。？！?!]+$/gu, "");
-  if (!normalized || /[./\\]/u.test(normalized)) return normalized;
-
-  const numericRef = parseImageRefNumber(normalized);
-  return numericRef !== undefined ? `[img#${numericRef}]` : normalized;
-}
-
 function stripFileExtension(filename: string): string {
   return filename.replace(/\.[^.]+$/u, "");
 }
@@ -597,6 +490,7 @@ async function persistGeneratedImages(
   const outputDir = resolveGeneratedImageOutputDir(input, context);
   await outputFs.mkdir(outputDir, { recursive: true });
   const allocatedLabels = new Set<string>();
+  const imageStore = await getContextImageStore(context);
 
   return Promise.all(images.map(async (image, offset) => {
     const extension = extensionForMimeType(image.mimeType);
@@ -619,18 +513,17 @@ async function persistGeneratedImages(
       }
     }
 
-    const storagePath = dockerEnabled()
-      ? path.join(context.session?.sessionDir || getNeoctlHome(), "generated", "images", `${randomUUID()}.base64.txt`)
-      : `${binaryPath}.base64.txt`;
-    if (dockerEnabled()) await fs.mkdir(path.dirname(storagePath), { recursive: true });
-    await fs.writeFile(storagePath, normalizeBase64ImageData(image.base64), "utf8");
+    // The downloadable export is not the authoritative payload. Keep a session-owned copy.
+    const imageId = `image_${randomUUID()}`;
+    const registered = await imageStore.persistMessage({
+      id: `generated-${imageId}`, role: "tool_result", createdAt: new Date().toISOString(),
+      blocks: [{ type: "image", imageId, mimeType: image.mimeType, data: image.base64, label }],
+      metadata: { generatedImages: true },
+    });
+    const block = registered.blocks[0];
+    if (block.type !== "image") throw new Error("Expected registered image");
+    return { ...image, imageId, imageAlias: block.imageAlias, label, path: binaryPath, storagePath: block.storage!.path };
 
-    return {
-      ...image,
-      label,
-      path: binaryPath,
-      storagePath,
-    };
   }));
 }
 
@@ -730,6 +623,7 @@ function createImageGenerationToolResultMessage(result: ToolResult, toolUseId: s
     for (const image of output.images) {
       blocks.push({
         type: "image",
+        imageId: image.imageId, imageAlias: image.imageAlias,
         mimeType: image.mimeType,
         data: image.storagePath ? "" : image.base64,
         label: image.label ?? `gen#${image.index + 1}`,

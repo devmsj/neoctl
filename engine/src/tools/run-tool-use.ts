@@ -73,10 +73,11 @@ export async function runToolUse(
     const output = redactWithRegistry(contextWithToolUseId.secretRedactions, await processToolOutput(tool, request, result, contextWithToolUseId));
     const safeResult = { ...result, output: redactWithRegistry(contextWithToolUseId.secretRedactions, result.output), summary: redactWithRegistry(contextWithToolUseId.secretRedactions, result.summary) };
     const resultMessage = tool.renderToolResultMessage?.(safeResult, request) ?? createToolResultMessage(request, safeResult.ok, output);
-    updates.push({ message: resultMessage, context: result.contextModifier?.(contextWithToolUseId) });
+    const normalizedResult = context.imageStore ? await context.imageStore.persistMessage(resultMessage) : resultMessage;
+    updates.push({ message: normalizedResult, context: result.contextModifier?.(contextWithToolUseId) });
 
     for (const message of result.newMessages ?? []) {
-      updates.push({ message });
+      updates.push({ message: context.imageStore ? await context.imageStore.persistMessage(message) : message });
     }
 
     return updates;

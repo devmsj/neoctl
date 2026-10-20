@@ -1,4 +1,4 @@
-import { getImageRegistryFromMessages } from "../../core/message-pipeline.js";
+import { imageRegistryForContext } from "../../core/session-images.js";
 import { resolveImageRefResult } from "../../core/image-registry.js";
 import { writeImageNoteForStoragePath, type ImageNote, type ImageRetention } from "../../core/image-notes.js";
 import type { Tool, ToolResult } from "../tool.js";
@@ -131,7 +131,7 @@ export function createImageNoteTool(): Tool<ImageNoteToolInput> {
       return false;
     },
     async call(input, context): Promise<ToolResult> {
-      const registry = getImageRegistryFromMessages(context.messages ?? []);
+      const registry = imageRegistryForContext(context);
       const recorded: ImageNoteRecordOutput[] = [];
       const failed: ImageNoteToolOutput["failed"] = [];
 

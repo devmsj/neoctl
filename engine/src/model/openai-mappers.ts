@@ -259,7 +259,6 @@ function chatInputContentFromBlocks(blocks: readonly MessageBlock[]): string | R
 }
 
 function imageStorageText(block: { imageId?: string; label?: string; storage?: { path: string; format: string } }): string | undefined {
-  if (!block.storage?.path) return undefined;
   const ref = block.imageId?.trim() || block.label?.trim();
   return ref ? `Image reference: ${ref}. For image_create edits, pass exactly this value in imageRefs; never pass a storage path or surrounding text.` : undefined;
 }

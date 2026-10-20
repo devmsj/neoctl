@@ -32,7 +32,9 @@ import { AssistantOutputFilter } from "./assistant-output-filter.js";
 import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-notes.js";
-import { buildImageRegistry } from "./image-registry.js";
+import { withCompactionProgress, type CompactionStarted } from "./compaction-progress.js";
+import { SessionImageStore } from "./session-images.js";
+import { getImageRegistryFromMessages } from "./message-pipeline.js";
 
 export interface SessionSettingsPatch {
   model?: string;
@@ -52,7 +54,7 @@ export interface QueryOptions {
   /** Safe boundary before context construction, never inside streaming/retries/tools.
    * Compaction is calculated from these authoritative query messages, not engine history.
    */
-  beforeTurn?: (messages: readonly Message[]) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
+  beforeTurn?: (messages: readonly Message[], onCompactionStart?: CompactionStarted) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
   /** Synchronous inbox handoff immediately before a model request. */
   takePendingMessages?: () => Message[];
   agentId: string;
@@ -107,6 +109,7 @@ export interface QueryDependencies {
   maxToolResultSerializedLength?: number;
   toolResultMemory?: ToolUseContext["toolResultMemory"];
   session?: ToolUseContext["session"];
+  imageStore?: SessionImageStore;
   secrets?: ToolUseContext["secrets"];
   secretRedactions?: ToolUseContext["secretRedactions"];
   recordContentReplacements?: ToolUseContext["recordContentReplacements"];
@@ -139,7 +142,12 @@ export async function* query(
   dependencies: QueryDependencies,
   options: QueryOptions,
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
-  const initialState = createInitialState(messages, {
+  const imageStore = dependencies.imageStore ?? await SessionImageStore.open(dependencies.session?.sessionDir, options.agentId);
+  if (!dependencies.imageStore) await imageStore.seedLegacyRegistry(getImageRegistryFromMessages(messages));
+  dependencies = { ...dependencies, imageStore };
+  const normalizedMessages: Message[] = [];
+  for (const message of messages) normalizedMessages.push(await imageStore.persistMessage(message, { touch: false }));
+  const initialState = createInitialState(normalizedMessages, {
     model: options.model,
   });
   initialState.maxOutputTokensOverride = options.maxOutputTokensOverride;
@@ -194,6 +202,7 @@ async function* queryLoop(
     },
     toolResultMemory: dependencies.toolResultMemory,
     session: dependencies.session,
+    imageStore: dependencies.imageStore,
     secrets: dependencies.secrets,
     secretRedactions: dependencies.secretRedactions,
     recordContentReplacements: dependencies.recordContentReplacements,
@@ -204,7 +213,7 @@ async function* queryLoop(
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
-    const update = await options.beforeTurn?.(state.messages);
+    const update = yield* withCompactionProgress(started => options.beforeTurn?.(state.messages, started));
     const settings = update?.settings;
     if (settings) {
       if (Object.hasOwn(settings, "model")) {
@@ -259,14 +268,14 @@ async function* queryLoop(
       });
       const systemPrompt = context.systemPrompt;
       const requestContextForTurn = options.requestContext;
-      const prepared = await prepareMessagesForQuery(state, context, dependencies, compactor, {
+      const prepared = yield* withCompactionProgress(started => prepareMessagesForQuery(state, context, dependencies, compactor, {
         model: state.currentModel ?? options.model,
         contextWindowTokensOverride: options.contextWindowTokensOverride,
         systemPrompt,
         toolDefinitions,
         toolUseContext: toolContext,
         requestContext: requestContextForTurn,
-      });
+      }, started));
       if (prepared.compaction?.changed) {
         state = { ...state, messages: prepared.compactedMessages };
         await dependencies.applyCompaction?.(prepared.compaction);
@@ -279,6 +288,7 @@ async function* queryLoop(
         }
       }
 
+      toolContext = { ...toolContext, messages: state.messages };
       const modelOutput = yield* callModelForTurn(state, context, prepared.messagesForQuery, dependencies, options, toolContext, {
         systemPrompt,
         toolDefinitions,
@@ -353,6 +363,7 @@ async function prepareMessagesForQuery(
   dependencies: QueryDependencies,
   compactor: Compactor,
   telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown> },
+  onCompactionStart?: CompactionStarted,
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -392,6 +403,8 @@ async function prepareMessagesForQuery(
   });
   const compaction = withCompactionReport(await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
+    onCompactionStart,
+    imageRegistry: dependencies.imageStore?.snapshot(),
     estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
   }), pairedBudgeted.length);
@@ -486,7 +499,7 @@ async function* callModelForTurn(
         || (event.type === "tool_call_delta" && event.argumentsDelta.length > 0)
         || event.type === "tool_use"
         || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) timing.firstOutput();
-      const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts);
+      const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts, dependencies.imageStore);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
 
@@ -510,10 +523,12 @@ async function* callModelForTurn(
 
       const reactiveBudget: ContextBudgetOptions = {
         ...dependencies.contextBudget,
+        imageRegistry: dependencies.imageStore?.snapshot(),
         estimatedInputTokens: reactiveMetrics.estimatedInputTokens,
         contextWindowTokens: reactiveMetrics.contextWindowTokens,
         summaryMaxChars: escalatedSummaryMax,
       };
+      yield { type: "state", phase: "compacting", detail: "reactive_compact: context limit exceeded; generating summary" };
       const compacted = withCompactionReport(
         await (compactor.reactiveCompact?.(state.messages, normalized, reactiveBudget) ?? compactor.compact(state.messages, reactiveBudget)),
         state.messages.length,
@@ -600,7 +615,7 @@ function adaptMessagesForModelCapabilities(messages: Message[], model: string | 
 
 function formatUnsupportedImagePlaceholder(block: { mimeType: string; label?: string; storage?: { path: string; format: string } }): string {
   const label = block.label?.trim();
-  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the load_image tool with this image label/id on a vision-capable model for visual inspection, or view/read only for the stored base64 text.` : "";
+  const storage = block.storage?.path ? ` Stored ${block.storage.format} payload: ${block.storage.path}. Use the image_inspect tool with this image label/id on a vision-capable model for visual inspection, or view/read only for the stored base64 text.` : "";
   const suffix = `[image ${block.mimeType} omitted: current model does not support image input.${storage}]`;
   return label ? `${label} ${suffix}` : suffix;
 }
@@ -611,6 +626,7 @@ async function* handleModelEvent(
   toolUses: ToolUseRequest[],
   outputFilter: DisplayOutputFilter,
   thinkingParts: string[],
+  imageStore?: SessionImageStore,
 ): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
   if (event.type === "assistant_delta") {
     yield* outputFilter.pushEvent(event);
@@ -624,7 +640,8 @@ async function* handleModelEvent(
   }
 
   if (event.type === "assistant_message") {
-    const message = outputFilter.sanitizeMessage(event.message);
+    const sanitized = outputFilter.sanitizeMessage(event.message);
+    const message = imageStore ? await imageStore.persistMessage(sanitized) : sanitized;
     yield* outputFilter.flushEvents();
     assistantMessages.push(message);
     for (const toolUse of extractToolUses(message)) toolUses.push(toolUse);
@@ -926,7 +943,7 @@ function formatCompactionDetail(compaction: CompactionResult): string {
   return `${compaction.reason ?? "compact"} reduced context by ${compaction.charsFreed ?? compaction.tokensFreed ?? 0} chars`;
 }
 
-function applyImageRetention(messages: readonly Message[]): Message[] {
+export function applyImageRetention(messages: readonly Message[]): Message[] {
   let changed = false;
   let assistantTurnsSinceImage = 0;
   const next = [...messages];
@@ -942,18 +959,16 @@ function applyImageRetention(messages: readonly Message[]): Message[] {
     const shouldKeepPixels = retention === "pinned" || (retention === "while_relevant" && assistantTurnsSinceImage <= ttlTurns) || (retention === "next_turn" && assistantTurnsSinceImage <= 1);
     if (shouldKeepPixels) continue;
 
-    const imageRegistry = buildImageRegistry([message]);
     const blocks: MessageBlock[] = message.blocks.flatMap((block) => {
       if (block.type !== "image") return [block];
       const label = block.label ?? "image";
-      const entry = imageRegistry.images.find((image) => image.label === block.label || image.storagePath === block.storage?.path);
-      const ref = entry?.id ?? label;
-      return [{ type: "text", text: `[image pixels omitted after ${retention} retention expired: ${label}; use load_image with ${ref} if visual inspection is needed]` }];
+      const ref = block.imageId ?? block.imageAlias ?? label;
+      return [{ type: "text", text: `[image pixels omitted after ${retention} retention expired: ${label}; use image_inspect with ${ref} if visual inspection is needed]` }];
     });
     next[index] = {
       ...message,
       blocks,
-      metadata: { ...message.metadata, imagePixelsOmittedByRetention: true, imageRegistry },
+      metadata: { ...message.metadata, imagePixelsOmittedByRetention: true },
     };
     changed = true;
   }

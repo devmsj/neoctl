@@ -145,7 +145,7 @@ test("manual compact coalesces and replaces both query state and history, never 
   assert.doesNotMatch(JSON.stringify(f.requests[2].messages), /OLD_INPUT/);
 });
 
-test("final no-tool boundary applies pending, compact includes final assistant and emits once", async () => {
+test("final no-tool boundary keeps compact pending until the next model call", async () => {
   const opened = gate(), resume = gate(); const compactInputs: Message[][] = [];
   const f = fixture({ modelGateway: { async *stream(): AsyncIterable<ModelStreamEvent> {
     opened.release(); await resume.promise;
@@ -156,11 +156,18 @@ test("final no-tool boundary applies pending, compact includes final assistant a
   const done = drain(f.engine.sendUserText("input")); await opened.promise;
   await f.engine.updateSessionSettings({ model: "gpt-5-mini", compact: true, contextWindowTokens: 90000 });
   resume.release(); const events = await done;
-  assert.match(JSON.stringify(compactInputs), /FINAL_ANSWER/);
-  assert.equal(events.filter((e) => e.type === "context.compacted").length, 1);
+  assert.equal(compactInputs.length, 0);
+  assert.equal(events.filter((e) => e.type === "context.compacted").length, 0);
   const metrics = events.filter((e) => e.type === "context.metrics");
   assert.equal(metrics.at(-1)?.metrics.contextWindowTokens, 90000);
   assert.equal(f.engine.getModelSettings().model, "gpt-5-mini");
+  assert.deepEqual(f.engine.getPendingSessionSettings(), { compact: true });
+  assert.match(JSON.stringify(f.engine.getHistoryMessages()), /FINAL_ANSWER/);
+  const nextEvents = await drain(f.engine.sendUserText("NEXT_CALL"));
+  assert.equal(compactInputs.length, 1);
+  assert.match(JSON.stringify(compactInputs), /FINAL_ANSWER/);
+  assert.match(JSON.stringify(compactInputs), /NEXT_CALL/);
+  assert.equal(nextEvents.filter(e => e.type === "context.compacted").length, 1);
   assert.deepEqual(f.engine.getPendingSessionSettings(), {});
   assert.match(JSON.stringify(f.engine.getHistoryMessages()), /FINAL_CHECKPOINT/);
 });
@@ -217,4 +224,24 @@ test("abort during before-turn compact commits checkpoint but never opens next m
   assert.equal(f.requests.length, 1);
   assert.equal(events.filter((e) => e.type === "context.compacted").length, 1);
   assert.match(JSON.stringify(f.engine.getHistoryMessages()), /ABORT_CHECKPOINT/);
+});
+
+
+test("busy compact survives abort/consumer close without running before the next call", async () => {
+  let compactions = 0;
+  const f = fixture({ compactor: { ...unchanged, async manualCompact(messages) {
+    compactions++;
+    return { messages: [...messages], changed: true, reason: "manualcompact" };
+  } } });
+  const stream = f.engine.sendUserText("close early");
+  await stream.next();
+  assert.deepEqual(await f.engine.updateSessionSettings({ compact: true, fastMode: true }), { deferred: true });
+  await stream.return(undefined);
+  assert.equal(compactions, 0);
+  assert.equal(f.engine.isFastMode(), true);
+  assert.deepEqual(f.engine.getPendingSessionSettings(), { compact: true });
+  f.resume.release();
+  await drain(f.engine.sendUserText("next call"));
+  assert.equal(compactions, 1);
+  assert.deepEqual(f.engine.getPendingSessionSettings(), {});
 });

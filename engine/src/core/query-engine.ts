@@ -16,7 +16,8 @@ import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
 import { applyRuntimeContextForPromptCache } from "./message-pipeline.js";
-import { persistMessageImages } from "./image-storage.js";
+import type { CompactionStarted } from "./compaction-progress.js";
+import { SessionImageStore } from "./session-images.js";
 import { query } from "./query.js";
 import { runAgent } from "./run-agent.js";
 import { GENERAL_PURPOSE_AGENT } from "../agents/agent-definition.js";
@@ -82,6 +83,7 @@ export class QueryEngine {
   private queryTiming?: QueryTimingState;
   private readonly timingRecords = new Map<string, TimingRecord>();
   private sessionStore?: SessionStore;
+  private imageStore?: SessionImageStore;
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
@@ -160,6 +162,7 @@ export class QueryEngine {
       if (this.options.session?.enabled !== false && this.options.session) {
         await this.openSession({ sessionId: this.options.session.sessionId, resume: this.options.session.resume });
       }
+      this.imageStore ??= await SessionImageStore.open(undefined, this.agentId);
       this.sessionInitialized = true;
     })();
     this.sessionInitialization = initialization;
@@ -273,9 +276,9 @@ export class QueryEngine {
         } : undefined,
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
-        beforeTurn: (messages) => {
+        beforeTurn: (messages, started) => {
           this.options.refreshTools?.(this);
-          return this.consumeSessionSettings(messages);
+          return this.consumeSessionSettings(messages, started);
         },
       };
 
@@ -292,6 +295,7 @@ export class QueryEngine {
           contextManager: this.contextManager,
           modelGateway: this.currentModelGateway,
           taskNotificationSource: this.options.taskNotificationSource,
+          imageStore: this.imageStore,
           toolResultMemory: this.sessionStore?.toolResultMemory,
           session: this.sessionStore ? { sessionId: this.sessionStore.sessionId, sessionDir: this.sessionStore.sessionDir, rootDir: this.options.session?.rootDir } : undefined,
           recordContentReplacements: (records) => this.sessionStore?.recordContentReplacements(records),
@@ -312,11 +316,9 @@ export class QueryEngine {
         }
         if (event.type === "terminal") {
           this.lastTerminalReason = event.reason;
-          // The final assistant/tool messages have already been recorded by this wrapper.
+          // Settle ordinary settings only; pending compact waits for the next model call.
           const hadPending = Object.keys(this.pendingSessionSettings).length > 0;
-          for (const result of await this.flushSessionSettings()) {
-            if (result.report) yield { type: "context.compacted", compaction: result.report };
-          }
+          await this.flushSessionSettings();
           if (hadPending) yield { type: "context.metrics", metrics: await this.contextMetrics() };
         }
         yield event;
@@ -325,7 +327,7 @@ export class QueryEngine {
       // Covers initialization errors, aborts, exceptions and consumer generator.return().
       // Do not yield in finally: a closing consumer may never resume the generator.
       try {
-        do { await this.flushSessionSettings(); } while (Object.keys(this.pendingSessionSettings).length);
+        await this.flushSessionSettings();
       }
       finally { this.running = false; }
     }
@@ -349,6 +351,7 @@ export class QueryEngine {
     }
     const mutation = this.settingsMutation.then(async () => {
       await this.initialize();
+      if (normalized.compact) delete this.pendingSessionSettings.compact;
       const update = await this.applySessionSettings(normalized, this.getHistoryMessages());
       if (update?.compaction) this.applyCompactionResult(update.compaction);
       return { deferred: false, ...(update?.compaction ? { compaction: update.compaction } : {}) };
@@ -404,14 +407,14 @@ export class QueryEngine {
     return patch;
   }
 
-  private async consumeSessionSettings(messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
+  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted): Promise<BeforeTurnUpdate | undefined> {
     const patch = this.pendingSessionSettings;
     if (!Object.keys(patch).length) return undefined;
     this.pendingSessionSettings = {};
-    return this.applySessionSettings(patch, messages);
+    return this.applySessionSettings(patch, messages, started);
   }
 
-  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[]): Promise<BeforeTurnUpdate | undefined> {
+  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted): Promise<BeforeTurnUpdate | undefined> {
     const changed: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
@@ -434,23 +437,22 @@ export class QueryEngine {
     }
     let compaction: CompactionResult | undefined;
     if (patch.compact) {
+      started?.("manualcompact");
       const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-      const budget = { ...this.options.contextBudget, contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
+      const budget = { ...this.options.contextBudget, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
       compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
     }
     return Object.keys(changed).length || compaction ? { settings: changed, compaction } : undefined;
   }
 
-  private async flushSessionSettings(): Promise<CompactionResult[]> {
-    const results: CompactionResult[] = [];
-    while (Object.keys(this.pendingSessionSettings).length) {
-      const update = await this.consumeSessionSettings(this.getHistoryMessages());
-      if (update?.compaction) {
-        this.applyCompactionResult(update.compaction);
-        if (update.compaction.changed) results.push(update.compaction);
-      }
+  private async flushSessionSettings(): Promise<void> {
+    // Ordinary settings can settle at the terminal boundary. A busy compact request
+    // must wait for the next model call, including when the current query ends/aborts.
+    while (Object.keys(this.pendingSessionSettings).some(key => key !== "compact")) {
+      const { compact, ...patch } = this.pendingSessionSettings;
+      this.pendingSessionSettings = compact ? { compact: true } : {};
+      await this.applySessionSettings(patch, this.getHistoryMessages());
     }
-    return results;
   }
 
   setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
@@ -542,6 +544,7 @@ export class QueryEngine {
     const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
     const contextBudget = {
       ...this.options.contextBudget,
+      imageRegistry: this.imageStore?.snapshot(),
       contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
     };
     const result = withCompactionReport(
@@ -697,18 +700,8 @@ export class QueryEngine {
   }
 
   private async persistMessageImages(message: Message): Promise<Message> {
-    if (!message.blocks.some((block) => block.type === "image")) return message;
-    const persistedBlocks = await persistMessageImages(message.blocks, { sessionDir: this.sessionStore?.sessionDir, agentId: this.agentId });
-    const hasRetention = typeof message.metadata?.imageRetention === "string";
-    return {
-      ...message,
-      blocks: persistedBlocks,
-      metadata: message.role === "user"
-        ? { ...message.metadata, imageRetention: "pinned", imageTtlTurns: undefined }
-        : hasRetention
-        ? message.metadata
-        : { ...message.metadata, imageRetention: "while_relevant", imageTtlTurns: 4 },
-    };
+    this.imageStore ??= await SessionImageStore.open(this.sessionStore?.sessionDir, this.agentId);
+    return this.imageStore.persistMessage(message);
   }
 
   private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {
@@ -722,6 +715,7 @@ export class QueryEngine {
       resume: options.resume,
       toolResultThresholdChars: this.options.session.toolResultThresholdChars,
     });
+    this.imageStore = await SessionImageStore.open(this.sessionStore.sessionDir, this.agentId);
     this.pendingSessionSettings = {};
     this.sessionPromptState = this.sessionStore.getSessionPrompt();
     this.activeSessionPrompt = this.sessionPromptState ?? null;

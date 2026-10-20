@@ -36,6 +36,32 @@ Hard errors include wrong types/enums/ranges, unsupported combinations, malforme
 
 Valid but potentially unintended inputs (e.g. edit sources supplied to generate mode, or both output destination fields) run with structured warnings. The source payload itself must still be valid.
 
+## Session image identity and inspection
+
+Images are session resources, not positions in the current model context. `sessionDir/image-resources.json` (version 1) owns the resource catalog and latest-image pointer. Every new resource receives an immutable `image_<UUID>` ID and a persistent `img_N` alias. An alias is allocated once, never renumbered by compaction or pixel retention. Labels are display metadata, not primary keys.
+
+- User attachments, tool-loaded images, generated images and assistant image blocks are persisted and registered **before** entering the inner query loop, history or transcript. These consumers receive the same normalized identity and payload reference.
+- New local imports and generated outputs keep their authoritative payload under the session's `attachments/images` directory. Moving/deleting a generated export does not remove its edit source. Re-importing the same path and bytes reuses identity; changing the file contents creates a new resource, without changing the old ID.
+- `image_inspect` returns copyable UUIDs and aliases, including when loading local paths. Use `{"mode":"list","offset":0,"limit":20}` to discover references without loading pixels; `limit` is 1–100. Results include availability and pagination. This removes the need to provoke errors to discover IDs.
+- `image_inspect` and `image_create` share reference and payload resolution. Unknown references, ambiguous labels and known references with missing/corrupt payloads are different errors. None silently substitutes another image. Explicit multi-image order is preserved.
+- `next_turn` / `while_relevant` / `pinned` govern pixel visibility only. Expiration placeholders keep the immutable ID. Continuous compaction and restart do not unregister resources. The latest-image fallback remembers the most recently loaded/generated image; replaying preserved historical messages does not change it.
+- Compaction receives an authoritative catalog snapshot. Boundaries retain compatibility metadata, but are not the source of truth; the model-facing directory shows at most 20 entries and points to paginated discovery.
+- Catalog writes are serialized, file-locked, synced and atomically replaced. Independent stores reload before allocation. Identity conflicts and failed commits do not change an existing ID's bytes. Unreadable/corrupt catalogs fail closed instead of silently reallocating aliases. A lock with a live or unidentifiable owner times out rather than risking two writers; after a crashed process, an unverifiable leftover lock requires operator inspection.
+
+### Existing sessions and lifecycle
+
+On first open without a catalog, migration streams the original `transcript.jsonl`, reserves the latest legacy checkpoint aliases, and repairs missing identity/storage/hash fields using the exact source message and block index—not labels or image similarity. Other recorded resources are added after reserving historical aliases. Legacy inline payloads are persisted. Migration creates the catalog without rewriting the transcript or modifying existing stored payloads; missing original bytes cannot be reconstructed and remain explicitly unavailable.
+
+The catalog must be backed up with the session and its image payloads. A context reset within the same session does not delete image resources; opening a different session uses a different catalog. Hosts with persistence disabled retain the catalog only for that in-memory session. Previously generated legacy payloads may still live at their original absolute paths; migration preserves those references rather than copying or relocating historical files.
+
+## Compaction UI lifecycle
+
+Compaction reports are primary timeline items, never nested inside collapsed process groups (including legacy reports without a primary flag). An idle **Compact session** click starts immediately through the settings barrier and publishes `phase=compacting` before awaiting the summary; duplicate requests are rejected while it is in flight. The browser shows progress and a completion/error notification.
+
+While a query is busy, the same action only queues a compact request. It is consumed before the **next model call**, not during the active call and not merely because the current query finishes or aborts. If no next call occurs yet, the request stays pending. Other session settings retain their existing terminal-settlement behavior.
+
+Automatic model-driven compaction reports its start before waiting for the summary stream. The UI distinguishes automatic, manual and context-limit recovery compaction rather than calling all summary wait time “preparing”. Ordinary budget checks that do not trigger compaction emit no false start event.
+
 ## Requested vs. reported vs. byte-inspected output
 
 - `requested`: the actual outgoing API parameters, including model, quality and other defaults.
@@ -63,7 +89,9 @@ Consequently, integration guarantees local input validation, faithful outgoing p
 
 ```sh
 npm run typecheck
-npx tsx --test tests/tools/image-generation.test.ts
+npx tsx --test tests/tools/image-generation.test.ts tests/core/session-images.test.ts
+npm run smoke:images
+npm run smoke:context
 npm run smoke:tools
 npm test
 npm run build

@@ -5,6 +5,10 @@ import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, 
 import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
 
 export interface ContextBudgetOptions {
+  /** Authoritative session resource snapshot; boundaries are only compatibility views. */
+  imageRegistry?: ImageRegistry;
+  /** Emitted before summary work starts; a budget check alone must not emit this. */
+  onCompactionStart?: (reason: Exclude<CompactionReason, "none">) => void;
   snipMaxChars?: number;
   microCompactMaxChars?: number;
   autoCompactMaxChars?: number;
@@ -121,6 +125,7 @@ export class ModelDrivenCompactor implements Compactor {
   ): Promise<CompactionResult> {
     if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
 
+    options.onCompactionStart?.(reason);
     try {
       const summary = await this.summarizeWithModel(messages, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
       return buildCompactionResult(messages, summary, reason, true, options);
@@ -252,7 +257,7 @@ export function snipCompactIfNeeded(messages: readonly Message[], options: Conte
   const tail = messages.slice(tailStart);
   const removed = messages.slice(head.length, tailStart);
   const summary = buildHistorySummary(removed, options.summaryMaxChars ?? 3000);
-  const imageRegistry = buildMergedImageRegistry(messages);
+  const imageRegistry = options.imageRegistry ?? buildMergedImageRegistry(messages);
   const boundary = createCompactionBoundaryMessage(`Snipped older conversation for context budget.\n\n${summary}`, "snip", false, imageRegistry);
   const compacted = [...head, boundary, ...tail];
 
@@ -400,7 +405,7 @@ function pureCompactWithSanitizedSummary(messages: readonly Message[], options: 
   if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
 
   const summary = buildPureSummary(messages, options.summaryMaxChars ?? 4000);
-  const imageRegistry = buildMergedImageRegistry(messages);
+  const imageRegistry = options.imageRegistry ?? buildMergedImageRegistry(messages);
   const boundary = createCompactionBoundaryMessage(
     `Pure compacted conversation after a transport/WAF risk block.\n\n${summary}`,
     "purecompact",
@@ -433,7 +438,7 @@ function buildCompactionResult(
       ? "Manually compacted earlier conversation."
       : "Reactive compacted earlier conversation.";
 
-  const imageRegistry = buildMergedImageRegistry(originalMessages);
+  const imageRegistry = options.imageRegistry ?? buildMergedImageRegistry(originalMessages);
   const preservedUsers = selectRecentUserMessages(messagesForSelection, options.keepRecentTokenBudget ?? COMPACT_USER_MESSAGE_MAX_TOKENS);
   const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven, imageRegistry);
   const compacted = [...preservedUsers, boundary];
