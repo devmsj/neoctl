@@ -58,6 +58,36 @@ test('disabled defaults preserve unauthenticated legacy routes; invalid configs 
   assert.deepEqual(await loadIsolationConfig(path.join(f.root, 'missing-default')), { enabled: false });
 });
 
+test('framework feedback is local, paginated and admin-only across owners', async t => {
+  const f = await fixture(t), admin = await f.login('Admin'), alice = await f.login('Alice');
+  const { FrameworkFeedbackStore } = await import('../../engine/dist/tools/builtins/framework-feedback-tool.js');
+  const store = new FrameworkFeedbackStore(path.join(f.root, 'framework-feedback'));
+  await Promise.all(Array.from({ length: 12 }, (_, i) => store.submit({ title: `建议${i}`, body: '问题；复现；改进' })));
+  assert.equal((await f.request('/api/framework-feedback')).status, 401);
+  assert.equal((await f.request('/api/framework-feedback', alice)).status, 403);
+  assert.equal((await f.request('/api/framework-feedback', admin, {})).status, 405);
+  const response = await f.request('/api/framework-feedback?page=2&pageSize=10&ownerUsername=Alice', admin);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('cache-control'), /no-store/);
+  const page = await response.json();
+  assert.equal(page.total, 12); assert.equal(page.items.length, 2); assert.equal(page.page, 2);
+  const tools = await (await f.request('/api/tools', admin)).json();
+  assert.equal(tools.items.find(x => x.name === 'framework_feedback').source, 'builtin');
+  assert.equal((await f.request('/api/tools/global', admin, { overrides: { framework_feedback: false } })).status, 200);
+  assert.equal((await (await f.request('/api/framework-feedback', admin)).json()).total, 12, 'disabling must retain submissions');
+  const id = page.items[0].id;
+  assert.equal((await f.request('/api/framework-feedback/delete', '', { id })).status, 401);
+  assert.equal((await f.request('/api/framework-feedback/delete', alice, { id })).status, 403);
+  assert.equal((await f.request('/api/framework-feedback/delete', admin)).status, 405);
+  assert.equal((await (await f.request('/api/framework-feedback/delete', admin, { id: '../outside' })).json()).ok, false);
+  assert.equal((await (await f.request('/api/framework-feedback/delete', admin, { id })).json()).deleted, true);
+  assert.equal((await (await f.request('/api/framework-feedback/delete', admin, { id })).json()).deleted, false);
+  await f.restart();
+  const freshAdmin = await f.login('Admin');
+  const remaining = await (await f.request('/api/framework-feedback?pageSize=50', freshAdmin)).json();
+  assert.equal(remaining.total, 11); assert.ok(!remaining.items.some(x => x.id === id));
+});
+
 test('username is the only account identifier and is safe as a data directory', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-isolation-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

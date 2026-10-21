@@ -108,6 +108,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
     const manager = createWorkspaceRuntimeManager({
       projectRoot: workRoot, workspaceRoot: workRoot, registryFile: path.join(root, 'workspaces.json'),
       createRuntime: options => core.createWebRuntime({
+        frameworkFeedbackDir: path.join(dataRoot, 'framework-feedback'),
         ...options, sessionId: options.sessionId || randomUUID(), sessionRootDir: sessionsRoot, resume: !!options.sessionId,
         ...pluginHost.runtimePlugins(options.sessionId),
         globalToolOverrides: globalTools.globalOverrides(),
@@ -230,7 +231,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
           const state = cpaQuotaMonitor?.getPublicState() || { config: { url: '', hasPassword: false }, quotas: [] };
           jsonReply(res, isAdmin ? state : { quotas: state.quotas }); return true;
         }
-        if (['/api/cpa-config', '/api/plugins/global', '/api/plugins/install', '/api/plugins/uninstall', '/api/prompt-config', '/api/tools/global'].includes(url.pathname) || (isAdmin && ['/api/plugins', '/api/tools'].includes(url.pathname))) {
+        if (['/api/cpa-config', '/api/plugins/global', '/api/plugins/install', '/api/plugins/uninstall', '/api/prompt-config', '/api/tools/global', '/api/framework-feedback', '/api/framework-feedback/delete'].includes(url.pathname) || (isAdmin && ['/api/plugins', '/api/tools'].includes(url.pathname))) {
           if (!isAdmin) throw httpError(403, '仅超管可修改全局配置');
           if (!['GET', 'POST'].includes(req.method)) throw httpError(405, '请求方法无效');
           if (url.pathname === '/api/cpa-config') {
@@ -243,6 +244,19 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
             jsonReply(res, { ok: true, ...state }); return true;
           }
           const admin = await userContext(session.user);
+          if (url.pathname === '/api/framework-feedback/delete') {
+            if (req.method !== 'POST') throw httpError(405, '请求方法无效');
+            const body = await readBoundedJson(req, 4096);
+            const repl = await admin.router.get({ tabId: 'global-model-config' });
+            jsonReply(res, await repl.deleteFrameworkFeedback(body?.id)); return true;
+          }
+          if (url.pathname === '/api/framework-feedback') {
+            if (req.method !== 'GET') throw httpError(405, '请求方法无效');
+            const repl = await admin.router.get({ tabId: 'global-model-config' });
+            try { jsonReply(res, await repl.listFrameworkFeedback(Number(url.searchParams.get('page') ?? 1), Number(url.searchParams.get('pageSize') ?? 10))); }
+            catch { jsonReply(res, { error: '建议加载失败' }, 500); }
+            return true;
+          }
           if (url.pathname === '/api/prompt-config') {
             // Global prompt protocol is independent of the selected owner/session.
             const target = new URL(url);

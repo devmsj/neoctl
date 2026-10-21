@@ -1,4 +1,5 @@
 import { IMAGE_EDIT_REFERENCE_GUIDE, IMAGE_SELECTION_GUIDE } from "../tools/builtins/image-capabilities.js";
+import { FRAMEWORK_FEEDBACK_PROMPT, FRAMEWORK_FEEDBACK_TOOL } from "../tools/builtins/framework-feedback-tool.js";
 import { readBundledSystemPrompt } from "./prompt-config.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
 import type { ToolUseContext } from "../tools/tool.js";
@@ -40,6 +41,7 @@ export function buildDefaultSystemPromptSections(enabledTools: readonly string[]
       content: [
         "Only tools supplied in this request are callable. Tool availability is controlled by runtime configuration; instructions mentioning other tools do not enable them. If a requested tool is unavailable, explain that it is unavailable in the current configuration rather than claiming the provider cannot support it.",
         enabledTools.includes("plan_update") ? "For tasks with multiple meaningful steps, call plan_update to create and maintain a visible execution plan." : "",
+        enabledTools.includes(FRAMEWORK_FEEDBACK_TOOL) ? FRAMEWORK_FEEDBACK_PROMPT : "",
         enabledTools.length
           ? `Available tools are provided separately. Stable tool prefix: ${enabledTools.join(", ")}.`
           : "Available tools are provided separately by the runtime.",

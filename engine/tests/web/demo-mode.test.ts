@@ -14,6 +14,7 @@ import { readFileTool, listDirectoryTool } from "../../src/tools/builtins/filesy
 import { grepTool } from "../../src/tools/builtins/grep-tool.js";
 import { searchTool } from "../../src/tools/builtins/search-tool.js";
 import { planTool } from "../../src/tools/builtins/plan-tool.js";
+import { createFrameworkFeedbackTool, FrameworkFeedbackStore } from "../../src/tools/builtins/framework-feedback-tool.js";
 import { createExecTool, createWriteStdinTool } from "../../src/tools/builtins/exec-tool.js";
 import { ExecProcessManager } from "../../src/tools/builtins/exec-process-manager.js";
 import { createAgentTool } from "../../src/agents/agent-tool.js";
@@ -36,7 +37,9 @@ async function fixture(t: TestContext, withPlugins = false) {
   const engine = new QueryEngine({ modelGateway: real, tools, cwd: root, model: "gpt-test", session: { rootDir: root, sessionId: "demo-session", resume: false } });
   await engine.initialize();
   taskStore.bindSession(engine.snapshot().session!.sessionDir);
+  tools.register(createFrameworkFeedbackTool(new FrameworkFeedbackStore(path.join(root, 'feedback'))));
   const backend = new DemoTools(tools, taskStore, processes);
+  assert.equal(backend.registry.get('framework_feedback'), undefined, 'offline demo must not fabricate submitted opinions');
   const waits: number[] = [];
   const demo = new DemoMode(backend, async ms => { waits.push(ms); });
   const runtime = { engine, tools, taskStore, execProcessManager: processes, modelGateway: real, agentRuntime: { modelGateway: real, tools, taskStore }, usage: new SessionUsageTracker(), initialMetrics: await engine.contextMetrics(), envPath: path.join(root, ".env") } as unknown as WebRuntime;

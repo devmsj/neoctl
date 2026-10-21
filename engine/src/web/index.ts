@@ -32,6 +32,7 @@ import { ExecProcessManager, type ExecProcessOutputDelta } from "../tools/builti
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
+import { createFrameworkFeedbackTool, FrameworkFeedbackStore } from "../tools/builtins/framework-feedback-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
@@ -82,6 +83,7 @@ export interface WebRuntime {
   envNotice?: string;
   pluginSupport?: WebRuntimePluginSupport;
   toolSupport?: WebRuntimeToolSupport;
+  frameworkFeedback?: FrameworkFeedbackStore;
 }
 
 export interface WebRuntimePluginDefinition extends Pick<NeoPluginResource, "id" | "name" | "version" | "tools"> {
@@ -344,6 +346,8 @@ export interface RunWebServerOptions {
 }
 
 export interface CreateWebRuntimeOptions {
+  /** Host-owned local feedback storage; never model-selected. */
+  frameworkFeedbackDir?: string;
   /** Optional storage root for this runtime's session transcripts. */
   sessionRootDir?: string;
   /** Override the initial session id for this runtime. */
@@ -531,6 +535,8 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   registerTool(createLoadImageTool(), { source: "builtin" });
   if (modelConfig?.provider === "openai") registerTool(createOpenAIImageGenerationTool(), { source: "builtin" });
   registerTool(planTool, { source: "builtin" });
+  const frameworkFeedback = new FrameworkFeedbackStore(options.frameworkFeedbackDir);
+  registerTool(createFrameworkFeedbackTool(frameworkFeedback), { source: "builtin" });
   for (const tool of options.externalTools ?? []) registerTool(tool, { source: "external" });
   for (const plugin of pluginCatalog) {
     for (const tool of plugin.tools) catalogTool(tool, { source: "plugin", pluginId: plugin.id, pluginName: plugin.name });
@@ -594,6 +600,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   activateSession({ engine, taskStore });
   const initialMetrics = await engine.contextMetrics();
   runtime = {
+    frameworkFeedback,
     engine,
     appPromptStore,
     communicationLogger,
@@ -1701,6 +1708,19 @@ export class WebRepl {
     this.publishRuntimeContext();
   }
 
+  async listFrameworkFeedback(page: number, pageSize: number) {
+    if (!this.runtime.frameworkFeedback) throw new Error("Framework feedback storage unavailable");
+    return this.runtime.frameworkFeedback.list(page, pageSize);
+  }
+
+  async deleteFrameworkFeedback(id: unknown): Promise<WebActionResult<{ deleted: boolean }>> {
+    if (typeof id !== "string" || !/^\d{13}-[a-f0-9-]{36}$/.test(id)) return actionFailure("INVALID_REQUEST", "建议编号无效");
+    try {
+      if (!this.runtime.frameworkFeedback) throw new Error("unavailable");
+      return { ok: true, deleted: await this.runtime.frameworkFeedback.delete(id) };
+    } catch { return actionFailure("FEEDBACK_DELETE_FAILED", "删除失败，请重试"); }
+  }
+
   pauseRun(): WebActionResult {
     if (this.runControl().canResume) return { ok: true };
     if (!this.runControl().canPause) return actionFailure("INVALID_REQUEST", "当前没有可暂停的会话执行");
@@ -2725,6 +2745,15 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       return sendJson(res, workspaceRepl.deleteWorkspaceDirectory
         ? await workspaceRepl.deleteWorkspaceDirectory(body.path)
         : actionFailure("CWD_NOT_CONFIGURED", "workspace navigation is not configured"));
+    }
+    if (req.method === "POST" && url.pathname === "/api/framework-feedback/delete") {
+      const body = await readJsonBody<{ id?: unknown }>(req);
+      return sendJson(res, await repl.deleteFrameworkFeedback(body?.id));
+    }
+    if (req.method === "GET" && url.pathname === "/api/framework-feedback") {
+      res.setHeader("Cache-Control", "no-store");
+      try { return sendJson(res, await repl.listFrameworkFeedback(Number(url.searchParams.get("page") ?? 1), Number(url.searchParams.get("pageSize") ?? 10))); }
+      catch { return sendJson(res, { ok: false, error: "建议加载失败" }, 500); }
     }
     if (req.method === "GET" && url.pathname === "/api/tools") return sendJson(res, repl.globalTools());
     if (req.method === "POST" && url.pathname === "/api/tools/global") {

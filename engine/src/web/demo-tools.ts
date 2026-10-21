@@ -66,6 +66,8 @@ export class DemoTools {
     implementations.set("image_inspect", createLoadImageTool());
     implementations.set("plan_update", planTool);
     for (const [name, original] of implementations) {
+      // Scripted demonstrations must not fabricate real framework feedback or enable its prompt.
+      if (name === "framework_feedback") continue;
       if (["expose_downloads", "expose_videos", "revoke_videos", "open_xhs_artifact_editor", "read_xhs_artifact"].includes(name)) this.resourceTools.set(name, original);
       const tool: Tool<any> = {
         ...original,

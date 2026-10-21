@@ -59,6 +59,7 @@ const workspaceRuntime = createWorkspaceRuntimeManager({
   registryFile: path.join(dataRoot, 'session-workspaces.json'),
   createRuntime: (runtimeOptions) => createWebRuntime({
     ...runtimeOptions,
+    frameworkFeedbackDir: path.join(dataRoot, 'framework-feedback'),
     ...pluginHost.runtimePlugins(runtimeOptions.sessionId),
     globalToolOverrides: toolSettings.globalOverrides(),
     resolveGlobalToolOverrides: () => toolSettings.globalOverrides(),

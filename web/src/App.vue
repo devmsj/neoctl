@@ -23,6 +23,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import diff from 'highlight.js/lib/languages/diff'
 import NeoSelect from './components/NeoSelect.vue'
+import FrameworkFeedbackList from './components/FrameworkFeedbackList.vue'
 import PromptConfigEditor from './components/PromptConfigEditor.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
 import ElapsedClock from './components/ElapsedClock.vue'
@@ -5320,6 +5321,15 @@ function createMobileSession() {
             </div>
             <PromptConfigEditor :endpoint="appUrl('/api/prompt-config')" @saved="onPromptConfigSaved" />
           </template>
+          <template v-else-if="state.settingsPage === 'feedback'">
+            <div class="page-head settings-page-head">
+              <div class="settings-subpage-title">
+                <button type="button" class="mini-button" aria-label="返回模型配置" @click="state.settingsPage = ''">←</button>
+                <h2>框架改进建议</h2>
+              </div>
+            </div>
+            <FrameworkFeedbackList :endpoint="runtimeUrl('/api/framework-feedback')" :confirm-delete="requestConfirmation" />
+          </template>
           <template v-else>
           <div class="page-head settings-page-head">
             <h2>模型配置</h2>
@@ -5402,6 +5412,9 @@ function createMobileSession() {
                 </div>
               </div>
             </section>
+            <button type="button" class="settings-prompt-entry" @click="state.settingsPage = 'feedback'">
+              <strong>框架改进建议</strong><span aria-hidden="true">›</span>
+            </button>
           </form>
           </template>
         </div>

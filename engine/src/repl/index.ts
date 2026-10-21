@@ -22,6 +22,7 @@ import { ExecProcessManager } from "../tools/builtins/exec-process-manager.js";
 import { listDirectoryTool, readFileTool } from "../tools/builtins/filesystem-tools.js";
 import { grepTool } from "../tools/builtins/grep-tool.js";
 import { searchTool } from "../tools/builtins/search-tool.js";
+import { createFrameworkFeedbackTool } from "../tools/builtins/framework-feedback-tool.js";
 import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
@@ -393,6 +394,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
   tools.register(planTool);
+  tools.register(createFrameworkFeedbackTool());
   for (const tool of createSecretTools()) tools.register(tool);
   tools.register(createSkillTool(skills));
   for (const tool of createSkillManagementTools(skills, { requireApproval: true, allowDelete: false })) tools.register(tool);

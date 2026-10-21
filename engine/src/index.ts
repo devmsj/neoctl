@@ -62,6 +62,7 @@ export * from "./tools/builtins/grep-tool.js";
 export * from "./tools/builtins/search-tool.js";
 export * from "./tools/builtins/search-providers.js";
 export * from "./tools/builtins/plan-tool.js";
+export * from "./tools/builtins/framework-feedback-tool.js";
 export * from "./tools/builtins/secret-tools.js";
 export * from "./tools/builtins/image-generation-tool.js";
 export * from "./tools/builtins/image-loader-tool.js";
