@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { executionRecoveryHint, isResumableExecution, type ExecutionState } from "./execution-state.js";
 import type { QueryTimingState, TimingRecord, TimingClock } from "./query-timing.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import { InMemoryAppPromptStore, type AppPromptInput, type AppPromptSnapshot, type AppPromptStore } from "../app/app-prompt.js";
@@ -75,11 +77,62 @@ export interface QueryEngineOptions {
   };
 }
 
+export interface QuerySimulation {
+  modelGateway: ModelGateway;
+  tools: ToolRegistry;
+  compactor: Compactor;
+}
+
 export class QueryEngine {
+  private simulation?: QuerySimulation;
+  private readonly displayOnlyMessages: Message[] = [];
+
+  /** Instance-local execution boundary; never inherited by forkForSession or written to provider settings. */
+  setSimulation(simulation: QuerySimulation): void {
+    if (this.running) throw new Error("cannot replace execution while a query is running");
+    this.cancelPendingTitleWork();
+    this.simulation = simulation;
+  }
+
+  /** Persist a visible message without submitting it to a model or changing an in-flight context. */
+  async recordDisplayMessage(message: Message): Promise<Message> {
+    await this.initialize();
+    const store = this.sessionStore;
+    const windowId = store?.snapshot().firstWindowId;
+    const stored = await this.imageStore!.persistMessage({ ...message, metadata: { ...message.metadata, displayOnly: true } });
+    if (store !== this.sessionStore || windowId !== store?.snapshot().firstWindowId) throw new Error("Session changed while recording message");
+    if (store) store.recordMessage(stored);
+    else this.displayOnlyMessages.push(stored);
+    return stored;
+  }
   private readonly agentId: string;
   private readonly history: Message[] = [];
   private readonly titleTimers = new Set<ReturnType<typeof setTimeout>>();
   private lastTerminalReason?: TerminalReason;
+  private executionState?: ExecutionState;
+  private executionStartedAt?: number;
+
+  private executionNow(): number {
+    return this.options.timingClock?.monotonicNow() ?? performance.now();
+  }
+
+  getExecutionState(): ExecutionState | undefined {
+    if (!this.executionState) return undefined;
+    const elapsedMs = (this.executionState.elapsedMs ?? 0) + (this.executionStartedAt === undefined
+      ? 0 : Math.max(0, this.executionNow() - this.executionStartedAt));
+    return { ...this.executionState, elapsedMs: Math.floor(elapsedMs) };
+  }
+
+  markExecutionPaused(): void {
+    this.setExecutionState({ status: "paused", reason: "user_pause" });
+  }
+
+  private setExecutionState(state: ExecutionState): void {
+    const elapsedMs = state.elapsedMs ?? this.getExecutionState()?.elapsedMs ?? 0;
+    this.executionState = { ...state, elapsedMs };
+    this.executionStartedAt = state.status === "running" ? this.executionNow() : undefined;
+    this.sessionStore?.recordExecutionState(this.executionState);
+  }
   private queryTiming?: QueryTimingState;
   private readonly timingRecords = new Map<string, TimingRecord>();
   private sessionStore?: SessionStore;
@@ -208,31 +261,56 @@ export class QueryEngine {
     });
   }
 
-  async *sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
+  sendUserText(text: string, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
+    return this.runQuery(text, options);
+  }
+
+  /** A UI continuation is a runtime action, not an invented user utterance. */
+  continueExecution(options: { abortSignal?: AbortSignal; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
+    return this.runQuery(undefined, options);
+  }
+
+  private async *runQuery(text: string | undefined, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
     if (this.running) throw new Error("query engine is already running");
     this.running = true;
+    let terminalReceived = false;
+    let queryAccepted = text !== undefined;
     try {
       await this.settingsMutation;
       await this.initialize();
+      const recovery = isResumableExecution(this.executionState) ? this.executionState : undefined;
+      if (text === undefined && !recovery) throw new Error("No interrupted execution to continue");
+      queryAccepted = true;
+      if (recovery) {
+        this.pendingRequestContext = { ...this.pendingRequestContext,
+          executionRecovery: executionRecoveryHint(recovery),
+          ...(text === undefined ? { continuationAction: "用户点击了继续按钮，请继续尚未完成的任务。这是运行时动作，不是用户发送的新消息。" } : {}),
+        };
+      }
+      const elapsedMs = recovery?.elapsedMs ?? 0;
+      this.setExecutionState(options.abortSignal?.aborted
+        ? { status: "paused", reason: "user_pause", elapsedMs } : { status: "running", elapsedMs });
       const cwdTransitionPaths = this.pendingCwdTransitionPaths;
       const pendingRequestContext = this.pendingRequestContext;
       const pendingRequestContextConsumed = this.pendingRequestContextConsumed;
       this.pendingCwdTransitionPaths = undefined;
       this.options.cwdTransitionPaths = undefined;
       if (cwdTransitionPaths?.length) void this.options.onCwdTransitionConsumed?.();
-      const userMessage = options.blocks
-        ? await this.persistMessageImages({
-            ...createTextMessage("user", options.displayText ?? text),
-            blocks: options.blocks,
-          })
-        : createTextMessage("user", text);
-      this.history.push(userMessage);
-      this.sessionStore?.recordMessage(userMessage);
-      this.scheduleSessionTitleCheck();
+      if (text !== undefined) {
+        const userMessage = options.blocks
+          ? await this.persistMessageImages({
+              ...createTextMessage("user", options.displayText ?? text),
+              blocks: options.blocks,
+            })
+          : createTextMessage("user", text);
+        this.history.push(userMessage);
+        this.sessionStore?.recordMessage(userMessage);
+        this.scheduleSessionTitleCheck();
+      }
 
       const initMessage = createSystemInitMessage({
         agentId: this.agentId,
-        tools: this.options.tools.names(),
+        tools: (this.simulation?.tools ?? this.options.tools).names(),
         model: this.currentModel,
         commands: [...(this.options.commands ?? [])],
         agents: [...(this.options.agents ?? [])],
@@ -277,7 +355,7 @@ export class QueryEngine {
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
         beforeTurn: (messages, started) => {
-          this.options.refreshTools?.(this);
+          if (!this.simulation) this.options.refreshTools?.(this);
           return this.consumeSessionSettings(messages, started);
         },
       };
@@ -286,14 +364,16 @@ export class QueryEngine {
         this.history,
         {
           ...this.options,
-          acquireTurnResources: this.options.acquireTurnResources ? () => this.options.acquireTurnResources!(this) : undefined,
+          acquireTurnResources: this.simulation ? undefined : this.options.acquireTurnResources ? () => this.options.acquireTurnResources!(this) : undefined,
+          tools: this.simulation?.tools ?? this.options.tools,
+          compactor: this.simulation?.compactor ?? this.options.compactor,
           onTimingState: timing => { this.queryTiming = timing; },
           onTiming: record => {
             this.timingRecords.set(record.id, { ...record });
             this.sessionStore?.recordTiming(record);
           },
           contextManager: this.contextManager,
-          modelGateway: this.currentModelGateway,
+          modelGateway: this.simulation?.modelGateway ?? this.currentModelGateway,
           taskNotificationSource: this.options.taskNotificationSource,
           imageStore: this.imageStore,
           toolResultMemory: this.sessionStore?.toolResultMemory,
@@ -315,7 +395,14 @@ export class QueryEngine {
           continue;
         }
         if (event.type === "terminal") {
+          terminalReceived = true;
           this.lastTerminalReason = event.reason;
+          if (this.executionState?.status !== "paused") {
+            this.setExecutionState({
+              status: event.reason === "completed" || event.reason === "turn_yielded" ? "completed" : "interrupted",
+              reason: event.reason,
+            });
+          }
           // Settle ordinary settings only; pending compact waits for the next model call.
           const hadPending = Object.keys(this.pendingSessionSettings).length > 0;
           await this.flushSessionSettings();
@@ -324,9 +411,11 @@ export class QueryEngine {
         yield event;
       }
     } finally {
-      // Covers initialization errors, aborts, exceptions and consumer generator.return().
-      // Do not yield in finally: a closing consumer may never resume the generator.
+      // Even a failed journal write must release the engine run lock.
       try {
+        if (queryAccepted && !terminalReceived && this.executionState?.status !== "paused") {
+          this.setExecutionState({ status: "interrupted", reason: "unexpected_termination" });
+        }
         await this.flushSessionSettings();
       }
       finally { this.running = false; }
@@ -438,7 +527,7 @@ export class QueryEngine {
     let compaction: CompactionResult | undefined;
     if (patch.compact) {
       started?.("manualcompact");
-      const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+      const compactor = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
       const budget = { ...this.options.contextBudget, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
       compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
     }
@@ -521,9 +610,13 @@ export class QueryEngine {
 
   reset(): void {
     if (this.running) throw new Error("cannot reset while query engine is running");
+    this.simulation = undefined;
+    this.displayOnlyMessages.length = 0;
     this.pendingSessionSettings = {};
     this.history.length = 0;
     this.lastTerminalReason = undefined;
+    this.executionState = undefined;
+    this.executionStartedAt = undefined;
     this.cancelPendingTitleWork();
     this.sessionStore?.reset();
     this.queryTiming = undefined;
@@ -541,7 +634,7 @@ export class QueryEngine {
     await this.initialize();
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
-    const compactor = this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+    const compactor = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
     const contextBudget = {
       ...this.options.contextBudget,
       imageRegistry: this.imageStore?.snapshot(),
@@ -587,7 +680,7 @@ export class QueryEngine {
   }
 
   getDisplayEntries(): SessionDisplayEntry[] {
-    return this.sessionStore?.getDisplayEntries() ?? this.history.map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
+    return this.sessionStore?.getDisplayEntries() ?? [...this.history, ...this.displayOnlyMessages].map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
   }
 
   private applyCompactionResult(result: CompactionResult): void {
@@ -628,14 +721,14 @@ export class QueryEngine {
   }
 
   refreshToolsIfIdle(): void {
-    if (!this.running) this.options.refreshTools?.(this);
+    if (!this.running && !this.simulation) this.options.refreshTools?.(this);
   }
 
   private async buildPromptExportSnapshot(messages: Message[], desiredState = this.sessionPromptState): Promise<SessionPromptExportSnapshot> {
     this.refreshToolsIfIdle();
     const toolContext: ToolUseContext = {
       agentId: this.agentId,
-      tools: this.options.tools,
+      tools: this.simulation?.tools ?? this.options.tools,
       appState: new InMemoryAppState(this.agentId, this.options.cwd),
       toolResultMemory: this.sessionStore?.toolResultMemory,
       session: this.sessionStore ? {
@@ -654,7 +747,7 @@ export class QueryEngine {
       },
       emit: () => undefined,
     };
-    const initialToolDefinitions = this.options.tools.definitions(toolContext);
+    const initialToolDefinitions = (this.simulation?.tools ?? this.options.tools).definitions(toolContext);
     const activePrompt = this.activeSessionPrompt;
     const baseline = await this.baselineContextManager.build({
       agentId: this.agentId,
@@ -707,6 +800,8 @@ export class QueryEngine {
   private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {
     if (this.options.session?.enabled === false || !this.options.session) return;
     this.cancelPendingTitleWork();
+    this.simulation = undefined;
+    this.displayOnlyMessages.length = 0;
     this.sessionStore = await SessionStore.open({
       agentId: this.agentId,
       cwd: this.options.cwd ?? process.cwd(),
@@ -716,6 +811,10 @@ export class QueryEngine {
       toolResultThresholdChars: this.options.session.toolResultThresholdChars,
     });
     this.imageStore = await SessionImageStore.open(this.sessionStore.sessionDir, this.agentId);
+    const execution = this.sessionStore.getExecutionState();
+    this.executionState = execution?.status === "running"
+      ? { ...execution, status: "interrupted", reason: "runtime_terminated" } : execution;
+    this.executionStartedAt = undefined;
     this.pendingSessionSettings = {};
     this.sessionPromptState = this.sessionStore.getSessionPrompt();
     this.activeSessionPrompt = this.sessionPromptState ?? null;
@@ -733,7 +832,7 @@ export class QueryEngine {
 
   private scheduleSessionTitleCheck(): void {
     const store = this.sessionStore;
-    if (!store || titleWorkComplete(store)) return;
+    if (this.simulation || !store || titleWorkComplete(store)) return;
     const version = this.titleSchedulerVersion;
     const timer = setTimeout(() => {
       this.titleTimers.delete(timer);
@@ -747,7 +846,7 @@ export class QueryEngine {
     try {
       if (version !== this.titleSchedulerVersion) return;
       const store = this.sessionStore;
-      if (!store || titleWorkComplete(store)) return;
+      if (this.simulation || !store || titleWorkComplete(store)) return;
       if (this.titleAgentRun?.version === version) return;
 
       const state = store.getTitleState();

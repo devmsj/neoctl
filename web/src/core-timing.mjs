@@ -20,3 +20,12 @@ export function timingElapsedMs(record, now = performance.now(), connected = tru
   if (record.status !== 'running' || !valid(record.elapsedMs)) return undefined
   return record.elapsedMs + (connected && Number.isFinite(record.receivedAt) ? Math.max(0, now - record.receivedAt) : 0)
 }
+
+// This is the task clock, distinct from individual query/tool timing records.
+export function executionElapsedMs(control, now = performance.now(), connected = true) {
+  const timer = control?.timer
+  if (!timer || !Number.isSafeInteger(timer.elapsedMs) || timer.elapsedMs < 0) return undefined
+  const advancing = timer.running && !['paused', 'interrupted', 'resuming'].includes(control.state)
+  return timer.elapsedMs + (advancing && connected && Number.isFinite(control.receivedAt)
+    ? Math.max(0, now - control.receivedAt) : 0)
+}

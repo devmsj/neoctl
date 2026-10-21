@@ -1,4 +1,5 @@
 import { QueryTimingState, type TimingClock, type TimingRecord } from "./query-timing.js";
+import { abortableStream } from "./abortable-stream.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
@@ -19,7 +20,7 @@ import {
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
   applyRuntimeContextForPromptCache,
-  insertUserContextBeforeLatestUser,
+  insertRuntimeContextBeforeLatestUser,
 } from "./message-pipeline.js";
 import {
   createInitialState,
@@ -439,7 +440,7 @@ async function prepareMessagesForQuery(
 
 function applyRequestContext(messages: readonly Message[], requestContext: Record<string, unknown> | undefined): Message[] {
   return requestContext && Object.keys(requestContext).length > 0
-    ? insertUserContextBeforeLatestUser(messages, requestContext)
+    ? insertRuntimeContextBeforeLatestUser(messages, {}, requestContext)
     : [...messages];
 }
 
@@ -475,7 +476,7 @@ async function* callModelForTurn(
       if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, ...pending];
     }
     if (options.requestContext) options.onRequestContextConsumed?.();
-    for await (const event of dependencies.modelGateway.stream({
+    for await (const event of abortableStream(dependencies.modelGateway.stream({
       model: activeModel,
       messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
@@ -488,7 +489,7 @@ async function* callModelForTurn(
       queryOrigin: options.queryOrigin,
       serviceTier: options.serviceTier,
       cancellation: options.abortSignal,
-    })) {
+    }), options.abortSignal)) {
       if (options.abortSignal?.aborted) {
         const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
         if (thinkingMessage) yield { type: "message", message: thinkingMessage };

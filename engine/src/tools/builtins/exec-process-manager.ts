@@ -200,6 +200,13 @@ export class ExecProcessManager {
     });
   }
 
+  /** Trusted host adapters (including simulations) share the normal owner-bound output store. */
+  outputStoreForSession(ownerSessionId: string, sessionDir: string): TerminalOutputStore {
+    const registered = this.registerOwnerSession(ownerSessionId, sessionDir);
+    if (!registered.ok) throw new Error(`Cannot bind terminal output: ${registered.reason}`);
+    return this.ownerBindings.get(ownerSessionId)!.store;
+  }
+
   listHistory(ownerSessionId: string, pagination: { offset?: number; limit?: number } = {}): StoreResult<{ records: RunView[]; nextOffset: number | null }> {
     return this.storeGuard(() => this.ownerBindings.get(ownerSessionId)?.store.listHistory(ownerSessionId, pagination)
       ?? { ok: false, reason: "not-found" });
@@ -297,8 +304,21 @@ export class ExecProcessManager {
     onOutput?: (delta: ExecProcessOutputDelta) => void,
     abortSignal?: AbortSignal,
   ): Promise<ExecProcessResult> {
+    abortSignal?.throwIfAborted();
     const sessionId = this.start(options);
-    const result = await this.interact(sessionId, { ownerId: options.ownerId, yieldTimeMs, onOutput, abortSignal });
+    // Kill only this still-foreground command; unrelated/background terminals survive.
+    const cancel = () => {
+      const session = this.sessions.get(sessionId);
+      if (session?.status === "running") this.signal(session, "kill");
+    };
+    abortSignal?.addEventListener("abort", cancel, { once: true });
+    if (abortSignal?.aborted) cancel();
+    let result: ExecProcessResult;
+    try {
+      result = await this.interact(sessionId, { ownerId: options.ownerId, yieldTimeMs, onOutput, abortSignal });
+    } finally {
+      abortSignal?.removeEventListener("abort", cancel);
+    }
     if (result.status === "running") {
       const session = this.sessions.get(sessionId);
       if (session && !session.backgrounded) {

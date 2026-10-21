@@ -2,8 +2,8 @@
 import { computed } from 'vue'
 import { formatDuration } from '../core-timing.mjs'
 
-const props = defineProps({ elapsedMs: { type: Number, default: undefined } })
-const duration = computed(() => formatDuration(props.elapsedMs))
+const props = defineProps({ elapsedMs: { type: Number, default: undefined }, showZero: Boolean })
+const duration = computed(() => formatDuration(props.elapsedMs) || (props.showZero && Number.isFinite(props.elapsedMs) ? '0s' : ''))
 // Keep the angle unwrapped: 59s -> 60s is 354deg -> 360deg, never a reverse sweep.
 const angle = computed(() => Math.floor(Math.max(0, props.elapsedMs || 0) / 1000) * 6)
 </script>

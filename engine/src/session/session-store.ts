@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isExecutionState, type ExecutionState } from "../core/execution-state.js";
 import { isTimingRecord, restoredTiming, type TimingRecord } from "../core/query-timing.js";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +15,7 @@ import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMem
 export type SessionTitleKind = "initial" | "refinement";
 
 export type SessionTranscriptEntry =
+  | { type: "execution"; sessionId: string; agentId: string; execution: ExecutionState }
   | { type: "timing"; sessionId: string; agentId: string; timing: TimingRecord; runGeneration?: number }
   | { type: "message"; sessionId: string; agentId: string; message: Message; runGeneration?: number }
   | { type: "content-replacement"; sessionId: string; agentId: string; replacements: ContentReplacementRecord[] }
@@ -108,6 +110,7 @@ export class SessionStore {
   readonly transcriptPath: string;
   readonly toolResultMemory: ToolResultMemory;
   private writeFailed = false;
+  private execution?: ExecutionState;
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
   private readonly displayEntries: SessionDisplayEntry[];
@@ -134,6 +137,7 @@ export class SessionStore {
     this.sessionDir = path.join(resolveSessionRoot(options), sessionId);
     this.transcriptPath = path.join(this.sessionDir, "transcript.jsonl");
     this.resumedMessages = loaded.messages;
+    this.execution = loaded.execution;
     for (const record of loaded.timings.values()) this.timings.set(record.id, restoredTiming(record));
     this.displayEntries = loaded.displayEntries;
     this.contentReplacements = loaded.replacements;
@@ -238,6 +242,15 @@ export class SessionStore {
   }
 
   /** Separate transcript facts: never part of resumedMessages or the model context. */
+  getExecutionState(): ExecutionState | undefined {
+    return this.execution ? { ...this.execution } : undefined;
+  }
+
+  recordExecutionState(execution: ExecutionState): void {
+    this.appendEntry({ type: "execution", sessionId: this.sessionId, agentId: this.agentId, execution });
+    this.execution = { ...execution };
+  }
+
   recordTiming(record: TimingRecord, runGeneration?: number): void {
     if (!isTimingRecord(record)) throw new Error("Invalid timing record");
     const timing = { ...record };
@@ -257,7 +270,7 @@ export class SessionStore {
     const generation = provenance?.runGeneration;
     const run = Number.isSafeInteger(generation) && generation! > 0 ? { runGeneration: generation } : {};
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message: stored, ...run });
-    this.resumedMessages.push(stored);
+    if (stored.metadata?.displayOnly !== true) this.resumedMessages.push(stored);
     this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
   }
 
@@ -410,6 +423,7 @@ export class SessionStore {
     const firstWindowId = randomUUID();
     this.appendEntry({ type: "reset", sessionId: this.sessionId, agentId: this.agentId, createdAt: new Date().toISOString() });
     this.resumedMessages.length = 0;
+    this.execution = undefined;
     this.displayEntries.length = 0;
     this.timings.clear();
     this.contentReplacements.length = 0;
@@ -474,6 +488,7 @@ export class SessionStore {
 }
 
 interface LoadedTranscript {
+  execution?: ExecutionState;
   timings: Map<string, TimingRecord>;
   messages: Message[];
   displayEntries: SessionDisplayEntry[];
@@ -520,6 +535,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
     if (agentId && entry.agentId !== agentId) continue;
     loaded.entries += 1;
     if (entry.type === "reset") {
+      loaded.execution = undefined;
       loaded.messages.length = 0;
       loaded.displayEntries.length = 0;
       loaded.timings.clear();
@@ -557,13 +573,14 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       loaded.previousWindowId = entry.previousWindowId;
       if (entry.windowId) loaded.windowId = entry.windowId;
     }
+    if (entry.type === "execution" && isExecutionState(entry.execution)) loaded.execution = { ...entry.execution };
     if (entry.type === "timing") {
       if (!isTimingRecord(entry.timing)) throw new Error("Invalid persisted timing record");
       loaded.timings.set(entry.timing.id, { ...entry.timing });
     }
     if (entry.type === "message") {
       const message = cloneMessage(entry.message);
-      loaded.messages.push(message);
+      if (message.metadata?.displayOnly !== true) loaded.messages.push(message);
       loaded.displayEntries.push({ type: "message", message: cloneMessage(message) });
     }
     if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);

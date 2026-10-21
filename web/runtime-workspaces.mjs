@@ -71,7 +71,7 @@ export function createWorkspaceRuntimeManager(options) {
     }
 
     async submit(text, attachments = []) {
-      if (!String(text || '').trim() && attachments.length === 0) return super.submit(text, attachments);
+      if (this.isDemo?.() || (!String(text || '').trim() && attachments.length === 0)) return super.submit(text, attachments);
       await this.materializeCurrentWorkspace();
       return super.submit(text, attachments);
     }

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import type { TimingRecord } from "../core/query-timing.js";
+import { DemoMode, DEMO_MARKER, DEMO_PROMPT, type DemoWait } from "./demo-mode.js";
+import { DemoTools } from "./demo-tools.js";
+import { createTextMessage } from "../types/messages.js";
 import { imageResultMetadata, type ImageResultMetadata } from "./image-result-metadata.js";
 import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
 import { handlePromptConfigRequest } from "./prompt-config-protocol.js";
@@ -902,6 +905,23 @@ function webRuntimeScopeKey(scope: WebRuntimeScope): string {
 }
 
 export class WebRepl {
+  private pendingContinuation: { engine: QueryEngine; text: string; attachments: WebAttachmentPayload[] } | undefined;
+  private runControl() {
+    const execution = this.runtime.engine.getExecutionState?.();
+    const resumable = (execution?.status === "paused" || execution?.status === "interrupted")
+      && (!this.activeAbortController || this.activeAbortController.signal.aborted);
+    const waiting = this.pendingContinuation?.engine === this.runtime.engine;
+    return {
+      state: waiting ? "resuming" : resumable ? execution.status : this.busy ? "running" : "idle",
+      canPause: !waiting && !resumable && !this.stoppingRun && !this.immediateSend && Boolean(this.activeAbortController),
+      canResume: resumable && !waiting && !this.immediateSend,
+      reason: execution?.reason,
+      timer: execution?.elapsedMs === undefined ? undefined : {
+        elapsedMs: execution.elapsedMs,
+        running: execution.status === "running" && !waiting,
+      },
+    };
+  }
   private readonly agentContentReader = createAgentContentDetailResolver();
   private readonly subscribers = new Set<WebSubscriber>();
   private eventSequence = 0;
@@ -934,7 +954,75 @@ export class WebRepl {
   private readonly backgroundSessionRuns = new Map<string, WebBackgroundSessionRun>();
   private readonly suppressReattachedStreaming = new Set<QueryEngine>();
 
-  constructor(private runtime: WebRuntime) {
+  private readonly demoSessions = new WeakMap<QueryEngine, DemoMode | null>();
+  private readonly demoStatus = new WeakMap<QueryEngine, { key: string; active: boolean }>();
+  private readonly demoMessageQueues = new WeakMap<QueryEngine, Promise<unknown>>();
+  private demoStarting = false;
+
+  isDemo(engine = this.runtime.engine): boolean {
+    const session = engine.snapshot().session;
+    const key = `${session?.sessionId}:${session?.firstWindowId}`;
+    const cached = this.demoStatus.get(engine);
+    if (cached?.key === key) return cached.active || this.demoSessions.has(engine);
+    if (cached) this.demoSessions.delete(engine);
+    const active = engine.getDisplayEntries().some(entry => entry.type === "message" && entry.message.metadata?.demoMode === DEMO_MARKER);
+    this.demoStatus.set(engine, { key, active });
+    if (active) this.demoSessions.set(engine, null);
+    return active;
+  }
+
+  async startDemo(expectedSessionId: string): Promise<WebActionResult> {
+    const engine = this.runtime.engine;
+    if (!expectedSessionId || expectedSessionId !== engine.snapshot().session?.sessionId) return actionFailure("SESSION_MISMATCH", "会话已切换");
+    if (this.demoStarting || this.isDemo() || this.busy || this.foregroundRun || this.stoppingRun || this.queuedInput !== undefined
+      || this.backgroundTaskCount || engine.getDisplayEntries().length || this.lines.some(line => line.kind !== "system")) {
+      return actionFailure("DEMO_REQUIRES_EMPTY_SESSION", "仅空闲的空会话可以进入演示模式");
+    }
+    // Reserve synchronously before any await: double clicks and concurrent submits cannot start a second run.
+    this.demoStarting = true;
+    this.busy = true;
+    let demo: DemoMode | undefined;
+    try {
+      demo = new DemoMode(new DemoTools(this.runtime.tools, this.runtime.taskStore, this.runtime.execProcessManager), this.demoOptions.wait);
+      this.demoSessions.set(engine, demo);
+      const marker = createTextMessage("system", "");
+      marker.isMeta = true;
+      marker.metadata = { demoMode: DEMO_MARKER };
+      await engine.recordDisplayMessage(marker);
+      await demo.backend.prepare(engine.snapshot().session!.sessionDir);
+      demo.controller.signal.throwIfAborted();
+      engine.setSimulation(demo);
+      this.startRun(DEMO_PROMPT);
+      return { ok: true };
+    } catch (error) {
+      demo?.stop();
+      this.busy = false;
+      this.broadcastSync();
+      return actionFailure("DEMO_START_FAILED", error instanceof Error ? error.message : String(error));
+    } finally { this.demoStarting = false; }
+  }
+
+  private async recordDemoInput(text: string, attachments: WebAttachmentPayload[]): Promise<{ ok: true } | { ok: false; error: string }> {
+    const engine = this.runtime.engine;
+    if (!text.trim() && attachments.length === 0) return { ok: true };
+    const previous = this.demoMessageQueues.get(engine) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(async () => {
+      const payload = buildWebPromptPayload(text, attachments);
+      const message = createTextMessage("user", payload.text);
+      if (payload.blocks) message.blocks = payload.blocks;
+      const stored = await engine.recordDisplayMessage(message);
+      if (this.runtime.engine === engine) {
+        renderMessage(stored, line => this.append(line));
+        this.broadcastSync();
+      }
+    });
+    this.demoMessageQueues.set(engine, pending);
+    try { await pending; return { ok: true }; }
+    catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    finally { if (this.demoMessageQueues.get(engine) === pending) this.demoMessageQueues.delete(engine); }
+  }
+
+  constructor(private runtime: WebRuntime, private readonly demoOptions: { wait?: DemoWait } = {}) {
     const lineId = { current: 0 };
     this.lines = initialLines(runtime, lineId);
     this.lineId = lineId.current;
@@ -1017,7 +1105,9 @@ export class WebRepl {
     return {
       lines: this.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
       status: this.timedStatus(),
-      busy: this.busy,
+      busy: this.runControl().canResume ? false : this.busy,
+      runControl: this.runControl(),
+      demoMode: this.isDemo(),
       queuedInput: this.queuedInput,
       backgroundTaskCount: backgroundTasks.length,
       backgroundTasks,
@@ -1247,6 +1337,9 @@ export class WebRepl {
   }
 
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.runControl().canResume && (!text.trimStart().startsWith("/") || !text.trim())) return this.continueRun(text, attachments);
+    if (this.pendingContinuation) return { ok: false, error: "续接请求已接收，请勿重复发送" };
+    if (this.isDemo()) return this.recordDemoInput(text, attachments);
     if (this.stoppingRun || this.immediateSend) return { ok: false, error: "正在停止上一轮请求，请稍后发送" };
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
@@ -1266,6 +1359,8 @@ export class WebRepl {
   }
 
   async submitImmediately(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true; interrupted: boolean } | { ok: false; error: string }> {
+    if (this.runControl().canResume) { const result = this.continueRun(text, attachments); return result.ok ? { ok: true, interrupted: false } : result; }
+    if (this.isDemo()) { const result = await this.recordDemoInput(text, attachments); return result.ok ? { ok: true, interrupted: false } : result; }
     if (this.immediateSend) return { ok: false, error: "正在发送，请勿重复提交" };
     if (this.stoppingRun) return { ok: false, error: "正在停止上一轮请求，请稍后发送" };
     if (!this.busy) {
@@ -1296,8 +1391,8 @@ export class WebRepl {
     this.queuedAttachments = [...(this.queuedAttachments ?? []), ...attachments].slice(0, 20);
   }
 
-  private startRun(text: string, attachments: WebAttachmentPayload[] = []): void {
-    const run = this.handleCommandOrPrompt(text, attachments).catch((error) => {
+  private startRun(text: string, attachments: WebAttachmentPayload[] = [], continuationOnly = false): void {
+    const run = this.handleCommandOrPrompt(text, attachments, continuationOnly).catch((error) => {
       this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       this.setBusy(false);
       this.setStatus({ ...this.status, phase: "ready", detail: undefined });
@@ -1523,6 +1618,7 @@ export class WebRepl {
 
   async compactSession(): Promise<WebActionResult<{ deferred: boolean }>> {
     const engine = this.runtime.engine;
+    if (this.isDemo()) return actionFailure("DEMO_SCRIPTED", "演示会话由后台安排压缩");
     if (this.compactingSession === engine) return actionFailure("COMPACTION_IN_PROGRESS", "Context compaction is already running");
     const showProgress = !this.busy;
     const runToken = this.foregroundRunToken;
@@ -1605,8 +1701,50 @@ export class WebRepl {
     this.publishRuntimeContext();
   }
 
+  pauseRun(): WebActionResult {
+    if (this.runControl().canResume) return { ok: true };
+    if (!this.runControl().canPause) return actionFailure("INVALID_REQUEST", "当前没有可暂停的会话执行");
+    this.runtime.engine.markExecutionPaused();
+    const queuedText = this.queuedInput;
+    const queuedAttachments = this.queuedAttachments;
+    // Do not await cooperative cancellation: the UI must stop immediately.
+    void this.stopForegroundRun("用户暂停了会话").catch(() => this.broadcastSync());
+    this.queuedInput = queuedText;
+    this.queuedAttachments = queuedAttachments;
+    this.status = { ...this.status, phase: "ready", detail: "paused", currentTool: undefined, retryCooldownUntil: undefined };
+    this.broadcastSync();
+    return { ok: true };
+  }
+
+  continueRun(text = "", attachments: WebAttachmentPayload[] = []): WebActionResult {
+    if (!this.runControl().canResume) return actionFailure("INVALID_REQUEST", "没有可恢复的执行，或续接请求已经提交");
+    const useQueue = !text.trim() && attachments.length === 0 && this.queuedInput !== undefined;
+    const request = { engine: this.runtime.engine,
+      text: text || (useQueue ? this.queuedInput! : ""),
+      attachments: useQueue ? this.queuedAttachments ?? [] : attachments };
+    this.queuedInput = undefined;
+    this.queuedAttachments = undefined;
+    this.pendingContinuation = request;
+    this.broadcastSync();
+    // Accept immediately, but never overlap two queries on the same mutable engine.
+    void (async () => {
+      try {
+        await this.stoppingRun;
+        await this.foregroundRun;
+        if (this.pendingContinuation !== request || this.runtime.engine !== request.engine) return;
+        this.pendingContinuation = undefined;
+        this.startRun(request.text, request.attachments, !request.text.trim() && request.attachments.length === 0);
+      } finally {
+        if (this.pendingContinuation === request) this.pendingContinuation = undefined;
+        this.broadcastSync();
+      }
+    })().catch(error => this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) }));
+    return { ok: true };
+  }
+
   async interrupt(): Promise<{ ok: true; interrupted: boolean }> {
     if (this.immediateSend) await this.immediateSend;
+    this.demoSessions.get(this.runtime.engine)?.stop();
     const interrupted = await this.stopForegroundRun("Interrupted from neo web");
     return { ok: true, interrupted };
   }
@@ -1811,6 +1949,9 @@ export class WebRepl {
   }
 
   private async detachRunningForeground(reason: string): Promise<boolean> {
+    if (this.pendingContinuation || this.stoppingRun) throw new Error("上一轮请求正在取消，请稍后切换会话");
+    if (this.demoStarting) throw new Error("演示模式正在启动");
+    if (this.isDemo() && this.busy) { this.demoSessions.get(this.runtime.engine)?.stop(); return this.stopForegroundRun(reason); }
     if (!this.busy) return false;
     const snapshot = this.runtime.engine.snapshot().session;
     const sessionId = snapshot?.sessionId ?? `session-${Date.now().toString(36)}`;
@@ -2162,7 +2303,7 @@ export class WebRepl {
     return imageIds.length === pending.length && imageIds.every((imageId, index) => imageId === pending[index]);
   }
 
-  private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = []): Promise<void> {
+  private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = [], continuationOnly = false): Promise<void> {
     const command = parseReplCommand(text);
     if (command.type === "exit") {
       this.append(systemLine("neo web server is still running. Close this tab or stop the server process with Ctrl+C."));
@@ -2257,7 +2398,7 @@ export class WebRepl {
 
     const promptPayload = buildWebPromptPayload(command.text, attachments);
     const optimisticMessageId = `web-user-${this.lineId + 1}`;
-    this.append({ kind: "user", text: promptPayload.displayText, messageId: optimisticMessageId });
+    if (!continuationOnly) this.append({ kind: "user", text: promptPayload.displayText, messageId: optimisticMessageId });
     const optimisticImageIds = (promptPayload.blocks ?? [])
       .filter((block): block is Extract<MessageBlock, { type: "image" }> => block.type === "image" && typeof block.imageId === "string")
       .map((block) => block.imageId as string);
@@ -2271,12 +2412,14 @@ export class WebRepl {
     this.setStatus({ ...this.status, phase: "running", detail: "working", modelOutput: undefined, usage: undefined, streamedOutputTokens: 0, inputTokenUpdatedAt: undefined, outputTokenUpdatedAt: undefined, retryCooldownUntil: undefined });
     const engine = this.runtime.engine;
     try {
-      for await (const event of engine.sendUserText(promptPayload.text, {
+      const options = {
         abortSignal: abortController.signal,
         blocks: promptPayload.blocks,
         displayText: promptPayload.displayText,
         stopAfterTurn: () => this.queuedInput !== undefined,
-      })) {
+      };
+      const stream = continuationOnly ? engine.continueExecution(options) : engine.sendUserText(promptPayload.text, options);
+      for await (const event of stream) {
         if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {
@@ -2294,6 +2437,7 @@ export class WebRepl {
         this.append({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
     } finally {
+      this.demoSessions.get(engine)?.backend.stop();
       if (this.foregroundRunToken !== runToken) return;
       if (this.runtime.engine !== engine) return;
       if (this.activeAbortController === abortController) this.activeAbortController = undefined;
@@ -2301,6 +2445,11 @@ export class WebRepl {
       this.finalizeForegroundView();
       this.pendingUserImageEchoIds = undefined;
       this.pendingUserImageEchoMessageId = undefined;
+      if (engine.getExecutionState?.()?.status === "interrupted") {
+        this.setBusy(false);
+        this.setStatus({ ...this.status, phase: "ready", detail: "interrupted", retryCooldownUntil: undefined });
+        return;
+      }
       const queuedText = this.queuedInput;
       const queuedAttach = this.queuedAttachments;
       this.queuedInput = undefined;
@@ -2625,6 +2774,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const body = await readJsonBody<{ model?: unknown; reasoning?: unknown }>(req);
       return sendJson(res, await repl.setSessionModel(body.model, body.reasoning));
     }
+    if (req.method === "POST" && url.pathname === "/api/demo") return sendJson(res, await repl.startDemo(url.searchParams.get("sessionId") ?? ""));
     if (req.method === "POST" && url.pathname === "/api/compact") return sendJson(res, await repl.compactSession());
     if (req.method === "POST" && url.pathname === "/api/fast-mode") {
       const body = await readJsonBody<{ enabled?: boolean }>(req);
@@ -2642,6 +2792,8 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const body = await readJsonBody<{ text?: string; attachments?: WebAttachmentPayload[] }>(req);
       return sendJson(res, await repl.submitImmediately(String(body.text ?? ""), sanitizeWebAttachments(body.attachments)));
     }
+    if (req.method === "POST" && url.pathname === "/api/run/pause") return sendJson(res, repl.pauseRun());
+    if (req.method === "POST" && url.pathname === "/api/run/continue") return sendJson(res, repl.continueRun());
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, await repl.interrupt());
     if (req.method === "POST" && url.pathname === "/api/queue/cancel") return sendJson(res, repl.cancelQueue());
     if (req.method === "POST" && url.pathname === "/api/queue/send-now") return sendJson(res, await repl.sendQueuedNow());

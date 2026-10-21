@@ -1,6 +1,9 @@
 <script setup>
+import { composerRunAction } from './run-control.mjs'
+import { executionLabel } from './execution-label.mjs'
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
+import { createDemoTrigger } from './demo-trigger.js'
 import { isDesktop, resourceActionTitle, revealResource } from './local-resources.mjs'
 import { connectDesktopFileDrops } from './desktop-file-drop.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -27,7 +30,7 @@ import FlipStatusText from './components/FlipStatusText.vue'
 // 撒粉暂时停用，组件源码保留以便恢复。
 // import DustStatusText from './components/DustStatusText.vue'
 import { createTranscriptFollow } from './transcript-follow.mjs'
-import { formatDuration, receiveTimings, timingElapsedMs } from './core-timing.mjs'
+import { formatDuration, receiveTimings, timingElapsedMs, executionElapsedMs } from './core-timing.mjs'
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
@@ -267,6 +270,8 @@ const state = reactive({
   contextWindowError: '',
   contextWindowSaving: false,
   busy: false,
+  runControl: { state: 'idle', canPause: false, canResume: false },
+  demoMode: false,
   queuedInput: undefined,
   backgroundTaskCount: 0,
   backgroundTasks: [],
@@ -434,32 +439,22 @@ const exactPhaseLabel = computed(() => {
   return phaseLabel.value
 })
 
-const active = computed(() => isActivePhase(state.status?.phase))
-const showTranscriptLoading = computed(() => active.value || state.busy || state.sessionResumeLoading || state.compactSaving)
-const transcriptLoadingLabel = computed(() => {
-  if (state.sessionResumeLoading) return '正在加载会话'
-  if (state.status?.phase === 'compacting') return `${compactionLabel.value} · 正在生成续接摘要`
-  if (state.compactSaving && !state.busy) return '正在压缩上下文'
-  if (liveImageCreateLine.value) {
-    const elapsed = lineElapsedText(liveImageCreateLine.value)
-    const title = isImageCreatePendingReplacementLine(liveImageCreateLine.value) ? '正在载入图片结果' : '图片模型正在生成'
-    return elapsed === '排队中' ? `${title} · 排队中` : title
-  }
-  if (state.status?.phase === 'calling_model') {
-    const output = state.status.modelOutput
-    if (output?.kind === 'text') return '正在生成回复'
-    if (output?.kind === 'tool_call') return output.name ? `正在准备调用 ${output.name}` : '正在准备工具调用'
-  }
-  return `正在${exactPhaseLabel.value}`
-})
+const active = computed(() => !state.runControl.canResume && state.runControl.state !== 'resuming' && isActivePhase(state.status?.phase))
+const showTranscriptLoading = computed(() => active.value || state.busy || state.runControl.canResume || state.runControl.state === 'resuming' || state.sessionResumeLoading || state.compactSaving)
+const transcriptLoadingLabel = computed(() => executionLabel({
+  loading: state.sessionResumeLoading, runState: state.runControl.state, phase: state.status?.phase,
+  compactSaving: state.compactSaving, busy: state.busy,
+  image: !!liveImageCreateLine.value,
+  imagePending: !!liveImageCreateLine.value && isImageCreatePendingReplacementLine(liveImageCreateLine.value),
+  imageQueued: !!liveImageCreateLine.value && lineElapsedText(liveImageCreateLine.value) === '排队中',
+  outputKind: state.status?.modelOutput?.kind,
+}))
 const transcriptElapsedMs = computed(() => {
   if (state.sessionResumeLoading) return undefined
-  if (liveImageCreateLine.value) {
-    const line = liveImageCreateLine.value
-    const timing = state.coreToolTimings.find(item => item.id === line.timing?.id) ?? line.timing
-    return timingElapsedMs(timing, state.timingTick, state.connected)
-  }
-  return timingElapsedMs(state.coreQueryTiming, state.timingTick, state.connected)
+  const elapsed = executionElapsedMs(state.runControl, state.timingTick, state.connected)
+  if (elapsed !== undefined) return elapsed
+  return timingElapsedMs(state.coreQueryTiming, state.timingTick,
+    state.connected && !state.runControl.canResume && state.runControl.state !== 'resuming')
 })
 const cleanSessionTitle = (value) => String(value || '').replace(/设计/g, '').trim()
 const displaySessionTitle = (session) => cleanSessionTitle(session?.title) || '未命名会话'
@@ -515,7 +510,7 @@ const currentContextWindowK = computed(() => {
 })
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
-const composerRunning = computed(() => active.value || state.busy)
+const composerRunning = computed(() => !state.runControl.canResume && (active.value || state.busy))
 const backgroundTaskCount = computed(() => state.backgroundTasks.length)
 const backgroundTaskHistory = computed(() => [...state.agentTaskHistory, ...state.terminalTaskHistory].sort((a, b) => {
   const stamp = task => typeof task.completedAt === 'number' ? task.completedAt : Date.parse(task.completedAt || task.updatedAt || '') || (typeof task.createdAt === 'number' ? task.createdAt : 0)
@@ -531,13 +526,18 @@ const allBackgroundTasks = computed(() => {
 })
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
 const composerHasDraft = computed(() => Boolean(input.value.trim() || state.attachments.length))
-const composerActionLabel = computed(() => {
-  if (composerActionPending.value) return '正在处理'
-  if (!composerRunning.value) return '发送 ↵'
-  if (composerHasDraft.value) return '打断并发送'
-  if (state.queuedInput) return '立即发送'
-  return '停止'
-})
+const composerAction = computed(() => composerRunAction({
+  running: composerRunning.value && !(state.demoMode && composerHasDraft.value),
+  control: state.runControl, hasDraft: composerHasDraft.value, queued: state.queuedInput,
+  pending: composerActionPending.value, uploading: state.uploadingFiles,
+}))
+const composerActionLabel = computed(() => composerAction.value.label)
+async function handleComposerAction() {
+  if (composerAction.value.disabled) return
+  if (composerAction.value.action === 'continue' || composerAction.value.action === 'pause') return toggleRunPause()
+  if (composerRunning.value) return interruptAndSubmit()
+  return submit()
+}
 const filteredSessions = computed(() => {
   const query = sessionSearch.value.trim().toLocaleLowerCase()
   const sessions = state.sessions || []
@@ -714,6 +714,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
   document.addEventListener('click', handleDocumentImageClick)
   document.addEventListener('click', handleDocumentResourceClick)
+  document.addEventListener('pointerdown', resetDemoGestureOutside, true)
   document.addEventListener('pointerdown', handleMobileMenuOutsidePointer, true)
   if (typeof ResizeObserver !== 'undefined' && sessionTitleViewport.value) {
     sessionTitleResizeObserver = new ResizeObserver(updateSessionTitleMarquee)
@@ -741,6 +742,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   document.removeEventListener('click', handleDocumentImageClick)
   document.removeEventListener('click', handleDocumentResourceClick)
+  document.removeEventListener('pointerdown', resetDemoGestureOutside, true)
   document.removeEventListener('pointerdown', handleMobileMenuOutsidePointer, true)
 })
 
@@ -1256,7 +1258,9 @@ function applySync(payload) {
   state.status = payload.status || state.status
   syncCoreTimings(payload.status)
   updateComposerMetricTargets()
+  state.demoMode = payload.demoMode === true
   state.busy = !!payload.busy
+  state.runControl = payload.runControl ? { ...payload.runControl, receivedAt: performance.now() } : { state: 'idle', canPause: false, canResume: false }
   state.queuedInput = payload.queuedInput
   state.backgroundTaskCount = payload.backgroundTaskCount || 0
   state.backgroundTasks = payload.backgroundTasks || []
@@ -1597,24 +1601,52 @@ function resetPromptSortState() {
   promptSortPosition.value = 'before'
 }
 
+const demoTrigger = createDemoTrigger()
+const demoStarting = ref(false)
+watch(() => state.session?.sessionId, () => demoTrigger.reset())
+watch(() => [state.busy, state.lines.length, input.value, state.attachments.length], () => demoTrigger.reset())
+
+function resetDemoGestureOutside(event) {
+  if (!event.target?.closest?.('[data-demo-trigger]')) demoTrigger.reset()
+}
+
+async function onRuntimeContextClick() {
+  const sessionId = state.session?.sessionId || ''
+  const eligible = !adminViewing.value && state.connected && !state.busy && !state.demoMode && !demoStarting.value
+    && !composerActionPending.value && !input.value.trim() && !state.attachments.length
+    && !state.queuedInput && !state.backgroundTaskCount && !state.lines.some(line => line.kind !== 'system')
+  if (!demoTrigger.click(sessionId, eligible)) return
+  demoStarting.value = true
+  const url = runtimeUrl('/api/demo')
+  try {
+    const response = await appFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    const result = await response.json()
+    if (!response.ok || !result.ok) throw new Error(result.error || '无法进入演示模式')
+    if (state.session?.sessionId === sessionId) notify('已进入演示模式')
+  } catch (error) {
+    if (state.session?.sessionId === sessionId) notify(error.message || String(error))
+  } finally { demoStarting.value = false }
+}
+
 async function submit() {
+  if (state.runControl.state === 'resuming') return
   if (composerActionPending.value) return
   if (adminViewing.value) return
   const text = input.value
   if (!text.trim() && state.attachments.length === 0) return
-  if (text.trim() === '/sessions') {
+  if (!state.demoMode && text.trim() === '/sessions') {
     input.value = ''
     resetComposerHeight()
     await openSessions()
     return
   }
-  if (text.trim() === '/login') {
+  if (!state.demoMode && text.trim() === '/login') {
     input.value = ''
     resetComposerHeight()
     await openLogin()
     return
   }
-  if (text.trim() === '/new') {
+  if (!state.demoMode && text.trim() === '/new') {
     input.value = ''
     resetComposerHeight()
     await newSession()
@@ -1638,6 +1670,10 @@ async function submit() {
     const body = await res.json()
     if (!res.ok || body?.error) throw new Error(body.error || `submit ${res.status}`)
   } catch (error) {
+    if (!input.value && !state.attachments.length) {
+      input.value = text
+      state.attachments = attachments
+    }
     notify(error.message || String(error))
   } finally {
     composerActionPending.value = false
@@ -1645,10 +1681,11 @@ async function submit() {
 }
 
 async function interruptAndSubmit() {
+  if (state.demoMode && composerHasDraft.value) return submit()
   if (composerActionPending.value) return
   if (!composerHasDraft.value) {
     if (state.queuedInput) await sendQueuedNow()
-    else await interrupt()
+    else await toggleRunPause()
     return
   }
   const text = input.value
@@ -1670,13 +1707,13 @@ async function interruptAndSubmit() {
   }
 }
 
-async function interrupt() {
+async function toggleRunPause() {
   if (composerActionPending.value) return
   composerActionPending.value = true
   try {
-    await postJson('/api/interrupt', {})
+    await postJson(state.runControl.canResume ? '/api/run/continue' : '/api/run/pause', {})
   } catch (error) {
-    notifyActionError(error, '停止回答失败')
+    notifyActionError(error, '暂停或继续失败')
   } finally {
     composerActionPending.value = false
   }
@@ -4633,7 +4670,7 @@ function createMobileSession() {
           <div ref="transcript" class="transcript" tabindex="0" aria-label="对话记录">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
-                <strong>运行上下文</strong>
+                <strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
               </div>
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
                 <button v-if="!authState.isolation" type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
@@ -4890,16 +4927,16 @@ function createMobileSession() {
               </div>
             </template>
             </div>
-            <div v-if="!state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(state.coreQueryTiming.durationMs)" class="message-loading" role="status">
+            <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
               <div class="message-loading-body">
-                <ElapsedClock :elapsed-ms="state.coreQueryTiming.durationMs" />
+                <ElapsedClock :elapsed-ms="transcriptElapsedMs" />
               </div>
             </div>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
                 <FlipStatusText class="message-loading-label" :text="transcriptLoadingLabel" />
                 <!-- 撒粉暂时停用：<DustStatusText class="message-loading-label" :text="transcriptLoadingLabel" /> -->
-                <ElapsedClock :elapsed-ms="transcriptElapsedMs" style="margin-inline-start: 10px" />
+                <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" style="margin-inline-start: 10px" />
               </div>
               <!-- 彩色旋转方块暂时停用，保留模板和样式以便恢复。
               <span class="message-loading-emblem" aria-hidden="true">
@@ -4998,19 +5035,25 @@ function createMobileSession() {
                   <svg class="composer-button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 10 5-5a3 3 0 0 1 4 4l-7 7a4.25 4.25 0 0 1-6-6l7-7M6 11l6-6" /></svg>
                 </button>
                 <button
-                  :type="composerRunning ? 'button' : 'submit'"
+                  v-if="composerRunning && (composerHasDraft || state.queuedInput) && state.runControl.canPause"
+                  type="button" class="ghost composer-pause-toggle"
+                  :disabled="composerActionPending" @click="toggleRunPause" title="立即暂停当前执行" aria-label="暂停"
+                ><svg class="composer-button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4v12M14 4v12" stroke-width="3" /></svg></button>
+                <button
+                  type="button"
                   :class="['primary', 'composer-action', { stop: composerRunning }]"
-                  :disabled="composerActionPending || (!composerRunning && (state.uploadingFiles || (!input.trim() && !state.attachments.length)))"
-                  :aria-busy="composerActionPending"
+                  :disabled="composerAction.disabled"
+                  :aria-busy="composerAction.action === 'waiting'"
                   :aria-label="composerActionLabel"
                   :title="composerActionLabel"
-                  @click="composerRunning ? interruptAndSubmit() : undefined"
+                  @click="handleComposerAction"
                 >
-                  <svg v-if="composerActionPending" class="composer-button-icon composer-wait-icon" data-action="waiting" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" opacity=".25" /><path d="M10 3.5a6.5 6.5 0 0 1 6.5 6.5" /></svg>
-                  <svg v-else-if="!composerRunning" class="composer-button-icon" data-action="send" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5" /></svg>
-                  <svg v-else-if="composerHasDraft" class="composer-button-icon" data-action="interrupt-send" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5v10M11 16V4m-4 4 4-4 4 4" /></svg>
-                  <svg v-else-if="state.queuedInput" class="composer-button-icon" data-action="send-now" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 5 7 5-7 5Zm10 0v10" /></svg>
-                  <svg v-else class="composer-button-icon" data-action="stop" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5h10v10H5Z" fill="currentColor" stroke="none" /></svg>
+                  <svg v-if="composerAction.action === 'waiting'" class="composer-button-icon composer-wait-icon" data-action="waiting" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" opacity=".25" /><path d="M10 3.5a6.5 6.5 0 0 1 6.5 6.5" /></svg>
+                  <svg v-else-if="composerAction.action === 'send'" class="composer-button-icon" data-action="send" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5" /></svg>
+                  <svg v-else-if="composerAction.action === 'interrupt-send'" class="composer-button-icon" data-action="interrupt-send" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5v10M11 16V4m-4 4 4-4 4 4" /></svg>
+                  <svg v-else-if="composerAction.action === 'send-now'" class="composer-button-icon" data-action="send-now" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 5 7 5-7 5Zm10 0v10" /></svg>
+                  <svg v-else-if="composerAction.action === 'continue'" class="composer-button-icon" data-action="continue" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
+                  <svg v-else class="composer-button-icon" data-action="pause" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4v12M14 4v12" stroke-width="3" /></svg>
                 </button>
               </div>
             </div>

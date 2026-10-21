@@ -3,7 +3,11 @@ import { mkdtemp, mkdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { browseWorkspace, discoverWorkspaceLocations, materializeWorkspace, reserveWorkspace, resolveWorkspaceInput, SessionWorkspaceRegistry } from '../runtime-workspaces.mjs';
+process.env.NEO_CORE_SOURCE = 'local';
+const { browseWorkspace, createWorkspaceRuntimeManager, discoverWorkspaceLocations, materializeWorkspace, reserveWorkspace, resolveWorkspaceInput, SessionWorkspaceRegistry } = await import('../runtime-workspaces.mjs');
+import { QueryEngine, ToolRegistry, TaskStore } from '../../engine/dist/index.js';
+import { ExecProcessManager } from '../../engine/dist/tools/builtins/exec-process-manager.js';
+import { SessionUsageTracker } from '../../engine/dist/web/index.js';
 
 test('reserving a workspace does not create its directory', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'neo-workspace-reserve-'));
@@ -104,6 +108,29 @@ test('browsing a reserved workspace falls back without creating it', async (t) =
   assert.equal(result.locations.some((item) => item.kind === 'home'), true);
   assert.equal(Array.isArray(result.entries), true);
   await assert.rejects(stat(candidate), { code: 'ENOENT' });
+});
+
+test('demo submission does not materialize a workspace or replace the active engine', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'neo-workspace-demo-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const tools = new ToolRegistry(), taskStore = new TaskStore();
+  let calls = 0;
+  const modelGateway = { async *stream() { calls++; throw new Error('real model must not run'); } };
+  const manager = createWorkspaceRuntimeManager({ projectRoot: root, workspaceRoot: path.join(root, 'workspaces'), registryFile: path.join(root, 'registry.json') });
+  const cwd = path.join(root, 'workspaces', 'reserved');
+  const engine = new QueryEngine({ modelGateway, tools, cwd, session: { rootDir: path.join(root, 'sessions'), resume: false } });
+  await engine.initialize();
+  taskStore.bindSession(engine.snapshot().session.sessionDir);
+  await engine.recordDisplayMessage({ id: 'marker', role: 'system', blocks: [], createdAt: new Date().toISOString(), isMeta: true, metadata: { demoMode: 'neo.demo.v1' } });
+  const runtime = { engine, tools, taskStore, execProcessManager: new ExecProcessManager(), usage: new SessionUsageTracker(), initialMetrics: await engine.contextMetrics(), envPath: path.join(root, '.env') };
+  const repl = manager.createRepl(runtime);
+  await repl.submit('record-only input');
+  assert.equal(runtime.engine, engine);
+  assert.equal(repl.snapshot().demoMode, true);
+  assert.ok(repl.snapshot().lines.some(line => line.text === 'record-only input'));
+  await assert.rejects(stat(cwd), { code: 'ENOENT' });
+  assert.equal(calls, 0);
+  await new Promise(resolve => setImmediate(resolve));
 });
 
 test('workspace locations expose human-friendly roots', async () => {

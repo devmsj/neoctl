@@ -1055,6 +1055,11 @@ dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
   gap: 8px;
 }
 .runtime-context-bar-title strong { font-size: 13px; white-space: nowrap; }
+/* Center text inside the theme's minimum-height interactive target. */
+.runtime-context-bar-title [data-demo-trigger] {
+  display: inline-flex;
+  align-items: center;
+}
 .runtime-context-bar-actions {
   display: flex;
   align-items: center;

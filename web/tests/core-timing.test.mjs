@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { formatDuration, receiveTimings, timingElapsedMs } from '../src/core-timing.mjs'
+import { executionElapsedMs, formatDuration, receiveTimings, timingElapsedMs } from '../src/core-timing.mjs'
 
 test('duration display uses whole seconds, including subsecond and minute boundaries', () => {
   for (const [ms, text] of [[0, ''], [999, ''], [1000, '1s'], [4700, '4s'],
@@ -11,6 +11,20 @@ test('duration display uses whole seconds, including subsecond and minute bounda
   const record = { version: 1, id: 'q', status: 'finished', durationMs: 4700 }
   assert.equal(formatDuration(timingElapsedMs(record)), '4s')
   assert.equal(record.durationMs, 4700, 'formatting does not change core precision')
+})
+
+test('task clock freezes while paused and resumes from accumulated active time', () => {
+  const control = { state: 'running', timer: { elapsedMs: 12500, running: true }, receivedAt: 500 }
+  assert.equal(executionElapsedMs(control, 2500), 14500)
+  assert.equal(executionElapsedMs(control, 0), 12500)
+  assert.equal(executionElapsedMs(control, 90000, false), 12500)
+  for (const state of ['paused', 'interrupted', 'resuming']) {
+    assert.equal(executionElapsedMs({ ...control, state }, 90000), 12500)
+  }
+  assert.equal(executionElapsedMs({ ...control, timer: { elapsedMs: 12500, running: false } }, 90000), 12500)
+  assert.equal(executionElapsedMs({ ...control, receivedAt: 90000 }, 91000), 13500)
+  assert.equal(executionElapsedMs(undefined), undefined)
+  assert.equal(executionElapsedMs({ timer: { elapsedMs: -1 } }), undefined)
 })
 
 const running = { version: 1, id: 'run', status: 'running', elapsedMs: 12000 }
