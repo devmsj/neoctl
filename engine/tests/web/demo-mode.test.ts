@@ -27,7 +27,8 @@ import { SessionImageStore, resolveContextImage } from "../../src/core/session-i
 import { loadNeoPlugins } from "../../src/plugins/plugin-system.js";
 
 async function fixture(t: TestContext, withPlugins = false) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-demo-"));
+  // Windows CI may expose TEMP through an 8.3 alias; security readers require canonical paths.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "neo-demo-")));
   const taskStore = new TaskStore(), processes = new ExecProcessManager(), tools = new ToolRegistry();
   let realCalls = 0;
   const real: ModelGateway = { async *stream() { realCalls++; throw new Error("Real API must not be called"); } };
