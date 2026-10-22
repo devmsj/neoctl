@@ -1,3 +1,4 @@
+import { abortableStream } from "../core/abortable-stream.js";
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
@@ -5,6 +6,7 @@ import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, 
 import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
 
 export interface ContextBudgetOptions {
+  abortSignal?: AbortSignal;
   /** Authoritative session resource snapshot; boundaries are only compatibility views. */
   imageRegistry?: ImageRegistry;
   /** Emitted before summary work starts; a budget check alone must not emit this. */
@@ -130,6 +132,7 @@ export class ModelDrivenCompactor implements Compactor {
       const summary = await this.summarizeWithModel(messages, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
       return buildCompactionResult(messages, summary, reason, true, options);
     } catch {
+      options.abortSignal?.throwIfAborted();
       return checkpointCompactWithSummary(messages, options, reason);
     }
   }
@@ -145,7 +148,8 @@ export class ModelDrivenCompactor implements Compactor {
     let streamedText = "";
     let finalAssistantText = "";
     let completed = false;
-    for await (const event of this.modelGateway.stream({
+    for await (const event of abortableStream(this.modelGateway.stream({
+      cancellation: options.abortSignal,
       model: options.compactModel,
       messages: compactMessages,
       tools: [],
@@ -156,7 +160,7 @@ export class ModelDrivenCompactor implements Compactor {
       providerOptions: {
         compact: true,
       },
-    })) {
+    }), options.abortSignal)) {
       if (event.type === "assistant_delta") streamedText += event.text;
       if (event.type === "assistant_message") finalAssistantText = extractText(event.message).trim() || finalAssistantText;
       if (event.type === "response_completed") completed = true;
@@ -164,6 +168,7 @@ export class ModelDrivenCompactor implements Compactor {
       if (event.type === "error") throw event.error;
     }
 
+    options.abortSignal?.throwIfAborted();
     if (!completed) throw new Error("Model compaction stream ended before completion");
     const summary = (finalAssistantText || streamedText).trim();
     if (!summary) throw new Error("Model compaction produced an empty summary");

@@ -212,7 +212,7 @@ test("abort and consumer return settle pending; forks never inherit pending; nul
   assert.equal((await f.engine.updateSessionSettings({})).deferred, false);
 });
 
-test("abort during before-turn compact commits checkpoint but never opens next model request", async () => {
+test("abort during before-turn compact retains pre-compaction history and never opens next model request", async () => {
   const compacting = gate(), releaseCompact = gate(); const controller = new AbortController();
   const f = fixture({ compactor: { ...unchanged, async manualCompact() {
     compacting.release(); await releaseCompact.promise;
@@ -220,10 +220,15 @@ test("abort during before-turn compact commits checkpoint but never opens next m
   } } });
   const done = drain(f.engine.sendUserText("input", { abortSignal: controller.signal })); await f.opened.promise;
   await f.engine.updateSessionSettings({ compact: true }); f.resume.release(); await compacting.promise;
-  controller.abort(); releaseCompact.release(); const events = await done;
+  const before = JSON.stringify(f.engine.getHistoryMessages());
+  controller.abort(); const events = await done;
   assert.equal(f.requests.length, 1);
-  assert.equal(events.filter((e) => e.type === "context.compacted").length, 1);
-  assert.match(JSON.stringify(f.engine.getHistoryMessages()), /ABORT_CHECKPOINT/);
+  assert.equal(events.filter((e) => e.type === "context.compacted").length, 0);
+  assert.equal(JSON.stringify(f.engine.getHistoryMessages()), before);
+  assert.equal(f.engine.getExecutionState()?.resumeCompaction, true);
+  releaseCompact.release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(JSON.stringify(f.engine.getHistoryMessages()), before);
 });
 
 

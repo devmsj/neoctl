@@ -1629,6 +1629,8 @@ export class WebRepl {
     if (this.compactingSession === engine) return actionFailure("COMPACTION_IN_PROGRESS", "Context compaction is already running");
     const showProgress = !this.busy;
     const runToken = this.foregroundRunToken;
+    const controller = showProgress ? new AbortController() : undefined;
+    if (controller) this.activeAbortController = controller;
     let finishForeground: (() => void) | undefined;
     const foreground = showProgress ? new Promise<void>(resolve => { finishForeground = resolve; }) : undefined;
     if (foreground) this.foregroundRun = foreground;
@@ -1639,7 +1641,7 @@ export class WebRepl {
     }
     try {
       // An idle click executes now through the settings barrier, not the chat/input queue.
-      const result = await engine.updateSessionSettings({ compact: true });
+      const result = await engine.updateSessionSettings({ compact: true }, { abortSignal: controller?.signal });
       if (this.runtime.engine === engine && this.foregroundRunToken === runToken) {
         if (result.compaction?.report) this.appendCompaction(result.compaction.report);
         if (!result.deferred) await this.refreshSessionSettingMetrics(engine);
@@ -1649,6 +1651,7 @@ export class WebRepl {
     } catch (error) {
       return actionFailure("COMPACTION_FAILED", error instanceof Error ? error.message : String(error));
     } finally {
+      if (controller && this.activeAbortController === controller) this.activeAbortController = undefined;
       if (this.compactingSession === engine) this.compactingSession = undefined;
       if (this.foregroundRun === foreground) this.foregroundRun = undefined;
       finishForeground?.();

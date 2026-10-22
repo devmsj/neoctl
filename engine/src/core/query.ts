@@ -168,7 +168,12 @@ export async function* query(
     yield { type: "terminal", reason: terminal };
     return terminal;
   } catch (error) {
-    outcome = options.abortSignal?.aborted ? "aborted" : "error";
+    outcome = options.abortSignal?.aborted ? "aborted_streaming" : "error";
+    if (options.abortSignal?.aborted) {
+      for (const record of timing.finish(outcome)) { dependencies.onTiming?.(record); yield { type: "timing.updated", timing: record }; }
+      yield { type: "terminal", reason: "aborted_streaming" };
+      return "aborted_streaming";
+    }
     throw error;
   } finally {
     // Never yield here: a consumer calling return() may never resume us.
@@ -214,7 +219,7 @@ async function* queryLoop(
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
-    const update = yield* withCompactionProgress(started => options.beforeTurn?.(state.messages, started));
+    const update = yield* withCompactionProgress(started => options.beforeTurn?.(state.messages, started), options.abortSignal);
     const settings = update?.settings;
     if (settings) {
       if (Object.hasOwn(settings, "model")) {
@@ -229,6 +234,7 @@ async function* queryLoop(
       if (Object.hasOwn(settings, "fastMode")) options.serviceTier = settings.fastMode ? "priority" : undefined;
       if (Object.hasOwn(settings, "contextWindowTokens")) options.contextWindowTokensOverride = settings.contextWindowTokens;
     }
+    if (update?.compaction && !update.compaction.changed) await dependencies.applyCompaction?.(update.compaction);
     if (update?.compaction?.changed) {
       state = { ...state, messages: update.compaction.messages, modelInputMessages: undefined, previousResponseId: undefined };
       await dependencies.applyCompaction?.(update.compaction);
@@ -276,7 +282,8 @@ async function* queryLoop(
         toolDefinitions,
         toolUseContext: toolContext,
         requestContext: requestContextForTurn,
-      }, started));
+      }, started, options.abortSignal), options.abortSignal);
+      options.abortSignal?.throwIfAborted();
       if (prepared.compaction?.changed) {
         state = { ...state, messages: prepared.compactedMessages };
         await dependencies.applyCompaction?.(prepared.compaction);
@@ -365,6 +372,7 @@ async function prepareMessagesForQuery(
   compactor: Compactor,
   telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown> },
   onCompactionStart?: CompactionStarted,
+  abortSignal?: AbortSignal,
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -405,6 +413,7 @@ async function prepareMessagesForQuery(
   const compaction = withCompactionReport(await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
     onCompactionStart,
+    abortSignal,
     imageRegistry: dependencies.imageStore?.snapshot(),
     estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
@@ -524,16 +533,22 @@ async function* callModelForTurn(
 
       const reactiveBudget: ContextBudgetOptions = {
         ...dependencies.contextBudget,
+        abortSignal: options.abortSignal,
         imageRegistry: dependencies.imageStore?.snapshot(),
         estimatedInputTokens: reactiveMetrics.estimatedInputTokens,
         contextWindowTokens: reactiveMetrics.contextWindowTokens,
         summaryMaxChars: escalatedSummaryMax,
       };
-      yield { type: "state", phase: "compacting", detail: "reactive_compact: context limit exceeded; generating summary" };
       const compacted = withCompactionReport(
-        await (compactor.reactiveCompact?.(state.messages, normalized, reactiveBudget) ?? compactor.compact(state.messages, reactiveBudget)),
+        yield* withCompactionProgress(started => {
+          const budget = { ...reactiveBudget, onCompactionStart: started };
+          const pending = compactor.reactiveCompact?.(state.messages, normalized, budget) ?? compactor.compact(state.messages, budget);
+          started("reactive_compact");
+          return pending;
+        }, options.abortSignal),
         state.messages.length,
       );
+      options.abortSignal?.throwIfAborted();
       if (!compacted.changed) {
         yield* outputFilter.finishVisibleMessage(assistantMessages);
         yield { type: "error", error: normalized };

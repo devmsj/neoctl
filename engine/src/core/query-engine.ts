@@ -18,6 +18,7 @@ import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
 import { applyRuntimeContextForPromptCache } from "./message-pipeline.js";
+import { abortableWork } from "./abortable-stream.js";
 import type { CompactionStarted } from "./compaction-progress.js";
 import { SessionImageStore } from "./session-images.js";
 import { query } from "./query.js";
@@ -129,7 +130,7 @@ export class QueryEngine {
 
   private setExecutionState(state: ExecutionState): void {
     const elapsedMs = state.elapsedMs ?? this.getExecutionState()?.elapsedMs ?? 0;
-    this.executionState = { ...state, elapsedMs };
+    this.executionState = { ...state, elapsedMs, ...(this.executionState?.resumeCompaction ? { resumeCompaction: true } : {}) };
     this.executionStartedAt = state.status === "running" ? this.executionNow() : undefined;
     this.sessionStore?.recordExecutionState(this.executionState);
   }
@@ -327,6 +328,7 @@ export class QueryEngine {
       };
       this.sessionStore?.recordMessage(initMessage);
 
+      const compactor = this.cancellableCompactor(options.abortSignal);
       const queryOptions: QueryOptions = {
         agentId: this.agentId,
         model: this.currentModel,
@@ -356,7 +358,7 @@ export class QueryEngine {
         stopAfterTurn: options.stopAfterTurn,
         beforeTurn: (messages, started) => {
           if (!this.simulation) this.options.refreshTools?.(this);
-          return this.consumeSessionSettings(messages, started);
+          return this.consumeSessionSettings(messages, started, compactor);
         },
       };
 
@@ -366,7 +368,7 @@ export class QueryEngine {
           ...this.options,
           acquireTurnResources: this.simulation ? undefined : this.options.acquireTurnResources ? () => this.options.acquireTurnResources!(this) : undefined,
           tools: this.simulation?.tools ?? this.options.tools,
-          compactor: this.simulation?.compactor ?? this.options.compactor,
+          compactor,
           onTimingState: timing => { this.queryTiming = timing; },
           onTiming: record => {
             this.timingRecords.set(record.id, { ...record });
@@ -382,7 +384,7 @@ export class QueryEngine {
           // query owns synthetic tool-use messages; persist them only via the message event below.
           // The export callback is an observer, not a second history writer.
           exportToolCalls: this.options.exportToolCalls,
-          applyCompaction: (result) => this.applyCompactionResult(result),
+          applyCompaction: (result) => { options.abortSignal?.throwIfAborted(); this.applyCompactionResult(result); },
         },
         queryOptions,
       );
@@ -423,7 +425,7 @@ export class QueryEngine {
   }
 
   /** Queue instance-local settings; no prompt messages or provider-global mutation. */
-  async updateSessionSettings(patch: SessionSettingsPatch): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
+  async updateSessionSettings(patch: SessionSettingsPatch, options: { abortSignal?: AbortSignal } = {}): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
     const normalized: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "model")) normalized.model = patch.model?.trim() || undefined;
     if (Object.hasOwn(patch, "reasoning")) normalized.reasoning = cloneReasoningConfig(patch.reasoning);
@@ -441,9 +443,19 @@ export class QueryEngine {
     const mutation = this.settingsMutation.then(async () => {
       await this.initialize();
       if (normalized.compact) delete this.pendingSessionSettings.compact;
-      const update = await this.applySessionSettings(normalized, this.getHistoryMessages());
-      if (update?.compaction) this.applyCompactionResult(update.compaction);
-      return { deferred: false, ...(update?.compaction ? { compaction: update.compaction } : {}) };
+      const previousExecution = this.getExecutionState();
+      if (normalized.compact) this.setExecutionState({ status: "running", resumeCompaction: true });
+      try {
+        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(options.abortSignal));
+        options.abortSignal?.throwIfAborted();
+        if (update?.compaction) this.applyCompactionResult(update.compaction);
+        if (normalized.compact) this.setExecutionState({ status: previousExecution?.status ?? "completed", reason: previousExecution?.reason });
+        return { deferred: false, ...(update?.compaction ? { compaction: update.compaction } : {}) };
+      } catch (error) {
+        if (normalized.compact) this.setExecutionState(options.abortSignal?.aborted
+          ? { status: "paused", reason: "user_pause" } : { status: "interrupted", reason: "compaction_failed" });
+        throw error;
+      }
     });
     // A rejected mutation must not poison subsequent settings or user input.
     this.settingsMutation = mutation.catch(() => undefined);
@@ -496,14 +508,14 @@ export class QueryEngine {
     return patch;
   }
 
-  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted): Promise<BeforeTurnUpdate | undefined> {
-    const patch = this.pendingSessionSettings;
+  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted, compactor?: Compactor): Promise<BeforeTurnUpdate | undefined> {
+    const patch = { ...this.pendingSessionSettings, ...(this.executionState?.resumeCompaction ? { compact: true } : {}) };
     if (!Object.keys(patch).length) return undefined;
     this.pendingSessionSettings = {};
-    return this.applySessionSettings(patch, messages, started);
+    return this.applySessionSettings(patch, messages, started, compactor);
   }
 
-  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted): Promise<BeforeTurnUpdate | undefined> {
+  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted, activeCompactor?: Compactor): Promise<BeforeTurnUpdate | undefined> {
     const changed: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
@@ -526,9 +538,8 @@ export class QueryEngine {
     }
     let compaction: CompactionResult | undefined;
     if (patch.compact) {
-      started?.("manualcompact");
-      const compactor = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-      const budget = { ...this.options.contextBudget, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
+      const compactor = activeCompactor ?? this.cancellableCompactor();
+      const budget = { ...this.options.contextBudget, onCompactionStart: started, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
       compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
     }
     return Object.keys(changed).length || compaction ? { settings: changed, compaction } : undefined;
@@ -626,7 +637,7 @@ export class QueryEngine {
 
   async compact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
-    const result = await this.updateSessionSettings({ compact: true });
+    const result = await this.updateSessionSettings({ compact: true }, options);
     return result.compaction ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" };
   }
 
@@ -683,9 +694,39 @@ export class QueryEngine {
     return this.sessionStore?.getDisplayEntries() ?? [...this.history, ...this.displayOnlyMessages].map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
   }
 
+  private clearPendingCompaction(): void {
+    if (!this.executionState?.resumeCompaction) return;
+    delete this.executionState.resumeCompaction;
+    this.setExecutionState(this.getExecutionState()!);
+  }
+
+  /** Keep the durable history untouched until the entire result can be committed. */
+  private cancellableCompactor(signal?: AbortSignal): Compactor {
+    const source = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+    const run = (messages: readonly Message[], budget: ContextBudgetOptions = {}, kind: "compact" | "manualCompact" | "reactiveCompact" = "compact", error?: Error) => {
+      const started: CompactionStarted = reason => {
+        signal?.throwIfAborted();
+        if (!this.executionState?.resumeCompaction) {
+          this.setExecutionState({ ...(this.getExecutionState() ?? { status: "running" }), resumeCompaction: true });
+        }
+        budget.onCompactionStart?.(reason);
+      };
+      return abortableWork(async () => {
+        if (kind !== "compact") started(kind === "manualCompact" ? "manualcompact" : "reactive_compact");
+        const options = { ...budget, abortSignal: signal, onCompactionStart: started };
+        return kind === "reactiveCompact" && source.reactiveCompact ? source.reactiveCompact(messages, error!, options)
+          : kind === "manualCompact" && source.manualCompact ? source.manualCompact(messages, options)
+          : source.compact(messages, options);
+      }, signal);
+    };
+    return { compact: (m, b) => run(m, b), manualCompact: (m, b) => run(m, b, "manualCompact"),
+      reactiveCompact: (m, e, b) => run(m, b, "reactiveCompact", e) };
+  }
+
   private applyCompactionResult(result: CompactionResult): void {
-    if (!result.changed) return;
+    if (!result.changed) { this.clearPendingCompaction(); return; }
     this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason, result.report);
+    this.clearPendingCompaction();
     this.history.length = 0;
     this.history.push(...result.messages.map(cloneMessage));
   }

@@ -1,3 +1,18 @@
+/** Race owned work without awaiting a provider that ignores cancellation. Late failures stay handled. */
+export async function abortableWork<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  let cancel!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    cancel = () => reject(signal?.reason ?? new Error("Aborted"));
+  });
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const result = await Promise.race([Promise.resolve().then(() => { signal?.throwIfAborted(); return work(); }), aborted]);
+    signal?.throwIfAborted();
+    return result;
+  } finally { signal?.removeEventListener("abort", cancel); }
+}
+
 /** Stop consuming immediately even if a provider ignores cancellation while awaiting I/O. */
 export async function* abortableStream<T>(source: AsyncIterable<T>, signal?: AbortSignal): AsyncGenerator<T> {
   const iterator = source[Symbol.asyncIterator]();

@@ -551,6 +551,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       loaded.windowId = undefined;
     }
     if (entry.type === "compact") {
+      if (loaded.execution) delete loaded.execution.resumeCompaction;
       loaded.messages.length = 0;
       loaded.replacements.length = 0;
       if (entry.replacementMessages) loaded.messages.push(...entry.replacementMessages.map(cloneMessage));
