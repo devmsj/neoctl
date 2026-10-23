@@ -7,6 +7,12 @@ export interface ImageResultMetadata {
   prompt?: string;
   mode?: string;
   semanticName?: string;
+  provider?: string;
+  sourceImages?: number;
+  revisedPrompt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
   images: Array<{ label?: string; width?: number; height?: number; mimeType?: string; hasAlphaChannel?: boolean; hasTransparentPixels?: boolean }>;
 }
 
@@ -21,6 +27,9 @@ export function imageResultMetadata(output: unknown): ImageResultMetadata | unde
   return {
     model: text(data.model), size: text(data.size), quality: text(data.quality), outputFormat: text(data.outputFormat),
     background: text(data.background), prompt: text(data.prompt), mode: text(data.mode), semanticName: text(data.semanticName),
+    provider:text(data.provider),sourceImages:typeof data.sourceImages==='number'?data.sourceImages:undefined,
+    revisedPrompt:text(data.revisedPrompt),startedAt:text(data.startedAt),finishedAt:text(data.finishedAt),
+    durationMs:typeof (data.duration ?? data.durationMs)==='number'?Number(data.duration ?? data.durationMs):undefined,
     images: data.images.map(value => {
       const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
       return { label: text(image.label), width: dimension(image.width), height: dimension(image.height), mimeType: text(image.mimeType), hasAlphaChannel: flag(image.hasAlphaChannel), hasTransparentPixels: flag(image.hasTransparentPixels) };

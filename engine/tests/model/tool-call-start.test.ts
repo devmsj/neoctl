@@ -50,6 +50,19 @@ for (const api of ["chat", "responses"] as const) {
   });
 }
 
+for (const api of ["chat", "responses"] as const) {
+  test(`${api}: protocol text completion reaches consumers before response close`, async () => {
+    const source = transport();
+    const iterator = api === "chat" ? normalizeChatStream(source.stream, { model: "test" }) : normalizeResponsesStream(source.stream, { model: "test" });
+    try {
+      source.send(api === "chat" ? { choices: [{ delta: { content: "visible text" } }] } : { type: "response.output_text.delta", delta: "visible text" });
+      assert.equal((await nextSemantic(iterator)).value?.type, "assistant_delta");
+      source.send(api === "chat" ? { choices: [{ delta: {}, finish_reason: "stop" }] } : { type: "response.output_text.done", text: "visible text" });
+      assert.equal((await nextSemantic(iterator)).value?.type, "assistant_text_done");
+    } finally { source.close(); await iterator.return(undefined); }
+  });
+}
+
 test("chat: late name is observed without parsing or completing partial JSON", async () => {
   const source = transport();
   const iterator = normalizeChatStream(source.stream, { model: "test" });

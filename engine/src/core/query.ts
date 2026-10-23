@@ -1,3 +1,4 @@
+import { ToolInputStream } from '../model/tool-input-stream.js';
 import { QueryTimingState, type TimingClock, type TimingRecord } from "./query-timing.js";
 import { abortableStream } from "./abortable-stream.js";
 import { InMemoryAppState } from "../app/app-state.js";
@@ -467,6 +468,7 @@ async function* callModelForTurn(
   const toolUses: ToolUseRequest[] = [];
   const outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
   const thinkingParts: string[] = [];
+  const inputStreams = new Map<string, ToolInputStream>();
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
@@ -509,6 +511,18 @@ async function* callModelForTurn(
         || (event.type === "tool_call_delta" && event.argumentsDelta.length > 0)
         || event.type === "tool_use"
         || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) timing.firstOutput();
+      if(event.type === 'tool_call_started'&&!inputStreams.has(event.callId)) inputStreams.set(event.callId,new ToolInputStream());
+      if(event.type === 'tool_call_delta') {
+        const decoder=inputStreams.get(event.callId)??new ToolInputStream();
+        inputStreams.set(event.callId,decoder);
+        const changes=decoder.append(event.argumentsDelta);
+        if(changes.length||decoder.truncated)yield {type:'tool_call.input',callId:event.callId,name:event.name,changes,truncated:decoder.truncated||undefined};
+      }
+      const readyUses=event.type==='tool_use'?[event.toolUse]:event.type==='assistant_message'?extractToolUses(event.message):[];
+      for(const toolUse of readyUses){
+        inputStreams.delete(toolUse.id);
+        yield {type:'tool_call.ready',toolUse};
+      }
       const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts, dependencies.imageStore);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
@@ -646,6 +660,13 @@ async function* handleModelEvent(
 ): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
   if (event.type === "assistant_delta") {
     yield* outputFilter.pushEvent(event);
+    return {};
+  }
+
+  if (event.type === "assistant_text_done") {
+    // Flush the existing output hold-back before publishing the actual text boundary.
+    yield* outputFilter.flushEvents();
+    yield { type: "assistant.output.done" };
     return {};
   }
 

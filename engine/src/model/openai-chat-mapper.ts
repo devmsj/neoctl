@@ -114,6 +114,7 @@ export async function* normalizeChatStream(
       }
 
       const finishReason = asString(choice.finish_reason);
+      if (finishReason) yield { type: "assistant_text_done" };
       if (finishReason === "tool_calls") {
         for (const buffer of toolBuffers.values()) yield { type: "tool_use", toolUse: toToolUse(buffer) };
       }

@@ -77,7 +77,8 @@ export async function runToolUse(
     updates.push({ message: normalizedResult, context: result.contextModifier?.(contextWithToolUseId) });
 
     for (const message of result.newMessages ?? []) {
-      updates.push({ message: context.imageStore ? await context.imageStore.persistMessage(message) : message });
+      const sourced={...message,metadata:{...message.metadata,sourceToolUseId:request.id,sourceToolName:request.name}};
+      updates.push({ message: context.imageStore ? await context.imageStore.persistMessage(sourced) : sourced });
     }
 
     return updates;

@@ -1,0 +1,114 @@
+/* The refined transcript is opt-in; folded history and surrounding panels keep their theme. */
+.transcript.rows-transcript {
+  --history-background: #ffffff;
+  --history-text: #20252d;
+  --history-strong: #17202b;
+  --history-secondary: #424c59;
+  --history-user-background: #f8f5f8;
+  --history-user-text: #202a36;
+  --history-border: #dce2e9;
+  --history-code-background: #e9edf2;
+  --history-icon: #94657e;
+  --conversation-content-inset: 13px;
+  --activity-icon-inset: var(--conversation-content-inset);
+  --activity-content-inset: calc(var(--activity-icon-inset) + 22px);
+  background: var(--history-background);
+  color: var(--history-text);
+  font-family: system-ui, 'Microsoft YaHei', sans-serif;
+}
+:root[data-theme='dark'] .transcript.rows-transcript {
+  --history-background: #111418;
+  --history-text: #d7dce3;
+  --history-strong: #eef0f4;
+  --history-secondary: #9aa4b2;
+  --history-user-background: #191e25;
+  --history-user-text: #e1e5eb;
+  --history-border: #2b323d;
+  --history-code-background: #202630;
+  --history-icon: #bb8ea6;
+}
+.rows-history .message.user,
+.rows-history .message.assistant {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+}
+.rows-history .message.user { padding: 12px 0 8px; }
+.rows-history .message.user > .message-body {
+  padding: 8px 12px;
+  border: 1px solid var(--history-border);
+  border-radius: 3px !important;
+  background: var(--history-user-background);
+}
+.rows-history .message.assistant { padding: 20px var(--conversation-content-inset) 10px; }
+.rows-history .message.user .message-text,
+.rows-history .message.assistant .message-text {
+  font-size: 15px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--history-text);
+}
+.rows-history .message.user .message-text { color: var(--history-user-text); }
+.rows-history .message-text strong { color: var(--history-strong); font-weight: 600; }
+.rows-history .message.user .message-text > :first-child,
+.rows-history .message.assistant .message-text > :first-child { margin-top: 0; }
+.rows-history .message.user .message-text > :last-child,
+.rows-history .message.assistant .message-text > :last-child { margin-bottom: 0; }
+.rows-history .message-text :not(pre) > code {
+  color: inherit;
+  background: var(--history-code-background);
+  border: 0;
+  border-radius: 3px !important;
+  padding: 1px 4px;
+}
+.rows-history .message-text pre {
+  background: var(--history-user-background);
+  border: 1px solid var(--history-border);
+  color: var(--history-text);
+}
+.rows-history .tool-history-entry.is-tool-group-start { padding-top: 10px; }
+.rows-history .tool-activity-row { color: var(--history-secondary); font-weight: 400; }
+.rows-history .tool-activity-row > .activity-icon,
+.rows-history .activity-pin { color: var(--history-icon); }
+.rows-history .activity-delivery { color: var(--history-text); }
+.rows-history .tool-observation { color: var(--history-secondary); }
+.rows-history .tool-observation .activity-icon,
+.rows-history .tool-observation .command-phase { color: var(--history-icon); }
+.rows-history .tool-observation.is-pinned { border-color: var(--history-border); }
+.rows-history .message.thinking {
+  display: block;
+  margin: 0;
+  padding: 0 0 0 var(--conversation-content-inset);
+  border: 0;
+}
+.rows-history .message.thinking .reasoning-body { padding: 0; }
+.rows-history .reasoning-sheet { margin: 0; padding: 0; animation: none; }
+.rows-history .message.thinking .reasoning-text {
+  margin: 0 0 0 22px;
+  padding: 3px 0 5px;
+  color: var(--history-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 400;
+  letter-spacing: 0;
+  animation: none !important;
+}
+.rows-history .reasoning-reveal { display: block; transition: none; transform: none; }
+.rows-history .reasoning-text::before,
+.rows-history .reasoning-text::after { display: none; }
+.rows-history .reasoning-text > :first-child { margin-top: 0; }
+.rows-history .reasoning-text > :last-child { margin-bottom: 0; }
+.rows-history .message.thinking .reasoning-sheet { color: var(--history-secondary); }
+.rows-history .message.thinking .reasoning-sheet > summary { padding: 3px 0; min-height: 26px; gap: 6px; color: var(--history-secondary) !important; font-size: 12px; line-height: 20px; }
+.rows-history .message.thinking.live .reasoning-heading { color: inherit; }
+.rows-history .reasoning-heading { font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.rows-transcript .message-loading { color: var(--history-secondary); }
+
+/* Terminal readers previously inherited a fixed light foreground from the dark task panel. */
+.rows-history .tool-observation .background-task-live-output:not(.terminal-stderr) { color: inherit; }
+.rows-history .tool-observation.is-pinned { color: var(--history-text); }
+.rows-history .tool-observation.is-pinned .tool-observation-viewport { opacity: 1; }
+.rows-history .tool-observation.is-main .tool-observation-viewport { opacity: .92; }

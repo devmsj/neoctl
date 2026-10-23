@@ -317,9 +317,9 @@ export class TerminalOutputStore {
     });
   }
 
-  read(ownerSessionId: string, runId: string, page: { stream: TerminalOutputStream; offset?: number; limitBytes?: number }): StoreResult<OutputPage> {
+  read(ownerSessionId: string, runId: string, page: { stream: TerminalOutputStream; offset?: number; limitBytes?: number; tail?: boolean }): StoreResult<OutputPage> {
     return this.guard(() => {
-      const offset = page.offset ?? 0;
+      let offset = page.offset ?? 0;
       const limit = page.limitBytes ?? 64 * 1024;
       if (!["stdout", "stderr"].includes(page.stream) || !integer(offset) || !integer(limit) || limit < 4 || limit > MAX_PAGE_BYTES) fail("invalid-input");
       const [owner, entry] = this.entry(ownerSessionId, runId);
@@ -333,6 +333,17 @@ export class TerminalOutputStore {
           const file = path.join(this.runDir(owner, entry.record), `${page.stream}.txt`);
           text = this.withFile(file, "read", (fd) => {
             if (fs.fstatSync(fd).size !== stored) fail("io-error");
+            if (page.tail && stored - offset > limit) {
+              offset = stored - limit;
+              const first = Buffer.alloc(1);
+              // Tail cursors must begin at a UTF-8 boundary, as ordinary pages do.
+              for (let i = 0; i < 3 && offset < stored; i++) {
+                fs.readSync(fd, first, 0, 1, offset);
+                if ((first[0]! & 0xc0) !== 0x80) break;
+                offset++;
+              }
+              nextOffset = offset;
+            }
             const bytes = Buffer.alloc(Math.min(limit + 1, stored - offset));
             let read = 0;
             while (read < bytes.length) {

@@ -223,7 +223,7 @@ async function runSyncAgent(input: {
       workspaceCwd,
     });
 
-    input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { task_id: task.taskId, agent_id: input.agentId, agent_type: input.agent.agentType } });
+    input.options.onProgress?.({ toolName: AGENT_TOOL_NAME, message: input.description, channel: "state", operation: "replace", phase: "running", data: { task_id: task.taskId, run_generation: task.runGeneration, agent_id: input.agentId, agent_type: input.agent.agentType } });
     let completed = await stream.next();
     while (!completed.done) {
       if (!ownsRun()) {
@@ -388,6 +388,7 @@ function launchAsyncAgent(input: {
       status: "async_launched",
       agent_id: input.agentId,
       task_id: taskId,
+      run_generation: task.runGeneration,
       description: input.description,
       prompt: input.input.prompt,
       output_file: task.outputFile,

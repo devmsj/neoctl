@@ -19,3 +19,8 @@ test("legacy metadata absence remains unknown; invalid dimensions are not promot
   assert.equal(output?.images[0]?.hasAlphaChannel, undefined);
   assert.equal(output?.images.length, 2);
 });
+
+test('image details retain actual structured lifecycle metadata',()=>{
+ const value=imageResultMetadata({provider:'openai',sourceImages:2,startedAt:'start',finishedAt:'end',duration:1234,revisedPrompt:'actual revision',images:[]});
+ assert.equal(value?.sourceImages,2);assert.equal(value?.durationMs,1234);assert.equal(value?.revisedPrompt,'actual revision');
+});

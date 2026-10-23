@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import {applyToolInputChanges, type ToolInputChange} from "../model/tool-input-stream.js";
+import { toolActivity, type ToolActivity } from "./tool-activity.js";
+import { toolObservationResult } from "./tool-observation-result.js";
 import type { TimingRecord } from "../core/query-timing.js";
 import { DemoMode, DEMO_MARKER, DEMO_PROMPT, type DemoWait } from "./demo-mode.js";
 import { DemoTools } from "./demo-tools.js";
@@ -276,6 +279,7 @@ interface UiToolStream {
 }
 
 interface UiLine {
+  connectPreviousTool?: boolean;
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
@@ -292,6 +296,9 @@ interface UiLine {
   toolDisplay?: UiToolDisplay;
   toolError?: string;
   toolStream?: UiToolStream;
+  activity?: ToolActivity;
+  observationOnly?: boolean;
+  observation?: Record<string, unknown>;
   format?: "markdown" | "ansi" | "plain" | "diff";
   previewStyle?: "summary";
   summaryMaxLines?: number;
@@ -451,7 +458,8 @@ interface WebSetAppPromptPayload {
 type WebLineOperation =
   | { type: "line.append"; line: UiLine }
   | { type: "line.text.append"; id: number; text: string }
-  | { type: "line.patch"; id: number; patch: Partial<UiLine> };
+  | { type: "line.patch"; id: number; patch: Partial<UiLine> }
+  | { type: "line.activity.input"; id: number; changes: ToolInputChange[]; truncated?: boolean };
 
 interface WebDeltaPayload {
   protocolVersion: 2;
@@ -940,6 +948,7 @@ export class WebRepl {
   private lineId = 0;
   private assistantLineId: number | undefined;
   private thinkingLineId: number | undefined;
+  private previousTurnToolId: number | undefined;
   private finalizedThinkingLineId: number | undefined;
   private readonly liveToolLineIds = new Map<string, number>();
   private activeAbortController: AbortController | undefined;
@@ -1088,14 +1097,14 @@ export class WebRepl {
     }, request);
   }
 
-  terminalOutput(sessionId: string, runId: string, stream: string, offset: number, limitBytes: number) {
+  terminalOutput(sessionId: string, runId: string, stream: string, offset: number, limitBytes: number, tail = false) {
     const session = this.runtime.engine.snapshot().session;
     if (!session?.sessionDir || !sessionId || sessionId !== session.sessionId || !runId || !["stdout", "stderr"].includes(stream)) return undefined;
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limitBytes) || limitBytes < 4 || limitBytes > 262144) return undefined;
     const manager = this.runtime.execProcessManager;
     const registered = manager.registerOwnerSession(sessionId, session.sessionDir);
     if (!registered.ok) return undefined;
-    const page = manager.readOutput(sessionId, runId, { stream: stream as "stdout" | "stderr", offset, limitBytes });
+    const page = manager.readOutput(sessionId, runId, { stream: stream as "stdout" | "stderr", offset, limitBytes, tail });
     // Cursor addresses stored bytes, not the possibly additionally redacted response length.
     return page.ok ? this.runtime.engine.redactDisplayValue({ sessionId, runId, ...page.value }) : undefined;
   }
@@ -1461,6 +1470,7 @@ export class WebRepl {
     this.runtime.usage.reset();
     this.status = initialStatus(this.runtime, metrics);
     const lineId = { current: 0 };
+    this.previousTurnToolId = undefined;
     this.lines = initialLines(this.runtime, lineId);
     this.lineId = lineId.current;
     this.assistantLineId = undefined;
@@ -1783,6 +1793,10 @@ export class WebRepl {
   private append(line: Omit<UiLine, "id">, streaming = false): number {
     const id = ++this.lineId;
     const nextLine = { id, ...line };
+    if (line.activity && line.toolName && line.toolUseId && !line.image) {
+      nextLine.connectPreviousTool = this.previousTurnToolId !== undefined;
+      this.previousTurnToolId = id;
+    }
     this.lines.push(nextLine);
     if (streaming) this.broadcastDelta({ type: "line.append", line: nextLine });
     else this.broadcastSync();
@@ -1807,6 +1821,8 @@ export class WebRepl {
   }
 
   private replaceLine(id: number, patch: Partial<UiLine>): void {
+    const previous = this.lines.find(line => line.id === id);
+    if (previous?.activity && patch.titleStatus) patch.activity = { ...previous.activity, phase: patch.titleStatus === "success" ? "completed" : "failed" };
     this.lines = this.lines.map((line) => line.id === id ? { ...line, ...patch } : line);
     this.broadcastSync();
   }
@@ -1952,6 +1968,7 @@ export class WebRepl {
         signal: terminal.signal,
         terminationReason: terminal.termination_reason,
         outputAvailability: terminal.output_ref.availability,
+        outputRevision: terminal.output_ref.streams,
       }));
     const sessionTasks = [...this.backgroundSessionRuns.values()].map((run) => ({
       kind: "session" as const,
@@ -2036,6 +2053,12 @@ export class WebRepl {
 
   private finalizeLiveLine(id: number | undefined): void {
     if (id === undefined) return;
+    const previous = this.lines.find(line => line.id === id);
+    if (previous?.activity && ["generating", "queued", "running"].includes(previous.activity.phase)) {
+      const activity: ToolActivity = { ...previous.activity, phase: previous.titleStatus === "success" ? "completed" : previous.titleStatus === "failure" ? "failed" : "interrupted" };
+      this.lines = this.lines.map(line => line.id === id ? { ...line, activity } : line);
+      this.queueDeltaOperation({ type: "line.patch", id, patch: { activity } });
+    }
     this.lines = this.lines.map((line) => line.id === id ? { ...line, live: false } : line);
     this.queueDeltaOperation({ type: "line.patch", id, patch: { live: false } });
   }
@@ -2056,6 +2079,7 @@ export class WebRepl {
   private cancelLiveToolLines(reason: string): void {
     for (const id of this.liveToolLineIds.values()) {
       const line = this.lines.find((item) => item.id === id);
+      if (line?.activity) this.patchLiveToolLine(line.toolUseId!, { activity: { ...line.activity, phase: "interrupted" } });
       const steps = (line?.toolStream?.steps ?? []).map((step) => step.status === "running" ? { ...step, status: "failed" as const, phase: "cancelled" } : step);
       this.lines = this.lines.map((item) => item.id === id ? { ...item, live: false, kind: "error", titleStatus: "failure", bodyTitle: reason, toolStream: { ...item.toolStream, phase: "cancelled", message: reason, steps } } : item);
       this.queueDeltaOperation({ type: "line.patch", id, patch: { live: false, kind: "error", titleStatus: "failure", bodyTitle: reason, toolStream: { ...line?.toolStream, phase: "cancelled", message: reason, steps } } });
@@ -2143,7 +2167,12 @@ export class WebRepl {
     } else {
       stream.message = progress.message;
     }
-    this.patchLiveToolLine(event.toolUse.id, { toolStream: stream });
+    const data = progress.data as Record<string, unknown> | undefined;
+    const observation = data && typeof data.task_id === "string" && Number.isSafeInteger(data.run_generation)
+      ? { ...line.observation, task_id: data.task_id, run_generation: data.run_generation }
+      : data && typeof data.session_id === "string" && ["terminal.started","terminal.output.delta"].includes(String(data.type)) && ["terminal_run","terminal_control"].includes(event.toolUse.name)
+        ? {...line.observation,session_id:data.session_id,status:"running",command:typeof data.command==="string"?data.command:line.observation?.command} : line.observation;
+    this.patchLiveToolLine(event.toolUse.id, { toolStream: stream, observation });
   }
 
   private applyAvailableToolResult(event: Extract<AgentEvent, { type: "tool.result.available" }>): void {
@@ -2173,17 +2202,25 @@ export class WebRepl {
   }
 
   private handleEvent(event: AgentEvent): void {
+    // Model lifecycle defines membership only. The frontend owns the fixed
+    // two-second playback and must not be interrupted by the next request.
+    if (event.type === "state" && event.phase === "calling_model") this.previousTurnToolId = undefined;
     this.reduce(event);
     if (event.type === "timing.updated") {
       if (event.timing.kind === "tool") {
         const line = this.lines.find(item => item.timing?.id === event.timing.id)
           ?? this.lines.find(item => item.id === this.liveToolLineIds.get(event.timing.toolUseId!));
         if (line) {
-          this.lines = this.lines.map(item => item.id === line.id ? { ...item, timing: event.timing } : item);
-          this.queueDeltaOperation({ type: "line.patch", id: line.id, patch: { timing: event.timing } });
+          const activity=line.activity && event.timing.status === "running" ? {...line.activity,phase:"running" as const} : line.activity;
+          this.lines = this.lines.map(item => item.id === line.id ? { ...item, timing: event.timing,activity } : item);
+          this.queueDeltaOperation({ type: "line.patch", id: line.id, patch: { timing: event.timing,activity } });
         }
       }
       this.queueDeltaStatus();
+      return;
+    }
+    if(event.type === "message" && event.message.metadata?.loadedImages === true && typeof event.message.metadata.sourceToolUseId === "string") {
+      renderObservedImages(event.message,line=>this.append(line));
       return;
     }
     if (event.type === "message" && this.matchesPendingUserImageEcho(event.message)) {
@@ -2194,16 +2231,42 @@ export class WebRepl {
       this.broadcastSync();
       return;
     }
-    if (event.type === "tool_call.started" || event.type === "tool_call.delta") {
+    if (event.type === "tool_call.started" || event.type === "tool_call.input") {
+      let id=this.liveToolLineIds.get(event.callId);
+      let previous=this.lines.find(line=>line.id===id);
+      const name=event.name||previous?.toolName||"tool";
+      if(id===undefined){
+        const activity:ToolActivity={phase:"generating",input:{}};
+        id=this.append({...formatToolUse({id:event.callId,name,input:{}}),activity,live:true});
+        this.liveToolLineIds.set(event.callId,id);
+        previous=this.lines.find(line=>line.id===id);
+      }
+      if(previous?.toolName!==name && name!=="tool")this.patchLiveToolLine(event.callId,{toolName:name,title:toolTitle(name,"running"),toolPresentation:toolPresentationForSource(name)});
+      if(event.type === "tool_call.input"){
+        const activity:ToolActivity={phase:"generating",input:applyToolInputChanges(previous?.activity?.input||{},event.changes),truncated:event.truncated};
+        this.lines=this.lines.map(line=>line.id===id?{...line,activity}:line);
+        this.queueDeltaOperation({type:"line.activity.input",id,changes:event.changes,truncated:event.truncated});
+      }
       this.queueDeltaStatus();
       return;
     }
+    if(event.type === "tool_call.ready") {
+      const patch={...formatToolUse(event.toolUse),activity:toolActivity(event.toolUse.input,"queued"),live:true};
+      if(this.liveToolLineIds.has(event.toolUse.id))this.patchLiveToolLine(event.toolUse.id,patch);
+      else this.liveToolLineIds.set(event.toolUse.id,this.append(patch));
+      return;
+    }
+    if(event.type === "tool_call.delta") { this.queueDeltaStatus(); return; }
     if (event.type === "context.compacted") {
       this.appendCompaction(event.compaction);
       return;
     }
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "retrying") {
       this.broadcastSync();
+      return;
+    }
+    if (event.type === "assistant.output.done") {
+      this.queueDeltaStatus();
       return;
     }
     if (event.type === "assistant.delta") {
@@ -2297,8 +2360,10 @@ export class WebRepl {
       this.finalizeLiveLine(this.assistantLineId);
       this.finalizeThinkingLine();
       this.assistantLineId = undefined;
-      const id = this.append({ ...formatToolUse(event.toolUse), live: true });
-      this.liveToolLineIds.set(event.toolUse.id, id);
+      const patch = { ...formatToolUse(event.toolUse),  activity:toolActivity(event.toolUse.input,"queued"), live: true };
+      const existing = this.liveToolLineIds.get(event.toolUse.id);
+      if (existing === undefined) this.liveToolLineIds.set(event.toolUse.id, this.append(patch));
+      else this.patchLiveToolLine(event.toolUse.id, patch);
       return;
     }
     if (event.type === "tool.finished") {
@@ -2660,11 +2725,14 @@ export function compactLineOperations(operations: WebLineOperation[]): WebLineOp
       previous.text += operation.text;
       continue;
     }
+    if(operation.type === "line.activity.input" && previous?.type === "line.activity.input" && previous.id === operation.id) {
+      previous.changes.push(...operation.changes);previous.truncated=operation.truncated;continue;
+    }
     if (operation.type === "line.patch" && previous?.type === "line.patch" && previous.id === operation.id) {
       previous.patch = { ...previous.patch, ...operation.patch };
       continue;
     }
-    compacted.push(operation.type === "line.patch" ? { ...operation, patch: { ...operation.patch } } : { ...operation });
+    compacted.push(operation.type === "line.patch" ? { ...operation, patch: { ...operation.patch } } : operation.type === "line.activity.input" ? {...operation,changes:[...operation.changes]} : { ...operation });
   }
   return compacted;
 }
@@ -2715,7 +2783,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     }
     if (req.method === "GET" && url.pathname === "/api/terminal-output") {
       res.setHeader("Cache-Control", "no-store");
-      const page = repl.terminalOutput(url.searchParams.get("sessionId") ?? "", url.searchParams.get("runId") ?? "", url.searchParams.get("stream") ?? "stdout", Number(url.searchParams.get("offset") ?? 0), Number(url.searchParams.get("limitBytes") ?? 65536));
+      const page = repl.terminalOutput(url.searchParams.get("sessionId") ?? "", url.searchParams.get("runId") ?? "", url.searchParams.get("stream") ?? "stdout", Number(url.searchParams.get("offset") ?? 0), Number(url.searchParams.get("limitBytes") ?? 65536), url.searchParams.get("tail") === "true");
       return page ? sendJson(res, page) : sendJson(res, { error: "终端输出不可获取或无权访问" }, 404);
     }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
@@ -2964,7 +3032,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     if (line.toolUseId && line.titleStatus && historyToolLineIndexes.has(line.toolUseId)) {
       const index = historyToolLineIndexes.get(line.toolUseId)!;
       const started = lines[index];
-      lines[index] = { ...line, presentationLevel: mergePresentationLevel(line.presentationLevel, started.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, started.toolDisplay) };
+      lines[index] = { ...line, activity: started.activity ? { ...started.activity, phase: line.titleStatus === "success" ? "completed" : "failed" } : undefined, presentationLevel: mergePresentationLevel(line.presentationLevel, started.presentationLevel), toolDisplay: mergeToolDisplays(line.toolDisplay, started.toolDisplay) };
       return index + 1;
     }
     lines.push(line);
@@ -2988,6 +3056,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
   }
   for (const [entryIndex, entry] of entries.entries()) {
     if (entry.type === "message") {
+      if(entry.message.metadata?.loadedImages === true && typeof entry.message.metadata.sourceToolUseId === "string"){renderObservedImages(entry.message,append);continue;}
       renderMessage(entry.message, append, undefined, {
         includeToolUseBlocks: true,
         includeThinkingBlocks: true,
@@ -3002,6 +3071,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
   for (const line of lines) {
     const matches = line.toolUseId ? toolTimings.get(line.toolUseId) : undefined;
     if (matches?.length === 1) line.timing = matches[0];
+    if (line.activity && !line.titleStatus) line.activity = { ...line.activity, phase: "interrupted" };
   }
   return lines;
 }
@@ -3156,6 +3226,9 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "usage") return { ...status, usage: event.usage, inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt, activityTick: status.activityTick + 1 };
+  if (event.type === "assistant.output.done") return status.modelOutput?.kind === "text" ? { ...status, modelOutput: undefined, activityTick: status.activityTick + 1 } : status;
+  if (event.type === "message" && event.message.role === "assistant" && event.message.blocks.some(block => block.type === "text") && status.modelOutput?.kind === "text") return { ...status, modelOutput: undefined, activityTick: status.activityTick + 1 };
+  if (event.type === "assistant.delta" && !event.text) return status;
   if (event.type === "assistant.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "text" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "thinking.delta") return { ...status, phase: "thinking", modelOutput: undefined, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.started") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
@@ -3521,6 +3594,13 @@ function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">
   return rendered;
 }
 
+function renderObservedImages(message:Message,append:(line:Omit<UiLine,"id">)=>number):void {
+  for(const [index,block] of message.blocks.entries()){
+    if(block.type!=="image")continue;
+    const line=imageLineForBlock("tool_result",block,message.id,index);
+    if(line)append({...line,observationOnly:true,messageId:message.id,parentToolName:"image_inspect",parentToolUseId:message.metadata?.sourceToolUseId as string});
+  }
+}
 function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>, messageId: string, blockIndex: number): Omit<UiLine, "id"> | undefined {
   const kind = kindForRole(role);
   if (kind === "meta") return undefined;
@@ -3643,12 +3723,13 @@ function thinkingLine(text: string, live = false): Omit<UiLine, "id"> {
 }
 
 function formatToolUse(toolUse: ToolUseRequest): Omit<UiLine, "id"> {
+  const activity = toolActivity(toolUse.input, "running");
   const toolPresentation = toolPresentationForSource(toolUse.name);
   const presentationLevel = toolPresentationLevel(toolUse.name, toolUse.input);
-  if (toolUse.name === "plan_update" && isWebPlanPayload(toolUse.input)) return { kind: "tool", toolName: toolUse.name, toolPresentation, title: toolPresentation.label, bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), presentationLevel, collapsible: true };
-  if (toolUse.name === "image_create") return { kind: "tool", toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", presentationLevel: "primary", collapsible: true };
+  if (toolUse.name === "plan_update" && isWebPlanPayload(toolUse.input)) return { kind: "tool", activity, toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: webPlanBodyTitle(toolUse.input), text: serializeWebPlanPayload(toolUse.input), presentationLevel, collapsible: true };
+  if (toolUse.name === "image_create") return { kind: "tool", activity, toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: "图片模型处理中", text: JSON.stringify(toolUse.input ?? {}, null, 2), format: "plain", previewStyle: "summary", presentationLevel: "primary", collapsible: true };
   const summary = summarizeToolUse(toolUse.name, toolUse.input);
-  return { kind: "tool", toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
+  return { kind: "tool", activity, toolName: toolUse.name, toolPresentation, toolUseId: toolUse.id, title: toolPresentation.label, bodyTitle: summary.bodyTitle, text: summary.text, toolDisplay: buildToolUseDisplay(toolUse.name, toolUse.input), previewStyle: "summary", presentationLevel, collapsible: true };
 }
 
 function formatToolResultLine(toolName: string, output: unknown, ok: boolean, presentToolResult?: UiToolResultPresenter): Omit<UiLine, "id"> {
@@ -3663,6 +3744,7 @@ function formatToolResultLine(toolName: string, output: unknown, ok: boolean, pr
     : formatToolResult(toolName, toolName.startsWith("subagent_") ? redactToolDetail(output) : output, ok);
   return {
     kind: ok ? "tool" : "error",
+    observation: toolObservationResult(toolName, output),
     toolError: ok ? undefined : toolErrorText(output, ok).slice(0, 2000),
     toolName,
     toolPresentation: toolPresentationForSource(toolName),

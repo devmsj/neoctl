@@ -35,6 +35,20 @@ async function drain(stream: AsyncIterable<AgentEvent>) {
 }
 const user = { ...createTextMessage("user", "hello"), id: "user-fixed", createdAt: "2026-09-21T00:00:00.000Z" };
 
+test("text protocol boundary flushes held text before ending reply generation", async () => {
+  const events = await drain(query([user], dependencies({
+    modelGateway: { async *stream() {
+      yield { type: "assistant_delta", text: "short text", displayChannel: "visible" };
+      yield { type: "assistant_text_done" };
+      yield { type: "response_completed" };
+    } },
+  }), { agentId: "test" }));
+  const boundary = events.findIndex(event => event.type === "assistant.output.done");
+  assert(boundary >= 0);
+  assert.equal(events.filter(event => event.type === "assistant.delta").map(event => event.text).join(""), "short text");
+  assert(events.filter((event, index) => event.type === "assistant.delta" && index > boundary).length === 0);
+});
+
 test("monotonic durations survive wall-clock rollback; finish is idempotent and snapshots are detached", () => {
   const c = clock(), timing = new QueryTimingState(c, user.id);
   c.mono = 10;
@@ -381,4 +395,24 @@ test("tool header is observable before arguments without execution or first-outp
   assert(events.some(e => e.type === "tool_call.started"));
   assert(!events.some(e => e.type === "tool.started"));
   assert.equal(records.at(-1)?.firstOutputMs, 20);
+});
+
+test('tool generation field changes arrive before ready and actual scheduling',async()=>{
+ const stream=query([user],dependencies({modelGateway:{async *stream(){
+  yield {type:'tool_call_started',callId:'early',name:'plan_update'};
+  yield {type:'tool_call_delta',callId:'early',name:'plan_update',argumentsDelta:'{"items":[{"description":"Build'};
+  yield {type:'tool_call_delta',callId:'early',name:'plan_update',argumentsDelta:' now","status":"pending"}]}'};
+  yield {type:'tool_use',toolUse:{id:'early',name:'plan_update',input:{items:[{description:'Build now',status:'pending'}]}}};
+ }}}),{agentId:'test',maxTurns:1});
+ const events:AgentEvent[]=[];
+ for await(const event of stream){
+  events.push(event);
+  if(event.type==='tool_call.input'){
+   assert(!events.some(e=>e.type==='tool.started'));
+   assert(event.changes.some(c=>c.path.includes('description')));
+   assert.equal('input' in event,false);
+  }
+ }
+ const started=events.findIndex(e=>e.type==='tool_call.started'),input=events.findIndex(e=>e.type==='tool_call.input'),ready=events.findIndex(e=>e.type==='tool_call.ready'),run=events.findIndex(e=>e.type==='tool.started');
+ assert(started>=0&&input>started&&ready>input&&run>ready);
 });

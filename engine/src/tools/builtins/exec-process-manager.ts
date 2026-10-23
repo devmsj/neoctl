@@ -212,7 +212,7 @@ export class ExecProcessManager {
       ?? { ok: false, reason: "not-found" });
   }
 
-  readOutput(ownerSessionId: string, runId: string, page: { stream: ExecOutputStream; offset?: number; limitBytes?: number }): StoreResult<OutputPage> {
+  readOutput(ownerSessionId: string, runId: string, page: { stream: ExecOutputStream; offset?: number; limitBytes?: number; tail?: boolean }): StoreResult<OutputPage> {
     const result = this.storeGuard(() => this.ownerBindings.get(ownerSessionId)?.store.read(ownerSessionId, runId, page)
       ?? { ok: false, reason: "not-found" });
     const session = this.sessions.get(runId);
@@ -303,6 +303,7 @@ export class ExecProcessManager {
     yieldTimeMs: number,
     onOutput?: (delta: ExecProcessOutputDelta) => void,
     abortSignal?: AbortSignal,
+    onStarted?: (sessionId: string) => void,
   ): Promise<ExecProcessResult> {
     abortSignal?.throwIfAborted();
     const sessionId = this.start(options);
@@ -315,6 +316,7 @@ export class ExecProcessManager {
     if (abortSignal?.aborted) cancel();
     let result: ExecProcessResult;
     try {
+      onStarted?.(sessionId);
       result = await this.interact(sessionId, { ownerId: options.ownerId, yieldTimeMs, onOutput, abortSignal });
     } finally {
       abortSignal?.removeEventListener("abort", cancel);

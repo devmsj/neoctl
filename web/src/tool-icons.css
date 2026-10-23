@@ -1,0 +1,30 @@
+
+.activity-icon .motion{transform-box:fill-box;transform-origin:center;animation-duration:2.4s;animation-timing-function:ease-in-out;animation-iteration-count:infinite}
+.activity-icon .plug{animation-name:tool-motion-plug}.activity-icon .reveal{animation-name:tool-motion-reveal}.activity-icon .draw{stroke-dasharray:60;animation-name:tool-motion-draw}.activity-icon .ink{stroke-dasharray:17;animation-name:tool-motion-ink;animation-duration:1.85s}.activity-icon .write{animation-name:tool-motion-write;animation-duration:1.85s}.activity-icon .scan{animation-name:tool-motion-scan}.activity-icon .type{stroke-dasharray:10;animation-name:tool-motion-type;animation-timing-function:steps(5,end)}.activity-icon .blink{animation-name:tool-motion-blink;animation-duration:1s;animation-timing-function:steps(2,jump-none)}.activity-icon .down{animation-name:tool-motion-down}.activity-icon .exchange{animation-name:tool-motion-exchange}.activity-icon .reverse{animation-direction:reverse}.activity-icon .brush{animation-name:tool-motion-brush}.activity-icon .tick{stroke-dasharray:12;animation-name:tool-motion-tick}.activity-icon .idea{animation-name:tool-motion-idea}.activity-icon .route{stroke-dasharray:18;animation-name:tool-motion-route}.activity-icon .halt{animation-name:tool-motion-halt}.activity-icon .send{animation-name:tool-motion-send}.activity-icon .forward{animation-name:tool-motion-forward}.activity-icon .grow{animation-name:tool-motion-grow;transform-origin:center bottom}.activity-icon .keyturn{animation-name:tool-motion-keyturn}.activity-icon .unlink1{animation-name:tool-motion-unlink1}.activity-icon .unlink2{animation-name:tool-motion-unlink2}.activity-icon .delay1{animation-delay:.3s}.activity-icon .delay2{animation-delay:.6s}
+@keyframes tool-motion-plug{0%,100%{transform:translateY(-1px)}45%,75%{transform:translateY(1px)}}
+@keyframes tool-motion-reveal{0%,10%,100%{opacity:.25;transform:scaleX(.6)}40%,75%{opacity:1;transform:scaleX(1)}}
+@keyframes tool-motion-draw{0%,10%{stroke-dashoffset:60;opacity:.4}75%,90%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:.4}}
+@keyframes tool-motion-ink{0%,8%{stroke-dashoffset:17;opacity:.4}70%,85%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:0}}
+@keyframes tool-motion-write{0%,100%{transform:translate(-4px,1px) rotate(-7deg)}18%{transform:translate(-2px,-1px)}35%{transform:translate(0,1px) rotate(-7deg)}53%{transform:translate(2px,-1px)}70%{transform:translate(4px,1px) rotate(-7deg)}82%{transform:translate(4px,-3px) rotate(3deg)}}
+@keyframes tool-motion-scan{0%,100%{transform:translate(-1px,-1px)}30%{transform:translate(1px,-1px)}60%{transform:translate(1px,1px)}80%{transform:translate(-1px,1px)}}
+@keyframes tool-motion-type{0%,12%,100%{stroke-dashoffset:10}65%,90%{stroke-dashoffset:0}}
+@keyframes tool-motion-blink{from{opacity:1}to{opacity:0}}
+@keyframes tool-motion-down{0%,100%{transform:translateY(-2px)}55%{transform:translateY(1px)}}
+@keyframes tool-motion-exchange{0%,100%{transform:translateX(-1px)}50%{transform:translateX(1px)}}
+@keyframes tool-motion-brush{0%,100%{transform:translate(-2px,1px) rotate(-6deg)}35%{transform:translate(1px,-1px)}70%{transform:translate(2px,1px) rotate(5deg)}}
+@keyframes tool-motion-tick{0%,15%{stroke-dashoffset:12;opacity:.3}60%,90%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:.3}}
+@keyframes tool-motion-idea{0%,100%{transform:translateY(1px)}45%,65%{transform:translateY(-1px)}}
+@keyframes tool-motion-route{0%{stroke-dashoffset:18;opacity:.3}55%,80%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:.3}}
+@keyframes tool-motion-halt{0%,100%{transform:scale(.85)}25%,85%{transform:scale(1)}}
+@keyframes tool-motion-send{0%,100%{transform:translate(-2px,2px);opacity:.6}60%,80%{transform:translate(0,0);opacity:1}}
+@keyframes tool-motion-forward{0%,100%{transform:translateX(-1px)}60%,80%{transform:translateX(1px)}}
+@keyframes tool-motion-grow{0%,100%{transform:scaleY(.5)}50%,80%{transform:scaleY(1)}}
+@keyframes tool-motion-keyturn{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
+@keyframes tool-motion-unlink1{0%,100%{transform:translate(0,0)}50%,80%{transform:translate(1px,-1px)}}
+@keyframes tool-motion-unlink2{0%,100%{transform:translate(0,0)}50%,80%{transform:translate(-1px,1px)}}
+.activity-icon .thought{stroke-dasharray:30;animation-name:tool-motion-thought;animation-duration:2.4s}.activity-icon .thought-next{animation-delay:1.2s}
+@keyframes tool-motion-thought{0%,100%{stroke-dashoffset:0;opacity:.45}18%,48%{stroke-dashoffset:0;opacity:1}70%{stroke-dashoffset:-7;opacity:.45}}
+.reasoning-sheet > summary > .reasoning-icon{width:16px;height:16px;flex:0 0 16px;stroke-width:2.4;color:var(--history-icon,var(--purple))}
+.reasoning-sheet > summary:has(> .reasoning-icon)::after{display:none}
+.reasoning-sheet > summary:has(> .reasoning-icon) > .reasoning-heading{animation:none}
+@media(prefers-reduced-motion:reduce){.activity-icon .motion{animation:none!important}}

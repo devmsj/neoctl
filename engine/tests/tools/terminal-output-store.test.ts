@@ -303,3 +303,19 @@ test("trusted resolver permits nested child sessions, rejects reassignment and i
   fs.symlinkSync(parent + "-saved", parent, "junction");
   no(store.read("child-owner", "r", { stream: "stdout" }), "unsafe-path");
 });
+
+test("tail reads skip old bytes without splitting Unicode and ordinary cursors remain exact", (t) => {
+  const f = fixture(t); f.start();
+  const text = 'old history\n' + '汉😀'.repeat(100) + '末尾\n';
+  ok(f.store.append('A', 'r', chunk('stdout', 0, text)));
+  const tail = ok(f.store.read('A', 'r', {stream:'stdout', offset:0, limitBytes:17, tail:true}));
+  assert.ok(tail.offset > 0);
+  assert.ok(Buffer.byteLength(tail.text!) <= 17);
+  assert.ok(!tail.text!.includes('\ufffd'));
+  assert.ok(tail.text!.endsWith('末尾\n'));
+  assert.equal(tail.nextOffset, Buffer.byteLength(text));
+  assert.equal(tail.endOfStoredOutput, true);
+  assert.equal(ok(f.store.read('A','r',{stream:'stdout',offset:0})).offset,0);
+  ok(f.store.append('A','r',chunk('stdout',tail.nextOffset,'next')));
+  assert.equal(ok(f.store.read('A','r',{stream:'stdout',offset:tail.nextOffset,limitBytes:17,tail:true})).text,'next');
+});

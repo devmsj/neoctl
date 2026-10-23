@@ -72,7 +72,7 @@ export function createSubagentOutputTool(taskStore: TaskStore = globalTaskStore)
       if (!task) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
 
       if (input.block && !taskStore.isTerminal(task)) {
-        options.onProgress?.({ toolName: "subagent_output", message: `Waiting for task ${input.task_id}` });
+        options.onProgress?.({ toolName: "subagent_output", message: `Waiting for task ${input.task_id}`,channel:"state",phase:"running",data:{task_id:task.taskId,run_generation:task.runGeneration} });
         await taskStore.waitForTerminal(input.task_id, { timeoutMs: input.timeout_ms ?? 30000, signal: context.abortSignal });
       }
 

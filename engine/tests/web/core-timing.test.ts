@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { QueryTimingState, type TimingRecord } from "../../src/core/query-timing.js";
 import { WebRepl, restoreWebHistoryLines } from "../../src/web/index.js";
 import type { AgentEvent } from "../../src/types/events.js";
-import { createToolResultMessage } from "../../src/types/messages.js";
+import { createTextMessage, createToolResultMessage } from "../../src/types/messages.js";
 
 const call = { id: "a", name: "probe", input: {} };
 function runtime(getTimingRecords: () => TimingRecord[]) {
@@ -70,6 +70,35 @@ test("historical tool timings are kept on display lines, not resent with every c
 });
 
 
+test("completed text and next model request do not retain generating-reply status", async () => {
+  const repl = new WebRepl(runtime(() => []) as never);
+  const handle = (repl as unknown as { handleEvent(event: AgentEvent): void }).handleEvent.bind(repl);
+  const chunks: string[] = [];
+  const response = Object.assign(new EventEmitter(), { writeHead() {}, write(chunk: string) { chunks.push(chunk); return true; } });
+  repl.subscribe(response as never);
+  try {
+    handle({ type: "assistant.delta", text: "previous visible reply" });
+    assert.equal(repl.snapshot(false).status.modelOutput?.kind, "text");
+    handle({ type: "assistant.output.done" });
+    assert.equal(repl.snapshot(false).status.phase, "calling_model");
+    assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const delta = chunks.filter(chunk => chunk.includes("\nevent: delta\n")).at(-1)!;
+    assert.equal(JSON.parse(delta.split("data: ")[1]).status.modelOutput, undefined);
+    handle({ type: "assistant.delta", text: "" });
+    assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+    handle({ type: "assistant.delta", text: "next reply" });
+    handle({ type: "message", message: createTextMessage("assistant", "next reply") });
+    assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+    handle({ type: "assistant.delta", text: "old text" });
+    handle({ type: "state", phase: "calling_model" });
+    assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+    handle({ type: "tool_call.started", callId: "next-tool", name: "file_read" });
+    handle({ type: "assistant.output.done" });
+    assert.equal(repl.snapshot(false).status.modelOutput?.kind, "tool_call", "a late text boundary must not erase current tool generation");
+  } finally { response.emit("close"); }
+});
+
 test("early tool activity reaches snapshot/SSE without argument leakage or token increments", async () => {
   const repl = new WebRepl(runtime(() => []) as never);
   const handle = (repl as unknown as { handleEvent(event: AgentEvent): void }).handleEvent.bind(repl);
@@ -106,5 +135,42 @@ test("early tool activity reaches snapshot/SSE without argument leakage or token
     assert.deepEqual(repl.snapshot(false).status.modelOutput, { kind: "text" });
     handle({ type: "thinking.delta", text: "reasoning" });
     assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+  } finally { response.emit("close"); }
+});
+
+
+test("tool connection membership survives later model calls for frontend timed playback", () => {
+  const repl = new WebRepl(runtime(() => []) as never);
+  const handle = (repl as unknown as { handleEvent(event: AgentEvent): void }).handleEvent.bind(repl);
+  const row = (id: string) => repl.snapshot(false).lines.find(line => line.toolUseId === id)!;
+  const chunks: string[] = [];
+  const response = Object.assign(new EventEmitter(), { writeHead() {}, write(chunk: string) { chunks.push(chunk); return true; } });
+  repl.subscribe(response as never);
+  try {
+    handle({ type: "state", phase: "calling_model" });
+    handle({ type: "tool_call.started", callId: "turn-a", name: "file_read" });
+    assert.equal(row("turn-a").connectPreviousTool, false);
+    handle({ type: "tool_call.ready", toolUse: { id: "turn-a", name: "file_read", input: { path: "a" } } });
+    handle({ type: "tool_call.started", callId: "turn-b", name: "file_list" });
+    assert.equal(row("turn-b").connectPreviousTool, true);
+    handle({ type: "state", phase: "running_tools" });
+    assert.equal(row("turn-b").connectPreviousTool, true);
+    handle({ type: "message", message: createToolResultMessage({ id: "turn-b", name: "file_list", input: {} }, true, "done") });
+    assert.equal(row("turn-b").connectPreviousTool, true, "results preserve the current group");
+    handle({ type: "state", phase: "calling_model" });
+    assert.equal(row("turn-b").connectPreviousTool, true);
+    const sync = JSON.parse(chunks.filter(chunk => chunk.includes("\nevent: sync\n")).at(-1)!.split("data: ")[1]);
+    assert.equal(sync.lines.find((line: { toolUseId: string }) => line.toolUseId === "turn-b").connectPreviousTool, true, "SSE retains membership for fixed frontend playback");
+    handle({ type: "tool_call.started", callId: "turn-c", name: "file_read" });
+    assert.equal(row("turn-c").connectPreviousTool, false);
+    handle({ type: "tool_call.started", callId: "turn-d", name: "file_read" });
+    assert.equal(row("turn-d").connectPreviousTool, true);
+    handle({ type: "state", phase: "calling_model" });
+    assert.equal(row("turn-d").connectPreviousTool, true, "new model calls do not erase existing membership");
+    handle({ type: "tool_call.ready", toolUse: { id: "turn-e", name: "file_list", input: {} } });
+    handle({ type: "tool_call.ready", toolUse: { id: "turn-f", name: "file_list", input: {} } });
+    assert.equal(row("turn-f").connectPreviousTool, true, "nonstreaming ready calls also connect");
+    handle({ type: "assistant.delta", text: "Actual reply" });
+    assert.equal(row("turn-f").connectPreviousTool, true);
   } finally { response.emit("close"); }
 });

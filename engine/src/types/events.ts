@@ -56,12 +56,15 @@ import type { TimingRecord } from "../core/query-timing.js";
 export type AgentEvent =
   | { type: "timing.updated"; timing: TimingRecord }
   | { type: "state"; phase: string; detail?: string }
+  | { type: "assistant.output.done" }
   | { type: "context.metrics"; metrics: ContextMetrics }
   | { type: "context.compacted"; compaction: CompactionReport }
   | { type: "assistant.delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking.delta"; text: string }
   /** Provider announced a tool call. No complete input, approval or execution implied. */
   | { type: "tool_call.started"; callId: string; name: string }
+  | { type: "tool_call.input"; callId: string; name?: string; changes: import("../model/tool-input-stream.js").ToolInputChange[]; truncated?: boolean }
+  | { type: "tool_call.ready"; toolUse: ToolUseRequest }
   | { type: "tool_call.delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "message"; message: Message }
   | { type: "tool.started"; toolUse: ToolUseRequest; index?: number; total?: number }

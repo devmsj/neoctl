@@ -142,6 +142,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
         input.yield_time_ms,
         (delta) => emitOutputDelta(context, delta),
         context.abortSignal,
+        (sessionId) => options.onProgress?.({toolName:"terminal_run",message:input.description || input.cmd,channel:"state",operation:"replace",phase:"running",data:{type:"terminal.started",session_id:sessionId,command:input.cmd}}),
       );
       const output = toToolOutput(result);
       const ok = result.status === "running" || (result.status === "exited" && result.exit_code === 0);

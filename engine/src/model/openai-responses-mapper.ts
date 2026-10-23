@@ -119,6 +119,10 @@ export async function* normalizeResponsesStream(
       }
     }
 
+    if (type === "response.output_text.done" || (type === "response.output_item.done" && (event.item as Record<string, unknown> | undefined)?.type === "message")) {
+      yield { type: "assistant_text_done" };
+    }
+
     if (isReasoningDeltaEvent(type)) {
       const delta = extractThinkingDelta(event);
       if (delta) {

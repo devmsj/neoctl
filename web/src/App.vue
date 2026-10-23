@@ -1,4 +1,14 @@
 <script setup>
+import "./rows-history.css"
+import { reconcileActivitySnapshot, runtimeActivitySignal, terminalObservation, referencedImages } from "./tool-runtime-observation.mjs"
+import { applyActivityInput } from "./tool-input-changes.mjs"
+import ToolActivityRow from "./components/ToolActivityRow.vue"
+import ToolTurnConnector from "./components/ToolTurnConnector.vue"
+import { useToolConnections } from './tool-concurrency.mjs'
+import ToolActivityIcon from "./components/ToolActivityIcon.vue"
+import ToolObservation from "./components/ToolObservation.vue"
+import { isActivityLine, agentObservation } from "./tool-activity.mjs"
+import { useToolObservation, hasUnansweredToolActivity } from "./use-tool-observation.mjs"
 import { composerRunAction } from './run-control.mjs'
 import { executionLabel } from './execution-label.mjs'
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
@@ -570,10 +580,40 @@ const activePanelLabel = computed(() => ({
   prompts: '提示词管理',
   settings: '模型配置',
 }[state.activePanel] || state.activePanel))
+const historyViewKey = 'neo-tool-history-view'
+const historyView = ref((()=>{try{return localStorage.getItem(historyViewKey)==='rows'?'rows':'folded'}catch{return 'folded'}})())
+watch(historyView,value=>{try{localStorage.setItem(historyViewKey,value)}catch{}})
+const activityPaused = computed(()=>state.runControl.canResume || !state.connected)
+const activityEntranceIds=reactive(new Set())
+const terminalOutputRevisions=reactive(new Map())
+const activityAnchor=ref(null),activityObservationHeight=ref(0),activityPinnedAnchor=ref(null)
+function setActivityAnchor(element){if(element)activityAnchor.value=element}
+function setActivityPinnedAnchor(element){if(element)activityPinnedAnchor.value=element}
+function measureObservationRow(anchor) {
+  const row=anchor?.closest('.virtual-message-row')
+  if(!row)return
+  // measureElement intentionally defers sizes during user scrolling. A known
+  // observation content change must update its row before that frame paints.
+  messageVirtualizer.value.resizeItem(Number(row.dataset.index),row.offsetHeight)
+}
+const activityLines = computed(()=>(state.lines || []).filter(line=>!shouldHideLine(line) || (historyView.value==='rows' && isActivityLine(line) && line.toolName?.startsWith('subagent_'))))
+const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>state.session?.sessionId,line=>runtimeActivitySignal(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
+function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
+const observedActivityLine=computed(()=>projectActivityObservation(activityObserved.value))
+const pinnedActivityLine=computed(()=>projectActivityObservation(activityPinnedLine.value))
+const showMainObservation=computed(()=>!!activityObserved.value && activityObserved.value.id!==activityPinned.value && hasUnansweredToolActivity(activityLines.value))
 const visibleLines = computed(() => {
   if (state.sessionResumeLoading) return []
-  return groupVisibleToolLines((state.lines || []).filter((line) => !shouldHideLine(line)))
+  const lines = activityLines.value
+  if(historyView.value==='rows'){const parents=new Set(lines.filter(isActivityLine).map(line=>line.toolUseId));return lines.filter(line=>!(line.image&&line.parentToolUseId&&parents.has(line.parentToolUseId)))}
+  return groupVisibleToolLines(lines.filter(line=>!line.observationOnly && (line.activity?.phase!=='generating' || line.titleStatus)))
 })
+const turnConnections=useToolConnections(visibleLines,()=>`${state.session?.sessionId||''}:${historyView.value}`)
+// Pin relocation/removal changes both the previous row and the new row.
+// Measure the mounted rows after the Teleport update, before the next paint.
+watch(activityPinned,()=>{
+  for(const row of messageList.value?.querySelectorAll('.virtual-message-row')||[])measureObservationRow(row)
+},{flush:'post'})
 const pendingMessageResizes = ref(0)
 const messageVirtualizer = useVirtualizer(computed(() => ({
   count: visibleLines.value.length,
@@ -583,7 +623,7 @@ const messageVirtualizer = useVirtualizer(computed(() => ({
   rangeExtractor: (range) => {
     const indexes = new Set(defaultRangeExtractor(range))
     visibleLines.value.forEach((line, index) => {
-      if (line?.live === true) indexes.add(index)
+      if (line?.live === true || (historyView.value==='rows' && (line?.id===activityLastId.value || line?.id===activityPinned.value))) indexes.add(index)
     })
     return [...indexes].sort((left, right) => left - right)
   },
@@ -1184,6 +1224,7 @@ function applyDelta(payload) {
     if (operation.type === 'line.append') {
       if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
         state.lines.push(operation.line)
+        if(isActivityLine(operation.line))activityEntranceIds.add(operation.line.id)
       }
       continue
     }
@@ -1192,6 +1233,8 @@ function applyDelta(payload) {
     const line = state.lines[index]
     if (operation.type === 'line.text.append') {
       queueLineText(operation.id, operation.text)
+    } else if (operation.type === 'line.activity.input') {
+      state.lines[index]={...line,activity:{...line.activity,phase:'generating',input:applyActivityInput(line.activity?.input||{},operation.changes||[]),truncated:operation.truncated}}
     } else if (operation.type === 'line.patch') {
       flushLineText(operation.id)
       const patchedLine = state.lines[index]
@@ -1209,7 +1252,7 @@ function applyTerminalOutput(payload) {
   for (const update of payload?.updates || []) {
     const sessionId = String(update?.sessionId || '')
     if (!sessionId || update.ownerSessionId !== state.session?.sessionId) continue
-    if (update.invalidated === true) continue // Owner-bound reader refreshes its own byte cursors; never append SSE as full output.
+    if (update.invalidated === true) {terminalOutputRevisions.set(sessionId,(terminalOutputRevisions.get(sessionId)||0)+1);continue} // Only invalidates the owner-bound reader, never copies output.
     const taskIndex = state.backgroundTasks.findIndex((task) => String(task?.sessionId || '') === sessionId)
     if (taskIndex < 0) continue
     const chunk = String(update.text || '')
@@ -1235,6 +1278,7 @@ function appendBoundedText(current, incoming, limit) {
 }
 
 function applySync(payload) {
+  activityEntranceIds.clear()
   resetLineTextScheduler()
   const incomingSessionId = String(payload.session?.sessionId || '')
   const previousSessionId = String(state.session?.sessionId || '')
@@ -1249,10 +1293,11 @@ function applySync(payload) {
     transcriptFollow.reset()
     resetSessionSettingsUi()
     resetVirtualMessages()
+    terminalOutputRevisions.clear()
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
     state.attachmentCounter = 0
   }
-  state.lines = payload.lines || []
+  state.lines = incomingSessionId === previousSessionId ? reconcileActivitySnapshot(payload.lines || [], state.lines) : (payload.lines || [])
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
   syncMessageImagePreviewsFromLines(state.lines)
@@ -3201,6 +3246,7 @@ function renderDiff(text) {
 }
 
 function isImageCreateResultLine(line) {
+  if(historyView.value==='rows' && line?.activity)return isImageCreateLine(line) && ['completed','failed','interrupted'].includes(line.activity.phase)
   return isImageCreateLine(line) && /\b(ok|failed|generated|edited|image\s+(?:generate|edit)\s+failed)\b/i.test(String(line?.text || ''))
 }
 
@@ -3547,12 +3593,12 @@ function renderImageDimensionDetails(line, requested) {
     const actual = result?.state === 'loading' && item.available ? '加载中…' : facts.actual
     const metadata = generatedImageMetadata(line, item)
     const alpha = `<div><dt>Alpha 通道</dt><dd>${alphaChannelLabel(metadata?.hasAlphaChannel)}</dd></div><div><dt>透明像素</dt><dd>${alphaChannelLabel(metadata?.hasTransparentPixels)}</dd></div>`
-    return `<section class="image2-detail-prompt" data-original-dimensions="${index}"><span>${escapeHtml(imageCaption(item, index))}</span><dl class="image2-detail-grid"><div><dt>请求尺寸</dt><dd>${escapeHtml(facts.requested)}</dd></div><div><dt>实际尺寸</dt><dd>${escapeHtml(actual)}</dd></div>${alpha}</dl>${facts.mismatch ? '<p>实际尺寸与请求尺寸不同（保留原图）</p>' : ''}</section>`
+    return `<section class="image2-detail-prompt" data-original-dimensions="${index}">${historyView.value==='rows'?'':`<span>${escapeHtml(imageCaption(item, index))}</span>`}<dl class="image2-detail-grid"><div><dt>请求尺寸</dt><dd>${escapeHtml(facts.requested)}</dd></div><div><dt>实际尺寸</dt><dd>${escapeHtml(actual)}</dd></div>${alpha}</dl>${facts.mismatch ? '<p>实际尺寸与请求尺寸不同（保留原图）</p>' : ''}</section>`
   }).join('')
 }
 
 function renderImageCreateDetail(line) {
-  const parsed = parseImageCreateResult(line?.text || '', line?.imageResult)
+  const parsed = historyView.value==='rows' ? structuredImageDetail(line) : parseImageCreateResult(line?.text || '', line?.imageResult)
   const fields = [
     ['模型', parsed.model],
     ['模式', parsed.mode],
@@ -3566,7 +3612,7 @@ function renderImageCreateDetail(line) {
     ['语义名称', parsed.semanticName],
     ['开始时间', parsed.startedAt],
     ['完成时间', parsed.finishedAt],
-  ].filter(([, value]) => value)
+  ].filter(([label, value]) => value && (historyView.value!=='rows' || !['请求尺寸','语义名称'].includes(label)))
   const metadata = fields.length
     ? `<dl class="image2-detail-grid">${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`
     : ''
@@ -3579,6 +3625,10 @@ function renderImageCreateDetail(line) {
   return `<div class="image2-detail-view">${metadata}${renderImageDimensionDetails(line, parsed.size)}${prompt}${revisedPrompt}</div>`
 }
 
+function structuredImageDetail(line) {
+  const p=line?.activity?.input||{},r=line?.imageResult||{}
+  return {...p,...r,count:r.images?.length,duration:Number.isFinite(r.durationMs)?formatDuration(r.durationMs):''}
+}
 function parseImageCreateResult(text, metadata) {
   const raw = String(text || '')
   const compact = raw.replace(/\s+/g, ' ').trim()
@@ -3959,13 +4009,24 @@ function mergeMessageImagePreviews(previews) {
   ].slice(-200)
 }
 
+function activityTerminalTask(line){
+  const id=line.observation?.session_id||line.activity?.input?.session_id
+  return id?[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])].find(t=>t.kind==='terminal'&&t.sessionId===id):undefined
+}
+function observationImages(line){
+  if(!['image_inspect','image_note'].includes(line?.toolName))return []
+  const direct=lineImagePreviews(line)
+  if(direct.length)return direct
+  const images=(state.lines||[]).flatMap(directLineImagePreviews)
+  return dedupeImages(referencedImages(line,images))
+}
 function lineImagePreviews(line) {
   if (isImageCreateLine(line)) return imageCreateLineImages(line)
-  const group = line?.kind === 'user' ? userMessageGroup(line) : [line]
+  const group = line?.kind === 'user' ? userMessageGroup(line) : line?.toolUseId ? [line, ...(state.lines || []).filter(item=>item.parentToolUseId===line.toolUseId && item.image)] : [line]
   const images = []
   for (const item of group) {
     images.push(...directLineImagePreviews(item))
-    for (const label of imageLabelsFromText(item?.text)) {
+    for (const label of historyView.value==='rows' && line?.toolName ? [] : imageLabelsFromText(item?.text)) {
       const sessionId = String(state.session?.sessionId || runtimeSessionId || '')
       const candidates = state.messageImagePreviews.filter((image) => image.sessionId === sessionId && image.label === label)
       const cached = String(item?.messageId || '').startsWith('web-user-')
@@ -4322,7 +4383,9 @@ function virtualMessageKey(line) {
 
 function estimateVirtualMessageSize(index) {
   const line = visibleLines.value[index]
+  if(historyView.value==='rows' && isActivityLine(line)) return 26 + (line.id===activityLastId.value&&showMainObservation.value?activityObservationHeight.value:0) + (line.toolName==='image_create'?286:line.resources?.length?100:0)
   if (!line) return MESSAGE_VIRTUAL_ESTIMATED_HEIGHT
+  if (historyView.value==='rows' && line.kind==='thinking') return 26 + (line.id===activityLastId.value&&showMainObservation.value?activityObservationHeight.value:0)
   if (isToolGroup(line)) {
     return toolGroupExpanded(line)
       ? Math.min(1200, 72 + line.lines.reduce((height, item) => height + estimateLineTextHeight(item), 0))
@@ -4668,7 +4731,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" class="transcript" tabindex="0" aria-label="对话记录">
+          <div ref="transcript" class="transcript" :class="{'rows-transcript':historyView==='rows'}" tabindex="0" aria-label="对话记录">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
@@ -4688,7 +4751,7 @@ function createMobileSession() {
               </div>
             </section>
 
-            <div ref="messageList" class="virtual-message-list" :style="{ height: `${virtualMessageTotalHeight}px` }">
+            <div ref="messageList" class="virtual-message-list" :class="{'rows-history':historyView==='rows'}" :style="{ height: `${virtualMessageTotalHeight}px` }">
             <template v-for="virtualRow in virtualMessageRows" :key="virtualRow.key">
               <div
                 :ref="measureVirtualMessageElement"
@@ -4697,7 +4760,20 @@ function createMobileSession() {
                 :style="{ transform: `translateY(${virtualRow.start - virtualScrollMargin}px)` }"
               >
               <template v-for="line in [visibleLines[virtualRow.index]]" :key="line.id">
-              <article v-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
+                <Transition name="tool-turn">
+                  <ToolTurnConnector v-if="turnConnections.has(line.id)" :connection="turnConnections.get(line.id)" />
+                </Transition>
+              <div v-if="historyView==='rows' && isActivityLine(line)" class="tool-history-entry" :class="{'is-tool-group-start':!isActivityLine(visibleLines[virtualRow.index-1]) && visibleLines[virtualRow.index-1]?.kind!=='thinking'}">
+                <ToolActivityRow :line="line" :entering="activityEntranceIds.has(line.id)" @entered="activityEntranceIds.delete(line.id)" :terminal-task="activityTerminalTask(line)" :pinned="activityPinned===line.id" :paused="activityPaused" :images="lineImagePreviews(line)" :download-name="imageDownloadName" :resource-url="pluginResourceUrl" :resource-height="pluginResourceHeight" @observe="toggleActivityObservation" @details="openToolDetail" />
+                <div v-if="line.id===activityPinned" :ref="setActivityPinnedAnchor" class="tool-pinned-observation-anchor"></div>
+                <div v-if="line.id===activityLastId" :ref="setActivityAnchor" class="tool-observation-anchor"></div>
+              </div>
+              <div v-else-if="historyView==='rows' && line.kind==='thinking'" class="thinking-history-entry">
+                <button type="button" class="tool-activity-row thinking-activity-row" :aria-pressed="activityPinned===line.id" @click="toggleActivityObservation(line)"><ToolActivityIcon class="reasoning-icon" name="thinking" :phase="line.live?'running':'completed'" :paused="activityPaused"/><span class="activity-purpose">思考</span><svg v-if="activityPinned===line.id" class="activity-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4zM12 16v6"/></svg></button>
+                <div v-if="line.id===activityPinned" :ref="setActivityPinnedAnchor" class="tool-pinned-observation-anchor"></div>
+                <div v-if="line.id===activityLastId" :ref="setActivityAnchor" class="tool-observation-anchor"></div>
+              </div>
+              <article v-else-if="isToolGroup(line)" :class="['message', 'tool-group-message', { live: line.live, expanded: toolGroupExpanded(line) }]">
                 <div class="tool-group-shell">
                   <button type="button" class="tool-group-trigger" :aria-expanded="toolGroupExpanded(line)" @click="toggleToolGroup(line, $event)">
                     <span class="tool-group-label">
@@ -4721,10 +4797,10 @@ function createMobileSession() {
                     <div v-for="item in line.lines" :key="item.id" :class="['tool-group-result', `kind-${item.kind || 'system'}`]">
                       <details v-if="item.kind === 'thinking'" class="reasoning-sheet" :open="item.live || undefined">
                         <summary>
-                          <span class="reasoning-title-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                          <ToolActivityIcon class="reasoning-icon" name="thinking" :phase="item.live ? 'running' : 'completed'" :paused="activityPaused" />
                           <span class="reasoning-heading">思考</span>
                         </summary>
-                        <div class="reasoning-reveal">
+                        <div v-if="String(item.text || '').trim()" class="reasoning-reveal">
                           <div class="reasoning-paper">
                             <div class="message-text markdown reasoning-text" v-html="renderLine(item)"></div>
                           </div>
@@ -4787,11 +4863,9 @@ function createMobileSession() {
                   </div>
                 </div>
               </article>
-              <article v-else :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
-              <div :class="['message-marker', { spinning: line.live }]">
-                <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true">
-                  <path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" />
-                </svg>
+              <article v-else :aria-label="historyView==='rows' && ['user','assistant'].includes(line.kind)?lineTitle(line):undefined" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
+              <div v-if="!(historyView==='rows' && ['user','assistant'].includes(line.kind))" :class="['message-marker', { spinning: line.live }]">
+                <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" /></svg>
               </div>
               <div v-if="isCompactionLine(line)" class="message-body compaction-message-body">
                 <section :class="['compaction-context-bar', { current: line.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(line)" @keydown.enter.prevent="openCompactionDetail(line)" @keydown.space.prevent="openCompactionDetail(line)">
@@ -4808,11 +4882,11 @@ function createMobileSession() {
               <div v-else-if="line.kind === 'thinking'" class="message-body reasoning-body">
                 <details class="reasoning-sheet" :open="line.live || undefined">
                   <summary>
-                    <span class="reasoning-title-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <ToolActivityIcon class="reasoning-icon" name="thinking" :phase="line.live ? 'running' : 'completed'" :paused="activityPaused" />
                     <span class="reasoning-heading">思考</span>
                     <span v-if="lineElapsedText(line)" class="reasoning-elapsed">{{ lineElapsedText(line) }}</span>
                   </summary>
-                  <div class="reasoning-reveal">
+                  <div v-if="String(line.text || '').trim()" class="reasoning-reveal">
                     <div class="reasoning-paper">
                       <div class="message-text markdown reasoning-text" v-html="renderLine(line)"></div>
                     </div>
@@ -4820,7 +4894,7 @@ function createMobileSession() {
                 </details>
               </div>
               <div v-else class="message-body">
-                <div v-if="!isPlanToolLine(line) && (line.kind !== 'tool' || lineResources(line).length) && !shouldCollapseToolLine(line)" class="message-head">
+                <div v-if="!(historyView==='rows' && ['user','assistant'].includes(line.kind)) && !isPlanToolLine(line) && (line.kind !== 'tool' || lineResources(line).length) && !shouldCollapseToolLine(line)" class="message-head">
                   <strong>{{ lineTitle(line) }}</strong>
                   <span v-if="line.toolName && toolResultStatus(line).key === 'failed'" class="tool-result-failure-mark" aria-label="执行失败">×</span>
                   <span v-if="!line.toolName && line.titleStatus">{{ line.titleStatus }}</span>
@@ -4928,6 +5002,14 @@ function createMobileSession() {
               </div>
             </template>
             </div>
+            <Teleport v-if="historyView==='rows' && activityAnchor" :to="activityAnchor">
+              <Transition name="main-observation" appear><div v-if="showMainObservation" class="observation-presence main-observation-presence"><div class="observation-presence-content">
+              <ToolObservation :render-text="renderLine" variant="main" :line="observedActivityLine" :terminal-revision="terminalOutputRevisions.get(observedActivityLine?.observation?.session_id || observedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="state.session?.sessionId" :images="observationImages(activityObserved)" :paused="activityPaused" @height="activityObservationHeight=$event" />
+              </div></div></Transition>
+            </Teleport>
+            <Teleport v-if="historyView==='rows' && activityPinnedAnchor" :to="activityPinnedAnchor">
+              <ToolObservation @height="measureObservationRow(activityPinnedAnchor)" :render-text="renderLine" v-if="pinnedActivityLine" variant="pinned" :line="pinnedActivityLine" :terminal-revision="terminalOutputRevisions.get(pinnedActivityLine?.observation?.session_id || pinnedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="state.session?.sessionId" :images="observationImages(activityPinnedLine)" :paused="activityPaused" />
+            </Teleport>
             <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" />
@@ -5335,6 +5417,7 @@ function createMobileSession() {
             <h2>模型配置</h2>
             <button class="primary" @click="saveLogin" :disabled="!state.login">保存</button>
           </div>
+          <label class="history-view-setting"><span>历史展示</span><NeoSelect v-model="historyView" :options="[{value:'folded',label:'折叠视图'},{value:'rows',label:'逐行视图'}]" /></label>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
           <form v-else class="settings-form" @submit.prevent="saveLogin">
             <button v-if="canConfigureModel" type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
@@ -5800,3 +5883,8 @@ function createMobileSession() {
     </div>
   </Teleport>
 </template>
+
+<style>
+.tool-pinned-observation-anchor{display:flow-root}.observation-presence{display:grid;grid-template-rows:1fr;opacity:1}.observation-presence-content{min-height:0;overflow:hidden}.main-observation-enter-active,.main-observation-leave-active{transition:opacity 240ms ease,grid-template-rows 240ms ease}.main-observation-enter-from,.main-observation-leave-to{opacity:0;grid-template-rows:0fr}@media(prefers-reduced-motion:reduce){.main-observation-enter-active,.main-observation-leave-active{transition:none}}
+.history-view-setting{display:flex;align-items:center;gap:16px;margin:16px 0;max-width:360px}.history-view-setting>span{white-space:nowrap}.tool-history-entry{padding:0;min-width:0}
+</style>
