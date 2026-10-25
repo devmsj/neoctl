@@ -48,6 +48,7 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
+    localStorage.setItem('neo-tool-history-view', 'folded');
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
       constructor(...args) {
@@ -118,6 +119,9 @@ try {
   await page.getByRole('button', { name: '登录', exact: true }).click();
   const logout = page.getByRole('button', { name: '退出登录', exact: true });
   await logout.waitFor();
+  assert.equal(await page.locator('.rows-transcript').count(), 1, 'isolated mode always uses rows');
+  assert.equal(await page.locator('.history-view-setting').count(), 0, 'isolated mode exposes no history-view modifier');
+  assert.equal(await page.getByText('历史展示', { exact: true }).count(), 0);
   assert.equal((await logout.textContent()).trim(), '');
   const logoutBox = await logout.boundingBox();
   assert.ok(logoutBox.x < 40 && logoutBox.y > 900, JSON.stringify(logoutBox));
@@ -310,6 +314,8 @@ try {
   await page.locator('.memory-card').waitFor();
   await page.getByRole('button', { name: '模型配置', exact: true }).click();
   await page.locator('.settings-form').waitFor();
+  assert.equal(await page.locator('.history-view-setting').count(), 0);
+  assert.equal(await page.getByText('历史展示', { exact: true }).count(), 0);
   assert.equal(await page.locator('.settings-prompt-entry').count(), 1);
   assert.equal(await page.locator('.settings-plugin-card').count(), 2);
   assert.equal(await page.getByText('CPA', { exact: true }).count(), 1);

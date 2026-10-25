@@ -55,6 +55,7 @@ test('preallocated workspace state survives a registry reload', async (t) => {
 
   assert.deepEqual(restored, {
     cwd: candidate,
+    workspacePaths: [candidate],
     materialized: false,
     cwdHistory: [candidate],
     cwdNoticePending: false,

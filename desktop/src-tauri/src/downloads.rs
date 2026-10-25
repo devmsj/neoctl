@@ -2,7 +2,7 @@
 //! WebView2 owns the transfer (including cookies, redirects and blob URLs).
 use std::path::Path;
 use tauri::{
-    webview::{DownloadEvent, PageLoadEvent},
+    webview::DownloadEvent,
     Manager, Webview, WebviewWindowBuilder,
 };
 
@@ -81,12 +81,6 @@ fn handle(webview: Webview, event: DownloadEvent<'_>) -> bool {
     }
 }
 
-fn is_bootstrap_url(url: &tauri::Url) -> bool {
-    url.scheme() != "about"
-        && url.host_str() != Some("127.0.0.1")
-        && url.host_str() != Some("localhost")
-}
-
 pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     // Disable automatic creation in config so hooks are attached before any navigation.
     let config = app
@@ -98,21 +92,6 @@ pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
         .expect("main window configuration is required");
     WebviewWindowBuilder::from_config(app, config)?
         .on_download(handle)
-        .on_page_load(|window, payload| {
-            if payload.event() != PageLoadEvent::Finished || !is_bootstrap_url(payload.url()) {
-                return;
-            }
-            if let Ok(mut start_url) = window
-                .app_handle()
-                .state::<crate::DesktopState>()
-                .start_url
-                .lock()
-            {
-                if start_url.is_none() {
-                    *start_url = Some(payload.url().clone());
-                }
-            }
-        })
         .build()?;
     Ok(())
 }

@@ -37,7 +37,7 @@ export function terminalPreviews(data: Record<string, unknown>, limit = 1400): T
   for (const stream of ['stdout', 'stderr']) {
     const value = data[stream];
     if (typeof value !== 'string') continue;
-    previews.push({ label: `${stream}${data.tty === true && stream === 'stdout' ? '（TTY 合流）' : ''}${value.length > limit ? ' · 预览已截断' : ''}`, kind: 'code', content: value.length > limit ? value.slice(0, limit) : value });
+    previews.push({ label: `${stream}${data.tty === true && stream === 'stdout' ? '（TTY 合流）' : ''}${value.length > limit ? '（预览已截断）' : ''}`, kind: 'code', content: value.length > limit ? value.slice(0, limit) : value });
   }
   return previews;
 }

@@ -103,6 +103,30 @@ jobs:
       - name: Install Desktop dependencies
         run: npm ci --prefix desktop --registry=https://registry.npmjs.org
 
+      - name: Prepare browser regression tooling
+        run: |
+          $browserTools = Join-Path $env:RUNNER_TEMP 'neo-browser-tests'
+          npm install --prefix $browserTools --no-audit --no-fund --package-lock=false playwright-core@1.64.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "PLAYWRIGHT_CORE_PATH=$browserTools/node_modules/playwright-core" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BROWSER_CHANNEL=msedge" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify launcher and frameless window controls in browser
+        working-directory: desktop
+        run: npm run test:browser
+
+      - name: Verify streaming rendering and compact workspace UI
+        working-directory: web
+        run: node tests/run-release-browser-tests.mjs
+
+      - name: Preserve browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ui-diagnostics
+          path: ${{ runner.temp }}/neo-launcher-*.png
+          if-no-files-found: ignore
+
       - name: Prepare published Web payload and bundled Node
         run: npm run bundle:prepare --prefix desktop
 
@@ -175,6 +199,6 @@ jobs:
             gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
           } else {
             gh release create $env:RELEASE_TAG @assets --repo "${{ github.repository }}" `
-              --title "Neo Desktop $env:VERSION" --generate-notes --verify-tag
+              --title "Neo Desktop $env:VERSION" --notes-file desktop/RELEASE_NOTES.md --verify-tag
           }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

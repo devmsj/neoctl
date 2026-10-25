@@ -327,7 +327,7 @@ function formatObjectPreview(value: Record<string, unknown>): string {
     parts.push(`${humanizePreviewKey(key)}=${formatted}`);
   }
   const extra = keys.length > 6 ? `, +${keys.length - 6} fields` : "";
-  return parts.length ? parts.join(" · ") + extra : "{}";
+  return parts.length ? parts.join("  ") + extra : "{}";
 }
 
 function formatPreviewField(value: unknown): string {

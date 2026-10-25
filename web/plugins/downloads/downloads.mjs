@@ -49,7 +49,7 @@ export class DownloadRegistry {
 export function createExposeDownloadsTool(options) {
   const tool = {
     name: 'expose_downloads',
-    description: 'Expose existing local files for browser download with no automatic expiration. Only absolute-path mappings are persisted; no file is copied. Any readable regular file anywhere is allowed, including outside the workspace. Links survive restarts but fail when the original path is moved, deleted, or unreadable. Anyone with the link can download. Input must be absolute paths. Copy downloads[].markdown verbatim (neoctl.resource-link.v1).',
+    description: 'Publish local files the user should receive as downloads, before the final reply. Pass absolute paths; any readable regular file is allowed, including outside the workspace. Copy downloads[].markdown verbatim (neoctl.resource-link.v1); never construct links or add/remove a sandbox: prefix. Only original-path mappings persist; no file is copied. Links survive restarts without automatic expiration (expiresAt=null), but fail if the source moves, is deleted or becomes unreadable. Anyone with the link can download. Old in-memory links cannot be restored; re-expose the original file.',
     inputSchema: {
       type: 'object',
       properties: { paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20, description: 'Absolute file paths to publish as permanent browser downloads.' } },

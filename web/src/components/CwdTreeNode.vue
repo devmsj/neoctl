@@ -1,4 +1,5 @@
 <script setup>
+import ChromeIcon from './ChromeIcon.vue'
 defineOptions({ name: 'CwdTreeNode' })
 
 defineProps({
@@ -24,10 +25,11 @@ const emit = defineEmits(['toggle', 'select', 'delete'])
         type="button"
         class="cwd-tree-toggle"
         :aria-label="expanded[node.path] ? '收起' : '展开'"
+        :aria-expanded="!!expanded[node.path]"
         @click.stop="emit('toggle', node)"
-      >{{ expanded[node.path] ? '▾' : '▸' }}</button>
+      ><ChromeIcon name="chevron" /></button>
       <button type="button" class="cwd-tree-name" :title="node.path" @click="emit('select', node)">
-        <span aria-hidden="true">◇</span>
+        <ChromeIcon name="folder" />
         <strong>{{ node.name }}</strong>
       </button>
       <button
@@ -36,7 +38,7 @@ const emit = defineEmits(['toggle', 'select', 'delete'])
         class="cwd-tree-delete"
         :aria-label="`删除 ${node.name}`"
         @click.stop="emit('delete', node)"
-      >×</button>
+      ><ChromeIcon name="trash" /></button>
     </div>
     <CwdTreeNode
       v-if="expanded[node.path] && children[node.path]"
@@ -45,6 +47,7 @@ const emit = defineEmits(['toggle', 'select', 'delete'])
       :expanded="expanded"
       :selected-path="selectedPath"
       :level="level + 1"
+      :allow-delete="allowDelete"
       @toggle="emit('toggle', $event)"
       @select="emit('select', $event)"
       @delete="emit('delete', $event)"

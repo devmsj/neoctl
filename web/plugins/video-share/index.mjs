@@ -20,7 +20,7 @@ export function createPlugin(context = {}) {
   }
   const expose = {
     name: 'expose_videos',
-    description: 'Display existing local videos inline in the conversation using embedded players. Persists only original absolute-path mappings, with no copies, directory restrictions or automatic expiration. Playback reads the original file; moving or deleting it invalidates the link. The UI embeds the player automatically. Do not include video links, URLs, Markdown links, HTML video tags or iframes in your textual reply; only acknowledge inline playback. Anyone with a link can view it. Recommend MP4 H.264/AAC or WebM; no transcoding is performed.',
+    description: 'Use for watching local videos inline, not a generic download tool. Pass absolute paths; players appear automatically in the conversation. Reply with a brief acknowledgement or explanation, without video URLs, Markdown links, HTML video tags or iframes. Also publish a download only if explicitly requested. Persistent original-path mappings have no directory restrictions, copies or automatic expiration; source movement, deletion or unreadability breaks playback. Anyone with the link can view it; do not claim a snapshot is stored. Playback requires browser codec support; no transcoding. Prefer MP4 H.264/AAC or WebM.',
     inputSchema: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20, description: 'Absolute video paths (.mp4, .m4v, .mov, .webm, .ogv).' } }, required: ['paths'], additionalProperties: false },
     metadata,
     validate(input) {
@@ -60,6 +60,5 @@ export function createPlugin(context = {}) {
     presentToolResult({ toolName, output }) {
       return toolName === 'expose_videos' ? videoPresentation(output) : undefined;
     },
-    promptSections: [{ name: 'Inline Video Playback', cacheStable: true, requiresTools: ['expose_videos'],
-    content: 'For local video files that the user wants to watch, use expose_videos instead of a generic download tool. The plugin automatically embeds HTML5 players inside the conversation, without opening a new page. Do not put video links, raw video URLs, Markdown video links, HTML video tags or iframe markup in your textual response. Reply only with a brief acknowledgement or relevant explanation; the player is already visible. Do not also expose the same video as a download unless the user explicitly requests a download. There is no automatic expiration. Playback depends on browser codec support; this plugin does not transcode. Publications are zero-copy original-path references with persistent mappings; anyone with a link can view them. Source movement or deletion invalidates the link; do not claim a snapshot is stored. Use revoke_videos only when requested.' }] };
+  };
 }

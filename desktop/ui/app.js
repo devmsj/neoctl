@@ -18,6 +18,7 @@ let initialized = false;
 let installedDir = '';
 let defaultDir = '';
 let backendRunning = false;
+let externalRuntime = false;
 let retryAction = 'initialize';
 let phase = 'booting';
 let cleanupPending = false;
@@ -43,16 +44,18 @@ function setBusy(value) {
   $('#clearInstallDirectory').disabled = value || Boolean(installedDir);
   browseButton.disabled = value || !initialized || Boolean(installedDir);
   pathInput.disabled = value || !initialized;
-  enterButton.disabled = value || !backendRunning;
+  enterButton.disabled = value || !installedDir || (externalRuntime && !backendRunning);
   $('#startBackend').disabled = value || !installedDir || backendRunning;
   $('#stopBackend').disabled = value || !backendRunning;
-  updateButton.disabled = value || !installedDir;
-  $('#cleanupRuntime').disabled = value || !installedDir;
+  updateButton.disabled = value || !installedDir || externalRuntime;
+  $('#cleanupRuntime').disabled = value || !installedDir || externalRuntime;
   retryButton.disabled = value;
+  enterButton.setAttribute('aria-busy', String(value));
 }
 
 function appendLog(line) {
-  if (disposed || !line) return;
+  if (disposed || !String(line ?? '').trim()) return;
+  $('#logDetails').hidden = false;
   const follow = installLog.scrollHeight - installLog.scrollTop - installLog.clientHeight < 32;
   installLog.textContent = `${installLog.textContent}${String(line)}\n`;
   if (installLog.textContent.length > 24000) installLog.textContent = installLog.textContent.slice(-18000);
@@ -82,10 +85,14 @@ function fail(error, action) {
   $('#progressStage').textContent = '需要重试';
   $('#progressTrack').setAttribute('aria-valuetext', `操作失败，${Math.round(estimate)}%`);
   appendLog(error);
-  retryButton.textContent = action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
-  if (action === 'refresh-install') retryButton.textContent = '重新读取位置并启动';
+  $('#logDetails').open = true;
+  const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
+  retryButton.setAttribute('aria-label', retryLabel);
+  retryButton.setAttribute('title', retryLabel);
   retryButton.hidden = false;
   showView('progressView', 'error');
+  // Reveal the actual failure even when the log panel just became visible.
+  window.requestAnimationFrame?.(() => { if (!disposed) installLog.scrollTop = installLog.scrollHeight; });
 }
 
 async function subscribe(event, handler) {
@@ -96,14 +103,30 @@ async function subscribe(event, handler) {
 }
 
 function updatePathDisplay() {
-  $('#pathDisplay').textContent = `${installedDir ? '数据位置' : '安装位置'}：${pathInput.value.trim() || defaultDir}`;
+  const path = pathInput.value.trim() || defaultDir;
+  $('#pathDisplay').textContent = path;
+  $('#pathName').textContent = path.split(/[\\/]/).filter(Boolean).at(-1) || path || '—';
+  $('#pathName').setAttribute('title', path);
+  $('#pathOptions').setAttribute('aria-label', installedDir ? '查看数据位置' : '更改安装位置');
 }
 on(pathInput, 'input', () => { directoryNeedsCleanup = false; $('#clearInstallDirectory').hidden = true; updatePathDisplay(); setBusy(busy); });
+
+function setVersions(state) {
+  const web = state.web_version || '未知', core = state.core_version || '未知';
+  $('#versionStatus').textContent = installedDir ? `Web ${web} / Core ${core}` : '';
+  $('#webVersion').textContent = web;
+  $('#coreVersion').textContent = core;
+  $('#versionBadges').hidden = !installedDir;
+}
 
 function applyBootstrap(state) {
   // Any configured path is existing data, even if runtime validation failed.
   if (state.installed && !state.install_dir) throw new Error('已有安装缺少数据位置，请检查配置后重试。');
+  externalRuntime = state.external_runtime === true;
   installedDir = state.install_dir || '';
+  $('#startBackend').hidden = true;
+  $('#stopBackend').hidden = externalRuntime;
+  updateButton.hidden = externalRuntime;
   defaultDir = state.default_install_dir || '';
   pathInput.value = installedDir || defaultDir;
   updatePathDisplay();
@@ -114,11 +137,9 @@ function applyBootstrap(state) {
   installButton.hidden = Boolean(installedDir);
   browseButton.disabled = Boolean(installedDir);
   pathInput.readOnly = Boolean(installedDir);
-  $('#readyTitle').textContent = installedDir ? 'Neo 启动页' : '安装 Neo';
+  $('#readyTitle').textContent = installedDir ? '启动页' : '安装';
   $('#readyMessage').textContent = installedDir ? '' : '首次安装需联网。';
-  $('#versionStatus').textContent = installedDir
-    ? `当前 Web ${state.web_version || '未知'} / Core ${state.core_version || '未知'}。`
-    : '';
+  setVersions(state);
   $('#backendControls').hidden = !installedDir;
   setCleanup(state.cleanup_pending ? ['检测到上次更新的清理或恢复任务，将重试删除非当前版本。'] : []);
 }
@@ -171,7 +192,7 @@ async function initialize() {
     setBusy(false);
     showView('readyView', 'ready', false);
     if (!installedDir) await checkInstallDirectory();
-    if (cleanupPending) await retryCleanup();
+    if (cleanupPending && !externalRuntime) await retryCleanup();
   } catch (error) {
     autoLaunch = false;
     initialized = false;
@@ -210,7 +231,8 @@ on($('#installForm'), 'submit', async (event) => {
   }
   setBusy(true);
   installLog.textContent = '';
-  $('#logDetails').open = false;
+  $('#logDetails').hidden = true;
+  $('#logDetails').open = true;
   retryButton.hidden = true;
   showView('progressView', 'installing');
   applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在准备安装…', log: '正在准备内置 Node.js，将联网获取最新 Web 与其兼容的 Core…' });
@@ -231,17 +253,18 @@ on($('#installForm'), 'submit', async (event) => {
 });
 
 on(updateButton, 'click', async () => {
-  if (busy || disposed || !installedDir) return;
+  if (busy || disposed || !installedDir || externalRuntime) return;
   setBusy(true);
   installLog.textContent = '';
-  $('#logDetails').open = false;
+  $('#logDetails').hidden = true;
+  $('#logDetails').open = true;
   retryButton.hidden = true;
   showView('progressView', 'updating');
   applyProgress({ percent: 0, title: '准备更新 Web 和 Core', stage: '准备中', message: '正在连接软件源…' });
   try {
     const versions = await api.core.invoke('update_runtime');
     if (disposed) return;
-    $('#versionStatus').textContent = `当前 Web ${versions.web_version} / Core ${versions.core_version}。`;
+    setVersions(versions);
     setCleanup(versions.cleanup_pending || []);
     $('#readyMessage').textContent = cleanupPending ? '新版本已启用，旧版本清理未完成。' : '更新完成，旧版本已删除。';
     await refreshBackend();
@@ -269,9 +292,9 @@ on(browseButton, 'click', async () => {
   }
 });
 on(enterButton, 'click', async () => {
-  if (busy || !backendRunning) return;
+  if (busy || !installedDir || (externalRuntime && !backendRunning)) return;
   setBusy(true);
-  try { await api.core.invoke('enter_application'); } catch(error) { $('#readyMessage').textContent = String(error); await refreshBackend(); } finally { if (!disposed) setBusy(false); }
+  try { await api.core.invoke('enter_application'); } catch(error) { if (!disposed) { $('#readyMessage').textContent = '未能进入，详情见日志。'; appendLog(error); $('#logDetails').open = true; await refreshBackend(); } } finally { if (!disposed) setBusy(false); }
 });
 on(retryButton, 'click', () => {
   if (busy || disposed) return;
@@ -303,14 +326,23 @@ initialize();
 async function refreshBackend() {
   try { backendRunning = (await api.core.invoke('runtime_status')) === true; } catch { backendRunning = false; }
   if (disposed) return;
-  $('#backendStatus').textContent = backendRunning ? '核心和后台运行中' : '核心和后台已关闭';
+  const status = backendRunning ? '已就绪' : externalRuntime ? '开发服务未连接' : '未启动';
+  enterButton.setAttribute('title', backendRunning ? '进入应用' : '启动并进入');
+  enterButton.setAttribute('aria-label', backendRunning ? '进入应用' : '启动并进入');
+  $('#enterLabel').textContent = backendRunning ? '进入' : '启动';
+  $('#stopBackend').hidden = externalRuntime || !backendRunning;
+  $('#backendStatus').textContent = status;
+  $('#logDetails').hidden = !installLog.textContent.trim();
+  $('#runtimeIndicator').dataset.running = String(backendRunning);
+  $('#runtimeIndicator').setAttribute('title', status);
+  $('#runtimeIndicator').setAttribute('aria-label', status);
   setBusy(busy);
 }
 for (const [id, command] of [['#startBackend','start_backend'],['#stopBackend','stop_backend']]) {
   on($(id), 'click', async () => {
-    if (busy || disposed) return;
+    if (busy || disposed || externalRuntime) return;
     setBusy(true);
-    try { await api.core.invoke(command); } catch(error) { if(!disposed) $('#readyMessage').textContent = String(error); }
+    try { await api.core.invoke(command); } catch(error) { if(!disposed) { $('#readyMessage').textContent = '未能启动，详情见日志。'; appendLog(error); $('#logDetails').open = true; } }
     finally { if (!disposed) { await refreshBackend(); setBusy(false); } }
   });
 }
@@ -320,12 +352,12 @@ cleanups.push(() => clearInterval(statusTimer));
 
 function setCleanup(warnings) {
   cleanupPending = warnings.length > 0;
-  $('#cleanupRuntime').hidden = !cleanupPending;
+  $('#cleanupRuntime').hidden = !cleanupPending || externalRuntime;
   $('#cleanupStatus').hidden = !cleanupPending;
   $('#cleanupStatus').textContent = warnings.join('\n');
 }
 async function retryCleanup() {
-  if (busy || disposed || !installedDir) return;
+  if (busy || disposed || !installedDir || externalRuntime) return;
   setBusy(true);
   try {
     const warnings = await api.core.invoke('cleanup_runtime');

@@ -24,6 +24,7 @@ const files = [
   'memory-monitor.test.mjs',
   'local-resources.test.mjs',
   'markdown-render.test.mjs',
+  'math-markdown.test.mjs',
   'neow.test.mjs',
   'observability-preservation.test.mjs',
   'plugin-settings.test.mjs',
@@ -36,12 +37,15 @@ const files = [
   'prompt-usage.test.mjs',
   'runtime-router-cleanup.test.mjs',
   'runtime-workspaces.test.mjs',
+  'workspace-scope.test.mjs',
   'server-startup.test.mjs',
   'tool-settings.test.mjs',
+  'tool-guidance.test.mjs',
   'tool-activity.test.mjs',
   'terminal-ansi.test.mjs',
   'transcript-follow.test.mjs',
   'upload-progress.test.mjs',
+  'ui-separators.test.mjs',
 ].map(file => `tests/${file}`);
 
 const options = process.argv.slice(2);

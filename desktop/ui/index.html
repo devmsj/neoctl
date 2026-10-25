@@ -1,82 +1,85 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light" />
-  <title>Neo Desktop · 安装</title>
+  <meta name="color-scheme" content="dark" />
+  <title>启动页</title>
   <link rel="stylesheet" href="./styles.css" />
   <script src="./app.js" defer></script>
 </head>
 <body data-state="booting">
+  <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" /></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8M6.4 5.6a8 8 0 1 0 11.2 0" /></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></symbol>
+    <symbol id="i-update" viewBox="0 0 24 24"><path d="M20 10a8 8 0 0 0-14-3L3 10m0-6v6h6M4 14a8 8 0 0 0 14 3l3-3m0 6v-6h-6" /></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4" /></symbol>
+    <symbol id="i-clean" viewBox="0 0 24 24"><path d="m14 4 6 6M3 17l9-11 8 8-11 7H3Zm5-5 6 6M16 6l4-4" /></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" /></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6" /></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></symbol>
+    <symbol id="i-orbit" viewBox="0 0 24 24"><path d="M7 4.5a9 9 0 1 0 10 0M12 2v5" /><circle cx="12" cy="13" r="2" /></symbol>
+  </defs></svg>
   <main class="shell">
-    <section class="hero" aria-labelledby="brandTitle">
-      <div class="artwork" aria-hidden="true">
-        <span class="registration registration-a"></span>
-        <svg class="brand-diamond" viewBox="0 0 240 340" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M120 16 219 170 120 324 21 170Z" transform="translate(7 7)" fill="#1a1a1a" />
-          <path d="M120 16 219 170 120 324 21 170Z" fill="#38bdf8" stroke="#1a1a1a" stroke-width="2" />
-        </svg>
-        <span class="fragment fragment-pink"></span>
-        <span class="fragment fragment-lime"></span>
-        <span class="registration registration-b"></span>
-      </div>
-      <div class="brand-copy">
-        <h1 id="brandTitle">Neo<span class="brand-period" aria-hidden="true">.</span></h1>
-      </div>
-    </section>
-
-    <section class="installer-card" aria-label="Neo 安装操作">
-      <!-- Keep the installation surface free of decorative labels. -->
+    <section class="installer-card" aria-label="启动控制">
       <section id="readyView" class="view" aria-labelledby="readyTitle">
-        <h2 id="readyTitle" tabindex="-1">安装 Neo</h2>
+        <h1 id="readyTitle" class="sr-only" tabindex="-1">安装</h1>
         <form id="installForm">
-          <p id="pathDisplay" class="status-message">正在读取默认数据位置…</p>
+          <div class="ready-heading">
+            <div id="runtimeIndicator" class="runtime-indicator" data-running="false" title="正在连接" aria-label="运行状态">
+
+              <span class="runtime-dot" aria-hidden="true"></span>
+              <span id="backendStatus" role="status">正在连接</span>
+            </div>
+            <button id="enterButton" class="icon-button primary-action" type="button" title="进入应用" aria-label="进入应用" hidden><span id="enterLabel">进入</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button>
+            <button id="installButton" class="icon-button primary-action" type="submit" title="安装并启动" aria-label="安装并启动" disabled><svg class="icon" aria-hidden="true"><use href="#i-download" /></svg><span>安装</span></button>
+          </div>
+          <div id="versionBadges" class="version-badges" aria-label="版本" hidden><span>Web <strong id="webVersion">—</strong></span><span>Core <strong id="coreVersion">—</strong></span></div>
+          <p id="pathDisplay" class="sr-only"></p>
           <details id="pathOptions">
-            <summary id="pathSummary">更改目录</summary>
-            <label for="installPath">数据位置</label>
-            <div class="path-control">
-              <input id="installPath" name="installPath" type="text" spellcheck="false" autocomplete="off" aria-describedby="readyMessage" placeholder="使用默认数据位置" />
-              <button id="browseButton" class="browse-button" type="button" disabled>浏览<span aria-hidden="true">↗</span></button>
+            <summary class="path-summary" title="数据位置"><svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg><span id="pathName">—</span><span id="pathSummary" class="sr-only">更改目录</span><svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
+            <div class="path-editor">
+              <label for="installPath" class="sr-only">数据位置</label>
+              <div class="path-control">
+                <input id="installPath" name="installPath" type="text" spellcheck="false" autocomplete="off" aria-describedby="readyMessage" placeholder="数据位置" />
+                <button id="browseButton" class="icon-button" type="button" title="选择目录" aria-label="选择目录" disabled><svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg></button>
+              </div>
             </div>
           </details>
-          <p id="readyMessage" class="status-message" role="status" aria-live="polite">正在读取安装位置…</p>
-          <button id="clearInstallDirectory" class="secondary-button" type="button" hidden>清空此目录（删除全部内容）</button>
-            <button id="installButton" class="primary-button" type="submit" disabled>安装并启动<span aria-hidden="true">↗</span></button>
-          <div id="backendControls" hidden>
-            <p id="versionStatus" class="version-status" role="status" aria-live="polite">正在读取 Web / Core 版本…</p>
-            <button id="updateRuntime" class="primary-button update-button" type="button" disabled>更新 Web 和 Core<span aria-hidden="true">↗</span></button>
-            <p id="cleanupStatus" class="status-message" role="status" hidden></p>
-            <button id="cleanupRuntime" class="secondary-button" type="button" hidden>重试清理旧版本</button>
-            <p id="backendStatus" role="status">后台已关闭</p>
-            <button id="startBackend" class="secondary-button" type="button">启动核心和后台</button>
-            <button id="stopBackend" class="secondary-button" type="button" disabled>关闭核心和后台</button>
+          <p id="readyMessage" class="status-message" role="status" aria-live="polite"></p>
+          <p id="versionStatus" class="sr-only" role="status"></p>
+          <div class="control-dock">
+            <button id="clearInstallDirectory" class="icon-button danger" type="button" title="清空此目录（删除全部内容）" aria-label="清空此目录（删除全部内容）" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg></button>
+
+            <div id="backendControls" class="backend-controls" hidden>
+              <button id="startBackend" class="icon-button" type="button" title="启动核心和后台" aria-label="启动核心和后台"><svg class="icon" aria-hidden="true"><use href="#i-power" /></svg></button>
+              <button id="stopBackend" class="icon-button" type="button" title="关闭核心和后台" aria-label="关闭核心和后台" disabled><svg class="icon" aria-hidden="true"><use href="#i-stop" /></svg></button>
+
+              <button id="updateRuntime" class="icon-button" type="button" title="更新 Web 和 Core" aria-label="更新 Web 和 Core" disabled><svg class="icon" aria-hidden="true"><use href="#i-update" /></svg></button>
+              <button id="cleanupRuntime" class="icon-button" type="button" title="重试清理旧版本" aria-label="重试清理旧版本" hidden><svg class="icon" aria-hidden="true"><use href="#i-clean" /></svg></button>
+            </div>
+
           </div>
-          <button id="enterButton" class="secondary-button" type="button" hidden>进入应用<span aria-hidden="true">→</span></button>
+          <p id="cleanupStatus" class="status-message warning" role="status" hidden></p>
         </form>
       </section>
-
       <section id="progressView" class="view" aria-labelledby="progressTitle" hidden>
-        <h2 id="progressTitle" tabindex="-1">准备运行环境</h2>
+        <div class="phase-heading"><span class="phase-orbit" aria-hidden="true"></span><h2 id="progressTitle" tabindex="-1">准备运行环境</h2><strong id="progressPercent">0%</strong></div>
         <p id="progressMessage" class="status-message" role="status" aria-live="polite">正在准备安装…</p>
-        <div class="progress-meta"><span id="progressStage">初始化</span><strong id="progressPercent">0%</strong></div>
         <div id="progressTrack" class="progress-track" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div>
-        <details id="logDetails">
-          <summary>安装日志</summary>
-          <pre id="installLog" tabindex="0" aria-label="安装日志"></pre>
-        </details>
-        <button id="retryButton" class="secondary-button" type="button" hidden>返回并重试<span aria-hidden="true">↗</span></button>
+        <div class="progress-meta"><span id="progressStage">初始化</span><button id="retryButton" class="icon-button" type="button" title="返回并重试" aria-label="返回并重试" hidden><svg class="icon" aria-hidden="true"><use href="#i-update" /></svg></button></div>
       </section>
-
       <section id="launchView" class="view" aria-labelledby="launchTitle" hidden>
-        <div class="success-mark" aria-hidden="true">↗</div>
-        <h2 id="launchTitle" tabindex="-1">启动 Neo</h2>
+        <div class="phase-heading"><span class="phase-orbit" aria-hidden="true"></span><h2 id="launchTitle" tabindex="-1">启动中</h2></div>
         <p id="launchMessage" class="status-message" role="status" aria-live="polite">正在启动…</p>
-        <div class="launching" aria-hidden="true"><span></span><span></span><span></span></div>
       </section>
-      <!-- Native menu stays available after navigation to the workspace. -->
     </section>
+    <details id="logDetails" class="observation" open hidden>
+      <summary title="展开或收起运行日志"><svg class="icon" aria-hidden="true"><use href="#i-terminal" /></svg><span class="sr-only">运行日志</span><span class="log-signal" aria-hidden="true"><i></i><i></i><i></i></span><svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
+      <div class="log-surface"><pre id="installLog" tabindex="0" aria-label="运行日志"></pre></div>
+    </details>
   </main>
-
 </body>
 </html>

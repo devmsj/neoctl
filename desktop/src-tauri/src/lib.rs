@@ -1,3 +1,4 @@
+mod desktop_chrome;
 mod directory_gate;
 mod downloads;
 mod health_check;
@@ -41,7 +42,6 @@ const REGISTRY: &str = "https://registry.npmjs.org";
 struct DesktopState {
     child: Arc<Mutex<Option<Child>>>,
     runtime_url: Mutex<Option<(PathBuf, String)>>,
-    start_url: Mutex<Option<tauri::Url>>,
     manual_start: std::sync::atomic::AtomicBool,
     operation: Mutex<()>,
     owner: Mutex<Option<(PathBuf, fs::File)>>,
@@ -56,6 +56,7 @@ struct BootstrapState {
     web_version: Option<String>,
     core_version: Option<String>,
     cleanup_pending: bool,
+    external_runtime: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -116,7 +117,7 @@ struct DesktopConfig {
 }
 
 #[tauri::command]
-fn sync_window_theme(window: WebviewWindow, theme: String) -> Result<(), String> {
+async fn sync_window_theme(window: WebviewWindow, theme: String) -> Result<(), String> {
     let theme = match theme.as_str() {
         "dark" => Some(tauri::Theme::Dark),
         "light" => Some(tauri::Theme::Light),
@@ -138,7 +139,8 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
     if let Some(root) = &install_dir {
         validate_install_dir(root)?;
         runtime_store::current(root)?;
-        ensure_owner(&app, root)?;
+        // Reading launcher status must not acquire the runtime ownership lock.
+        // Start, update and cleanup acquire it at their mutation boundaries.
     }
     let versions = install_dir.as_deref().and_then(|path| {
         runtime_store::current(path)
@@ -151,7 +153,7 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
             .as_deref()
             .map(runtime_is_installed)
             .unwrap_or(false),
-        auto_launch: install_dir
+        auto_launch: runtime_control::attached_target(&app).is_none() && install_dir
             .as_deref()
             .map(runtime_is_installed)
             .unwrap_or(false)
@@ -163,6 +165,7 @@ fn bootstrap_state(app: AppHandle) -> Result<BootstrapState, String> {
         web_version: versions.as_ref().map(|value| value.web_version.clone()),
         core_version: versions.map(|value| value.core_version),
         cleanup_pending: configured_cleanup_pending(&app)?,
+        external_runtime: runtime_control::attached_target(&app).is_some(),
     })
 }
 
@@ -247,7 +250,8 @@ async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), Stri
 
 #[tauri::command]
 async fn update_runtime(app: AppHandle) -> Result<RuntimeVersions, String> {
-    if runtime_control::runtime_status(app.clone())
+    if runtime_control::attached_target(&app).is_some() { return Err("开发服务不能从调试壳更新".into()); }
+    if runtime_control::runtime_status(app.clone()).await
         && rfd::AsyncMessageDialog::new()
             .set_title("更新 Web 和 Core")
             .set_description(
@@ -279,6 +283,9 @@ async fn launch_runtime(
     state: tauri::State<'_, DesktopState>,
     install_dir: String,
 ) -> Result<(), String> {
+    if runtime_control::attached_target(&app).is_some() {
+        return runtime_control::enter_application(app, window).await;
+    }
     let child_slot = state.child.clone();
     tauri::async_runtime::spawn_blocking(move || {
         launch_runtime_blocking(&app, &window, child_slot, PathBuf::from(install_dir), true)
@@ -294,7 +301,7 @@ fn install_runtime_blocking(
 ) -> Result<RuntimeVersions, String> {
     let state = app.state::<DesktopState>();
     let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
-    if !source.is_update() && runtime_control::runtime_status(app.clone()) {
+    if !source.is_update() && runtime_control::running(&app) {
         return Err(if source.is_update() {
             "请先关闭核心和后台再更新".into()
         } else {
@@ -549,6 +556,7 @@ fn run_independent_update(
 
 #[tauri::command]
 async fn cleanup_runtime(app: AppHandle) -> Result<Vec<String>, String> {
+    if runtime_control::attached_target(&app).is_some() { return Err("开发服务不能从调试壳清理".into()); }
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DesktopState>();
         let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
@@ -974,9 +982,13 @@ fn display_io(context: &'static str) -> impl FnOnce(std::io::Error) -> String {
     move |error| format!("{context}：{error}")
 }
 
+mod bootstrap_page;
+
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("neo-start", |_context, request| bootstrap_page::respond(request))
         .plugin(local_resources::init())
+        .plugin(desktop_chrome::init())
         .manage(DesktopState::default())
         .invoke_handler(tauri::generate_handler![
             sync_window_theme,
@@ -997,11 +1009,9 @@ pub fn run() {
         ])
         .setup(|app| {
             downloads::setup(app)?;
-            uninstall::setup_menu(app)?;
             tray::setup(app)?;
             Ok(())
         })
-        .on_menu_event(uninstall::on_menu_event)
         .on_window_event(tray::on_window_event)
         .run(tauri::generate_context!())
         .expect("failed to run Neo Desktop");

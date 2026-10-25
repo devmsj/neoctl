@@ -98,7 +98,7 @@ pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
             if handle.get_webview_window("main").is_none() {
                 break;
             }
-            let active = crate::runtime_control::runtime_status(handle.clone());
+            let active = crate::runtime_control::running(&handle);
             if previous != Some(active) {
                 if let Some(base) = handle.default_window_icon() {
                     let mut rgba = base.rgba().to_vec();
@@ -121,9 +121,9 @@ pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
                         updated &= tray.set_icon(Some(icon.clone())).is_ok();
                         updated &= tray
                             .set_tooltip(Some(if active {
-                                "Neo Desktop · 核心和后台运行中"
+                                "Neo Desktop  核心和后台运行中"
                             } else {
-                                "Neo Desktop · 核心和后台已关闭"
+                                "Neo Desktop  核心和后台已关闭"
                             }))
                             .is_ok();
                     }

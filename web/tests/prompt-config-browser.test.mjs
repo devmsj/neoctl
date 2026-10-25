@@ -35,7 +35,7 @@ async function mount() {
 }
 
 async function openGlobal(page) {
-  await page.getByRole('button', { name: '模型配置', exact: true }).first().click()
+  await page.getByRole('button', { name: '全局配置', exact: true }).first().click()
   await page.getByRole('button', { name: '提示词配置', exact: true }).click()
   const editor = page.locator('.settings-page .prompt-config-editor')
   await editor.getByRole('textbox', { name: '系统提示词' }).waitFor()
@@ -43,9 +43,9 @@ async function openGlobal(page) {
   return editor
 }
 async function openSession(page) {
-  await page.locator('.runtime-context-bar button').filter({ hasText: '系统提示词' }).click()
+  await page.locator('.runtime-context-bar').getByRole('button', { name: /系统提示词/ }).click()
   const editor = page.locator('.runtime-context-modal .prompt-config-editor')
-  await editor.getByRole('textbox', { name: '系统提示词' }).waitFor()
+  await editor.getByRole('textbox', { name: '会话指令' }).waitFor()
   await page.waitForFunction(() => !document.querySelector('.runtime-context-modal .prompt-config-textarea')?.disabled)
   return editor
 }
@@ -61,7 +61,7 @@ test('model settings opens a clean secondary prompt form and reloads saved conte
     await editor.getByRole('button', { name: '保存', exact: true }).click()
     await f.page.waitForFunction(() => document.querySelector('.toast')?.textContent === '提示词已保存')
     assert.equal(f.getGlobal().content, '## Agent Scaffold\n新的版本提示词')
-    await f.page.getByRole('button', { name: '返回模型配置' }).click()
+    await f.page.getByRole('button', { name: '返回全局配置' }).click()
     assert.equal(await f.page.locator('.prompt-config-editor').count(), 0)
     await f.page.getByRole('button', { name: '提示词配置', exact: true }).click()
     await f.page.waitForFunction(() => document.querySelector('.prompt-config-textarea')?.value.includes('新的版本提示词'))
@@ -79,7 +79,7 @@ test('session prompt saves only its owner and can reset without changing the ver
     if (process.env.PROMPT_UI_SCREENSHOT_DIR) await f.page.screenshot({ path: `${process.env.PROMPT_UI_SCREENSHOT_DIR}/session-prompt.png`, fullPage: true })
     await editor.getByRole('textbox').fill('仅 A 会话使用')
     await editor.getByRole('button', { name: '保存', exact: true }).click()
-    await f.page.waitForFunction(() => !Array.from(document.querySelectorAll('.runtime-context-modal button')).find(b => b.textContent === '恢复默认')?.disabled)
+    await f.page.waitForFunction(() => !Array.from(document.querySelectorAll('.runtime-context-modal button')).find(b => b.getAttribute('aria-label') === '恢复默认')?.disabled)
     assert.equal(f.writes[0].owner, 'prompt-session-a')
     assert.equal(f.writes[0].body.mode, 'append')
     assert.equal(f.getGlobal().content, original)
@@ -158,23 +158,19 @@ test('runtime preview updates do not overwrite a session draft or its edit revis
   } finally { await f.close() }
 })
 
-test('legacy prompt migration requires confirmation and never silently strips the original', async () => {
+for (const mode of ['legacy_full_override', 'replace_base']) test('editing existing ' + mode + ' needs no mode choice and preserves semantics', async () => {
   const f = await mount()
   try {
-    f.seedSession({ content: 'LEGACY_ORIGINAL', effectiveContent: 'LEGACY_ORIGINAL', revision: 'legacy-1', mode: 'legacy_full_override', override: true })
+    f.seedSession({ content: 'ORIGINAL', effectiveContent: 'ORIGINAL', revision: 'existing-1', mode, override: true })
     const editor = await openSession(f.page)
-    assert.equal(await editor.getByRole('textbox').inputValue(), 'LEGACY_ORIGINAL')
-    await editor.getByRole('combobox').selectOption('append')
-    f.page.once('dialog', dialog => dialog.dismiss())
-    await editor.getByRole('button', { name: '保存', exact: true }).click()
-    assert.equal(f.writes.length, 0)
-    assert.equal(await editor.getByRole('textbox').inputValue(), 'LEGACY_ORIGINAL')
-    await editor.getByRole('textbox').fill('USER_ONLY')
-    f.page.once('dialog', dialog => dialog.accept())
+    assert.equal(await editor.getByRole('textbox').inputValue(), 'ORIGINAL')
+    assert.equal(await editor.locator('select, [role="combobox"], .prompt-config-mode').count(), 0)
+    assert.equal(await editor.getByRole('region', { name: '只读的生效上下文' }).getByRole('textbox').count(), 0)
+    await editor.getByRole('textbox').fill('UPDATED')
     await editor.getByRole('button', { name: '保存', exact: true }).click()
     await f.page.waitForFunction(() => document.querySelector('.toast')?.textContent === '提示词已保存')
-    assert.equal(f.writes[0].body.mode, 'append')
-    assert.equal(f.writes[0].body.content, 'USER_ONLY')
+    assert.equal(f.writes[0].body.mode, mode)
+    assert.equal(f.writes[0].body.content, 'UPDATED')
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })

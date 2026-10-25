@@ -14,7 +14,7 @@ export function installVersioning(initial, apiUrl, editor) {
   $('status').after(actions);
   function status(text, error = false) { editor.status(text, error); }
   function controls() {
-    $('versionState').textContent = 'v' + version + (stale ? ' · 已过期／只读' : '');
+    $('versionState').textContent = 'v' + version + (stale ? '（已过期，只读）' : '');
     $('latestVersion').hidden = !stale;
     $('downloadDraft').hidden = !backup;
     $('restoreDraft').hidden = !backup || stale;

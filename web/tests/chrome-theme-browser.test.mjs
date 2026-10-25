@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 const dist=fileURLToPath(new URL('../dist/',import.meta.url))
 const require=createRequire(import.meta.url)
-const {chromium}=require(process.env.NEO_PLAYWRIGHT_MODULE||'../../desktop/.cache/ui-test/node_modules/playwright-core')
+const {chromium}=require(process.env.PLAYWRIGHT_CORE_PATH||process.env.NEO_PLAYWRIGHT_MODULE||'../../desktop/.cache/ui-test/node_modules/playwright-core')
 const server=createServer(async(req,res)=>{try{const path=resolve(dist,req.url==='/'?'index.html':`.${req.url}`);res.setHeader('Content-Type',{'.html':'text/html','.css':'text/css','.js':'text/javascript'}[extname(path)]||'application/octet-stream');res.end(await readFile(path))}catch{res.writeHead(404);res.end()}})
 await new Promise(r=>server.listen(0,'127.0.0.1',r))
 let browser
@@ -22,7 +22,7 @@ try {
   {id:'intro',kind:'assistant',text:'我会检查当前目录与运行状态，再汇总需要关注的信息。'},
   {id:'tool',kind:'tool',toolName:'terminal_run',toolUseId:'command',titleStatus:'failure',activity:{phase:'failed',input:{cmd:'Get-ComputerInfo',description:'检查本机运行状态'}},observation:{session_id:'theme-terminal',exit_code:1,stdout:'操作系统  Windows 11\n内存  32 GB\n当前目录  C:\\workspace'}},
   {id:'reply',kind:'assistant',text:'当前目录包含项目源码与运行数据。\n\n系统运行正常，部分诊断信息需要进一步确认。'}]}
- await page.addInitScript(()=>{localStorage.setItem('neo-tool-history-view','rows');localStorage.setItem('neoctl-web.theme','dark');window.EventSource=class{addEventListener(){}close(){}}})
+ await page.addInitScript(()=>{localStorage.setItem('neo-tool-history-view','folded');localStorage.setItem('neoctl-web.theme','dark');window.EventSource=class{addEventListener(){}close(){}}})
  await page.route('**/api/**',route=>{
   const path=new URL(route.request().url()).pathname
   let json={}
@@ -38,11 +38,13 @@ try {
   else if(path==='/api/cpa-quota')json={quotas:[{account:'workspace',remainingPercent:91,usedPercent:9,resetAt:now,updatedAt:now}],config:{url:'',hasPassword:false}}
   else if(path==='/api/memory')json={current:{at:now,rss:104857600,heapUsed:25165824,external:4194304},history:[{at:now,rss:104857600}],sampleMs:60000}
   else if(path==='/api/terminal-output'){const stream=new URL(route.request().url()).searchParams.get('stream');const text=stream==='stdout'?'操作系统  Windows 11\n内存  32 GB\n当前目录  C:\\workspace':'';json={sessionId:session.sessionId,runId:'theme-terminal',stream,offset:0,nextOffset:Buffer.byteLength(text),text,endOfStoredOutput:true,record:{availability:'available',lifecycle:'terminal',exit:{exitCode:1},streams:{stdout:{storedBytes:Buffer.byteLength(text)},stderr:{storedBytes:0}}}}}
+  else if(path==='/api/cwd/scope')json={ok:true,paths:['C:\\workspace']}
   else if(path==='/api/cwd')json={cwd:'C:\\workspace',parent:'C:\\',entries:[{name:'src',path:'C:\\workspace\\src',isDirectory:true}],locations:[]}
   return route.fulfill({json})
  })
  await page.goto(`http://127.0.0.1:${server.address().port}/`)
  await page.locator('.tool-activity-row').waitFor()
+ assert.equal(await page.locator('.rows-transcript').count(),1,'legacy folded preference is ignored')
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark'); await page.waitForTimeout(250)
  const styleOf=async(selector)=>page.locator(selector).first().evaluate(el=>{const s=getComputedStyle(el);return{background:s.backgroundColor,color:s.color,border:s.borderTopWidth,borderColor:s.borderTopColor,radius:s.borderTopLeftRadius,shadow:s.boxShadow,font:s.fontSize,weight:s.fontWeight}})
  const screenshot=async(name)=>{await mkdir('web/.run',{recursive:true});await page.screenshot({path:`web/.run/chrome-${name}.png`})}
@@ -57,16 +59,22 @@ try {
  assert.equal((await styleOf('.activity-icon.failed')).color,'rgb(187, 142, 166)')
  assert.equal((await styleOf('.message.assistant .message-text')).font,'15px')
  assert.equal(await page.locator('.message.user .message-head').count(),0)
+ assert.equal(await page.locator('.memory-stats, .memory-card-foot, .memory-card-head small, .quota-card-foot, .quota-card-update').count(),0,'secondary technical details removed')
+ assert.equal(await page.locator('.right-panel').getByText(/RSS|V8 堆|外部内存|更新于/).count(),0)
+ assert.equal(await page.locator('.memory-card-head strong').textContent(),'100 MB')
+ assert.ok(await page.locator('.memory-card').evaluate(el=>el.getBoundingClientRect().height<120),'memory card stays compact')
+ assert.equal(await page.locator('.quota-progress').getAttribute('aria-valuenow'),'91')
+ await page.locator('.memory-trend-point').first().focus()
+ await page.locator('.memory-tooltip').waitFor()
+ await page.locator('.composer textarea').focus()
  await screenshot('dark-chat')
- await page.locator('.sidebar .nav button').filter({hasText:'模型配置'}).click()
+ await page.locator('.sidebar .nav button').filter({hasText:'全局配置'}).click()
  await page.locator('.settings-form').waitFor()
  assert.equal((await styleOf('.settings-card')).border,'1px')
  assert.equal((await styleOf('.settings-card')).shadow,'none')
  assert.equal((await styleOf('.settings-form input')).background,'rgb(25, 30, 37)')
- await page.locator('.history-view-setting .neo-select-trigger').click()
- await page.locator('.neo-select-menu').waitFor()
- assert.equal((await styleOf('.neo-select-menu')).background,'rgb(32, 38, 48)')
- await page.keyboard.press('Escape')
+ assert.equal(await page.locator('.history-view-setting').count(),0,'history view modification is hidden')
+ assert.equal(await page.getByText('历史展示',{exact:true}).count(),0)
  await screenshot('dark-settings')
  await page.getByRole('button',{name:'框架改进建议',exact:true}).click()
  await page.locator('.feedback-item').waitFor()
@@ -76,20 +84,22 @@ try {
  assert.equal((await styleOf('[role=alertdialog]')).border,'1px')
  await screenshot('dark-confirm')
  await page.getByRole('button',{name:'取消',exact:true}).click()
- await page.getByRole('button',{name:'返回模型配置',exact:true}).click()
+ await page.getByRole('button',{name:'返回全局配置',exact:true}).click()
  await page.locator('.sidebar .nav button').filter({hasText:'会话管理'}).click()
  await page.locator('.session-card').first().waitFor()
- assert.equal((await styleOf('.session-card')).border,'1px')
+ assert.equal((await styleOf('.session-card')).border,'0px')
  assert.equal((await styleOf('.session-card')).shadow,'none')
  await page.locator('.session-search input').fill('工具历史')
  assert.equal(await page.locator('.session-card').count(),1)
  await screenshot('dark-sessions')
  await page.locator('.session-entry').click()
- await page.getByRole('button',{name:'切换工作目录',exact:true}).click()
+ await page.getByRole('button',{name:'工作区范围',exact:true}).click()
+ await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'添加路径',exact:true}).click()
  await page.locator('.cwd-picker-modal').waitFor()
  assert.equal((await styleOf('.cwd-picker-modal')).background,'rgb(25, 30, 37)')
  await screenshot('dark-directory')
  await page.locator('.cwd-picker-modal').getByRole('button',{name:'取消',exact:true}).click()
+ await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
  await page.locator('.sidebar .theme-toggle').click()
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='light'); await page.waitForTimeout(250)
  assert.equal((await styleOf('.sidebar')).background,'rgb(255, 255, 255)')
@@ -100,7 +110,7 @@ try {
  await page.waitForFunction(()=>{const el=document.querySelector('.is-pinned .background-task-live-output');return el&&getComputedStyle(el).color==='rgb(32, 37, 45)'})
  assert.equal(await page.locator('.is-pinned .tool-observation-viewport').evaluate(el=>getComputedStyle(el).opacity),'1')
  await screenshot('light-chat')
- await page.locator('.sidebar .nav button').filter({hasText:'模型配置'}).click()
+ await page.locator('.sidebar .nav button').filter({hasText:'全局配置'}).click()
  await page.locator('.settings-form').waitFor()
  assert.equal((await styleOf('.settings-form input')).background,'rgb(255, 255, 255)')
  await screenshot('light-settings')

@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { createIsolationAuth, createIsolationAccounts, publicUser, loadIsolationConfig, jsonReply, readBoundedJson, httpError } from './isolation-auth.mjs';
 
 const SESSION_ID = /^(?!\.{1,2}$)[a-zA-Z0-9_.-]{1,220}$/;
-const GET_ROUTES = new Set(['/api/client-info', '/api/state', '/api/runtime-context', '/api/sessions', '/api/cwd', '/api/tools', '/api/session-tools', '/api/session-plugins', '/api/tool-call-detail', '/api/terminal-output', '/api/agent-content', '/events']);
-const POST_ROUTES = new Set(['/api/submit', '/api/submit-now', '/api/interrupt', '/api/run/pause', '/api/run/continue', '/api/queue/cancel', '/api/queue/send-now', '/api/sessions/resume', '/api/sessions/new', '/api/sessions/delete', '/api/cwd/change', '/api/cwd/create', '/api/cwd/delete', '/api/session-model', '/api/session-tools', '/api/session-plugins', '/api/compact', '/api/fast-mode', '/api/context-window']);
+const GET_ROUTES = new Set(['/api/client-info', '/api/state', '/api/runtime-context', '/api/sessions', '/api/cwd', '/api/cwd/scope', '/api/tools', '/api/session-tools', '/api/session-plugins', '/api/tool-call-detail', '/api/terminal-output', '/api/agent-content', '/events']);
+const POST_ROUTES = new Set(['/api/submit', '/api/submit-now', '/api/interrupt', '/api/run/pause', '/api/run/continue', '/api/queue/cancel', '/api/queue/send-now', '/api/sessions/resume', '/api/sessions/new', '/api/sessions/delete', '/api/cwd/change', '/api/cwd/add', '/api/cwd/remove', '/api/cwd/create', '/api/cwd/delete', '/api/session-model', '/api/session-tools', '/api/session-plugins', '/api/compact', '/api/fast-mode', '/api/context-window']);
 const SAFE_COMMANDS = new Set(['/help', '/cost', '/compact', '/pure', '/new', '/sessions', '/state', '/reset']);
 const inside = (root, target) => { const relative = path.relative(root, target); return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)); };
 
@@ -367,7 +367,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
             }
           }
         }
-        if (url.pathname === '/api/cwd' || url.pathname.startsWith('/api/cwd/')) {
+        if (url.pathname === '/api/cwd' || (url.pathname.startsWith('/api/cwd/') && url.pathname !== '/api/cwd/scope')) {
           const repl = await user.router.get(scope);
           await workspaceFs.mkdir(user.workRoot, { recursive: true });
           const current = repl.snapshot().cwd;

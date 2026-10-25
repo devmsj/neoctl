@@ -1,4 +1,4 @@
-/* The refined transcript is opt-in; folded history and surrounding panels keep their theme. */
+/* Fixed row transcript: conversational spacing and tool observation alignment. */
 .transcript.rows-transcript {
   --history-background: #ffffff;
   --history-text: #20252d;
@@ -74,8 +74,7 @@
 .rows-history .activity-pin { color: var(--history-icon); }
 .rows-history .activity-delivery { color: var(--history-text); }
 .rows-history .tool-observation { color: var(--history-secondary); }
-.rows-history .tool-observation .activity-icon,
-.rows-history .tool-observation .command-phase { color: var(--history-icon); }
+.rows-history .tool-observation .activity-icon { color: var(--history-icon); }
 .rows-history .tool-observation.is-pinned { border-color: var(--history-border); }
 .rows-history .message.thinking {
   display: block;

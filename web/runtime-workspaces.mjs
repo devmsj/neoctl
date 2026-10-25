@@ -49,6 +49,7 @@ export function createWorkspaceRuntimeManager(options) {
 
   class WorkspaceWebRepl extends WebRepl {
     syncScheduled = false;
+    scopeMutation = Promise.resolve();
 
     subscribe(res) {
       if (this.subscribers.size >= maxSubscribers) {
@@ -67,6 +68,7 @@ export function createWorkspaceRuntimeManager(options) {
       return {
         ...super.snapshot(includeCatalog),
         cwd: currentEngineCwd(this.runtime.engine, projectRoot),
+        workspacePaths: this.runtime.engine.getWorkspacePaths(),
       };
     }
 
@@ -74,6 +76,35 @@ export function createWorkspaceRuntimeManager(options) {
       if (this.isDemo?.() || (!String(text || '').trim() && attachments.length === 0)) return super.submit(text, attachments);
       await this.materializeCurrentWorkspace();
       return super.submit(text, attachments);
+    }
+
+    workspaceScope() {
+      return { ok: true, paths: this.runtime.engine.getWorkspacePaths() };
+    }
+
+    updateWorkspaceScope(value, remove = false) {
+      const engine = this.runtime.engine;
+      const operation = this.scopeMutation.then(async () => {
+        if (this.busy || engine !== this.runtime.engine) return workspaceFailure('CWD_UPDATE_BLOCKED', new Error('当前无法修改工作区范围'));
+        try {
+          if (!String(value || '').trim()) throw new Error('请选择路径');
+          const current = currentEngineCwd(engine, projectRoot);
+          const target = resolveWorkspaceInput(value, current);
+          if (!remove) await validateWorkspaceDirectory(target);
+          const previous = engine.getWorkspacePaths();
+          const key = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+          const paths = remove ? previous.filter(item => key(item) !== key(target))
+            : previous.some(item => key(item) === key(target)) ? previous : [...previous, target];
+          if (this.busy || engine !== this.runtime.engine) throw new Error('当前无法修改工作区范围');
+          const id = engine.snapshot().session?.sessionId;
+          if (!id) throw new Error('session transcripts are disabled');
+          await engine.updateWorkspacePaths(paths, normalized => registry.set(id, currentEngineCwd(engine, projectRoot), { workspacePaths: normalized }));
+          await this.refreshSessionView();
+          return { ok: true, paths, cwd: currentEngineCwd(engine, projectRoot) };
+        } catch (error) { return workspaceFailure('CWD_UPDATE_FAILED', error); }
+      });
+      this.scopeMutation = operation.catch(() => undefined);
+      return operation;
     }
 
     async browseWorkspace(value) {
@@ -123,10 +154,12 @@ export function createWorkspaceRuntimeManager(options) {
         await registry.set(snapshot.sessionId, cwd, {
           materialized: true,
           cwdHistory: history,
-          cwdNoticePending: true,
+          workspacePaths: [cwd],
+          cwdNoticePending: false,
         });
         this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, snapshot.sessionId, true, {
-          cwdTransitionPaths: history,
+          workspacePaths: [cwd],
+          cwdTransitionPaths: undefined,
           onCwdTransitionConsumed: () => markCwdNoticeConsumed(snapshot.sessionId),
         });
         await this.runtime.engine.initialize();
@@ -151,13 +184,15 @@ export function createWorkspaceRuntimeManager(options) {
       const snapshot = this.runtime.engine.snapshot().session;
       if (!snapshot) throw new Error('session transcripts are disabled');
       if (cwd !== candidate) {
-        this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, snapshot.sessionId, true);
+        this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, snapshot.sessionId, true, {
+          workspacePaths: this.runtime.engine.getWorkspacePaths().map(item => item === candidate ? cwd : item),
+        });
         await this.runtime.engine.initialize();
         registerEngineSync(this);
         await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
         await this.refreshSessionView();
       }
-      await registry.set(snapshot.sessionId, cwd, { materialized: true, cwdHistory: [cwd] });
+      await registry.set(snapshot.sessionId, cwd, { materialized: true, cwdHistory: [cwd], workspacePaths: this.runtime.engine.getWorkspacePaths() });
       return cwd;
     }
 
@@ -189,7 +224,8 @@ export function createWorkspaceRuntimeManager(options) {
         const cwd = workspace?.cwd || projectRoot;
         if (workspace && !workspace.materialized) pendingWorkspacePaths.add(cwd);
         this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, sessionId, true, {
-          cwdTransitionPaths: workspace?.cwdNoticePending ? workspace.cwdHistory : undefined,
+          workspacePaths: workspace?.workspacePaths ?? [cwd],
+          cwdTransitionPaths: undefined,
           onCwdTransitionConsumed: () => markCwdNoticeConsumed(sessionId),
         });
         await this.runtime.engine.initialize();
@@ -236,7 +272,8 @@ export function createWorkspaceRuntimeManager(options) {
       const runtime = await options.createRuntime({
         ...runtimeOptions,
         cwd,
-        cwdTransitionPaths: mappedWorkspace?.cwdNoticePending ? mappedWorkspace.cwdHistory : undefined,
+        workspacePaths: mappedWorkspace?.workspacePaths ?? [cwd],
+        cwdTransitionPaths: undefined,
         onCwdTransitionConsumed: runtimeOptions.sessionId
           ? () => markCwdNoticeConsumed(runtimeOptions.sessionId)
           : undefined,
@@ -258,6 +295,8 @@ function createWorkspaceEngine(source, cwd, sessionId, resume, overrides = {}) {
   return new QueryEngine({
     ...source.options,
     cwd,
+    workspacePaths: [cwd],
+    cwdTransitionPaths: undefined,
     model: settings.model,
     reasoning: settings.reasoning,
     ...overrides,
@@ -349,6 +388,7 @@ export class SessionWorkspaceRegistry {
     const cwd = path.resolve(rawCwd);
     return {
       cwd,
+      workspacePaths: Array.isArray(value.workspacePaths) ? [...new Set(value.workspacePaths.filter(item => typeof item === 'string' && item.trim()).map(item => path.resolve(item)))] : [cwd],
       materialized: typeof value === 'string' ? true : value.materialized !== false,
       cwdHistory: normalizeCwdHistory(typeof value === 'string' ? undefined : value.cwdHistory, cwd),
       cwdNoticePending: typeof value === 'string' ? false : value.cwdNoticePending === true,
@@ -365,7 +405,8 @@ export class SessionWorkspaceRegistry {
     items[id] = {
       ...previousObject,
       cwd: resolved,
-      materialized: options.materialized !== false,
+      workspacePaths: options.workspacePaths ?? previousObject.workspacePaths ?? [resolved],
+      materialized: options.materialized === undefined ? previousObject.materialized !== false : options.materialized !== false,
       cwdHistory: normalizeCwdHistory(options.cwdHistory ?? previousObject.cwdHistory, resolved),
       cwdNoticePending: options.cwdNoticePending === undefined
         ? previousObject.cwdNoticePending === true

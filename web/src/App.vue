@@ -18,20 +18,14 @@ import { isDesktop, resourceActionTitle, revealResource } from './local-resource
 import { connectDesktopFileDrops } from './desktop-file-drop.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from './markdown.mjs'
+import { renderMath } from './math-markdown.mjs'
 import TerminalOutputReader from './TerminalOutputReader.vue'
 import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
-import hljs from 'highlight.js/lib/core'
-import javascript from 'highlight.js/lib/languages/javascript'
-import typescript from 'highlight.js/lib/languages/typescript'
-import python from 'highlight.js/lib/languages/python'
-import bash from 'highlight.js/lib/languages/bash'
-import json from 'highlight.js/lib/languages/json'
-import css from 'highlight.js/lib/languages/css'
-import xml from 'highlight.js/lib/languages/xml'
-import markdown from 'highlight.js/lib/languages/markdown'
-import yaml from 'highlight.js/lib/languages/yaml'
-import diff from 'highlight.js/lib/languages/diff'
+import ChromeIcon from './components/ChromeIcon.vue'
+import SettingsSaveButton from './components/SettingsSaveButton.vue'
+import TaskStatusIcon from './components/TaskStatusIcon.vue'
+import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
 import NeoSelect from './components/NeoSelect.vue'
 import FrameworkFeedbackList from './components/FrameworkFeedbackList.vue'
 import PromptConfigEditor from './components/PromptConfigEditor.vue'
@@ -50,30 +44,7 @@ import { uploadFileChunks } from './chunk-upload.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
 import { originalImageResource, generatedImageMetadata, alphaChannelLabel } from './image-result-metadata.mjs'
 
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('js', javascript)
-hljs.registerLanguage('jsx', javascript)
-hljs.registerLanguage('typescript', typescript)
-hljs.registerLanguage('ts', typescript)
-hljs.registerLanguage('tsx', typescript)
-hljs.registerLanguage('python', python)
-hljs.registerLanguage('py', python)
-hljs.registerLanguage('bash', bash)
-hljs.registerLanguage('sh', bash)
-hljs.registerLanguage('shell', bash)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('css', css)
-hljs.registerLanguage('html', xml)
-hljs.registerLanguage('xml', xml)
-hljs.registerLanguage('vue', xml)
-hljs.registerLanguage('markdown', markdown)
-hljs.registerLanguage('md', markdown)
-hljs.registerLanguage('yaml', yaml)
-hljs.registerLanguage('yml', yaml)
-hljs.registerLanguage('diff', diff)
-
 const composerActionPending = ref(false)
-const sessionOptionsOpen = ref(false)
 const adminViewing = computed(isIsolationAdmin)
 const canConfigureModel = computed(() => !authState.isolation || adminViewing.value)
 
@@ -97,7 +68,7 @@ const PANEL_LABELS = {
   sessions: '会话管理',
   users: '用户管理',
   tools: '运行时能力',
-  settings: '模型配置',
+  settings: '全局配置',
 }
 const LINE_TITLE_LABELS = {
   Assistant: '助手',
@@ -293,6 +264,7 @@ const state = reactive({
   session: undefined,
   modelSettings: undefined,
   cwd: '',
+  workspaceScope: { open: false, paths: [], loading: false, mutating: false, error: '' },
   cwdPicker: {
     open: false,
     cwd: '',
@@ -321,6 +293,9 @@ const state = reactive({
   adminUserBusy: false,
   adminUserError: '',
   login: undefined,
+  loginLoading: false,
+  loginSaving: false,
+  cpaSaving: false,
   cpaConfig: { url: '', password: '', hasPassword: false, loaded: false },
   cpaQuotas: [],
   cpaQuotaIndex: 0,
@@ -430,6 +405,9 @@ const BACKGROUND_TASK_OUTPUT_MAX_CHARS = 40_000
 
 const liveImageCreateLine = computed(() => [...(state.lines || [])].reverse().find((line) => isImageCreateLiveLine(line)) || null)
 const phaseLabel = computed(() => phaseText(state.status?.phase))
+const compactButtonLabel = computed(() => state.status?.phase === 'compacting' ? '正在压缩上下文'
+  : state.compactSaving ? (state.busy ? '正在安排压缩' : '正在压缩上下文')
+  : state.pendingSessionSettings.compact ? '已安排压缩' : '压缩会话')
 const compactionLabel = computed(() => {
   const detail = String(state.status?.detail || '')
   if (/autocompact/.test(detail)) return '自动压缩上下文'
@@ -445,7 +423,7 @@ const exactPhaseLabel = computed(() => {
   if (state.status?.phase === 'running_tools') {
     const tool = state.status?.currentTool
     if (String(tool?.name || '').toLowerCase() === 'image_create') return '图片生成中'
-    if (tool?.name) return `调用 ${tool.name}${tool.kind ? ` · ${tool.kind}` : ''}`
+    if (tool?.name) return `调用 ${tool.name}${tool.kind ? `（${tool.kind}）` : ''}`
   }
   return phaseLabel.value
 })
@@ -578,11 +556,9 @@ const activePanelLabel = computed(() => ({
   sessions: '会话管理',
   users: '用户管理',
   prompts: '提示词管理',
-  settings: '模型配置',
+  settings: '全局配置',
 }[state.activePanel] || state.activePanel))
-const historyViewKey = 'neo-tool-history-view'
-const historyView = ref((()=>{try{return localStorage.getItem(historyViewKey)==='rows'?'rows':'folded'}catch{return 'folded'}})())
-watch(historyView,value=>{try{localStorage.setItem(historyViewKey,value)}catch{}})
+const historyView = computed(() => 'rows')
 const activityPaused = computed(()=>state.runControl.canResume || !state.connected)
 const activityEntranceIds=reactive(new Set())
 const terminalOutputRevisions=reactive(new Map())
@@ -839,6 +815,7 @@ async function fetchGlobalTools() {
 }
 
 async function saveGlobalTools() {
+  if (!canConfigureModel.value || state.busy || state.globalTools.loading) return
   const overrides = Object.fromEntries(state.globalTools.items.map((item) => [item.name, item.configuredEnabled !== false]))
   state.globalTools.loading = true
   try {
@@ -897,6 +874,7 @@ async function fetchGlobalPlugins() {
 }
 
 async function saveGlobalPlugins() {
+  if (!canConfigureModel.value || state.globalPlugins.locked || state.globalPlugins.loading) return
   const enabledIds = state.globalPlugins.items.filter((item) => item.configuredEnabled !== false).map((item) => item.id)
   state.globalPlugins.loading = true
   try {
@@ -925,6 +903,7 @@ async function installPlugin() {
 }
 
 async function uninstallPlugin(plugin) {
+  if (!canConfigureModel.value || state.globalPlugins.locked || state.globalPlugins.loading) return
   if (!window.confirm(`卸载“${plugin.name}”？历史资源将不可访问，用户数据保留。`)) return
   state.globalPlugins.loading = true
   try {
@@ -1766,11 +1745,15 @@ async function toggleRunPause() {
 }
 
 async function retractQueuedInput() {
+  if (composerActionPending.value) return
+  composerActionPending.value = true
   try {
     const result = await postJson('/api/queue/cancel', {})
     notify(result.cancelled ? '已撤回排队消息' : '没有待撤回的消息')
   } catch (error) {
     notifyActionError(error, '撤回排队消息失败')
+  } finally {
+    composerActionPending.value = false
   }
 }
 
@@ -1823,6 +1806,14 @@ function resetSessionSettingsUi() {
   state.contextWindowModalOpen = false
   state.modelError = ''
   state.contextWindowError = ''
+  state.workspaceScope.open = false
+  state.workspaceScope.paths = []
+  state.workspaceScope.loading = false
+  state.workspaceScope.mutating = false
+  state.cwdPicker.open = false
+  state.cwdPicker.loading = false
+  state.cwdPicker.mutating = false
+  document.body.classList.remove('cwd-picker-lock')
   state.pendingSessionSettings = {}
   settingsReturnFocus = undefined
   document.body.classList.remove('context-window-open')
@@ -2205,10 +2196,13 @@ async function deleteSession(sessionId) {
   }
 }
 
-async function openLogin(provider) {
+async function openLogin(provider, providerOnly = false) {
   if (!canConfigureModel.value) return
   state.activePanel = 'settings'
+  if (state.loginSaving || state.loginLoading) return
+  state.loginLoading = true
   state.settingsPage = ''
+  const previousProvider = state.login?.provider
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
     const res = await appFetch(runtimeUrl(`/api/login${query}`))
@@ -2218,9 +2212,12 @@ async function openLogin(provider) {
     loginProvider.value = body.provider
     Object.keys(loginValues).forEach((key) => delete loginValues[key])
     Object.assign(loginValues, body.values || {})
-    await Promise.all([fetchCpaState(), fetchGlobalPlugins(), fetchGlobalTools()])
+    if (!providerOnly) await Promise.all([fetchCpaState(), fetchGlobalPlugins(), fetchGlobalTools()])
   } catch (error) {
+    if (previousProvider) loginProvider.value = previousProvider
     notifyActionError(error, '加载模型配置失败')
+  } finally {
+    state.loginLoading = false
   }
 }
 
@@ -2230,35 +2227,37 @@ async function onPromptConfigSaved(result) {
 }
 
 async function switchLoginProvider() {
-  await openLogin(loginProvider.value)
+  await openLogin(loginProvider.value, true)
 }
 
 async function saveLogin() {
-  if (!canConfigureModel.value) return
-  const [modelSave, cpaSave] = await Promise.allSettled([
-    postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } }),
-    postJson('/api/cpa-config', {
+  if (!canConfigureModel.value || !state.login || state.loginSaving || state.loginLoading) return
+  state.loginSaving = true
+  try {
+    await postJson('/api/login', { provider: loginProvider.value, values: { ...loginValues } })
+    notify('模型配置已保存')
+  } catch (error) {
+    notifyActionError(error, '模型配置保存失败')
+  } finally { state.loginSaving = false }
+}
+
+async function saveCpaConfig() {
+  if (!canConfigureModel.value || !state.cpaConfig.loaded || state.cpaSaving) return
+  state.cpaSaving = true
+  try {
+    const cpaResult = await postJson('/api/cpa-config', {
       url: state.cpaConfig.url,
       password: state.cpaConfig.password === CPA_PASSWORD_MASK ? '' : state.cpaConfig.password,
       preservePassword: state.cpaConfig.hasPassword && (!state.cpaConfig.password || state.cpaConfig.password === CPA_PASSWORD_MASK),
-    }),
-  ])
-  if (cpaSave.status === 'fulfilled') {
-    const cpaResult = cpaSave.value
+    })
     state.cpaQuotas = Array.isArray(cpaResult?.quotas) ? cpaResult.quotas : []
     state.cpaQuotaIndex = 0
-    state.cpaConfig.loaded = true
     state.cpaConfig.hasPassword = Boolean(cpaResult?.config?.hasPassword)
     state.cpaConfig.password = state.cpaConfig.hasPassword ? CPA_PASSWORD_MASK : ''
-  }
-  if (modelSave.status === 'fulfilled' && cpaSave.status === 'fulfilled') {
-    notify('模型配置已保存')
-    return
-  }
-  const failed = []
-  if (modelSave.status === 'rejected') failed.push(actionErrorMessage(modelSave.reason, '模型配置保存失败'))
-  if (cpaSave.status === 'rejected') failed.push(actionErrorMessage(cpaSave.reason, 'CPA 配置保存失败'))
-  notify(failed.join('；'))
+    notify('CPA 配置已保存')
+  } catch (error) {
+    notifyActionError(error, 'CPA 配置保存失败')
+  } finally { state.cpaSaving = false }
 }
 
 function normalizedQuotaPercent(value) {
@@ -2432,13 +2431,26 @@ function compactionModeText(line) {
   return line?.compaction?.modelDriven ? '模型生成摘要' : '确定性摘要'
 }
 
+const contextFocusOrigins = new Map()
+function focusContextDialog(selector) {
+  contextFocusOrigins.set(selector, document.activeElement)
+  // Called by synchronous open handlers; wait until their state changes are queued.
+  queueMicrotask(() => nextTick(() => document.querySelector(selector + ' button')?.focus()))
+}
+function restoreContextFocus(selector) {
+  const origin = contextFocusOrigins.get(selector)
+  contextFocusOrigins.delete(selector)
+  nextTick(() => { if (origin?.isConnected) origin.focus() })
+}
 function openCompactionDetail(line) {
   if (!isCompactionLine(line)) return
+  focusContextDialog('.compaction-detail-modal')
   state.compactionDetailLineId = line.id
   document.body.classList.add('runtime-context-open')
 }
 
 function closeCompactionDetail() {
+  restoreContextFocus('.compaction-detail-modal')
   state.compactionDetailLineId = undefined
   if (!state.runtimeContextModal && !state.runtimeContextDetail && !state.projectContextOpen) document.body.classList.remove('runtime-context-open')
 }
@@ -2544,7 +2556,7 @@ function closeToolDetail() {
 }
 function toolDetailKeydown(event) {
   if (event.key !== 'Tab') return
-  const nodes = Array.from(event.currentTarget.querySelectorAll('button:not(:disabled), [tabindex="0"]'))
+  const nodes = Array.from(event.currentTarget.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]'))
   const first = nodes[0], last = nodes.at(-1)
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
@@ -2862,14 +2874,19 @@ function backgroundTaskLiveOutput(task) {
   return stripAnsi(String(task?.output || ''))
 }
 
+let backgroundTaskTrigger
 function openBackgroundTaskDetail(task) {
+  const opening = !state.backgroundTaskDetail
+  if (opening) backgroundTaskTrigger = document.activeElement
   state.backgroundTaskDetail = { ...task }
   document.body.classList.add('tool-detail-open')
+  if (opening) nextTick(() => document.querySelector('.background-task-modal .tool-result-modal-close')?.focus())
 }
 
 function closeBackgroundTaskDetail() {
   state.backgroundTaskDetail = undefined
   document.body.classList.remove('tool-detail-open')
+  nextTick(() => { if (backgroundTaskTrigger?.isConnected) backgroundTaskTrigger.focus() })
 }
 
 function phaseText(phase = 'ready') {
@@ -2925,6 +2942,7 @@ function runtimeToolSchema(tool) {
 
 function openRuntimeContextModal(kind) {
   if (authState.isolation && kind === 'prompt') return
+  focusContextDialog('.runtime-context-modal')
   state.runtimeContextModal = kind
   state.runtimeContextDetail = undefined
   document.body.classList.add('runtime-context-open')
@@ -2933,12 +2951,14 @@ function openRuntimeContextModal(kind) {
 }
 
 function closeRuntimeContextModal() {
+  restoreContextFocus('.runtime-context-modal')
   state.runtimeContextDetail = undefined
   state.runtimeContextModal = ''
   document.body.classList.remove('runtime-context-open')
 }
 
 function closeRuntimeContextDetail() {
+  restoreContextFocus('.runtime-context-detail-modal')
   state.runtimeContextDetail = undefined
 }
 
@@ -2961,6 +2981,47 @@ function closeProjectContext() {
   document.body.classList.remove('runtime-context-open')
 }
 
+async function openWorkspaceScope() {
+  settingsReturnFocus = document.activeElement
+  state.workspaceScope.open = true
+  state.workspaceScope.error = ''
+  state.workspaceScope.loading = true
+  document.body.classList.add('cwd-picker-lock')
+  nextTick(() => document.querySelector('.workspace-scope-modal')?.focus())
+  const request = captureSessionSetting('/api/cwd/scope')
+  try {
+    const res = await appFetch(request.url)
+    const result = await res.json()
+    if (!res.ok || result.ok === false) throw requestError(result, res.status)
+    if (!Array.isArray(result.paths)) throw new Error('服务需更新后重启')
+    if (request.isCurrent()) state.workspaceScope.paths = result.paths
+  } catch (error) {
+    if (request.isCurrent()) state.workspaceScope.error = actionErrorMessage(error, '读取失败')
+  } finally { if (request.isCurrent()) state.workspaceScope.loading = false }
+}
+
+function closeWorkspaceScope() {
+  if (state.workspaceScope.mutating) return
+  state.workspaceScope.open = false
+  document.body.classList.remove('cwd-picker-lock')
+  restoreSettingsFocus()
+}
+
+async function removeWorkspacePath(path) {
+  const request = captureSessionSetting('/api/cwd/remove')
+  state.workspaceScope.mutating = true
+  state.workspaceScope.error = ''
+  try {
+    const result = await postJson(request.url, { path }, true)
+    if (!request.isCurrent()) return
+    state.workspaceScope.paths = result.paths || []
+    if (result.cwd) state.cwd = result.cwd
+    await fetchRuntimeContext()
+  } catch (error) {
+    if (request.isCurrent()) state.workspaceScope.error = actionErrorMessage(error, '移除失败')
+  } finally { if (request.isCurrent()) state.workspaceScope.mutating = false }
+}
+
 async function openCwdPicker() {
   state.cwdPicker.open = true
   state.cwdPicker.input = state.cwd || ''
@@ -2968,29 +3029,33 @@ async function openCwdPicker() {
   state.cwdPicker.error = ''
   document.body.classList.add('cwd-picker-lock')
   await browseCwd(state.cwd)
+  nextTick(() => document.querySelector('.cwd-picker-path input')?.focus())
 }
 
 function closeCwdPicker() {
   if (state.cwdPicker.mutating) return
   state.cwdPicker.open = false
   state.cwdPicker.error = ''
-  document.body.classList.remove('cwd-picker-lock')
+  nextTick(() => document.querySelector('.workspace-scope-add')?.focus())
 }
 
 async function browseCwd(path = state.cwdPicker.input) {
+  const request = captureSessionSetting('/api/cwd')
   state.cwdPicker.loading = true
   state.cwdPicker.error = ''
   try {
     const target = new URL('/api/cwd', window.location.origin)
     if (String(path || '').trim()) target.searchParams.set('path', String(path).trim())
-    const res = await appFetch(runtimeUrl(`${target.pathname}${target.search}`))
+    const url = new URL(request.url, window.location.origin)
+    if (target.searchParams.has('path')) url.searchParams.set('path', target.searchParams.get('path'))
+    const res = await appFetch(url.pathname + url.search)
     const result = await res.json().catch(() => ({}))
     if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
-    applyCwdBrowseResult(result)
+    if (request.isCurrent()) applyCwdBrowseResult(result)
   } catch (error) {
-    state.cwdPicker.error = actionErrorMessage(error, '无法打开路径')
+    if (request.isCurrent()) state.cwdPicker.error = actionErrorMessage(error, '无法打开路径')
   } finally {
-    state.cwdPicker.loading = false
+    if (request.isCurrent()) state.cwdPicker.loading = false
   }
 }
 
@@ -3016,16 +3081,21 @@ function applyCwdBrowseResult(result) {
 }
 
 async function fetchCwdBranch(path) {
+  const request = captureSessionSetting('/api/cwd')
   const target = new URL('/api/cwd', window.location.origin)
   target.searchParams.set('path', path)
-  const res = await appFetch(runtimeUrl(`${target.pathname}${target.search}`))
+  const url = new URL(request.url, window.location.origin)
+  url.searchParams.set('path', path)
+  const res = await appFetch(url.pathname + url.search)
   const result = await res.json().catch(() => ({}))
+  if (!request.isCurrent()) throw new Error('Session changed')
   if (!res.ok || result?.error || result?.ok === false) throw requestError(result, res.status)
   if (Array.isArray(result.locations)) state.cwdPicker.locations = result.locations
   return result
 }
 
 async function toggleCwdTree(node) {
+  const request = captureSessionSetting('/api/cwd')
   const path = node.path
   if (state.cwdPicker.treeExpanded[path]) {
     state.cwdPicker.treeExpanded = { ...state.cwdPicker.treeExpanded, [path]: false }
@@ -3035,11 +3105,12 @@ async function toggleCwdTree(node) {
   try {
     if (!state.cwdPicker.treeChildren[path]) {
       const result = await fetchCwdBranch(path)
+      if (!request.isCurrent()) return
       state.cwdPicker.treeChildren = { ...state.cwdPicker.treeChildren, [path]: result.entries || [] }
     }
     state.cwdPicker.treeExpanded = { ...state.cwdPicker.treeExpanded, [path]: true }
   } catch (error) {
-    state.cwdPicker.error = actionErrorMessage(error, '无法展开路径')
+    if (request.isCurrent()) state.cwdPicker.error = actionErrorMessage(error, '无法展开路径')
   }
 }
 
@@ -3050,17 +3121,18 @@ function selectCwdTreeNode(node) {
 }
 
 async function createCwdDirectory() {
+  const request = captureSessionSetting('/api/cwd/create')
   const target = String(state.cwdPicker.input || '').trim()
   if (!target) return
   state.cwdPicker.mutating = true
   state.cwdPicker.error = ''
   try {
-    const result = await postJson('/api/cwd/create', { path: target })
-    applyCwdBrowseResult(result)
+    const result = await postJson(request.url, { path: target }, true)
+    if (request.isCurrent()) applyCwdBrowseResult(result)
   } catch (error) {
-    state.cwdPicker.error = actionErrorMessage(error, '新建失败')
+    if (request.isCurrent()) state.cwdPicker.error = actionErrorMessage(error, '新建失败')
   } finally {
-    state.cwdPicker.mutating = false
+    if (request.isCurrent()) state.cwdPicker.mutating = false
   }
 }
 
@@ -3086,29 +3158,32 @@ async function deleteCwdDirectory(entry) {
 async function selectCwd() {
   const target = String(state.cwdPicker.selectionExplicit ? state.cwdPicker.selectedPath : state.cwdPicker.input).trim()
   if (!target) return
-  if (!state.cwdPicker.selectionExplicit && target === state.cwdPicker.cwd && target !== state.cwd) return
+  if (!state.cwdPicker.selectionExplicit && !state.cwdPicker.selectedPath && target === state.cwdPicker.cwd) return
+  const request = captureSessionSetting('/api/cwd/add')
   state.cwdPicker.mutating = true
   state.cwdPicker.error = ''
   try {
-    const result = await postJson('/api/cwd/change', { path: target })
-    state.cwd = result.cwd || target
+    const result = await postJson(request.url, { path: target }, true)
+    if (!request.isCurrent()) return
+    state.workspaceScope.paths = result.paths || []
+    state.cwd = result.cwd || state.cwd
     state.cwdPicker.open = false
-    document.body.classList.remove('cwd-picker-lock')
+    nextTick(() => document.querySelector('.workspace-scope-add')?.focus())
     await fetchRuntimeContext()
-    notify(result.unchanged ? '工作目录未变' : '工作目录已切换')
   } catch (error) {
-    state.cwdPicker.error = actionErrorMessage(error, '切换失败')
+    if (request.isCurrent()) state.cwdPicker.error = actionErrorMessage(error, '添加失败')
   } finally {
-    state.cwdPicker.mutating = false
+    if (request.isCurrent()) state.cwdPicker.mutating = false
   }
 }
 
 function openRuntimeToolDetail(tool) {
   if (!tool) return
+  focusContextDialog('.runtime-context-detail-modal')
   state.runtimeContextDetail = {
     kind: 'tool',
     title: tool.name,
-    meta: tool.strict ? '严格模式' : '兼容模式',
+    meta: tool.strict ? '严格模式' : '',
     description: tool.description || '',
     schema: runtimeToolSchema(tool),
   }
@@ -3390,7 +3465,7 @@ function renderLineResources(line) {
     const href = escapeHtml(appUrl(item.url))
     const size = item.sizeBytes ? formatBytes(item.sizeBytes) : ''
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
-    const meta = [size, expires].filter(Boolean).join(' · ')
+    const meta = [size, expires].filter(Boolean).join('  ')
     const downloadable = item.kind === 'download' || item.downloadName
     const action = downloadable ? '下载' : '打开'
     const download = downloadable ? ` download="${escapeHtml(item.downloadName || item.label || '')}"` : ' target="_blank" rel="noreferrer noopener"'
@@ -3634,8 +3709,8 @@ function parseImageCreateResult(text, metadata) {
   const compact = raw.replace(/\s+/g, ' ').trim()
   const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   const generated = /^(generated|edited)\s+(\d+)\s+images?/i.exec(lines[0] || compact)
-  const detailsLine = (lines.find((line) => line.includes(' · ')) || '').replace(/^requested:\s*/i, '')
-  const detailParts = detailsLine.split(' · ').map((part) => part.trim()).filter(Boolean)
+  const detailsLine = (lines.find((line) => /^requested:/i.test(line) || line.includes(' · ') || /^\S+ {2,}\S+ {2,}/.test(line)) || '').replace(/^requested:\s*/i, '')
+  const detailParts = detailsLine.split(/ · | {2,}/).map((part) => part.trim()).filter(Boolean)
   const durationMs = numberField(compact, ['duration', 'durationMs', 'elapsed', 'elapsedMs'])
   return {
     provider: matchImageCreateField(compact, 'provider', ['model', 'prompt']) || detailParts[0] || '',
@@ -3705,7 +3780,23 @@ function sanitizeMarkdown(html, resourceReferences = []) {
       node.setAttribute('rel', 'noreferrer noopener')
     }
   }
+  renderMath(template.content)
   highlightCodeBlocks(template.content)
+  // Wide rich content stays keyboard-scrollable within the transcript.
+  for (const pre of template.content.querySelectorAll('pre')) {
+    pre.tabIndex = 0
+    pre.setAttribute('role', 'region')
+    pre.setAttribute('aria-label', pre.dataset.lang ? pre.dataset.lang + ' 代码块' : '代码块')
+  }
+  for (const table of template.content.querySelectorAll('table')) {
+    const viewport = document.createElement('div')
+    viewport.className = 'markdown-table-scroll'
+    viewport.tabIndex = 0
+    viewport.setAttribute('role', 'region')
+    viewport.setAttribute('aria-label', '表格')
+    table.replaceWith(viewport)
+    viewport.append(table)
+  }
   return template.innerHTML
 }
 
@@ -3716,13 +3807,9 @@ function highlightCodeBlocks(root) {
     const pre = code.parentElement
     if (pre && language) pre.setAttribute('data-lang', language)
     try {
-      const result = language && hljs.getLanguage(language)
-        ? hljs.highlight(source, { language, ignoreIllegals: true })
-        : source.length <= 20000
-          ? hljs.highlightAuto(source)
-          : undefined
+      const result = highlightSource(source, language)
       if (!result) continue
-      code.innerHTML = result.value
+      code.innerHTML = result.html
       code.className = ['hljs', result.language ? `language-${result.language}` : language ? `language-${language}` : ''].filter(Boolean).join(' ')
       if (pre && result.language && !pre.hasAttribute('data-lang')) pre.setAttribute('data-lang', result.language)
     } catch {
@@ -3731,27 +3818,9 @@ function highlightCodeBlocks(root) {
   }
 }
 
-function normalizeCodeLanguage(className) {
-  const match = /(?:^|\s)language-([\w-]+)/.exec(className || '') || /(?:^|\s)lang-([\w-]+)/.exec(className || '')
-  if (!match) return ''
-  const value = match[1].toLowerCase()
-  const aliases = {
-    cjs: 'javascript',
-    mjs: 'javascript',
-    node: 'javascript',
-    shell: 'bash',
-    zsh: 'bash',
-    powershell: 'bash',
-    ps1: 'bash',
-    python3: 'python',
-    yml: 'yaml',
-    html: 'xml',
-    vue: 'xml',
-  }
-  return aliases[value] || value
-}
 
 function handleKeydown(event) {
+  if (event.isComposing || event.keyCode === 229 || event.target?.composing) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     submit()
@@ -3759,6 +3828,7 @@ function handleKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.isComposing || event.keyCode === 229 || event.target?.composing) return
   if (event.key === 'Escape' && state.confirmDialog.open) {
     event.preventDefault()
     resolveConfirmation(false)
@@ -3792,6 +3862,11 @@ function handleGlobalKeydown(event) {
   if (event.key === 'Escape' && state.cwdPicker.open) {
     event.preventDefault()
     closeCwdPicker()
+    return
+  }
+  if (event.key === 'Escape' && state.workspaceScope.open) {
+    event.preventDefault()
+    closeWorkspaceScope()
     return
   }
   if (event.key === 'Escape' && state.runtimeContextDetail) {
@@ -3837,7 +3912,7 @@ function applyTheme(value) {
   document.documentElement.dataset.theme = value
   document.documentElement.style.colorScheme = value
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0c0c0f' : '#ffffff')
-  window.__TAURI__?.core?.invoke?.('sync_window_theme', { theme: value }).catch(() => {})
+  // The desktop adapter observes the theme and synchronizes both native surfaces.
   try {
     localStorage.setItem(THEME_STORAGE_KEY, value)
   } catch {
@@ -3941,7 +4016,7 @@ function textWithAttachmentLabels(text, attachments) {
 }
 
 function stripImageLabels(text) {
-  return String(text).replace(/\s*\[img#\d+\]\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim()
+  return String(text).replace(/\[img#\d+\]/g, '')
 }
 
 function stripImageOperationHint(text) {
@@ -3949,16 +4024,12 @@ function stripImageOperationHint(text) {
     .replace(LEGACY_IMAGE_GENERATION_HINT, '')
     .replace(LEGACY_IMAGE_OPERATION_HINT, '')
     .replace(LEGACY_DOWNLOAD_EXPOSURE_HINT, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
 }
 
 function stripHiddenAttachmentManifest(text) {
+  // Metadata removal must not collapse code indentation, blank lines or TeX spacing.
   return String(text || '')
     .replace(new RegExp(`${escapeRegExp(ATTACHMENT_MANIFEST_START)}[\\s\\S]*?${escapeRegExp(ATTACHMENT_MANIFEST_END)}`, 'g'), '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
 }
 
 function imageLabelsFromText(text) {
@@ -4369,9 +4440,14 @@ function resetComposerHeight() {
   el.scrollTop = 0
 }
 
-function autosize() {
+function handleComposerCompositionEnd() {
+  nextTick(() => autosize())
+}
+
+function autosize(event) {
   const el = composer.value
-  if (!el) return
+  // Keep the IME anchor stable while candidate text is changing.
+  if (!el || event?.isComposing || el.composing) return
   el.style.height = 'auto'
   const maxHeight = window.innerHeight * (window.matchMedia('(max-width: 820px)').matches ? 0.28 : 0.34)
   el.style.height = `${Math.max(composerMinimumHeight(), Math.min(el.scrollHeight, maxHeight))}px`
@@ -4609,15 +4685,13 @@ function createMobileSession() {
               <path d="M10 3.5v2M10 14.5v2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M3.5 10h2M14.5 10h2M5.4 14.6l1.4-1.4M13.2 6.8l1.4-1.4" />
               <circle cx="10" cy="10" r="2.75" />
             </svg>
-            <span>模型配置</span>
+            <span>全局配置</span>
           </span>
         </button>
       </nav>
 
       <button :class="['sidebar-card', 'session-entry', { working: composerRunning }]" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
-        <span class="session-entry-icon" aria-hidden="true">
-          <i class="session-diamond"></i>
-        </span>
+
         <span class="session-entry-main">
           <span ref="sessionTitleViewport" :class="['session-title-line', { marquee: titleShouldMarquee }]">
             <strong ref="sessionTitleText">{{ currentTitle }}</strong>
@@ -4628,7 +4702,7 @@ function createMobileSession() {
 
       <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
         <div class="prompt-stack-head">
-          <button type="button" class="mini-button" @click="openPromptManager()">提示词管理</button>
+          <button type="button" class="mini-button chrome-label" @click="openPromptManager()"><ChromeIcon name="prompts" /><span>提示词管理</span></button>
         </div>
 
         <div class="prompt-list">
@@ -4648,8 +4722,8 @@ function createMobileSession() {
               <strong>{{ item.title }}</strong>
             </div>
             <div class="prompt-card-actions">
-              <button type="button" class="mini-button" @click="applyPromptItem(item)">应用</button>
-              <button type="button" class="mini-button" @click="editPromptItem(item)">编辑</button>
+              <button type="button" class="mini-button chrome-icon-button" aria-label="应用" :title="`应用：${item.title}`" @click="applyPromptItem(item)"><ChromeIcon name="apply" /></button>
+              <button type="button" class="mini-button chrome-icon-button" aria-label="编辑" :title="`编辑：${item.title}`" @click="editPromptItem(item)"><ChromeIcon name="edit" /></button>
             </div>
           </article>
         </div>
@@ -4660,7 +4734,7 @@ function createMobileSession() {
           class="logout-icon-button"
           type="button"
           aria-label="退出登录"
-          :title="`${authState.user?.username} · 退出登录`"
+          :title="`退出登录（${authState.user?.username}）`"
           @click="logoutUser"
         >
           <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
@@ -4686,7 +4760,7 @@ function createMobileSession() {
               <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
               <button v-if="adminViewing" type="button" :class="{ active: state.activePanel === 'users' }" @click="openMobilePanel('users')">用户</button>
               <button v-if="!authState.isolation" type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
-              <button v-if="canConfigureModel" type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">模型配置</button>
+              <button v-if="canConfigureModel" type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">全局配置</button>
               <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
               <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
                 <span class="core-version-spark spark-a" aria-hidden="true"></span>
@@ -4734,20 +4808,20 @@ function createMobileSession() {
           <div ref="transcript" class="transcript" :class="{'rows-transcript':historyView==='rows'}" tabindex="0" aria-label="对话记录">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
-                <strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
+                <ChromeIcon name="context" /><strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
               </div>
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
-                <button v-if="!authState.isolation" type="button" @click="openRuntimeContextModal('prompt')"><span>系统提示词</span><strong>{{ runtimePromptSections.length }}</strong></button>
-                <button type="button" @click="openRuntimeContextModal('tools')"><span>工具</span><strong>{{ runtimeTools.length }}</strong></button>
-                <button type="button" @click="openRuntimeContextModal('plugins')"><span>插件</span><strong>{{ effectiveSessionPluginCount }}</strong></button>
+                <button v-if="!authState.isolation" type="button" :title="'系统提示词 ' + runtimePromptSections.length" :aria-label="'系统提示词 ' + runtimePromptSections.length" @click="openRuntimeContextModal('prompt')"><ChromeIcon name="prompts" /><strong>{{ runtimePromptSections.length }}</strong></button>
+                <button type="button" :title="'工具 ' + runtimeTools.length" :aria-label="'工具 ' + runtimeTools.length" @click="openRuntimeContextModal('tools')"><ChromeIcon name="tools" /><strong>{{ runtimeTools.length }}</strong></button>
+                <button type="button" :title="'插件 ' + effectiveSessionPluginCount" :aria-label="'插件 ' + effectiveSessionPluginCount" @click="openRuntimeContextModal('plugins')"><ChromeIcon name="plugins" /><strong>{{ effectiveSessionPluginCount }}</strong></button>
               </div>
-              <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" @click="fetchRuntimeContext">重试</button>
-              <span v-else class="runtime-context-syncing">同步中</span>
+              <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" title="重新加载上下文" aria-label="重新加载上下文" @click="fetchRuntimeContext"><ChromeIcon name="refresh" /></button>
+              <span v-else class="runtime-context-syncing" role="status" aria-label="同步运行上下文" title="同步运行上下文"><ChromeIcon name="refresh" /></span>
             </section>
             <section v-if="runtimeProjectDocuments.length" class="runtime-context-bar project-context-bar">
-              <div class="runtime-context-bar-title"><strong>项目上下文</strong></div>
+              <div class="runtime-context-bar-title"><ChromeIcon name="document" /><strong>项目上下文</strong></div>
               <div class="runtime-context-bar-actions">
-                <button type="button" @click="openProjectContext"><span>文档</span><strong>{{ runtimeProjectDocuments.length }}</strong></button>
+                <button type="button" :title="'项目文档 ' + runtimeProjectDocuments.length" :aria-label="'项目文档 ' + runtimeProjectDocuments.length" @click="openProjectContext"><ChromeIcon name="document" /><strong>{{ runtimeProjectDocuments.length }}</strong></button>
               </div>
             </section>
 
@@ -4807,13 +4881,13 @@ function createMobileSession() {
                         </div>
                       </details>
                       <section v-else-if="isCompactionLine(item)" :class="['compaction-context-bar', { current: item.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(item)" @keydown.enter.prevent="openCompactionDetail(item)" @keydown.space.prevent="openCompactionDetail(item)">
-                        <div class="compaction-context-title"><strong>压缩上下文</strong></div>
-                        <div class="compaction-context-actions">
-                          <span><span>摘要</span><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
-                          <span v-if="item.compaction.imageCount"><span>图片</span><strong>{{ item.compaction.imageCount }}</strong></span>
-
-                        </div>
-                      </section>
+                    <div class="compaction-context-title"><ChromeIcon name="compact" /><strong>上下文已压缩</strong></div>
+                    <div class="compaction-context-actions">
+                      <span :title="'摘要 ' + String(item.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
+                      <span v-if="item.compaction.imageCount" :title="'图片引用 ' + item.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ item.compaction.imageCount }}</strong></span>
+                      <ChromeIcon class="context-chevron" name="chevron" />
+                    </div>
+                  </section>
                       <div v-else-if="shouldCollapseToolLine(item)" :class="['tool-result-summary', `status-${toolResultStatus(item).key}`]">
                         <div class="tool-result-title-row">
                           <svg :class="['tool-result-diamond', { spinning: item.live }]" viewBox="0 0 20 20" aria-hidden="true">
@@ -4864,20 +4938,18 @@ function createMobileSession() {
                 </div>
               </article>
               <article v-else :aria-label="historyView==='rows' && ['user','assistant'].includes(line.kind)?lineTitle(line):undefined" :class="['message', line.kind || 'system', { live: line.live, 'prompt-usage': isPromptUsageLine(line), 'context-compaction': isCompactionLine(line), 'compact-tool': shouldCollapseToolLine(line) }]">
-              <div v-if="!(historyView==='rows' && ['user','assistant'].includes(line.kind))" :class="['message-marker', { spinning: line.live }]">
+              <div v-if="!isCompactionLine(line) && !(historyView==='rows' && ['user','assistant'].includes(line.kind))" :class="['message-marker', { spinning: line.live }]">
                 <svg class="message-marker-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.75 17.25 10 10 17.25 2.75 10Z" /></svg>
               </div>
               <div v-if="isCompactionLine(line)" class="message-body compaction-message-body">
                 <section :class="['compaction-context-bar', { current: line.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(line)" @keydown.enter.prevent="openCompactionDetail(line)" @keydown.space.prevent="openCompactionDetail(line)">
-                  <div class="compaction-context-title">
-                    <strong>压缩上下文</strong>
-                  </div>
-                  <div class="compaction-context-actions">
-                    <span><span>摘要</span><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
-                    <span v-if="line.compaction.imageCount"><span>图片</span><strong>{{ line.compaction.imageCount }}</strong></span>
-
-                  </div>
-                </section>
+                    <div class="compaction-context-title"><ChromeIcon name="compact" /><strong>上下文已压缩</strong></div>
+                    <div class="compaction-context-actions">
+                      <span :title="'摘要 ' + String(line.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
+                      <span v-if="line.compaction.imageCount" :title="'图片引用 ' + line.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ line.compaction.imageCount }}</strong></span>
+                      <ChromeIcon class="context-chevron" name="chevron" />
+                    </div>
+                  </section>
               </div>
               <div v-else-if="line.kind === 'thinking'" class="message-body reasoning-body">
                 <details class="reasoning-sheet" :open="line.live || undefined">
@@ -5029,11 +5101,12 @@ function createMobileSession() {
             </div>
           </div>
 
-          <div v-if="state.queuedInput && !adminViewing" class="queued">
-            <span>已排队：{{ state.queuedInput }}</span>
-            <div>
-              <button type="button" :disabled="composerActionPending" @click="sendQueuedNow">立即发送</button>
-              <button type="button" :disabled="composerActionPending" @click="retractQueuedInput">取消</button>
+          <div v-if="state.queuedInput && !adminViewing" class="queued-message" role="group" aria-label="排队消息" :aria-busy="composerActionPending">
+            <span class="queued-message-marker" title="等待发送" aria-label="等待发送"><ChromeIcon name="queue" /></span>
+            <span class="queued-message-preview" :title="state.queuedInput" role="status">{{ state.queuedInput }}</span>
+            <div class="queued-message-actions">
+              <button type="button" :disabled="composerActionPending" title="立即发送" aria-label="立即发送" @click="sendQueuedNow"><ChromeIcon name="sendNow" /></button>
+              <button type="button" :disabled="composerActionPending" title="取消排队" aria-label="取消排队" @click="retractQueuedInput"><ChromeIcon name="close" /></button>
             </div>
           </div>
 
@@ -5047,9 +5120,9 @@ function createMobileSession() {
             @drop="handleComposerDrop"
           >
             <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
-              <span class="composer-app-prompt-label">当前提示词</span>
+              <span class="composer-app-prompt-label" title="当前提示词" aria-label="当前提示词"><ChromeIcon name="prompts" /></span>
               <strong>{{ activeAppPromptTitle }}</strong>
-              <button type="button" class="mini-button danger" @click="clearAppPrompt">清空</button>
+              <button type="button" class="mini-button danger chrome-icon-button" title="清空当前提示词" aria-label="清空当前提示词" @click="clearAppPrompt"><ChromeIcon name="close" /></button>
             </div>
             <div v-if="fileAttachments().length" class="attachments file-attachments">
               <figure v-for="(item, index) in fileAttachments()" :key="item.label" class="file-attachment">
@@ -5057,53 +5130,42 @@ function createMobileSession() {
                   <strong :title="item.localReference ? item.absolutePath : undefined">{{ fileAttachmentLabel(item, index) }}</strong>
                   <span>{{ fileAttachmentMeta(item) }}</span>
                 </figcaption>
-                <button type="button" aria-label="移除附件" @click="removeAttachment(item.label)">×</button>
+                <button type="button" aria-label="移除附件" title="移除附件" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
               </figure>
             </div>
             <div v-if="imageAttachments().length" class="attachments image-attachments">
               <figure v-for="(item, index) in imageAttachments()" :key="item.label" class="image-attachment">
                 <img :src="appUrl(item.previewUrl)" :alt="item.name || `图片 ${index + 1}`" />
                 <figcaption>图片 {{ index + 1 }}</figcaption>
-                <button type="button" aria-label="移除图片" @click="removeAttachment(item.label)">×</button>
+                <button type="button" aria-label="移除图片" title="移除图片" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
               </figure>
             </div>
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
-            <textarea ref="composer" v-model="input" placeholder="在这里输入你的问题、需求或下一步安排…" @keydown="handleKeydown" @paste="handlePaste" @input="autosize"></textarea>
-            <div class="composer-path-row">
-              <button type="button" class="composer-cwd" title="切换工作目录" aria-label="切换工作目录" @click="openCwdPicker">
-                <svg class="composer-cwd-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h5l2 2h8v9h-15Z" /></svg><span :title="currentCwd">{{ currentCwd }}</span>
-              </button>
-            </div>
-            <div :class="['composer-footer', { 'session-options-open': sessionOptionsOpen }]">
+            <textarea ref="composer" v-model="input" placeholder="有什么想做的？" aria-label="消息" @keydown="handleKeydown" @paste="handlePaste" @input="autosize" @compositionend="handleComposerCompositionEnd"></textarea>
+            <div class="composer-footer">
               <div id="composer-session-metrics" class="composer-metrics" aria-label="运行状态指标">
-                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" aria-label="选择模型" @click="openModelModal"><em>模型</em><strong>{{ modelName }}</strong></button>
-                <button type="button" :class="['metric-chip', 'numeric', 'context-window-trigger', metricBumpClass('context')]" :key="`context-${state.composerMetrics.context.bump}`" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
-                <span :class="['metric-chip numeric', metricBumpClass('inputTokens')]" :key="`input-${state.composerMetrics.inputTokens.bump}`"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
-                <span :class="['metric-chip numeric', metricBumpClass('outputTokens')]" :key="`output-${state.composerMetrics.outputTokens.bump}`"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
+                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :title="modelName" aria-label="选择模型" @click="openModelModal"><em>模型</em><strong>{{ modelName }}</strong></button>
+                <div class="composer-usage" role="group" aria-label="用量">
+                <button type="button" class="metric-chip numeric context-window-trigger" title="上下文窗口" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
+                <span class="metric-chip numeric" title="输入 Token"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
+                <span class="metric-chip numeric" title="输出 Token"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
+                </div>
+              </div>
+              <div class="composer-actions">
+                <button type="button" class="workspace-scope-trigger" title="工作区范围" aria-label="工作区范围" @click="openWorkspaceScope"><ChromeIcon name="folder" /></button>
                 <button
                   type="button"
                   :class="['fast-mode-button', { active: selectedFastMode, syncing: state.fastModeMutating }]"
                   :aria-pressed="selectedFastMode"
+                  aria-label="快速模式"
                   :title="selectedFastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
                   @click="toggleFastMode"
                 >
-                  <span>快速模式</span>
+                  <ChromeIcon name="fast" />
                 </button>
                 <span class="compress-wrap">
-                  <button type="button" class="compact-button" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession">{{ state.status?.phase === 'compacting' ? '正在压缩上下文' : state.compactSaving ? (state.busy ? '正在安排压缩' : '正在压缩上下文') : state.pendingSessionSettings.compact ? '已安排压缩' : '压缩会话' }}</button>
+                  <button type="button" class="compact-button" :class="{ 'is-compacting': state.status?.phase === 'compacting' || (state.compactSaving && !state.busy), 'is-pending': state.pendingSessionSettings.compact || (state.compactSaving && state.busy) }" :title="compactButtonLabel" :aria-label="compactButtonLabel" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession"><ChromeIcon :name="state.pendingSessionSettings.compact || (state.compactSaving && state.busy) ? 'clock' : 'compact'" /></button>
                 </span>
-              </div>
-              <div class="composer-actions">
-              <button
-                type="button"
-                class="session-options-toggle"
-                aria-label="会话选项"
-                :aria-expanded="sessionOptionsOpen"
-                aria-controls="composer-session-metrics"
-                @click="sessionOptionsOpen = !sessionOptionsOpen"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 14h14M7 3v6M13 11v6" /></svg>
-              </button>
 
                 <button
                   type="button"
@@ -5147,7 +5209,7 @@ function createMobileSession() {
           <button v-if="mobileCard" type="button" class="mobile-card-close" aria-label="关闭卡片" @click="closeMobileCard">×</button>
           <section class="background-task-section" data-card="tasks">
             <div class="background-task-head">
-              <div class="panel-title">{{ rightPanelTitle('tasks') }}</div>
+              <div class="panel-title chrome-label"><ChromeIcon name="tasks" />{{ rightPanelTitle('tasks') }}</div>
               <strong v-if="backgroundTaskCount" class="background-task-count">{{ backgroundTaskCount }}</strong>
             </div>
             <button
@@ -5157,13 +5219,13 @@ function createMobileSession() {
               :title="backgroundTaskTitle(primaryBackgroundTask)"
               @click="openBackgroundTaskDetail(primaryBackgroundTask)"
             >
-              <span :class="['background-task-dot', `status-${primaryBackgroundTask.status}`]"></span>
+              <TaskStatusIcon :status="primaryBackgroundTask.status" />
               <strong>{{ backgroundTaskDisplayTitle(primaryBackgroundTask) }}</strong>
               <span v-if="backgroundTaskCount > 1" class="background-task-more">+{{ backgroundTaskCount - 1 }}</span>
-              <b aria-hidden="true">›</b>
+              <ChromeIcon name="chevron" class="task-entry-chevron" />
             </button>
             <details v-if="backgroundTaskHistory.length" class="background-task-history">
-              <summary><span>最近结束</span><strong>{{ backgroundTaskHistory.length }}</strong></summary>
+              <summary><ChromeIcon name="clock" /><span>最近结束</span><strong>{{ backgroundTaskHistory.length }}</strong><ChromeIcon name="chevron" class="task-history-chevron" /></summary>
               <div class="background-task-history-list">
                 <button
                   v-for="task in backgroundTaskHistory"
@@ -5173,9 +5235,9 @@ function createMobileSession() {
                   :title="backgroundTaskTitle(task)"
                   @click="openBackgroundTaskDetail(task)"
                 >
-                  <span :class="['background-task-dot', `status-${task.status}`]"></span>
+                  <TaskStatusIcon :status="task.status" />
                   <strong>{{ backgroundTaskDisplayTitle(task) }}</strong>
-                  <span :class="['background-task-summary-status', `status-${task.status}`]">{{ taskStatusText(task.status) }}</span>
+                  <ChromeIcon name="chevron" class="task-entry-chevron" />
                 </button>
               </div>
             </details>
@@ -5183,34 +5245,29 @@ function createMobileSession() {
           <section v-if="currentCpaQuota" class="quota-card" data-card="quota">
             <div class="quota-card-head">
               <div>
-                <span>{{ rightPanelTitle('quota') }} · {{ quotaAccountLabel(currentCpaQuota.account) }}</span>
+                <span class="chrome-label" :title="`周额度：${quotaAccountLabel(currentCpaQuota.account)}
+续期：${formatQuotaReset(currentCpaQuota.resetAt)}`"><ChromeIcon name="quota" />剩余额度</span>
                 <strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong>
               </div>
-              <div class="quota-card-controls">
+              <div v-if="state.cpaQuotas.length > 1" class="quota-card-controls">
                 <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="上一个凭据" @click="rotateCpaQuota(-1)">‹</button>
-                <small>{{ state.cpaQuotas.length > 1 ? `${state.cpaQuotaIndex + 1}/${state.cpaQuotas.length}` : '剩余' }}</small>
+                <small :title="quotaAccountLabel(currentCpaQuota.account)">{{ state.cpaQuotaIndex + 1 }}/{{ state.cpaQuotas.length }}</small>
                 <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="下一个凭据" @click="rotateCpaQuota(1)">›</button>
               </div>
             </div>
             <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="normalizedQuotaPercent(currentCpaQuota.remainingPercent)" aria-valuemin="0" aria-valuemax="100">
               <span class="quota-progress-fill" :style="{ width: `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
             </div>
-            <div class="quota-card-foot">
-              <span>已使用 {{ quotaPercent(currentCpaQuota.usedPercent) }}</span>
-              <span>续期时间 {{ formatQuotaReset(currentCpaQuota.resetAt) }}</span>
-            </div>
-            <div class="quota-card-update">更新于 {{ formatQuotaReset(currentCpaQuota.updatedAt) }}</div>
           </section>
           <section class="quota-card memory-card" data-card="memory">
             <div class="memory-card-head">
               <div>
-                <span>{{ rightPanelTitle('memory') }}</span>
+                <span class="chrome-label" :title="rightPanelTitle('memory')"><ChromeIcon name="memory" />内存</span>
                 <strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong>
               </div>
-              <small>RSS</small>
             </div>
             <div v-if="memoryTrendPath" class="memory-chart" @mousemove="updateMemoryHover" @mouseleave="clearMemoryHover">
-              <svg class="memory-trend" viewBox="0 0 260 44" preserveAspectRatio="none" role="img" aria-label="最近一小时 RSS 趋势">
+              <svg class="memory-trend" viewBox="0 0 260 44" preserveAspectRatio="none" role="img" aria-label="最近一小时内存趋势">
                 <path :d="memoryTrendPath" />
                 <circle
                   v-for="(point, index) in memoryTrendPoints"
@@ -5234,13 +5291,6 @@ function createMobileSession() {
               </div>
             </div>
             <div v-else class="memory-trend-empty">—</div>
-            <div class="memory-stats">
-              <div><span>V8 堆</span><strong>{{ formatMemoryBytes(memoryCurrent?.heapUsed) }}</strong></div>
-              <div><span>外部内存</span><strong>{{ formatMemoryBytes(memoryCurrent?.external) }}</strong></div>
-            </div>
-            <div class="memory-card-foot">
-              <span>更新于 {{ formatMemoryTime(memoryCurrent?.at) }}</span>
-            </div>
           </section>
         </aside>
       </section>
@@ -5250,9 +5300,9 @@ function createMobileSession() {
           <div class="page-head sessions-page-head">
             <div>
               <h2>会话管理</h2>
-              <p>{{ adminViewing ? '查看全部用户的历史会话' : '查找、继续或整理历史会话' }}</p>
+
             </div>
-            <button v-if="!adminViewing" class="primary" @click="newSession">+ 新建会话</button>
+            <button v-if="!adminViewing" class="primary page-icon-button" title="新建会话" aria-label="新建会话" @click="newSession"><ChromeIcon name="plus" /></button>
           </div>
           <div class="session-toolbar">
             <label class="session-search" aria-label="搜索会话">
@@ -5268,23 +5318,23 @@ function createMobileSession() {
               <div class="session-card-main">
                 <div class="session-card-title">
                   <strong>{{ displaySessionTitle(session) }}</strong>
-                  <span v-if="adminViewing" class="current-pill">{{ session.ownerUsername }}{{ session.ownerDeleted ? ' · 已删除' : '' }}</span>
+                  <span v-if="adminViewing" class="current-pill">{{ session.ownerUsername }}{{ session.ownerDeleted ? '（已删除）' : '' }}</span>
                   <span v-if="isCurrentSession(session.sessionId) && (!adminViewing || authState.adminOwnerUsername === session.ownerUsername)" class="current-pill">当前</span>
                   <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
                 </div>
                 <div class="session-card-meta">
-                  <code :title="session.sessionId">ID · {{ session.sessionId }}</code>
+                  <code :title="session.sessionId">ID {{ session.sessionId }}</code>
                   <time :datetime="session.updatedAt || session.createdAt">更新于 {{ formatSessionTime(session.updatedAt || session.createdAt) }}</time>
                 </div>
               </div>
               <div class="session-actions">
-                <button :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="resumeSession(session)">{{ state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中…' : '打开' }}</button>
-                <button v-if="!adminViewing" class="danger" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)">删除</button>
+                <button class="page-icon-button" :disabled="state.sessionResumeLoading || state.sessionsLoading" :title="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中' : '打开'" aria-label="打开会话" @click="resumeSession(session)"><ChromeIcon :name="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? 'clock' : 'apply'" /></button>
+                <button v-if="!adminViewing" class="danger page-icon-button" title="删除会话" aria-label="删除会话" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)"><ChromeIcon name="trash" /></button>
               </div>
             </article>
           </div>
           <nav v-if="!state.sessionsLoading && filteredSessions.length && sessionTotalPages > 1" class="session-pagination" aria-label="会话分页">
-            <button type="button" :disabled="sessionPage === 1" @click="sessionPage -= 1">上一页</button>
+            <button type="button" :disabled="sessionPage === 1" @click="sessionPage -= 1" title="上一页" aria-label="上一页"><ChromeIcon name="back" /></button>
             <button
               v-for="page in sessionPageNumbers"
               :key="page"
@@ -5293,7 +5343,7 @@ function createMobileSession() {
               :aria-current="page === sessionPage ? 'page' : undefined"
               @click="sessionPage = page"
             >{{ page }}</button>
-            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="sessionPage += 1">下一页</button>
+            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="sessionPage += 1" title="下一页" aria-label="下一页"><ChromeIcon name="apply" /></button>
           </nav>
         </div>
       </section>
@@ -5301,11 +5351,11 @@ function createMobileSession() {
       <section v-else-if="adminViewing && state.activePanel === 'users'" class="content-grid single">
         <div class="panel-page sessions-page admin-users-page">
           <div class="page-head sessions-page-head">
-            <div><h2>用户管理</h2><p>创建和删除普通用户账号</p></div>
+            <div><h2>用户管理</h2></div>
           </div>
           <form class="admin-user-form" @submit.prevent="createManagedUser">
             <label>用户名<input v-model="adminUsername" maxlength="100" autocomplete="off" required /></label>
-            <button class="primary" :disabled="state.adminUserBusy">创建普通用户</button>
+            <button class="primary page-icon-button" title="创建普通用户" aria-label="创建普通用户" :disabled="state.adminUserBusy"><ChromeIcon name="plus" /></button>
           </form>
           <p v-if="state.adminUserError" class="admin-user-error" role="alert">{{ state.adminUserError }}</p>
           <div v-if="state.adminUsersLoading" class="empty-state">正在加载用户…</div>
@@ -5314,7 +5364,7 @@ function createMobileSession() {
               <div class="session-card-main">
                 <div class="session-card-title"><strong>{{ user.username }}</strong><span class="current-pill">{{ user.role === 'admin' ? '超管' : '普通用户' }}</span></div>
               </div>
-              <div class="session-actions"><button v-if="user.role !== 'admin'" class="danger" :disabled="state.adminUserBusy" @click="deleteManagedUser(user)">删除账号</button></div>
+              <div class="session-actions"><button v-if="user.role !== 'admin'" class="danger page-icon-button" title="删除账号" aria-label="删除账号" :disabled="state.adminUserBusy" @click="deleteManagedUser(user)"><ChromeIcon name="trash" /></button></div>
             </article>
           </div>
         </div>
@@ -5325,8 +5375,8 @@ function createMobileSession() {
           <div class="page-head">
             <h2>提示词</h2>
             <div class="page-head-actions">
-              <button class="ghost" @click="state.activePanel = 'chat'">回到对话</button>
-              <button class="primary" @click="newPromptItem">+ 新建提示词</button>
+              <button class="ghost page-icon-button" title="回到对话" aria-label="回到对话" @click="state.activePanel = 'chat'"><ChromeIcon name="back" /></button>
+              <button class="primary page-icon-button" title="新建提示词" aria-label="新建提示词" @click="newPromptItem"><ChromeIcon name="plus" /></button>
             </div>
           </div>
           <div class="prompt-workbench">
@@ -5367,16 +5417,16 @@ function createMobileSession() {
               <div class="prompt-editor-toolbar">
                 <strong class="prompt-editor-current">{{ promptDraft.title || '新提示词' }}</strong>
                 <div class="prompt-editor-toolbar-actions">
-                  <button class="mini-button" type="button" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)">应用</button>
-                  <button class="mini-button" type="button" @click="savePromptItem">保存</button>
-                  <button class="mini-button danger" type="button" :disabled="!promptDraft.id" @click="deletePromptItem">删除</button>
+                  <button class="mini-button page-icon-button" type="button" title="应用提示词" aria-label="应用提示词" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)"><ChromeIcon name="apply" /></button>
+                  <button class="mini-button page-icon-button" type="button" title="保存提示词" aria-label="保存提示词" @click="savePromptItem"><ChromeIcon name="save" /></button>
+                  <button class="mini-button danger page-icon-button" type="button" title="删除提示词" aria-label="删除提示词" :disabled="!promptDraft.id" @click="deletePromptItem"><ChromeIcon name="trash" /></button>
                 </div>
               </div>
 
               <div class="prompt-editor-grid">
                 <label class="prompt-editor-field">
                   <span>名称</span>
-                  <input v-model="promptDraft.title" type="text" placeholder="例如：代码评审" />
+                  <input v-model="promptDraft.title" type="text" placeholder="名称" />
                 </label>
                 <label class="prompt-editor-field prompt-editor-field-full">
                   <span>提示词内容</span>
@@ -5397,7 +5447,7 @@ function createMobileSession() {
           <template v-if="canConfigureModel && state.settingsPage === 'prompt'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="mini-button" aria-label="返回模型配置" @click="state.settingsPage = ''">←</button>
+                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="state.settingsPage = ''"><ChromeIcon name="back" /></button>
                 <h2>提示词配置</h2>
               </div>
             </div>
@@ -5406,7 +5456,7 @@ function createMobileSession() {
           <template v-else-if="state.settingsPage === 'feedback'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="mini-button" aria-label="返回模型配置" @click="state.settingsPage = ''">←</button>
+                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="state.settingsPage = ''"><ChromeIcon name="back" /></button>
                 <h2>框架改进建议</h2>
               </div>
             </div>
@@ -5414,21 +5464,19 @@ function createMobileSession() {
           </template>
           <template v-else>
           <div class="page-head settings-page-head">
-            <h2>模型配置</h2>
-            <button class="primary" @click="saveLogin" :disabled="!state.login">保存</button>
+            <h2>全局配置</h2>
           </div>
-          <label class="history-view-setting"><span>历史展示</span><NeoSelect v-model="historyView" :options="[{value:'folded',label:'折叠视图'},{value:'rows',label:'逐行视图'}]" /></label>
           <div v-if="!state.login" class="empty-state">正在加载配置…</div>
-          <form v-else class="settings-form" @submit.prevent="saveLogin">
+          <div v-else class="settings-form">
             <button v-if="canConfigureModel" type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
               <strong>提示词配置</strong><span aria-hidden="true">›</span>
             </button>
-            <section class="settings-card">
-              <header class="settings-card-head"><strong>模型</strong></header>
+            <form class="settings-card settings-model-card" aria-label="模型配置" @submit.prevent="saveLogin">
+              <header class="settings-card-head"><strong>模型</strong><SettingsSaveButton label="保存模型配置" :busy="state.loginSaving" :disabled="state.loginLoading" /></header>
               <div class="settings-field-grid">
                 <label class="settings-field">
                   <span>供应商</span>
-                  <NeoSelect v-model="loginProvider" :options="loginProviderOptions(state.login.providers)" aria-label="供应商" @change="switchLoginProvider" />
+                  <NeoSelect v-model="loginProvider" :options="loginProviderOptions(state.login.providers)" :disabled="state.loginLoading || state.loginSaving" aria-label="供应商" @change="switchLoginProvider" />
                 </label>
                 <label v-for="field in state.login.fields" :key="field.key" class="settings-field">
                   <span>{{ loginFieldLabel(field.label) }}<i v-if="field.required" class="settings-required" aria-label="必填"></i></span>
@@ -5437,68 +5485,70 @@ function createMobileSession() {
                     v-model="loginValues[field.key]"
                     :options="loginFieldOptions(field)"
                     :aria-label="loginFieldLabel(field.label)"
+                    :disabled="state.loginLoading || state.loginSaving"
                   />
                   <input
                     v-else
                     v-model="loginValues[field.key]"
                     :type="field.secret ? 'password' : 'text'"
+                    :disabled="state.loginLoading || state.loginSaving"
                     :placeholder="field.placeholder || `请输入${loginFieldLabel(field.label)}`"
                   />
                 </label>
               </div>
-            </section>
+            </form>
 
-            <section v-if="canConfigureModel" class="settings-card">
-              <header class="settings-card-head"><strong>CPA</strong></header>
+            <form v-if="canConfigureModel" class="settings-card settings-cpa-card" aria-label="CPA 配置" @submit.prevent="saveCpaConfig">
+              <header class="settings-card-head"><strong>CPA</strong><SettingsSaveButton label="保存 CPA 配置" :busy="state.cpaSaving" :disabled="!state.cpaConfig.loaded" /></header>
               <div class="settings-field-grid">
                 <label class="settings-field">
                   <span>URL</span>
-                  <input v-model="state.cpaConfig.url" type="text" placeholder="http://127.0.0.1:8317" autocomplete="off" />
+                  <input v-model="state.cpaConfig.url" :disabled="state.cpaSaving || !state.cpaConfig.loaded" type="text" placeholder="http://127.0.0.1:8317" autocomplete="off" />
                 </label>
                 <label class="settings-field">
                   <span>管理密码</span>
-                  <input v-model="state.cpaConfig.password" type="password" placeholder="请输入管理密码" autocomplete="new-password" />
+                  <input v-model="state.cpaConfig.password" :disabled="state.cpaSaving || !state.cpaConfig.loaded" type="password" placeholder="请输入管理密码" autocomplete="new-password" />
                 </label>
               </div>
-            </section>
+            </form>
 
-            <section v-if="canConfigureModel" class="settings-card settings-plugin-card">
+            <form v-if="canConfigureModel" class="settings-card settings-tools-card" aria-label="全局工具" @submit.prevent="saveGlobalTools">
               <header class="settings-card-head">
-                <div><strong>工具</strong><small>内置与插件工具默认开启，关闭后立即对当前会话生效。</small></div>
-                <button type="button" class="mini-button" :disabled="state.busy || state.globalTools.loading" @click="saveGlobalTools">保存</button>
+                <strong>工具</strong>
+                <SettingsSaveButton label="保存全局工具" :busy="state.globalTools.loading" :disabled="state.busy" />
               </header>
               <div class="plugin-settings-list">
                 <label v-for="tool in state.globalTools.items" :key="tool.name" class="plugin-settings-row">
-                  <span><strong><code>{{ tool.name }}</code></strong><small>{{ tool.source === 'plugin' ? `插件 · ${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small></span>
+                  <span><strong><code>{{ tool.name }}</code></strong><small>{{ tool.source === 'plugin' ? `${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small></span>
                   <span class="plugin-toggle">
-                    <input v-model="tool.configuredEnabled" type="checkbox" :aria-label="tool.name" />
+                    <input v-model="tool.configuredEnabled" :disabled="state.busy || state.globalTools.loading" type="checkbox" :aria-label="tool.name" />
                     <span aria-hidden="true"></span>
                   </span>
                 </label>
               </div>
-            </section>
+            </form>
 
-            <section v-if="canConfigureModel" class="settings-card settings-plugin-card">
+            <form v-if="canConfigureModel" class="settings-card settings-plugins-card" aria-label="全局插件" @submit.prevent="saveGlobalPlugins">
               <header class="settings-card-head">
                 <strong>插件</strong>
-                <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="installPlugin">安装可信插件</button>
-                <button type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="saveGlobalPlugins">保存</button>
+                <!-- <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="installPlugin">安装可信插件</button> -->
+                <SettingsSaveButton label="保存全局插件" :busy="state.globalPlugins.loading" :disabled="state.globalPlugins.locked" />
               </header>
               <div class="plugin-settings-list">
                 <div v-for="plugin in state.globalPlugins.items" :key="plugin.id" class="plugin-settings-row">
                   <span><strong>{{ plugin.name }}</strong><small>{{ plugin.tools.length }} 个工具</small></span>
                   <span class="plugin-toggle">
-                    <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked" :aria-label="plugin.name" />
+                    <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" :aria-label="plugin.name" />
                     <span aria-hidden="true"></span>
                   </span>
-                <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="uninstallPlugin(plugin)">卸载</button>
+                <button v-if="state.globalPlugins.installationSupported" type="button" class="settings-icon-button plugin-uninstall" :title="'卸载 ' + plugin.name" :aria-label="'卸载 ' + plugin.name" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="uninstallPlugin(plugin)"><ChromeIcon name="trash" /></button>
                 </div>
               </div>
-            </section>
+            </form>
             <button type="button" class="settings-prompt-entry" @click="state.settingsPage = 'feedback'">
               <strong>框架改进建议</strong><span aria-hidden="true">›</span>
             </button>
-          </form>
+          </div>
           </template>
         </div>
       </section>
@@ -5522,7 +5572,7 @@ function createMobileSession() {
       :class="['core-version', { celebrating: state.coreEasterEgg }]"
       role="button"
       tabindex="0"
-      :title="`内核版本 ${state.coreVersion} · 点击试试`"
+      :title="`内核版本 ${state.coreVersion}`"
       @click="triggerCoreEasterEgg"
       @keydown.enter.prevent="triggerCoreEasterEgg"
       @keydown.space.prevent="triggerCoreEasterEgg"
@@ -5535,19 +5585,42 @@ function createMobileSession() {
   </Teleport>
 
   <Teleport to="body">
-    <div v-if="state.cwdPicker.open" class="cwd-picker-backdrop" @click.self="closeCwdPicker">
-      <section class="cwd-picker-modal" role="dialog" aria-modal="true" aria-label="选择工作目录">
+    <div v-if="state.workspaceScope.open && !state.cwdPicker.open" class="cwd-picker-backdrop" @click.self="closeWorkspaceScope">
+      <section class="workspace-scope-modal" role="dialog" aria-modal="true" aria-label="工作区范围" tabindex="-1" @keydown="trapSettingsFocus">
         <header class="cwd-picker-head">
-          <strong>CWD</strong>
-          <button type="button" aria-label="关闭" @click="closeCwdPicker">×</button>
+          <strong>工作区范围</strong>
+          <div class="workspace-scope-actions">
+            <button type="button" class="workspace-scope-add" title="添加路径" aria-label="添加路径" :disabled="state.busy || state.workspaceScope.mutating || state.workspaceScope.loading" @click="openCwdPicker"><ChromeIcon name="plus" /></button>
+            <button type="button" title="关闭" aria-label="关闭" @click="closeWorkspaceScope"><ChromeIcon name="close" /></button>
+          </div>
+        </header>
+        <div class="workspace-scope-list" :aria-busy="state.workspaceScope.loading">
+          <div v-for="path in state.workspaceScope.paths" :key="path" class="workspace-scope-path">
+            <ChromeIcon name="folder" />
+            <span>{{ path }}</span>
+            <button type="button" :title="'移除 ' + path" :aria-label="'移除 ' + path" :disabled="state.busy || state.workspaceScope.mutating" @click="removeWorkspacePath(path)"><ChromeIcon name="trash" /></button>
+          </div>
+          <span v-if="!state.workspaceScope.paths.length" class="workspace-scope-empty">{{ state.workspaceScope.loading ? '读取中' : '暂无路径' }}</span>
+        </div>
+        <p v-if="state.workspaceScope.error" class="cwd-picker-error" role="alert">{{ state.workspaceScope.error }}</p>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="state.cwdPicker.open" class="cwd-picker-backdrop" @click.self="closeCwdPicker">
+      <section class="cwd-picker-modal" role="dialog" aria-modal="true" aria-label="选择工作目录" @keydown="trapSettingsFocus">
+        <header class="cwd-picker-head">
+          <strong>添加路径</strong>
+          <button type="button" aria-label="返回" title="返回" @click="closeCwdPicker"><ChromeIcon name="back" /></button>
         </header>
         <form class="cwd-picker-path" @submit.prevent="browseCwd()">
           <input v-model="state.cwdPicker.input" autocomplete="off" spellcheck="false" aria-label="工作目录路径" />
-          <button type="submit" :disabled="state.cwdPicker.loading">前往</button>
-          <button type="button" :disabled="state.cwdPicker.mutating" @click="createCwdDirectory">新建</button>
+          <button type="submit" :disabled="state.cwdPicker.loading" title="前往" aria-label="前往"><ChromeIcon name="apply" /></button>
+          <button type="button" :disabled="state.cwdPicker.mutating" title="新建目录" aria-label="新建目录" @click="createCwdDirectory"><ChromeIcon name="folderPlus" /></button>
         </form>
         <div class="cwd-picker-shortcuts">
-          <button v-if="state.cwdPicker.parent" type="button" @click="browseCwd(state.cwdPicker.parent)">← 上级</button>
+          <button v-if="state.cwdPicker.parent" type="button" title="上级目录" aria-label="上级目录" @click="browseCwd(state.cwdPicker.parent)"><ChromeIcon name="back" /></button>
           <span>{{ state.cwdPicker.selectedPath || state.cwdPicker.cwd }}</span>
         </div>
         <div class="cwd-picker-browser">
@@ -5560,7 +5633,7 @@ function createMobileSession() {
               :title="location.path"
               @click="browseCwd(location.path)"
             >
-              <span aria-hidden="true">{{ location.kind === 'drive' || location.kind === 'volume' ? '▣' : location.kind === 'home' ? '◆' : '◇' }}</span>
+              <ChromeIcon :name="location.kind === 'drive' || location.kind === 'volume' ? 'drive' : location.kind === 'home' ? 'home' : 'folder'" />
               <strong>{{ location.label }}</strong>
             </button>
           </nav>
@@ -5581,8 +5654,8 @@ function createMobileSession() {
           </div>
         </div>
         <footer class="cwd-picker-actions">
-          <button type="button" @click="closeCwdPicker">取消</button>
-          <button type="button" class="primary" :disabled="state.cwdPicker.mutating || state.cwdPicker.loading" @click="selectCwd">选择</button>
+          <button type="button" title="取消" aria-label="取消" @click="closeCwdPicker"><ChromeIcon name="close" /></button>
+          <button type="button" class="primary" :disabled="state.cwdPicker.mutating || state.cwdPicker.loading" title="选择" aria-label="选择" @click="selectCwd"><ChromeIcon name="check" /></button>
         </footer>
       </section>
     </div>
@@ -5590,13 +5663,13 @@ function createMobileSession() {
 
   <Teleport to="body">
     <div v-if="state.projectContextOpen" class="runtime-context-modal-backdrop" @click.self="closeProjectContext">
-      <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="项目上下文">
+      <section class="runtime-context-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" aria-label="项目上下文">
         <header class="runtime-context-modal-head">
           <div>
             <span v-if="state.projectContextDocument" class="runtime-context-kicker">{{ state.projectContextDocument.path }}</span>
             <strong>{{ state.projectContextDocument?.name || '项目上下文' }}</strong>
           </div>
-          <button type="button" :aria-label="state.projectContextDocument ? '返回' : '关闭'" @click="closeProjectContext">×</button>
+          <button type="button" :aria-label="state.projectContextDocument ? '返回' : '关闭'" @click="closeProjectContext"><ChromeIcon name="close" /></button>
         </header>
         <div class="runtime-context-modal-content">
           <div v-if="!state.projectContextDocument" class="runtime-context-index">
@@ -5631,7 +5704,7 @@ function createMobileSession() {
     <div v-if="state.modelModalOpen" class="context-window-backdrop" @click.self="closeModelModal">
       <section class="context-window-modal session-model-modal" role="dialog" aria-modal="true" aria-label="选择模型" @keydown="trapSettingsFocus">
         <form @submit.prevent="saveSessionModel">
-          <header class="session-model-header"><h2>模型</h2><button type="button" class="ghost" aria-label="关闭模型选择" @click="closeModelModal">×</button></header>
+          <header class="session-model-header"><h2>模型</h2><button type="button" class="ghost" aria-label="关闭模型选择" title="关闭" @click="closeModelModal"><ChromeIcon name="close" /></button></header>
           <input id="session-model-search" v-model="state.modelSearch" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off" />
           <div class="session-model-list" role="radiogroup" aria-label="模型">
             <label v-for="model in filteredModelOptions" :key="model" class="session-model-option" :class="{ selected: state.modelDraft === model }">
@@ -5648,8 +5721,8 @@ function createMobileSession() {
           </fieldset>
           <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>
           <div class="context-window-actions">
-            <button type="button" class="ghost" @click="closeModelModal">取消</button>
-            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft">{{ state.modelSaving ? '保存中…' : '确认' }}</button>
+            <button type="button" class="ghost" title="取消" aria-label="取消" @click="closeModelModal"><ChromeIcon name="close" /></button>
+            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft" :aria-busy="state.modelSaving" :aria-label="state.modelSaving ? '保存中' : '确认'" :title="state.modelSaving ? '保存中' : '确认'"><ChromeIcon :name="state.modelSaving ? 'clock' : 'check'" /></button>
           </div>
         </form>
       </section>
@@ -5676,8 +5749,8 @@ function createMobileSession() {
           </div>
           <p v-if="state.contextWindowError" class="context-window-error" role="alert">{{ state.contextWindowError }}</p>
           <div class="context-window-actions">
-            <button type="button" class="ghost" @click="closeContextWindowModal">取消</button>
-            <button type="submit" class="primary" :disabled="state.contextWindowSaving">{{ state.contextWindowSaving ? '保存中…' : '确认' }}</button>
+            <button type="button" class="ghost" title="取消" aria-label="取消" @click="closeContextWindowModal"><ChromeIcon name="close" /></button>
+            <button type="submit" class="primary" :disabled="state.contextWindowSaving" :aria-busy="state.contextWindowSaving" :aria-label="state.contextWindowSaving ? '保存中' : '确认'" :title="state.contextWindowSaving ? '保存中' : '确认'"><ChromeIcon :name="state.contextWindowSaving ? 'clock' : 'check'" /></button>
           </div>
         </form>
       </section>
@@ -5698,12 +5771,12 @@ function createMobileSession() {
 
   <Teleport to="body">
     <div v-if="compactionDetailLine" class="runtime-context-detail-backdrop" @click.self="closeCompactionDetail">
-      <section class="runtime-context-detail-modal compaction-detail-modal" role="dialog" aria-modal="true" aria-label="压缩上下文详情">
+      <section class="runtime-context-detail-modal compaction-detail-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" aria-label="压缩上下文详情">
         <header class="runtime-context-modal-head">
           <div>
-            <strong>压缩上下文详情</strong>
+            <strong><ChromeIcon name="compact" />压缩上下文</strong>
           </div>
-          <button type="button" aria-label="关闭" @click="closeCompactionDetail">×</button>
+          <button type="button" aria-label="关闭" @click="closeCompactionDetail"><ChromeIcon name="close" /></button>
         </header>
         <div class="runtime-context-detail-content compaction-detail-content">
           <dl class="compaction-detail-stats">
@@ -5714,8 +5787,8 @@ function createMobileSession() {
             <div><dt>释放字符</dt><dd>{{ compactNumber(compactionDetailLine.compaction.charsFreed) }}</dd></div>
             <div><dt>图片引用</dt><dd>{{ compactionDetailLine.compaction.imageCount || 0 }}</dd></div>
           </dl>
-          <h3>实际续接上下文</h3>
-          <pre>{{ compactionDetailLine.compaction.continuationState || compactionDetailLine.compaction.summary || '未提供续接上下文' }}</pre>
+          <h3>续接上下文</h3>
+          <pre tabindex="0" aria-label="续接上下文">{{ compactionDetailLine.compaction.continuationState || compactionDetailLine.compaction.summary || '未提供续接上下文' }}</pre>
         </div>
       </section>
     </div>
@@ -5723,12 +5796,12 @@ function createMobileSession() {
 
   <Teleport to="body">
     <div v-if="state.runtimeContextModal" class="runtime-context-modal-backdrop" @click.self="closeRuntimeContextModal">
-      <section class="runtime-context-modal" role="dialog" aria-modal="true" aria-label="运行上下文">
+      <section class="runtime-context-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" aria-label="运行上下文">
         <header class="runtime-context-modal-head">
           <div>
             <strong>{{ state.runtimeContextModal === 'prompt' ? '系统提示词' : state.runtimeContextModal === 'tools' ? '可用工具' : '会话插件' }}</strong>
           </div>
-          <button type="button" aria-label="关闭" @click="closeRuntimeContextModal">×</button>
+          <button type="button" aria-label="关闭" @click="closeRuntimeContextModal"><ChromeIcon name="close" /></button>
         </header>
 
         <div class="runtime-context-modal-content">
@@ -5746,7 +5819,7 @@ function createMobileSession() {
               <div class="runtime-tool-status"><span>可用 {{ effectiveSessionToolCount }} / {{ state.sessionTools.items.length }}</span></div>
               <div v-for="tool in state.sessionTools.items" :key="tool.name" class="runtime-plugin-row">
                 <button type="button" class="runtime-tool-detail-button" :disabled="!runtimeTools.some((item) => item.name === tool.name)" @click="openRuntimeToolDetail(runtimeTools.find((item) => item.name === tool.name))">
-                  <code>{{ tool.name }}</code><small>{{ tool.available === false ? `插件未启用 · ${tool.pluginName || tool.pluginId}` : tool.source === 'plugin' ? `插件 · ${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small>
+                  <code>{{ tool.name }}</code><small>{{ tool.available === false ? `${tool.pluginName || tool.pluginId}（未启用）` : tool.source === 'plugin' ? `${tool.pluginName || tool.pluginId}` : tool.source === 'external' ? '外部工具' : '内置工具' }}</small>
                 </button>
                 <NeoSelect
                   class="runtime-plugin-control"
@@ -5786,13 +5859,13 @@ function createMobileSession() {
 
   <Teleport to="body">
     <div v-if="state.runtimeContextDetail" class="runtime-context-detail-backdrop" @click.self="closeRuntimeContextDetail">
-      <section class="runtime-context-detail-modal" role="dialog" aria-modal="true" :aria-label="state.runtimeContextDetail.title">
+      <section class="runtime-context-detail-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" :aria-label="state.runtimeContextDetail.title">
         <header class="runtime-context-modal-head">
           <div>
             <span v-if="state.runtimeContextDetail.meta" class="runtime-context-kicker">{{ state.runtimeContextDetail.meta }}</span>
             <strong>{{ state.runtimeContextDetail.title }}</strong>
           </div>
-          <button type="button" aria-label="返回" @click="closeRuntimeContextDetail">×</button>
+          <button type="button" aria-label="返回" @click="closeRuntimeContextDetail"><ChromeIcon name="close" /></button>
         </header>
         <div class="runtime-context-detail-content">
           <template v-if="state.runtimeContextDetail.kind === 'tool'">
@@ -5807,13 +5880,13 @@ function createMobileSession() {
 
   <Teleport to="body">
     <div v-if="state.backgroundTaskDetail" class="tool-result-modal-backdrop" @click.self="closeBackgroundTaskDetail">
-      <section class="tool-result-modal background-task-modal" role="dialog" aria-modal="true" aria-label="后台任务">
+      <section class="tool-result-modal background-task-modal" @keydown="toolDetailKeydown" role="dialog" aria-modal="true" aria-label="后台任务">
         <header class="tool-result-modal-head">
           <div class="tool-result-modal-title">
-            <strong>后台任务</strong>
+            <ChromeIcon name="tasks" /><strong>后台任务</strong>
             <span class="background-task-modal-count">{{ allBackgroundTasks.length }}</span>
           </div>
-          <button type="button" class="tool-result-modal-close" aria-label="关闭" @click="closeBackgroundTaskDetail">×</button>
+          <button type="button" class="tool-result-modal-close" aria-label="关闭" title="关闭" @click="closeBackgroundTaskDetail"><ChromeIcon name="close" /></button>
         </header>
         <div :class="['tool-result-modal-content', 'background-task-page', { single: allBackgroundTasks.length <= 1 }]">
           <nav v-if="allBackgroundTasks.length > 1" class="background-task-index" aria-label="后台任务列表">
@@ -5822,32 +5895,32 @@ function createMobileSession() {
               :key="backgroundTaskKey(task)"
               type="button"
               :class="['background-task-index-item', { active: backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail) }]"
+              :aria-current="backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail) ? 'true' : undefined"
               :title="backgroundTaskTitle(task)"
               @click="openBackgroundTaskDetail(task)"
             >
-              <span :class="['background-task-dot', `status-${task.status}`]"></span>
+              <TaskStatusIcon :status="task.status" />
               <span class="background-task-index-copy">
                 <strong>{{ backgroundTaskDisplayTitle(task) }}</strong>
-                <small>{{ taskStatusText(task.status) }}</small>
               </span>
             </button>
           </nav>
           <article class="background-task-detail">
             <header class="background-task-detail-head">
               <div class="background-task-detail-title">
-                <span :class="['background-task-dot', `status-${state.backgroundTaskDetail.status}`]"></span>
-                <strong>{{ backgroundTaskDisplayTitle(state.backgroundTaskDetail) }}</strong>
+                <TaskStatusIcon :status="state.backgroundTaskDetail.status" />
+                <strong :title="backgroundTaskTitle(state.backgroundTaskDetail)">{{ backgroundTaskTitle(state.backgroundTaskDetail) }}</strong>
               </div>
-              <span :class="['tool-result-modal-status', `status-${state.backgroundTaskDetail.status}`]">{{ taskStatusText(state.backgroundTaskDetail.status) }}</span>
+
             </header>
-            <dl class="background-task-meta">
-              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt>耗时</dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
-              <div v-if="state.backgroundTaskDetail.cwd" class="wide"><dt>目录</dt><dd>{{ state.backgroundTaskDetail.cwd }}</dd></div>
+            <dl class="background-task-meta" :class="{ empty: !backgroundTaskElapsed(state.backgroundTaskDetail) }">
+              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt title="耗时" aria-label="耗时"><ChromeIcon name="clock" /></dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
+
             </dl>
             <div class="background-task-detail-body">
               <section v-if="state.backgroundTaskDetail.kind !== 'agent' && backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command-section">
-                <header>命令</header>
-                <pre class="background-task-command">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
+                <header class="chrome-label"><ChromeIcon name="terminal" /><span>命令</span></header>
+                <pre class="background-task-command" tabindex="0" aria-label="运行命令">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
               </section>
               <TerminalOutputReader v-if="state.backgroundTaskDetail.kind === 'terminal'" :owner-session-id="state.backgroundTaskDetail.ownerSessionId || state.session?.sessionId" :run-id="state.backgroundTaskDetail.sessionId" />
 
@@ -5886,5 +5959,5 @@ function createMobileSession() {
 
 <style>
 .tool-pinned-observation-anchor{display:flow-root}.observation-presence{display:grid;grid-template-rows:1fr;opacity:1}.observation-presence-content{min-height:0;overflow:hidden}.main-observation-enter-active,.main-observation-leave-active{transition:opacity 240ms ease,grid-template-rows 240ms ease}.main-observation-enter-from,.main-observation-leave-to{opacity:0;grid-template-rows:0fr}@media(prefers-reduced-motion:reduce){.main-observation-enter-active,.main-observation-leave-active{transition:none}}
-.history-view-setting{display:flex;align-items:center;gap:16px;margin:16px 0;max-width:360px}.history-view-setting>span{white-space:nowrap}.tool-history-entry{padding:0;min-width:0}
+.tool-history-entry{padding:0;min-width:0}
 </style>

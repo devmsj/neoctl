@@ -1,0 +1,68 @@
+/* Minimal secondary surfaces: one hierarchy, aligned rows, no nested card chrome. */
+:root[data-theme] .workspace-scope-modal { width: min(640px, calc(100vw - 32px)); max-height: min(620px, calc(100dvh - 48px)); overflow: auto; border: 1px solid var(--chrome-line); border-radius: 8px; background: var(--chrome-surface); color: var(--chrome-text); box-shadow: none; outline: none; }
+:root[data-theme] .workspace-scope-modal .cwd-picker-head { padding: 16px 20px; border-bottom: 1px solid var(--chrome-line-soft); }
+:root[data-theme] .workspace-scope-actions { display: flex; align-items: center; gap: 10px; }
+:root[data-theme] .workspace-scope-modal button { display: inline-flex; align-items: center; justify-content: center; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 6px; border: 0 !important; border-radius: 5px; background: transparent !important; color: var(--chrome-muted); box-shadow: none !important; }
+:root[data-theme] .workspace-scope-modal button:hover:not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-text); }
+:root[data-theme] .workspace-scope-list { padding: 4px 20px; }
+:root[data-theme] .workspace-scope-path { display: grid; grid-template-columns: 16px minmax(0, 1fr) 32px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--chrome-line-soft); }
+:root[data-theme] .workspace-scope-path:last-child { border: 0; }
+:root[data-theme] .workspace-scope-path > .chrome-icon { color: var(--chrome-faint); }
+:root[data-theme] .workspace-scope-path > span { overflow-wrap: anywhere; font: 12px/1.7 var(--mono); }
+:root[data-theme] .workspace-scope-empty { display: block; padding: 32px 0; text-align: center; font-size: 12px; color: var(--chrome-faint); }
+:root[data-theme] .workspace-scope-modal > .cwd-picker-error { padding: 0 20px 12px; font-size: 12px; }
+:root[data-theme] .panel-page .page-icon-button,
+:root[data-theme] .panel-page .session-actions .page-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 34px; width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 7px !important; border: 0 !important; border-radius: 5px !important; box-shadow: none !important; background: transparent !important; color: var(--chrome-muted) !important; transform: none !important; }
+:root[data-theme] .panel-page .page-icon-button:hover:not(:disabled) { color: var(--chrome-text) !important; background: var(--chrome-hover) !important; }
+:root[data-theme] .panel-page .session-actions .danger:hover:not(:disabled) { color: var(--chrome-danger) !important; }
+:root[data-theme] .panel-page .session-list { display: flex; flex-direction: column; gap: 0; }
+:root[data-theme] .panel-page .session-card { display: flex; flex-direction: row; align-items: center; gap: 20px; padding: 18px 8px !important; border: 0 !important; border-bottom: 1px solid var(--chrome-line-soft) !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; transform: none !important; }
+:root[data-theme] .panel-page .session-card.current { background: transparent !important; }
+:root[data-theme] .panel-page .session-card::before,
+:root[data-theme] .panel-page .session-card::after { content: none !important; }
+:root[data-theme] .panel-page .session-card-main { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 7px; }
+:root[data-theme] .panel-page .session-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 22px; }
+:root[data-theme] .panel-page .session-card-title strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.6; }
+:root[data-theme] .panel-page .session-card-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; }
+:root[data-theme] .panel-page .session-card-meta code { padding: 0; border: 0; background: transparent; white-space: normal; overflow-wrap: anywhere; color: var(--chrome-faint); font: 11px/1.6 var(--mono); }
+:root[data-theme] .panel-page .session-card-meta time { color: var(--chrome-faint); font: 11px/1.6 var(--chrome-sans); }
+:root[data-theme] .panel-page .session-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; padding: 0; }
+:root[data-theme] .panel-page .session-card :is(.current-pill, .live-pill) { padding: 1px 6px; border: 0; background: var(--chrome-accent-soft); color: var(--chrome-accent); font: 10px/1.6 var(--chrome-sans); }
+:root[data-theme] .panel-page .session-toolbar { display: flex; align-items: center; gap: 16px; margin: 0; padding: 8px 0 16px; border: 0; background: transparent; box-shadow: none; }
+:root[data-theme] .panel-page .session-search { flex: 1; min-width: 0; }
+:root[data-theme] .panel-page .session-search input { width: 100%; min-height: 36px; padding: 8px 12px; }
+:root[data-theme] .panel-page .session-count { flex: 0 0 auto; font-size: 11px; color: var(--chrome-faint); }
+:root[data-theme] .panel-page .sessions-page-head { align-items: center; }
+:root[data-theme] .panel-page .session-pagination { align-items: center; gap: 6px; }
+:root[data-theme] .panel-page .session-pagination button { display: inline-flex; align-items: center; justify-content: center; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 4px; border: 0 !important; background: transparent !important; box-shadow: none !important; }
+:root[data-theme] .panel-page .session-pagination button.active { color: var(--chrome-accent); background: var(--chrome-accent-soft) !important; }
+@media (max-width: 760px) {
+  :root[data-theme] .panel-page .session-card { gap: 10px; padding: 16px 0 !important; }
+  :root[data-theme] .panel-page .session-actions { gap: 6px; }
+  :root[data-theme] .panel-page .session-card-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
+  :root[data-theme] .workspace-scope-modal .cwd-picker-head { padding: 12px 16px; }
+  :root[data-theme] .workspace-scope-list { padding: 4px 16px; }
+}
+
+:root[data-theme] .panel-page .admin-user-form { display: flex; flex-direction: row; align-items: flex-end; gap: 12px; margin: 0 0 20px; }
+:root[data-theme] .panel-page .admin-user-form > label { flex: 1; min-width: 0; }
+:root[data-theme] .panel-page .admin-user-form > button { margin-bottom: 2px; }
+:root[data-theme] .panel-page .admin-user-form input { display: block; width: 100%; min-height: 38px; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--chrome-line) !important; border-radius: 5px; background: var(--chrome-surface) !important; color: var(--chrome-text) !important; box-shadow: none !important; outline: none; font: 13px/1.5 var(--chrome-sans); }
+:root[data-theme] .panel-page .admin-user-form input:focus { border-color: var(--chrome-accent) !important; }
+:root[data-theme] .panel-page .session-card-meta time { margin: 0; }
+:root[data-theme] .workspace-scope-path > span { font-weight: 400; }
+:root[data-theme] .panel-page .session-card-title strong { white-space: normal; overflow: visible; text-overflow: clip; }
+:root[data-theme] .panel-page .page-head { display: flex; flex-direction: row !important; align-items: center !important; justify-content: space-between !important; gap: 16px; text-align: left !important; }
+:root[data-theme] .panel-page .page-head h2 { margin: 0; }
+:root[data-theme] .panel-page .page-head-actions { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 10px; width: auto; margin: 0; }
+:root[data-theme] .panel-page .session-toolbar { flex-direction: row !important; justify-content: space-between; }
+:root[data-theme] .panel-page .session-search { width: auto !important; max-width: none; }
+:root[data-theme] .panel-page .session-search input { max-width: none; }
+:root[data-theme] .panel-page .prompt-editor-toolbar { display: flex; flex-direction: row !important; align-items: center; justify-content: space-between; gap: 12px; }
+:root[data-theme] .panel-page .prompt-editor-toolbar-actions { display: flex; flex: 0 0 auto; width: auto; align-items: center; justify-content: flex-end; gap: 10px; }
+:root[data-theme] .panel-page .prompt-workbench :is(.prompt-library-panel, .prompt-editor-panel) { background: transparent !important; }
+@media (max-width: 760px) {
+  :root[data-theme] .panel-page .prompt-editor-toolbar { flex-wrap: wrap; }
+  :root[data-theme] .panel-page .prompt-editor-current { flex: 1; min-width: 80px; }
+  :root[data-theme] .panel-page .session-count { white-space: nowrap; }
+}

@@ -1,0 +1,23 @@
+// Release-only UI checks use fixture data; never call a model or mutate user sessions.
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const files = [
+  'streaming-highlight-browser.test.mjs',
+  'composer-ime-browser.test.mjs',
+  'small-desktop-browser.test.mjs',
+  'global-settings-browser.test.mjs',
+  'context-chrome-browser.test.mjs',
+  'workspace-layout-browser.test.mjs',
+  'workspace-pages-browser.test.mjs',
+  'task-chrome-browser.test.mjs',
+  'runtime-tool-list-browser.test.mjs',
+].map(file => `tests/${file}`)
+const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...files], {
+  cwd: fileURLToPath(new URL('../', import.meta.url)),
+  env: process.env,
+  stdio: 'inherit',
+  windowsHide: true,
+})
+if (result.error) console.error(result.error)
+process.exitCode = result.error || result.signal ? 1 : (result.status ?? 1)

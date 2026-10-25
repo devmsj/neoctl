@@ -4,12 +4,8 @@ use std::{
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
 };
-use tauri::{
-    menu::{MenuBuilder, SubmenuBuilder},
-    AppHandle, Manager,
-};
+use tauri::{AppHandle, Manager};
 
-const MENU_ID: &str = "uninstall-desktop";
 static UNINSTALL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct UninstallGuard;
@@ -78,9 +74,7 @@ fn confirm_and_uninstall(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Shared by the bootstrap UI and the native menu (also available after the
-/// webview navigates to the local web app). Native errors remain visible even
-/// when no frontend invoke/error handler is present.
+/// Shared by the bootstrap UI and the frontend application menu.
 #[tauri::command]
 pub async fn uninstall_desktop(app: AppHandle) -> Result<(), String> {
     let result = tauri::async_runtime::spawn_blocking(move || confirm_and_uninstall(&app))
@@ -99,55 +93,12 @@ pub async fn uninstall_desktop(app: AppHandle) -> Result<(), String> {
     result
 }
 
-pub fn setup_menu(app: &mut tauri::App) -> tauri::Result<()> {
-    let desktop_menu = SubmenuBuilder::new(app, "应用")
-        .text("return-start-page", "返回启动页")
-        .separator()
-        .text("check-package-updates", "检查核心与 Web 更新…")
-        .separator()
-        .text(MENU_ID, "卸载 Neo Desktop…")
-        .build()?;
-    let menu = MenuBuilder::new(app).item(&desktop_menu).build()?;
-    app.set_menu(menu)?;
-    Ok(())
-}
-
-pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
-    if event.id().as_ref() == "return-start-page" {
-        let state = app.state::<crate::DesktopState>();
-        state.manual_start.store(true, Ordering::Release);
-        let url = state.start_url.lock().ok().and_then(|u| u.clone());
-        match (app.get_webview_window("main"), url) {
-            (Some(window), Some(url)) => {
-                if let Err(error) = window.navigate(url) {
-                    rfd::MessageDialog::new()
-                        .set_title("无法返回启动页")
-                        .set_description(error.to_string())
-                        .show();
-                }
-            }
-            (Some(_), None) => {
-                rfd::MessageDialog::new()
-                    .set_title("启动页尚未准备完成")
-                    .set_description("未能取得启动页地址，请稍后重试。当前工作台不会被关闭。")
-                    .show();
-            }
-            _ => {}
-        }
-    }
-    if event.id().as_ref() == "check-package-updates" {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = crate::updates::check_package_updates(app).await;
-        });
-    }
-    if event.id().as_ref() == MENU_ID {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            // uninstall_desktop already displays native errors.
-            let _ = uninstall_desktop(app).await;
-        });
-    }
+pub fn return_start_page(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<crate::DesktopState>();
+    let url = crate::bootstrap_page::url();
+    state.manual_start.store(true, Ordering::Release);
+    app.get_webview_window("main").ok_or("Main window unavailable")?
+        .navigate(url).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -2224,11 +2224,11 @@ function SubagentLivePanel(
   const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "pending").length;
   const recentCount = Math.max(0, activities.length - activeCount);
   const countText = activeCount > 1
-    ? `${activeCount} active${recentCount ? ` · ${recentCount} recent` : ""}`
+    ? `${activeCount} active${recentCount ? `  ${recentCount} recent` : ""}`
     : recentCount && activeCount === 0
       ? `${recentCount} recent`
       : "";
-  const text = `↳ subagent ${subagentStatusText(selected.status, animationTick)}${countText ? ` · ${countText}` : ""} · ${compactAgentSummary(selected, width)}`;
+  const text = `↳ subagent ${subagentStatusText(selected.status, animationTick)}${countText ? `  ${countText}` : ""}  ${compactAgentSummary(selected, width)}`;
   return e(Text, { color: statusColor(selected.status) }, fitToWidth(text, width));
 }
 
@@ -2247,7 +2247,7 @@ function compactAgentSummary(activity: AgentActivity, maxLength: number): string
     ? `${activity.currentTool.name}${activity.currentTool.inputPreview ? ` ${activity.currentTool.inputPreview}` : ""}`
     : firstSafeSubagentPreview(activity.resultPreview, activity.error, activity.lastText, activity.prompt);
   const elapsed = formatElapsed(Date.now() - new Date(activity.startedAt).getTime());
-  return truncateMiddle(`${activity.description || activity.agentId} · ${elapsed} · tools:${activity.totalToolUseCount} · ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
+  return truncateMiddle(`${activity.description || activity.agentId}  ${elapsed}  tools:${activity.totalToolUseCount}  ${current.replace(/\s+/g, " ")}`, Math.max(8, maxLength));
 }
 
 function firstSafeSubagentPreview(...values: Array<string | undefined>): string {
@@ -2293,7 +2293,7 @@ function BackgroundTaskStatusLine(
     Box,
     { flexDirection: "column", width, overflow: "hidden" },
     e(Text, { color: "yellow" }, fitToWidth(summary, width)),
-    ...detailTasks.map((task, index) => e(Text, { key: `bg-task-${task.taskId}-${index}`, color: "yellow" }, fitToWidth(`  ${task.type}:${truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, width - 30))} · ${task.status} · ${formatElapsed(Date.now() - new Date(task.createdAt).getTime())}`, width))),
+    ...detailTasks.map((task, index) => e(Text, { key: `bg-task-${task.taskId}-${index}`, color: "yellow" }, fitToWidth(`  ${task.type}:${truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, width - 30))}  ${task.status}  ${formatElapsed(Date.now() - new Date(task.createdAt).getTime())}`, width))),
   );
 }
 
@@ -2480,8 +2480,8 @@ function skillNameCompletions(skills: readonly SkillCompletionInfo[], current: s
 }
 
 function formatSkillCompletionDescription(skill: SkillCompletionInfo): string {
-  const tags = skill.tags?.length ? ` · ${skill.tags.join(",")}` : "";
-  return `${skill.description}${skill.execution ? ` · ${skill.execution}` : ""}${tags}`;
+  const tags = skill.tags?.length ? `  ${skill.tags.join(",")}` : "";
+  return `${skill.description}${skill.execution ? `  ${skill.execution}` : ""}${tags}`;
 }
 
 function secretCommandCompletions(prefix: string, secrets: readonly SecretCompletionInfo[]): SlashCommandCompletion[] {
@@ -2556,7 +2556,7 @@ function secretKeyCompletions(secrets: readonly SecretCompletionInfo[], current:
     .map((secret) => ({
       value: secret.key,
       insertText: `/secret ${action} ${secret.key}${action === "rename" ? " " : ""}`,
-      description: `${secret.status} · length=${secret.length}${secret.requestReason ? ` · ${secret.requestReason}` : ""}`,
+      description: `${secret.status}  length=${secret.length}${secret.requestReason ? `  ${secret.requestReason}` : ""}`,
       arguments: "optional" as const,
       kind: "secret-key" as const,
     }));
@@ -2597,7 +2597,7 @@ function modelCompletion(modelId: string): SlashCommandCompletion {
     metadata?.reasoning ? (efforts?.length ? `reasoning: ${efforts.join("/")}` : "reasoning") : undefined,
     metadata?.imageInput ? "vision" : undefined,
     window.tokens ? `${formatCompactNumber(window.tokens)} ctx` : undefined,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join("  ");
   return {
     value: modelId,
     insertText: `/model ${modelId}`,
@@ -2745,7 +2745,7 @@ function SlashCompletionLines(
   const nameWidth = Math.min(32, Math.max(...visibleCompletions.map((completion) => completion.value.length)));
   const pageCount = slashCompletionPageCount(completions);
   const pageIndex = Math.floor(pageStart / SLASH_COMPLETION_PAGE_SIZE) + 1;
-  const footer = pageCount > 1 ? "↑/↓ select · ←/→ page · Tab complete" : "↑/↓ select · Tab complete";
+  const footer = pageCount > 1 ? "↑/↓ select  ←/→ page  Tab complete" : "↑/↓ select  Tab complete";
   const rows = visibleCompletions.map((completion, index) => {
     const selected = index === safeSelectedIndex;
     const numberPrefix = `${pageStart + index + 1}.`.padStart(String(completions.length).length + 1);
@@ -3534,11 +3534,11 @@ function SessionsBrowser({ state, width }: { state: SessionsBrowserState; width:
   const showPagination = pageCount > 1;
   const contentWidth = Math.max(20, width);
   const header = showPagination
-    ? `Saved sessions (${state.sessions.length}) · page ${state.pageIndex + 1}/${pageCount}`
+    ? `Saved sessions (${state.sessions.length})  page ${state.pageIndex + 1}/${pageCount}`
     : `Saved sessions (${state.sessions.length})`;
   const footer = showPagination
-    ? "↑/↓ select · ←/→ page · Enter resume · d/Delete remove · Esc close"
-    : "↑/↓ select · Enter resume · d/Delete remove · Esc close";
+    ? "↑/↓ select  ←/→ page  Enter resume  d/Delete remove  Esc close"
+    : "↑/↓ select  Enter resume  d/Delete remove  Esc close";
 
   return e(
     Box,
@@ -3568,11 +3568,11 @@ function SkillsBrowser({ state, width }: { state: SkillsBrowserState; width: num
   const showPagination = pageCount > 1;
   const contentWidth = Math.max(20, width);
   const header = showPagination
-    ? `Skills (${state.skills.length}) · page ${state.pageIndex + 1}/${pageCount}`
+    ? `Skills (${state.skills.length})  page ${state.pageIndex + 1}/${pageCount}`
     : `Skills (${state.skills.length})`;
   const footer = showPagination
-    ? "↑/↓ select · ←/→ page · Enter details · i invoke · a import · d/Delete remove · Esc close"
-    : "↑/↓ select · Enter details · i invoke · a import · d/Delete remove · Esc close";
+    ? "↑/↓ select  ←/→ page  Enter details  i invoke  a import  d/Delete remove  Esc close"
+    : "↑/↓ select  Enter details  i invoke  a import  d/Delete remove  Esc close";
   const nameWidth = Math.min(28, Math.max(...pageItems.map((skill) => skill.name.length)));
 
   return e(
@@ -3607,11 +3607,11 @@ function SecretsBrowser({ state, width }: { state: SecretsBrowserState; width: n
   const showPagination = pageCount > 1;
   const contentWidth = Math.max(20, width);
   const header = showPagination
-    ? `Secrets (${state.secrets.length}) · page ${state.pageIndex + 1}/${pageCount}`
+    ? `Secrets (${state.secrets.length})  page ${state.pageIndex + 1}/${pageCount}`
     : `Secrets (${state.secrets.length})`;
   const footer = showPagination
-    ? "↑/↓ select · ←/→ page · Enter info · s set · r rename · a add · e empty · d/Delete remove · Esc close"
-    : "↑/↓ select · Enter info · s set · r rename · a add · e empty · d/Delete remove · Esc close";
+    ? "↑/↓ select  ←/→ page  Enter info  s set  r rename  a add  e empty  d/Delete remove  Esc close"
+    : "↑/↓ select  Enter info  s set  r rename  a add  e empty  d/Delete remove  Esc close";
   const keyWidth = Math.min(32, Math.max(...pageItems.map((secret) => secret.key.length)));
 
   return e(
@@ -3624,7 +3624,7 @@ function SecretsBrowser({ state, width }: { state: SecretsBrowserState; width: n
       const prefix = `${absoluteIndex + 1}.`.padStart(String(state.secrets.length).length + 1);
       const reason = secret.requestReason ? ` reason=${JSON.stringify(secret.requestReason)}` : "";
       const restWidth = Math.max(0, contentWidth - prefix.length - keyWidth - 4);
-      const rest = fitToWidth(`${secret.status} · length=${secret.length}${reason}`, restWidth);
+      const rest = fitToWidth(`${secret.status}  length=${secret.length}${reason}`, restWidth);
       return e(
         Text,
         { key: secret.key, color: "white" },
@@ -3862,7 +3862,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
     return e(
       Box,
       { flexDirection: "column", marginTop: 1 },
-      e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: choose provider · saving to ${state.envPath}`, contentWidth)),
+      e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: choose provider  saving to ${state.envPath}`, contentWidth)),
       ...state.providers.map((provider, index) => e(
         Text,
         { key: `provider-${provider}-${index}`, color: "white" },
@@ -3870,7 +3870,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
         e(Text, { color: "gray" }, " "),
         e(Text, { color: "cyan" }, provider),
       )),
-      e(Text, { color: "gray" }, fitToWidth("↑/↓ select · Enter edit config · Esc close", contentWidth)),
+      e(Text, { color: "gray" }, fitToWidth("↑/↓ select  Enter edit config  Esc close", contentWidth)),
     );
   }
 
@@ -3879,7 +3879,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
   return e(
     Box,
     { flexDirection: "column", marginTop: 1 },
-    e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: ${state.provider} · ${state.envPath}`, contentWidth)),
+    e(Text, { color: "cyan", bold: true }, fitToWidth(`Login: ${state.provider}  ${state.envPath}`, contentWidth)),
     ...fields.map((field, index) => {
       const selected = index === state.selectedFieldIndex;
       const rawValue = state.values[field.key] ?? "";
@@ -3894,7 +3894,7 @@ function LoginFormView({ state, width }: { state: LoginFormState; width: number 
         e(Text, { color: rawValue ? "white" : "gray" }, fitToWidth(`${visibleValue}${placeholder}`, Math.max(8, contentWidth - maxLabel - 14))),
       );
     }),
-    e(Text, { color: "gray" }, fitToWidth("↑/↓ field · ←/→ cursor · type edit · Tab cycle choices · Enter save · Esc back/cancel", contentWidth)),
+    e(Text, { color: "gray" }, fitToWidth("↑/↓ field  ←/→ cursor  type edit  Tab cycle choices  Enter save  Esc back/cancel", contentWidth)),
     e(Text, { color: "gray" }, fitToWidth("Provider fields save as OPENAI_*; shared runtime fields save as MODEL_*.", contentWidth)),
   );
 }
@@ -4001,14 +4001,14 @@ function stripEnvQuotes(value: string): string {
 function formatSessionBrowserRow(session: SessionSummary, absoluteIndex: number, width: number, running = false): { numberPrefix: string; rest: string } {
   const numberPrefix = `${absoluteIndex + 1}.`.padStart(4);
   const title = session.title?.trim() || "(untitled)";
-  const runningTag = running ? " · running" : "";
-  const updated = session.updatedAt ? ` · ${formatSessionTimestamp(session.updatedAt)}` : "";
-  const messages = ` · ${session.messages} messages`;
+  const runningTag = running ? "  running" : "";
+  const updated = session.updatedAt ? `  ${formatSessionTimestamp(session.updatedAt)}` : "";
+  const messages = `  ${session.messages} messages`;
   const fixedParts = `${numberPrefix} ${runningTag}${updated}${messages}`;
   const idBudget = Math.max(12, Math.min(32, Math.floor(width * 0.28)));
   const id = truncateMiddle(session.sessionId, idBudget);
   const titleBudget = Math.max(8, width - fixedParts.length - id.length - 5);
-  const row = fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)} · ${id}${runningTag}${updated}${messages}`, width);
+  const row = fitToWidth(`${numberPrefix} ${truncateMiddle(title, titleBudget)}  ${id}${runningTag}${updated}${messages}`, width);
   return { numberPrefix, rest: row.slice(numberPrefix.length) };
 }
 
@@ -4626,11 +4626,11 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
   const sourceImages = typeof output.sourceImages === "number" ? output.sourceImages : undefined;
   const lines = [`${mode === "edit" ? "edited" : "generated"} ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
-  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join(" · ")}`);
+  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join("  ")}`);
   if (isRecord(output.actual)) {
     lines.push(`upstream-reported quality: ${String(output.actual.quality ?? "unreported")}`);
     if (Array.isArray(output.images)) for (const image of output.images.filter(isRecord)) {
-      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height} · ${String(image.mimeType ?? "")}`);
+      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height}  ${String(image.mimeType ?? "")}`);
     }
   }
   if (Array.isArray(output.warnings)) for (const warning of output.warnings.filter(isRecord)) {
@@ -4767,7 +4767,7 @@ function formatWebSearchToolResult(output: Record<string, unknown>, ok: boolean)
     if (!isRecord(item)) return;
     const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : "Untitled";
     const url = typeof item.url === "string" ? item.url : "";
-    const published = typeof item.published === "string" ? ` · ${item.published}` : "";
+    const published = typeof item.published === "string" ? `  ${item.published}` : "";
     lines.push(`[${index + 1}] ${title}${published}`);
     if (url) lines.push(url);
     const highlights = Array.isArray(item.highlights) ? item.highlights.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
@@ -5197,7 +5197,7 @@ const STATUS_PHASE_MIN_DISPLAY_MS = 2000;
 const STATUS_SHIMMER_GAP_TICKS = 3;
 const STATUS_SHIMMER_RADIUS = 1;
 const STATUS_SHIMMER_COLOR = "whiteBright";
-const STATUS_SEPARATOR = " · ";
+const STATUS_SEPARATOR = "  ";
 const STATUS_BAR_RENDER_ROWS = 1;
 const BACKGROUND_TASK_STATUS_RENDER_ROWS = 1;
 const QUEUED_INPUT_RENDER_ROWS = 1;

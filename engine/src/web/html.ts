@@ -440,13 +440,13 @@ function renderBackgroundTasks() {
   for (const task of tasks.slice(0, 2)) {
     const row = document.createElement('div');
     row.className = 'status-bg-row';
-    row.textContent = '  ' + task.type + ':' + truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, Math.floor(window.innerWidth / 18))) + ' · ' + task.status + ' · ' + formatElapsed(Date.now() - Date.parse(task.createdAt || new Date().toISOString()));
+    row.textContent = '  ' + task.type + ':' + truncateMiddle(task.description || task.agentId || task.taskId, Math.max(12, Math.floor(window.innerWidth / 18))) + '  ' + task.status + '  ' + formatElapsed(Date.now() - Date.parse(task.createdAt || new Date().toISOString()));
     rows.appendChild(row);
   }
 }
 function ensureStatusNodes() {
   if (statusNodes.phase) return;
-  statusEl.innerHTML = '<div class="status-main"><span data-part="phase"></span><span class="sep">·</span><span data-part="model"></span><span class="sep">·</span><span data-part="ctxPercent"></span><span class="sep">·</span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep">·</span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span></div><div data-part="backgroundRows"></div>';
+  statusEl.innerHTML = '<div class="status-main"><span data-part="phase"></span><span class="sep" aria-hidden="true"></span><span data-part="model"></span><span class="sep" aria-hidden="true"></span><span data-part="ctxPercent"></span><span class="sep" aria-hidden="true"></span><span data-part="inputArrow">↑</span> <span data-part="inputTokens"></span><span class="sep" aria-hidden="true"></span><span data-part="outputArrow">↓</span> <span data-part="outputTokens"></span></div><div data-part="backgroundRows"></div>';
   for (const node of statusEl.querySelectorAll('[data-part]')) statusNodes[node.getAttribute('data-part')] = node;
 }
 function minimumDisplayPhase(target) {
@@ -585,7 +585,7 @@ function renderSessionsPanel() {
   const currentSessionId = state.session && state.session.sessionId;
   const header = '<div class="panel-header"><div><div class="panel-title">Sessions</div><div class="panel-subtitle">Manage saved sessions.</div></div><div class="panel-toolbar"><button class="panel-primary" data-action="new-session" title="New session" aria-label="New session">+</button></div></div>';
   const body = sessions.length ? '<div class="session-list">' + sessions.map((s, i) => renderSessionCard(s, i, selected, currentSessionId)).join('') + '</div>' : '<div class="panel-muted">No saved sessions found. Tap + to start a new session.</div>';
-  panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select · Enter enter · Delete remove</div>';
+  panelEl.innerHTML = header + body + '<div class="panel-muted" style="margin-top:8px">↑/↓ select  Enter enter  Delete remove</div>';
 }
 function renderSessionCard(s, i, selected, currentSessionId) {
   const isCurrent = s.sessionId === currentSessionId;
@@ -596,7 +596,7 @@ function renderSessionCard(s, i, selected, currentSessionId) {
     '<span class="session-badge">' + esc(s.messages) + ' messages</span>',
   ].filter(Boolean).join('');
   const classes = ['session-card', i === selected ? 'selected' : '', isCurrent ? 'current' : '', isRunning ? 'running' : ''].filter(Boolean).join(' ');
-  return '<div class="' + classes + '" data-session-index="' + i + '"><div class="session-main"><div class="session-title-line"><span class="session-name">' + esc(s.title || '(untitled)') + '</span></div><div class="session-badges">' + badges + '</div><div class="session-meta">' + esc(truncateMiddle(s.sessionId, 28)) + ' · updated ' + esc(s.updatedAt || 'unknown') + '</div></div><div class="session-actions"><span class="panel-actions"><button data-action="enter" data-session-id="' + esc(s.sessionId) + '">enter</button><button class="danger" data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div></div>';
+  return '<div class="' + classes + '" data-session-index="' + i + '"><div class="session-main"><div class="session-title-line"><span class="session-name">' + esc(s.title || '(untitled)') + '</span></div><div class="session-badges">' + badges + '</div><div class="session-meta">' + esc(truncateMiddle(s.sessionId, 28)) + '  updated ' + esc(s.updatedAt || 'unknown') + '</div></div><div class="session-actions"><span class="panel-actions"><button data-action="enter" data-session-id="' + esc(s.sessionId) + '">enter</button><button class="danger" data-action="delete" data-session-id="' + esc(s.sessionId) + '">delete</button></span></div></div>';
 }
 function showChatView() {
   state.view = 'chat';
@@ -681,7 +681,7 @@ function renderCompletions() {
   const pageCount = Math.ceil(list.length / pageSize);
   const title = pageCount > 1 ? 'Completions (' + list.length + ') page ' + (Math.floor(pageStart / pageSize) + 1) + '/' + pageCount : 'Completions (' + list.length + ')';
   completionsEl.style.display = 'block';
-  completionsEl.innerHTML = '<div class="completion-title">' + esc(title) + '</div>' + visible.map((c, i) => '<div class="completion-row ' + (c.kind || '') + ' ' + (i + pageStart === selected ? 'selected' : '') + '"><span class="num">' + (i + pageStart + 1) + '.</span><span class="name">' + esc(c.value) + '</span><span class="desc">' + esc(c.description || '') + '</span></div>').join('') + '<div class="completion-footer">↑/↓ select · ←/→ page · Tab complete</div>';
+  completionsEl.innerHTML = '<div class="completion-title">' + esc(title) + '</div>' + visible.map((c, i) => '<div class="completion-row ' + (c.kind || '') + ' ' + (i + pageStart === selected ? 'selected' : '') + '"><span class="num">' + (i + pageStart + 1) + '.</span><span class="name">' + esc(c.value) + '</span><span class="desc">' + esc(c.description || '') + '</span></div>').join('') + '<div class="completion-footer">↑/↓ select  ←/→ page  Tab complete</div>';
 }
 function selectedCompletion() { const list = completions(); return list.length ? list[Math.max(0, Math.min(state.completionIndex, list.length - 1))] : undefined; }
 function completeSelection() { const c = selectedCompletion(); if (!c) return false; const cursor = input.selectionStart || 0; input.value = c.insertText + input.value.slice(cursor); input.selectionStart = input.selectionEnd = c.insertText.length; autosize(); renderCompletions(); return true; }

@@ -52,7 +52,8 @@ test("append survives global edits and tool toggles without snapshotting generat
   const request = f.requests[0];
   assert.match(request.systemPrompt!, /GLOBAL_V2/);
   assert.match(request.systemPrompt!, /CUSTOM_RULE/);
-  assert.match(request.systemPrompt!, /use the image_create tool/);
+  assert.match(request.systemPrompt!, /Stable tool prefix: image_create/);
+  assert.doesNotMatch(request.systemPrompt!, /IMAGE_SELECTION_GUIDE|quality=auto|imageRefs/);
   assert.doesNotMatch(request.systemPrompt!, /GLOBAL_V1|DOWNLOAD_RULE|no drawing/);
   assert.deepEqual(request.tools.map(t => t.name), ["image_create"]);
   assert.equal((request.systemPrompt!.match(/CUSTOM_RULE/g) ?? []).length, 1);

@@ -16,14 +16,15 @@ assert.ok(playwright, 'Set PLAYWRIGHT_CORE_PATH to installed playwright-core')
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 // Read, do not copy/modify the production sanitizer. This host contract test uses its
 // exact current functions but does not mount App or claim App's props are wired.
-const hostFunctions = ['sanitizeMarkdown', 'highlightCodeBlocks', 'normalizeCodeLanguage', 'safeHref'].map(name => {
+const hostFunctions = ['sanitizeMarkdown', 'highlightCodeBlocks', 'safeHref'].map(name => {
   const fn = appSource.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'))?.[0]
   assert.ok(fn, `Existing App ${name} must be available`)
   return fn
 }).join('\n')
 const fixtureModule = `import { createApp, h, reactive } from '/node_modules/.vite/deps/vue.js';
-import { marked } from '/node_modules/.vite/deps/marked.js';
-import hljs from '/node_modules/.vite/deps/highlight__js.js';
+import { marked } from '/src/markdown.mjs';
+import { highlightSource, normalizeCodeLanguage } from '/src/code-highlight.mjs';
+import { renderMath } from '/src/math-markdown.mjs';
 import Reader from '/src/AgentContentReader.vue';
 import '/src/style.css'; import '/src/neo-brutalist-soft.css';
 ${hostFunctions}
@@ -114,8 +115,8 @@ try {
   await reader.getByText('刷新新增正文', { exact: true }).first().waitFor({ timeout: 8000 })
   await reader.getByRole('button', { name: '增量刷新已保存过程', exact: true }).click()
   assert.equal(await reader.locator('article').count(), 4)
-  assert.match(await reader.innerText(), /调用 ID：call-1 · 调用状态：invoked/)
-  assert.match(await reader.innerText(), /调用 ID：call-1 · 调用状态：failed/)
+  assert.match(await reader.innerText(), /调用 ID：call-1\s+调用状态：invoked/)
+  assert.match(await reader.innerText(), /调用 ID：call-1\s+调用状态：failed/)
   await page.evaluate(() => { window.readerProps.visiblePreview = { text: 'HIDDEN-UNKNOWN', truncated: false, channel: 'unknown', runGeneration: 2 } })
   assert.ok(!(await reader.innerText()).includes('HIDDEN-UNKNOWN'))
   await page.evaluate(() => { window.readerProps.visiblePreview = { text: 'OLD-RUN-PREVIEW', truncated: false, channel: 'visible', runGeneration: 1 } })

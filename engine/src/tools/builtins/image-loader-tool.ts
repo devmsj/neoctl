@@ -87,6 +87,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
   return {
     name: "image_inspect",
     description:
+      "When a historical image is not visible in the active context, load its pixels before description, OCR or visual analysis. Use IDs/labels from the image registry; context compaction retains references, not visual facts. " +
       "Use mode=list (no imageRefs required) to discover persistent session image IDs with offset/limit pagination. Inspect results return reusable IDs; retention only controls pixel visibility. Load one or more images into the current context for direct visual inspection by the model. " +
       "Supports two sources: (1) conversation history images via ids (img_1), labels, or numeric refs; " +
       "(2) external files via absolute or relative file paths (e.g. ./screenshot.png, C:\\images\\photo.jpg). " +

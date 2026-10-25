@@ -1,0 +1,158 @@
+/* One restrained rich-text palette for transcript messages and markdown readers. */
+:root {
+  --rich-code-bg: #f6f7fa;
+  --rich-code-text: #374151;
+  --rich-code-line: #e5e8ef;
+  --rich-inline-bg: #f1edf3;
+  --rich-inline-text: #78536e;
+  --syntax-keyword: #86539b;
+  --syntax-string: #39776a;
+  --syntax-title: #3b6e9a;
+  --syntax-number: #99612f;
+  --syntax-property: #8b536b;
+  --syntax-comment: #646e7e;
+  --syntax-deletion: #ab4c60;
+}
+:root[data-theme='dark'] {
+  --rich-code-bg: #1c222b;
+  --rich-code-text: #d3dce8;
+  --rich-code-line: #2b3542;
+  --rich-inline-bg: #292530;
+  --rich-inline-text: #d2afc5;
+  --syntax-keyword: #c8a5df;
+  --syntax-string: #9cc6b4;
+  --syntax-title: #9dbfe2;
+  --syntax-number: #d8b48a;
+  --syntax-property: #d4a3b7;
+  --syntax-comment: #929fae;
+  --syntax-deletion: #e2a0ab;
+}
+:root[data-theme] :is(.message-text, .markdown) {
+  min-width: 0;
+  --md-h1-size: 22px;
+  --md-h2-size: 19px;
+  --md-h3-size: 17px;
+  --md-h4-size: 15px;
+}
+:root[data-theme] :is(.message-text, .markdown) :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.3em 0 .6em;
+  color: var(--chrome-strong);
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+:root[data-theme] :is(.message-text, .markdown) > :first-child { margin-top: 0; }
+:root[data-theme] :is(.message-text, .markdown) > :last-child { margin-bottom: 0; }
+:root[data-theme] :is(.message-text, .markdown) p { margin: 0 0 .8em; }
+:root[data-theme] :is(.message-text, .markdown) p:last-child { margin-bottom: 0; }
+:root[data-theme] :is(.message-text, .markdown) :is(ul, ol) { padding-left: 1.65em; margin: .65em 0; }
+:root[data-theme] :is(.message-text, .markdown) li { margin: .3em 0; padding-left: .15em; }
+:root[data-theme] :is(.message-text, .markdown) li::marker { color: var(--chrome-faint); }
+:root[data-theme] :is(.message-text, .markdown) li > p { margin-bottom: .35em; }
+:root[data-theme] :is(.message-text, .markdown) li > :is(ul, ol) { margin: .25em 0; }
+:root[data-theme] :is(.message-text, .markdown) a {
+  color: var(--syntax-title);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+:root[data-theme] :is(.message-text, .markdown) a:hover { text-decoration-color: currentColor; }
+:root[data-theme] :is(.message-text, .markdown) :not(pre) > code {
+  padding: 2px 5px;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: var(--rich-inline-bg) !important;
+  color: var(--rich-inline-text) !important;
+  box-shadow: none !important;
+  font-size: .88em;
+  font-weight: 400;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+:root[data-theme] :is(.message-text, .markdown) pre {
+  max-width: 100%;
+  min-width: 0;
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--rich-code-line) !important;
+  border-radius: 6px !important;
+  background: var(--rich-code-bg) !important;
+  color: var(--rich-code-text) !important;
+  box-shadow: none !important;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.75;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  overflow: auto;
+  tab-size: 2;
+}
+:root[data-theme] :is(.message-text, .markdown) pre[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  position: sticky;
+  float: none;
+  left: 0;
+  top: auto;
+  width: fit-content;
+  margin: 0 0 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--syntax-comment);
+  font-size: 10px;
+  line-height: 1.3;
+  letter-spacing: .04em;
+  text-transform: none;
+  user-select: none;
+}
+:root[data-theme] :is(.message-text, .markdown) pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent !important;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: inherit;
+}
+:root[data-theme] :is(.message-text, .markdown) .hljs { color: var(--rich-code-text); background: transparent; }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-type, .hljs-template-tag) { color: var(--syntax-keyword); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-string, .hljs-regexp, .hljs-addition) { color: var(--syntax-string); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section, .hljs-link) { color: var(--syntax-title); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet) { color: var(--syntax-number); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-attr, .hljs-attribute, .hljs-property, .hljs-selector-id, .hljs-selector-class, .hljs-template-variable, .hljs-variable) { color: var(--syntax-property); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-comment, .hljs-quote, .hljs-meta) { color: var(--syntax-comment); }
+:root[data-theme] :is(.message-text, .markdown) :is(.hljs-function, .hljs-params, .hljs-tag) { color: var(--rich-code-text); }
+:root[data-theme] :is(.message-text, .markdown) .hljs-deletion { color: var(--syntax-deletion); background: color-mix(in srgb, var(--syntax-deletion) 9%, transparent); }
+:root[data-theme] :is(.message-text, .markdown) .hljs-addition { background: color-mix(in srgb, var(--syntax-string) 9%, transparent); }
+:root[data-theme] :is(.message-text, .markdown) blockquote {
+  margin: 14px 0;
+  padding: 5px 14px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--chrome-accent) 55%, transparent);
+  background: transparent;
+  color: var(--chrome-muted);
+}
+:root[data-theme] :is(.message-text, .markdown) hr { margin: 22px 0; border: 0; border-top: 1px solid var(--chrome-line-soft); }
+:root[data-theme] :is(.message-text, .markdown) .markdown-table-scroll { max-width: 100%; margin: 14px 0; overflow: auto; border: 1px solid var(--rich-code-line); border-radius: 5px; }
+:root[data-theme] :is(.message-text, .markdown) table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.65; }
+:root[data-theme] :is(.message-text, .markdown) :is(th, td) { min-width: 7em; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--rich-code-line); text-align: left; overflow-wrap: normal; word-break: normal; }
+:root[data-theme] :is(.message-text, .markdown) th { background: var(--rich-code-bg); color: var(--chrome-muted); font-weight: 500; }
+:root[data-theme] :is(.message-text, .markdown) tbody tr:last-child td { border-bottom: 0; }
+:root[data-theme] :is(.message-text, .markdown) tbody tr:hover { background: color-mix(in srgb, var(--rich-code-bg) 65%, transparent); }
+:root[data-theme] :is(.message-text, .markdown) input[type='checkbox'] { accent-color: var(--chrome-accent); vertical-align: middle; margin: 0 6px 2px 0; }
+:root[data-theme] :is(.message-text, .markdown) :is(pre, .markdown-table-scroll, a):focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
+/* KaTeX owns its internal metrics: keep prose rules away from its MathML/HTML. */
+:root[data-theme] :is(.message-text, .markdown) .math-expression { color: inherit; }
+:root[data-theme] :is(.message-text, .markdown) .katex { font-size: 1.08em; }
+:root[data-theme] :is(.message-text, .markdown) .math-display { display: block; max-width: 100%; margin: 16px 0; padding: 6px 2px; overflow-x: auto; overflow-y: hidden; }
+:root[data-theme] :is(.message-text, .markdown) .katex-display { margin: 0; }
+:root[data-theme] :is(.message-text, .markdown) .math-fallback { font-family: var(--mono); font-size: .9em; color: var(--chrome-muted); overflow-wrap: anywhere; }
+:root[data-theme] :is(.message-text, .markdown) .math-display:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
+@media (max-width: 600px) {
+  :root[data-theme] :is(.message-text, .markdown) pre { padding: 12px; font-size: 12px; }
+  :root[data-theme] :is(.message-text, .markdown) :is(th, td) { padding: 8px 10px; }
+}

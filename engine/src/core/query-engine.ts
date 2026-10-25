@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { executionRecoveryHint, isResumableExecution, type ExecutionState } from "./execution-state.js";
@@ -66,6 +67,7 @@ export interface QueryEngineOptions {
   skills?: readonly string[];
   plugins?: readonly string[];
   exportToolCalls?: (calls: Array<{ id: string; name: string; input: unknown }>) => void;
+  workspacePaths?: readonly string[];
   cwdTransitionPaths?: readonly string[];
   onCwdTransitionConsumed?: () => void | Promise<void>;
   appPromptStore?: AppPromptStore;
@@ -178,9 +180,58 @@ export class QueryEngine {
     this.contextManager = { build: async (input) => {
       // Capture before any asynchronous baseline work: an in-flight request never observes a later edit.
       const content = this.activeSessionPrompt;
-      return applySessionPrompt(await this.baselineContextManager.build(input), content);
+      return applySessionPrompt(await this.buildWorkspaceContext(input), content);
     } };
     this.pendingCwdTransitionPaths = normalizeCwdTransitionPaths(options.cwdTransitionPaths);
+  }
+
+  getWorkspacePaths(): string[] {
+    return [...(this.options.workspacePaths ?? [this.options.cwd ?? process.cwd()])];
+  }
+
+  setWorkspacePaths(paths: readonly string[]): void {
+    if (this.running) throw new Error("Cannot change workspace scope during a model response");
+    this.applyWorkspacePaths(paths);
+  }
+
+  private applyWorkspacePaths(paths: readonly string[]): void {
+    const seen = new Set<string>();
+    this.options.workspacePaths = paths.map(item => resolve(item)).filter(item => {
+      const key = process.platform === 'win32' ? item.toLowerCase() : item;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (this.options.workspacePaths.length) this.options.cwd = this.options.workspacePaths[0];
+  }
+
+  async updateWorkspacePaths(paths: readonly string[], persist: (paths: string[]) => Promise<void>): Promise<void> {
+    if (this.running) throw new Error("Cannot change workspace scope during a model response");
+    const operation = this.settingsMutation.then(async () => {
+      const previous = this.options.workspacePaths;
+      const cwd = this.options.cwd;
+      // A query accepted after this mutation waits on the same settings barrier.
+      this.applyWorkspacePaths(paths);
+      try { await persist(this.getWorkspacePaths()); }
+      catch (error) { this.options.workspacePaths = previous; this.options.cwd = cwd; throw error; }
+    });
+    this.settingsMutation = operation.catch(() => undefined);
+    await operation;
+  }
+
+  private async buildWorkspaceContext(input: Parameters<ContextManager["build"]>[0]) {
+    const paths = this.options.workspacePaths ? this.getWorkspacePaths() : undefined;
+    const context = await this.baselineContextManager.build({ ...input, cwd: this.options.cwd, omitProjectMemory: paths ? true : input.omitProjectMemory });
+    if (!paths) return context;
+    const documents = input.omitProjectMemory ? [] : paths.flatMap(cwd => readProjectMemoryDocuments(cwd));
+    const { projectMemory, memoryFiles, ...userContext } = context.userContext;
+    return {
+      ...context, userContext,
+      systemContext: {
+        ...context.systemContext,
+        "Workspace scope changed": paths,
+        ...(documents.length ? { workspaceMemory: documents.map(doc => ({ path: doc.path, content: doc.content })) } : {}),
+      },
+    };
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
@@ -790,7 +841,7 @@ export class QueryEngine {
     };
     const initialToolDefinitions = (this.simulation?.tools ?? this.options.tools).definitions(toolContext);
     const activePrompt = this.activeSessionPrompt;
-    const baseline = await this.baselineContextManager.build({
+    const baseline = await this.buildWorkspaceContext({
       agentId: this.agentId,
       messages,
       enabledTools: initialToolDefinitions.map((tool) => tool.name),
@@ -823,7 +874,7 @@ export class QueryEngine {
       userContext: context.userContext,
       systemContext: context.systemContext,
       userContextPrompt,
-      projectDocuments: readProjectMemoryDocuments(this.options.cwd ?? process.cwd()),
+      projectDocuments: this.getWorkspacePaths().flatMap(cwd => readProjectMemoryDocuments(cwd)),
       toolDefinitions,
       commands: [...(this.options.commands ?? [])],
       agents: [...(this.options.agents ?? [])],

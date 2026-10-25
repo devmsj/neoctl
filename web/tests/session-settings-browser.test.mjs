@@ -153,7 +153,8 @@ for (const busy of [false, true]) {
         current.status.phase = 'ready'
         await sync(page, current)
         assert.equal(await compact.isDisabled(), true)
-        assert.equal(await compact.textContent(), '已安排压缩')
+        assert.equal(await compact.getAttribute('aria-label'), '已安排压缩')
+        assert.equal((await compact.textContent()).trim(), '')
         assert.equal(await page.locator('.message-loading-label').count(), 0)
         // Actual next-round snapshot clears pending and supplies effective metrics/settings.
         current.modelSettings = { model: current.pendingSessionSettings.model, reasoning: current.pendingSessionSettings.reasoning }
@@ -178,8 +179,8 @@ test('model and context dialogs stay minimal, keyboard-operable and within mobil
     const { page } = fixture
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 700 })
-      const options = page.getByRole('button', { name: '会话选项', exact: true })
-      if (await options.getAttribute('aria-expanded') !== 'true') await options.click()
+      // Metadata stays visible on narrow screens; no disclosure required.
+      assert.equal(await page.getByRole('button', { name: '会话选项', exact: true }).count(), 0)
       assert.equal(await page.locator('.composer-metrics .model-trigger').isVisible(), true)
       let dialog = await openModel(page)
       await dialog.getByRole('searchbox').fill('plain')
@@ -346,16 +347,17 @@ test('compaction stays outside folded process groups and uses explicit live sema
     await page.getByRole('dialog', { name: '压缩上下文详情' }).waitFor()
     await page.keyboard.press('Escape')
     await page.locator('.compact-button:visible').click()
-    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩上下文'))
+    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩中'))
     assert.equal(posted, true)
     assert.equal(await page.locator('.compact-button:visible').isDisabled(), true)
     current.busy = true
     current.status = { ...current.status, phase: 'compacting', detail: 'manualcompact: generating context summary' }
     await sync(page, current)
-    assert.match(await page.locator('.message-loading-label').textContent(), /正在生成续接摘要/)
+    assert.match(await page.locator('.message-loading-label').textContent(), /压缩中/)
+    assert.equal(await page.locator('.compact-button:visible').getAttribute('aria-label'), '正在压缩上下文')
     current.status.detail = 'autocompact: generating context summary'
     await sync(page, current)
-    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('自动压缩上下文'))
+    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩中'))
     assert.doesNotMatch(await page.locator('.message-loading-label').textContent(), /准备中/)
     current.busy = false
     current.status.phase = 'ready'

@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const required = [
-  'ui/index.html', 'ui/app.js', 'ui/styles.css',
+  'ui/index.html', 'ui/app.js', 'ui/styles.css', 'ui/window-chrome.js',
+  'src-tauri/src/bootstrap_page.rs', 'src-tauri/src/desktop_chrome.rs',
+  'src-tauri/capabilities/desktop-chrome.json', 'tests/ui/entry-flow.test.cjs',
+  'tests/ui/window-chrome.test.cjs', 'tests/ui/window-chrome-browser.test.cjs',
   'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json', 'src-tauri/src/lib.rs',
   'resources/payload/neoctl-web.tgz', 'resources/payload/payload-manifest.json',
   'tests/scripts/backend-ui.test.cjs', 'tests/scripts/check-updates.test.cjs',

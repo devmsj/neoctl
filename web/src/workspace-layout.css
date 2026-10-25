@@ -1,0 +1,30 @@
+/* Preserve the conversation first; secondary columns give up width gradually. */
+@media (min-width: 821px) {
+  :root .shell {
+    --navigation-width: clamp(168px, calc(28vw - 64px), 280px);
+    --information-width: clamp(176px, calc(26vw - 52px), 300px);
+    grid-template-columns: var(--navigation-width) minmax(0, 1fr);
+  }
+  :root .chat-grid {
+    grid-template-columns: minmax(0, 1fr) var(--information-width);
+    gap: clamp(10px, 1.1vw, 16px);
+    padding: clamp(10px, 1.1vw, 16px) !important;
+  }
+  :root .chat-panel, :root .right-panel { min-width: 0; }
+  :root .transcript { padding: clamp(10px, 1.25vw, 18px); }
+  :root .composer { margin-inline: clamp(6px, .8vw, 12px); }
+}
+@media (min-width: 821px) and (max-width: 1060px) {
+  :root[data-theme] .sidebar .nav { padding-inline: 10px; }
+  :root[data-theme] .sidebar .nav button { padding-inline: 10px; }
+  :root[data-theme] .sidebar-card { margin-inline: 10px; }
+  :root[data-theme] .right-panel > section { padding-inline: 12px; }
+}
+/* Keep the page canvas in step with the native erase and WebView surfaces. */
+:root[data-neo-desktop], :root[data-neo-desktop] body { background-color: var(--chrome-bg, var(--bg)); }
+/* The native shell contributes only unobtrusive controls, not a second toolbar. */
+:root[data-neo-desktop] .workspace { padding-top: var(--neo-window-inset, 36px); }
+:root[data-neo-desktop] .sidebar-footer { margin-bottom: 48px; }
+@media (max-width: 820px) {
+  :root[data-neo-desktop] .chat-grid { height: calc(100dvh - 48px - var(--neo-window-inset, 36px)); }
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-chrome",
+  "description": "Window controls and application menu; commands validate the exact active app origin",
+  "windows": ["main"],
+  "local": true,
+  "remote": { "urls": ["http://127.0.0.1:*"] },
+  "permissions": ["desktop-chrome:allow-window-action", "desktop-chrome:allow-application-action", "desktop-chrome:allow-sync-surface"]
+}

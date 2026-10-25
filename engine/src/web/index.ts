@@ -366,6 +366,7 @@ export interface CreateWebRuntimeOptions {
   /** Workspace root used by context, tools, and session storage. */
   cwd?: string;
   /** Persisted CWD transition chain shown to the model on the next request only. */
+  workspacePaths?: readonly string[];
   cwdTransitionPaths?: readonly string[];
   onCwdTransitionConsumed?: () => void | Promise<void>;
   /** Additional tools to register in the web runtime. */
@@ -594,6 +595,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     taskNotificationSource: createTaskNotificationSource(taskStore),
     commands: replCommandDefinitions.map((command) => command.usage),
     plugins: [...(options.plugins ?? []), ...activePlugins.map((plugin) => plugin.id)],
+    workspacePaths: options.workspacePaths,
     cwdTransitionPaths: options.cwdTransitionPaths,
     onCwdTransitionConsumed: options.onCwdTransitionConsumed,
     session: {
@@ -2789,11 +2791,22 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     const workspaceRepl = repl as WebRepl & {
+      workspaceScope?: () => unknown;
+      updateWorkspaceScope?: (value: string | undefined, remove: boolean) => Promise<unknown>;
       browseWorkspace?: (value?: string) => Promise<unknown>;
       changeWorkspace?: (value?: string) => Promise<unknown>;
       createWorkspaceDirectory?: (value?: string) => Promise<unknown>;
       deleteWorkspaceDirectory?: (value?: string) => Promise<unknown>;
     };
+    if (req.method === "GET" && url.pathname === "/api/cwd/scope") {
+      return sendJson(res, workspaceRepl.workspaceScope?.() ?? actionFailure("CWD_NOT_CONFIGURED", "Workspace scope is not configured"));
+    }
+    if (req.method === "POST" && ["/api/cwd/add", "/api/cwd/remove"].includes(url.pathname)) {
+      const body = await readJsonBody<{ path?: string }>(req);
+      return sendJson(res, workspaceRepl.updateWorkspaceScope
+        ? await workspaceRepl.updateWorkspaceScope(body.path, url.pathname.endsWith("/remove"))
+        : actionFailure("CWD_NOT_CONFIGURED", "Workspace scope is not configured"));
+    }
     if (req.method === "GET" && url.pathname === "/api/cwd") {
       return sendJson(res, workspaceRepl.browseWorkspace
         ? await workspaceRepl.browseWorkspace(url.searchParams.get("path") ?? undefined)
@@ -4232,11 +4245,11 @@ function formatImageGenerationToolResult(output: Record<string, unknown>, ok: bo
     : undefined;
   const lines = [`${mode === "edit" ? "edited" : "generated"} ${returnedImages ?? 0} image${returnedImages === 1 ? "" : "s"}`];
   const details = [provider, model, size, quality && quality !== "auto" ? quality : undefined, format].filter((value): value is string => Boolean(value));
-  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join(" · ")}`);
+  if (details.length > 0) lines.push(`${output.requested ? "requested: " : ""}${details.join("  ")}`);
   if (isRecord(output.actual)) {
     lines.push(`upstream-reported quality: ${String(output.actual.quality ?? "unreported")}`);
     if (Array.isArray(output.images)) for (const image of output.images.filter(isRecord)) {
-      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height} · ${String(image.mimeType ?? "")}`);
+      if (typeof image.width === "number" && typeof image.height === "number") lines.push(`actual image: ${image.width}x${image.height}  ${String(image.mimeType ?? "")}`);
     }
   }
   if (Array.isArray(output.warnings)) for (const warning of output.warnings.filter(isRecord)) {
@@ -4272,7 +4285,7 @@ function formatListToolResult(output: Record<string, unknown>, ok: boolean): str
   if (pathValue) lines.push(`path: ${pathValue}`);
   lines.push(`type: ${typeValue}`);
   const counts = [returnedEntries !== undefined ? `${returnedEntries} shown` : undefined, totalFiles !== undefined ? `${totalFiles} files` : undefined, totalDirectories !== undefined ? `${totalDirectories} dirs` : undefined].filter((value): value is string => Boolean(value));
-  if (counts.length > 0) lines.push(`entries: ${counts.join(" · ")}`);
+  if (counts.length > 0) lines.push(`entries: ${counts.join("  ")}`);
   if (names.length > 0) lines.push("sample:", ...names.map((name) => `  ${name}`));
   return lines.join("\n");
 }
@@ -4312,7 +4325,7 @@ function formatWebSearchToolResult(output: Record<string, unknown>, ok: boolean)
     if (!isRecord(item)) return;
     const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : "Untitled";
     const url = typeof item.url === "string" ? item.url : "";
-    const published = typeof item.published === "string" ? ` · ${item.published}` : "";
+    const published = typeof item.published === "string" ? `  ${item.published}` : "";
     lines.push(`[${index + 1}] ${title}${published}`);
     if (url) lines.push(url);
     const highlights = Array.isArray(item.highlights) ? item.highlights.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
@@ -4335,7 +4348,7 @@ function formatGrepToolResult(output: Record<string, unknown>, ok: boolean): str
   if (query !== undefined) lines.push(`query: ${query}`);
   if (grepPath !== undefined) lines.push(`path: ${grepPath}`);
   const countParts = [`${returnedMatches ?? matches.length} shown`, totalMatchesKnown !== undefined ? `${totalMatchesKnown} known` : undefined, truncated ? "truncated" : undefined].filter((value): value is string => Boolean(value));
-  lines.push(`matches: ${countParts.join(" · ")}`);
+  lines.push(`matches: ${countParts.join("  ")}`);
   if (matches.length === 0) return [...lines, "no matches"].join("\n");
   lines.push("results:");
   for (const match of matches) lines.push(formatGrepMatchLine(match));

@@ -82,7 +82,7 @@
   border-bottom: 1px solid var(--chrome-line-soft) !important;
 }
 :root[data-theme] .sidebar .nav { padding: 16px 12px; gap: 4px; }
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :is(button, summary, a.image-download) {
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :where(button, summary, a.image-download) {
   border: 1px solid var(--chrome-line) !important;
   border-radius: 5px !important;
   background: transparent !important;
@@ -93,12 +93,12 @@
   text-decoration: none;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease !important;
 }
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :is(button, summary, a.image-download):is(:hover, :active):not(:disabled) {
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :where(button, summary, a.image-download):is(:hover, :active):not(:disabled) {
   background: var(--chrome-hover) !important;
   box-shadow: none !important;
   transform: none !important;
 }
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :is(button, summary, a, input, textarea, [tabindex]):focus-visible {
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :is(button, summary, a, [tabindex]):where(:not(input):not(textarea):not(.neo-select-trigger)):focus-visible {
   outline: 2px solid var(--chrome-accent) !important;
   outline-offset: 2px;
   box-shadow: none !important;
@@ -210,6 +210,52 @@
 :root[data-theme] .right-panel .memory-trend path { stroke: var(--chrome-accent); }
 :root[data-theme] .right-panel .memory-trend-point { fill: var(--chrome-accent); stroke: var(--chrome-panel); }
 :root[data-theme] .right-panel :is(.memory-stats strong, .quota-card-foot, .quota-card-update, .memory-card-foot) { color: var(--chrome-muted); font-weight: 400; }
+/* Compact glanceable cards: a label/value row and one visual indicator. */
+:root[data-theme] .right-panel { gap: 8px; }
+:root[data-theme] .right-panel :is(.background-task-section, .quota-card, .status-card) { padding: 11px 12px; }
+:root[data-theme] .right-panel :is(.memory-card-head, .quota-card-head) > div:first-child { display: flex; align-items: center; justify-content: space-between; flex: 1; min-width: 0; gap: 12px; }
+:root[data-theme] .right-panel :is(.memory-card-head strong, .quota-card-head strong) { font-size: 18px; line-height: 24px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+:root[data-theme] .right-panel .memory-chart { height: 30px; margin: 10px 0 0; }
+:root[data-theme] .right-panel .memory-trend { height: 30px; }
+:root[data-theme] .right-panel .memory-trend-empty { min-height: 0; height: 0; overflow: hidden; margin: 0; }
+:root[data-theme] .right-panel .quota-progress { margin: 10px 0 0; }
+:root[data-theme] .right-panel .background-task-head { margin-bottom: 0; }
+:root[data-theme] .right-panel .background-task-history { margin-top: 6px; }
+/* Quiet secondary chrome: outline icons, no nested empty-state cards. */
+:root[data-theme] .chrome-label { display: inline-flex; align-items: center; gap: 7px; }
+:root[data-theme] .chrome-label > .chrome-icon { color: var(--chrome-accent); }
+:root[data-theme] .sidebar .prompt-stack { border-color: var(--chrome-line-soft) !important; }
+:root[data-theme] .sidebar .prompt-stack-head .mini-button { width: 100%; flex: 1 1 auto; justify-content: flex-start; padding: 0 12px; }
+:root[data-theme] .sidebar .prompt-list-empty { min-height: 64px; border: 0; background: transparent; color: var(--chrome-faint); }
+:root[data-theme] .sidebar .prompt-card { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+:root[data-theme] .sidebar .prompt-card-body { flex: 1; min-width: 0; }
+:root[data-theme] .sidebar .prompt-card-body strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-theme] .sidebar .prompt-card-actions { gap: 2px; padding: 0; flex-shrink: 0; }
+:root[data-theme] :is(.sidebar, .composer) .chrome-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0 !important; color: var(--chrome-muted) !important; }
+:root[data-theme] .composer .fast-mode-button { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 4px 6px; }
+:root[data-theme] .composer .fast-mode-button.active { color: var(--chrome-accent) !important; }
+:root[data-theme] .composer-app-prompt { border: 0; border-bottom: 1px solid var(--chrome-line-soft); background: transparent; padding: 0 0 8px; gap: 8px; }
+:root[data-theme] .composer-app-prompt strong { font-size: 12px; font-weight: 500; }
+:root[data-theme] .composer textarea::placeholder { color: var(--chrome-faint); opacity: .8; }
+:root[data-theme] .right-panel :is(.background-task-section, .quota-card, .status-card) { border-color: var(--chrome-line-soft) !important; }
+:root[data-theme] .right-panel :is(small, .background-task-count) { background: transparent !important; font-variant-numeric: tabular-nums; }
+:root[data-theme] .right-panel :is(.quota-card-update, .memory-card-foot) { font-size: 10px; color: var(--chrome-faint); }
+:root[data-theme] .right-panel .quota-card-update { display: flex; justify-content: flex-end; }
+:root[data-theme] .right-panel :is(.quota-card-update, .memory-card-foot) .chrome-icon { width: 12px; height: 12px; flex-basis: 12px; color: inherit; }
+@media (pointer: coarse) {
+  :root[data-theme] :is(.sidebar, .composer) .chrome-icon-button { width: 36px; height: 36px; }
+  :root[data-theme] .composer .fast-mode-button { min-width: 36px; min-height: 36px; }
+}
+/* Queue controls are deliberately namespaced; never reuse tool phase classes. */
+:root[data-theme] .queued-message { display: flex; align-items: center; gap: 9px; min-width: 0; margin: 0 0 6px; padding: 6px 10px; border-top: 1px solid var(--chrome-line-soft); background: transparent; color: var(--chrome-muted); font: 12px/1.5 var(--chrome-sans); }
+:root[data-theme] .queued-message-marker { display: inline-flex; color: var(--chrome-accent); flex: 0 0 auto; }
+:root[data-theme] .queued-message-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root[data-theme] .queued-message-actions { display: flex; flex: 0 0 auto; gap: 3px; }
+:root[data-theme] .queued-message-actions button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0 !important; border-radius: 4px !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important; }
+:root[data-theme] .queued-message-actions button:hover:not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-accent) !important; }
+:root[data-theme] .queued-message-actions button:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
+:root[data-theme] .queued-message-actions button:disabled { opacity: .4; cursor: default; }
+@media (pointer: coarse) { :root[data-theme] .queued-message-actions button { width: 36px; height: 36px; } }
 /* Pages use the same hierarchy rather than a second nested card theme. */
 :root[data-theme] .panel-page {
   border: 0 !important;
@@ -233,7 +279,6 @@
 :root[data-theme] .panel-page :is(.settings-card-head strong, .settings-prompt-entry strong, .prompt-library-head strong, .prompt-editor-current) { font-size: 13px; font-weight: 550; }
 :root[data-theme] .panel-page .settings-prompt-entry { min-height: 46px; padding: 10px 16px; }
 :root[data-theme] .panel-page .settings-prompt-entry > span { color: var(--chrome-faint); }
-:root[data-theme] .panel-page .history-view-setting { padding: 8px 0 18px; margin: 0; color: var(--chrome-muted); }
 :root[data-theme] .panel-page :is(.plugin-settings-row, .plugin-settings-row:hover) { background: transparent !important; border-color: var(--chrome-line-soft) !important; }
 :root[data-theme] .panel-page .plugin-toggle > span { border: 1px solid var(--chrome-line) !important; background: var(--chrome-hover) !important; border-radius: 12px !important; }
 :root[data-theme] .panel-page .plugin-toggle > span::after { border-radius: 50% !important; background: var(--chrome-muted) !important; box-shadow: none; }
@@ -250,7 +295,8 @@
 :root[data-theme] .panel-page .prompt-library-item { border: 0 !important; border-bottom: 1px solid var(--chrome-line-soft) !important; background: transparent !important; box-shadow: none !important; transform: none !important; }
 :root[data-theme] .panel-page .prompt-library-item.active { background: var(--chrome-accent-soft) !important; }
 /* Form controls and dropdowns share one surface and focus treatment. */
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea:not(.composer textarea), select, .neo-select) {
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea:not(.composer textarea), select),
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) .neo-select {
   border: 1px solid var(--chrome-line) !important;
   border-radius: 4px !important;
   background: var(--chrome-surface) !important;
@@ -267,6 +313,9 @@
 :root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) :is(.ghost, .primary, .mini-button, .session-actions button, .session-pagination button) { min-height: 34px; padding: 6px 12px; font-size: 12px; }
 :root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) button.danger { color: var(--chrome-danger) !important; background: transparent !important; border-color: var(--chrome-line) !important; }
 :root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) button.danger:hover:not(:disabled) { border-color: var(--chrome-danger) !important; background: color-mix(in srgb, var(--chrome-danger) 9%, transparent) !important; }
+/* Inputs own one focus border; compound selects highlight their wrapper only. */
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea, select, .neo-select-trigger):focus { outline: none !important; box-shadow: none !important; }
+:root[data-theme] :is(.sidebar, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea, select):focus { border-color: var(--chrome-accent) !important; }
 /* Dialog sizing, focus trapping and behavior remain owned by their original components. */
 :root[data-theme] :is(.cwd-picker-backdrop, .runtime-context-modal-backdrop, .runtime-context-detail-backdrop, .confirm-dialog-backdrop, .context-window-backdrop, .image-preview-backdrop, .tool-result-modal-backdrop) { background: var(--chrome-overlay) !important; }
 :root[data-theme] :is([role='dialog'], [role='alertdialog']) {

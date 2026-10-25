@@ -32,7 +32,7 @@ test('frontend-only: bidirectional content without run controls; file changes wi
     await page.locator('.background-task-history-item').first().click()
     await page.getByText('命令已修正', { exact: true }).waitFor()
     assert.deepEqual(await page.locator('.agent-parent-message .markdown').allTextContents(), ['检查项目文档\n', '保留原有目录\n', '目录已确认\n', '继续检查命令\n', '命令已修正\n'])
-    assert.deepEqual(await page.locator('.agent-parent-message header').allTextContents(), ['主代理 → 子代理', '主代理 → 子代理', '子代理 → 主代理', '主代理 → 子代理', '子代理 → 主代理'])
+    assert.deepEqual(await page.locator('.agent-parent-message header').allTextContents(), ['委派', '委派', '回复', '委派', '回复'])
     assert.equal(await page.locator('.agent-run-tabs, .agent-reader-tabs, .reader-actions').count(), 0)
     assert.doesNotMatch(await page.locator('.background-task-modal').innerText(), /第\s*\d+\s*轮|未提供|已送达|待送达/)
     await page.setViewportSize({ width: 430, height: 850 })

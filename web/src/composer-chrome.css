@@ -1,0 +1,76 @@
+/* One writing surface, a quiet location row, and grouped metadata/actions.
+   All values stay visible at every width; no collapsed mobile-only toolbar. */
+:root[data-theme] .composer { container-type: inline-size; padding: 12px 14px 10px; }
+:root[data-theme] .composer:focus-within { border-color: var(--chrome-line) !important; }
+:root[data-theme] .composer:has(textarea:focus) { border-color: var(--chrome-accent) !important; }
+:root[data-theme] .composer textarea { outline: none !important; display: block; padding: 8px 6px 12px; font-size: 14px; line-height: 1.65; }
+:root[data-theme] .composer .composer-path-row { margin-top: 6px; padding: 4px 0 6px; border-bottom: 1px solid var(--chrome-line-soft); }
+:root[data-theme] .composer .composer-cwd {
+  display: flex; align-items: flex-start; width: 100%; min-height: 28px; padding: 5px 6px; gap: 7px;
+  border: 0 !important; border-radius: 5px !important; color: var(--chrome-muted) !important;
+}
+:root[data-theme] .composer .composer-cwd-icon { width: 14px; height: 14px; flex: 0 0 14px; margin-top: 1px; color: var(--chrome-faint); }
+:root[data-theme] .composer .composer-cwd span { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; font: 11px/1.6 var(--mono); }
+:root[data-theme] .composer .composer-footer {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+  margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--chrome-line-soft);
+}
+:root[data-theme] .composer .composer-metrics {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline;
+  gap: 4px 24px; min-width: 0; padding: 0; margin: 0; border: 0;
+}
+:root[data-theme] .composer .metric-chip {
+  display: inline-flex; align-items: baseline; flex: 0 1 auto; min-width: 0; max-width: 100%; min-height: 28px;
+  padding: 5px 6px; gap: 8px; overflow: visible; border: 0 !important; border-radius: 5px !important;
+  background: transparent !important; box-shadow: none !important;
+}
+:root[data-theme] .composer .metric-chip::after { content: none; animation: none; }
+:root[data-theme] .composer .metric-chip em { flex: 0 0 auto; color: var(--chrome-faint); font: 11px/18px var(--chrome-sans); letter-spacing: 0; text-transform: none; }
+:root[data-theme] .composer .metric-chip strong { color: var(--chrome-muted); font: 12px/18px var(--mono); font-variant-numeric: tabular-nums; }
+:root[data-theme] .composer .model-chip { align-items: baseline; }
+:root[data-theme] .composer .model-chip strong { color: var(--chrome-text); max-width: 100%; white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; }
+:root[data-theme] .composer .composer-usage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
+:root[data-theme] .composer .composer-usage .metric-chip { white-space: nowrap; }
+:root[data-theme] .composer .composer-usage strong { text-align: left; }
+:root[data-theme] .composer .composer-actions { display: flex; justify-self: end; flex-wrap: nowrap; align-items: center; gap: 4px; margin: 0; }
+:root[data-theme] .composer .compress-wrap { display: flex; margin: 0 8px 0 0; }
+:root[data-theme] .composer .composer-actions :is(button, .compact-button) {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px;
+  width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 6px !important;
+  border: 0 !important; border-radius: 6px !important; background: transparent !important;
+  color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important;
+}
+:root[data-theme] .composer :is(.composer-cwd, button.metric-chip, .composer-actions button):hover:not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-text) !important; }
+:root[data-theme] .composer .composer-actions .composer-action { background: var(--chrome-accent-soft) !important; color: var(--chrome-strong) !important; }
+:root[data-theme] .composer .composer-actions .composer-action:hover:not(:disabled) { background: color-mix(in srgb, var(--chrome-accent) 23%, transparent) !important; }
+:root[data-theme] .composer .composer-actions :is(.fast-mode-button.active, .compact-button.is-pending, .compact-button.is-compacting) { color: var(--chrome-accent) !important; }
+:root[data-theme] .composer .composer-actions .fast-mode-button.active { background: var(--chrome-accent-soft) !important; }
+:root[data-theme] .composer .composer-actions button:disabled { opacity: .4; }
+:root[data-theme] .composer .composer-actions .compact-button:is(.is-pending, .is-compacting) { opacity: 1; }
+:root[data-theme] .composer .composer-app-prompt { display: flex; align-items: center; min-height: 34px; gap: 8px; margin: 0 0 6px; padding: 0 6px 6px; box-shadow: none !important; }
+:root[data-theme] .composer .composer-app-prompt-label { display: inline-flex; align-items: center; flex: 0 0 16px; }
+:root[data-theme] .composer .composer-app-prompt::before,
+:root[data-theme] .composer .composer-app-prompt::after { content: none; animation: none; }
+:root[data-theme] .composer .composer-app-prompt strong { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 12px; color: var(--chrome-muted); }
+:root[data-theme] .composer .attachments { gap: 8px; margin-bottom: 8px; }
+:root[data-theme] .composer :is(.file-attachment, .image-attachment) { min-width: 0; max-width: 100%; border: 1px solid var(--chrome-line-soft) !important; border-radius: 6px !important; background: transparent !important; box-shadow: none !important; }
+:root[data-theme] .composer .file-attachment { width: 220px; min-height: 56px; }
+:root[data-theme] .composer .file-attachment figcaption { padding: 10px 38px 10px 12px; gap: 4px; }
+:root[data-theme] .composer .file-attachment figcaption strong { font-size: 12px; font-weight: 450; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .composer .file-attachment figcaption span { line-height: 1.5; overflow-wrap: anywhere; color: var(--chrome-faint); }
+:root[data-theme] .composer :is(.file-attachment, .image-attachment) button { display: inline-flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 5px; top: 4px; right: 4px; border: 0 !important; border-radius: 4px !important; background: var(--chrome-surface) !important; color: var(--chrome-muted) !important; box-shadow: none !important; }
+:root[data-theme] .composer :is(.file-attachment, .image-attachment) button:hover { color: var(--chrome-danger) !important; background: var(--chrome-hover) !important; }
+:root[data-theme] .composer .image-attachment img { border-radius: 5px 5px 0 0; }
+:root[data-theme] .composer .image-attachment figcaption { font-size: 11px; line-height: 1.5; }
+@container (max-width: 620px) {
+  :root[data-theme] .composer .composer-metrics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+  :root[data-theme] .composer .model-chip { justify-self: start; }
+  :root[data-theme] .composer .composer-usage { gap: 0 16px; }
+}
+@container (max-width: 340px) {
+  :root[data-theme] .composer .composer-usage { gap: 0 6px; }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  :root[data-theme] .composer .composer-actions :is(button, .compact-button) { width: 36px; min-width: 36px; height: 36px; min-height: 36px; flex-basis: 36px; }
+  :root[data-theme] .composer { padding: 10px 12px; }
+}

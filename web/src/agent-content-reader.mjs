@@ -74,7 +74,7 @@ export function canExportFull(content, view) {
 export function contentText(content, view) {
   if (view !== 'timeline') return content.fragment?.text ?? ''
   return content.items.map(item => {
-    const header = item.kind === 'assistant' ? '可展示正文' : `${item.kind} · ${item.toolName || '工具名未提供'} · 调用 ID：${item.toolUseId || '未提供'} · 调用状态：${item.status || 'unknown'}`
+    const header = item.kind === 'assistant' ? '可展示正文' : `${item.kind}\n${item.toolName || '工具名未提供'}\n调用 ID：${item.toolUseId || '未提供'}\n调用状态：${item.status || 'unknown'}`
     const object = item.kind === 'tool_use' ? `\n对象：${item.object?.text ?? '未提供'}（${partLabel(item.object)}）` : ''
     return `--- ${header}${object} ---\n${item.content.text}\n[${partLabel(item.content)}${item.content.hasMore ? '；当前分片未读完' : ''}]`
   }).join('\n\n')

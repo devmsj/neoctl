@@ -1,10 +1,11 @@
 import { Marked } from 'marked'
+import { mathExtensions } from './math-markdown.mjs'
 
 // CommonMark rejects a closing ** after punctuation when CJK text follows it.
 // Support this prose convention at the inline-token layer, not by rewriting
 // messages: code blocks/spans, HTML attributes and link destinations stay literal.
 export const marked = new Marked({
-  extensions: [{
+  extensions: [...mathExtensions, {
     name: 'cjkStrong',
     level: 'inline',
     start(source) { return source.indexOf('**') },

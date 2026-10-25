@@ -344,6 +344,11 @@ test('uploads and unfinished chunks are private to their user', async t => {
   assert.ok(completed.file);
   assert.equal((await f.request('/api/submit?tabId=upload', b, { text: 'test', attachments: [{ kind: 'file', absolutePath: uploaded.file.absolutePath }] })).status, 403);
   assert.equal((await f.request('/api/cwd?path=' + encodeURIComponent(f.root), a)).status, 403);
+  for (const endpoint of ['/api/cwd/add', '/api/cwd/remove']) {
+    assert.equal((await f.request(endpoint, a, {path:f.root})).status, 403);
+  }
+  const scope = await (await f.request('/api/cwd/scope', a)).json();
+  assert.equal(scope.ok, true); assert.ok(scope.paths.every(item => item.startsWith(f.root)));
 });
 
 test('SSE is authenticated and closes on logout', async t => {

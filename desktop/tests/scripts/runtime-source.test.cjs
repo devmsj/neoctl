@@ -74,7 +74,7 @@ test('local backend lifecycle, tray and updates remain connected without remote 
     assert.ok(rust.includes(`runtime_control::${command}`), command);
     assert.match(read('src-tauri/src/runtime_control.rs'), new RegExp(`(?:async )?fn ${command}\\(`));
   }
-  assert.match(read('src-tauri/src/tray.rs'), /runtime_control::runtime_status/);
+  assert.match(read('src-tauri/src/tray.rs'), /runtime_control::running/);
   assert.match(rust, /mod tray;/);
   assert.match(rust, /mod updates;/);
   assert.match(rust, /\.env\("NEO_EMBED_RUNTIME", "true"\)/);

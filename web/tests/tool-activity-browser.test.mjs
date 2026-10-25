@@ -32,7 +32,7 @@ try {
   browser = await chromium.launch({ channel: 'msedge', headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.addInitScript(()=>{if(!localStorage.getItem('neo-tool-history-view'))localStorage.setItem('neo-tool-history-view','rows')});
+  await page.addInitScript(()=>{localStorage.setItem('neo-tool-history-view','folded')});
   const snapshot = {
     busy:true,
     lines: [
@@ -114,14 +114,14 @@ try {
   await deliver([{type:'line.append',line:{id:'terminal',kind:'tool',toolName:'terminal_run',toolUseId:'terminal-call',live:false,text:'',titleStatus:'success',activity:{phase:'completed',input:{cmd:'long command'}},observation:{status:'running',session_id:'real-run',stdout:'initial output'}}}]);
   await page.locator('[data-tool=terminal_run] .tool-activity-row').click();
   await page.locator('.is-pinned').getByText('real process output',{exact:true}).waitFor();
-  assert.equal(await page.locator('.is-pinned .command-phase.running').count(),1);
-  assert.equal(await page.locator('.is-pinned .command-phase.completed').count(),0);
+  assert.equal(await page.locator('.is-pinned .observation-command[data-command-phase=running]').count(),1);
+  assert.equal(await page.locator('.is-pinned .observation-command[data-command-phase=completed]').count(),0);
   await page.evaluate(()=>window.__streams.at(-1).handlers.error({}));
   await page.waitForTimeout(100);const pausedRequests=terminalRequests;await page.waitForTimeout(1100);
   assert.equal(terminalRequests,pausedRequests);assert.equal(await page.locator('.tool-observation.is-pinned.is-paused').count(),1);
   terminalLifecycle='terminal';
   await page.evaluate(()=>{window.__streams.at(-1).handlers.open({});window.__streams.at(-1).handlers['terminal.output']({data:JSON.stringify({updates:[{ownerSessionId:'fake-image-create',sessionId:'real-run',invalidated:true}]})})});
-  await page.locator('.is-pinned .command-phase.completed').waitFor();
+  await page.locator('.is-pinned .observation-command[data-command-phase=completed]').waitFor();
   assert.equal(await page.locator('.tool-observation.is-pinned').count(),1);
   const density=await page.locator('[data-tool=file_edit] .tool-activity-row').evaluate(row=>{const icon=row.querySelector('.activity-icon'),text=row.querySelector('.activity-purpose');return {height:row.getBoundingClientRect().height,font:getComputedStyle(text).fontSize,gap:getComputedStyle(row).gap,icon:icon.getBoundingClientRect().width}});
   assert.deepEqual(density,{height:26,font:'12px',gap:'6px',icon:16});
@@ -230,13 +230,15 @@ try {
   const commandIcon=page.locator('[data-tool=terminal_run] .tool-activity-row>.activity-icon.failed');
   assert.equal(await commandIcon.evaluate(el=>getComputedStyle(el).color),'rgb(187, 142, 166)','failed command icon does not turn red');
   await page.locator('[data-tool=terminal_run] .tool-activity-row').click();
-  assert.equal(await page.locator('.is-pinned .command-phase.failed').evaluate(el=>getComputedStyle(el).color),'rgb(187, 142, 166)','command failure glyph keeps the observation palette');
+  await page.locator('.is-pinned .observation-command[data-command-phase=failed]').waitFor();
+  assert.equal(await page.locator('.is-pinned .observation-command svg,.is-pinned .command-phase').count(),0,'command observation has no duplicate status glyph');
   assert.deepEqual(errors,[]);
   await page.reload();
   await page.locator('.tool-activity-entry').first().waitFor();
   assert.equal(await page.locator('.tool-activity-entry.is-entering').count(),0);
   assert.equal(await page.locator('.activity-pin').count(),0);
-  assert.equal(await page.evaluate(()=>localStorage.getItem('neo-tool-history-view')),'rows');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('neo-tool-history-view')),'folded','legacy preference remains ignored and is not rewritten');
+  assert.equal(await page.locator('.rows-transcript').count(),1);
   await deliver([{type:'line.patch',id:'current-live',patch:{live:false,titleStatus:'success'}},{type:'line.append',line:{id:'status-answer',kind:'assistant',text:'A completed answer remains visible',live:false}}]);
   await deliver([{type:'line.append',line:{id:'purpose-stream',kind:'tool',toolName:'file_read',toolUseId:'purpose-stream-call',live:true,activity:{phase:'generating',input:{path:'src/purpose.ts'}}}}]);
   const purposeRow=page.locator('[data-tool=file_read]').last().locator('.activity-purpose');
@@ -432,15 +434,15 @@ try {
     }return maxError;
   });
   assert.ok(scrollFrames<=1,`history scroll has no estimate-to-measurement gaps: ${scrollFrames}`);
-  snapshot.lines=[{id:'folded-user',kind:'user',text:'Original user message'},{id:'folded-assistant',kind:'assistant',text:'Original assistant response'},{id:'folded-thinking',kind:'thinking',text:'Completed thought',live:false}];
+  snapshot.lines=[{id:'fixed-rows-user',kind:'user',text:'Original user message'},{id:'fixed-rows-assistant',kind:'assistant',text:'Original assistant response'},{id:'fixed-rows-thinking',kind:'thinking',text:'Completed thought',live:false}];
   await page.evaluate(()=>localStorage.setItem('neo-tool-history-view','folded'));
   await page.reload();
-  await page.locator('.message.user .message-head').waitFor();
-  assert.equal(await page.locator('.rows-transcript').count(),0,'folded mode does not inherit refined styling');
-  assert.equal(await page.locator('.message.user .message-marker-icon').count(),1,'folded keeps original role marker');
-  assert.ok(await page.locator('.message.assistant .message-head').count()>0,'folded keeps original role headings');
+  await page.locator('.rows-transcript').waitFor();
+  assert.equal(await page.locator('.message.user .message-head').count(),0,'fixed rows keeps role headings hidden');
+  assert.equal(await page.locator('.message.user .message-marker-icon').count(),0,'fixed rows keeps role markers hidden');
+  assert.equal(await page.locator('.history-view-setting').count(),0,'frontend exposes no history-view modifier');
   assert.deepEqual(errors,[]);
-  console.log('PASS rows: incremental drafts, main/pin windows, manual scroll, reply transitions, recursive plan, image/plugin placeholders, terminal lifecycle, themes/colors/alignment, narrow layout, reload and folded compatibility');
+  console.log('PASS fixed rows: incremental drafts, main/pin windows, manual scroll, reply transitions, recursive plan, image/plugin placeholders, terminal lifecycle, themes/colors/alignment, narrow layout, reload and ignored legacy preference');
 
 } finally {
   await browser?.close()

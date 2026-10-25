@@ -12,6 +12,24 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const root = ref(null)
 const menu = ref(null)
 const open = ref(false)
+const menuStyle = ref({})
+function positionMenu(event) {
+  if (!open.value || (event && menu.value?.contains(event.target))) return
+  const rect = root.value?.getBoundingClientRect()
+  if (!rect) return
+  const margin = 8, gap = 6
+  const below = window.innerHeight - rect.bottom - margin - gap
+  const above = rect.top - margin - gap
+  const up = below < 180 && above > below
+  const maxHeight = Math.max(32, Math.min(280, up ? above : below))
+  const width = Math.min(Math.max(rect.width, 120), window.innerWidth - margin * 2)
+  menuStyle.value = {
+    position: 'fixed', left: Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin)) + 'px',
+    width: width + 'px', maxHeight: maxHeight + 'px',
+    top: up ? 'auto' : rect.bottom + gap + 'px',
+    bottom: up ? window.innerHeight - rect.top + gap + 'px' : 'auto',
+  }
+}
 const menuId = `neo-select-${Math.random().toString(36).slice(2, 10)}`
 
 const normalizedOptions = computed(() => props.options.map((option, index) => {
@@ -31,11 +49,16 @@ const selectedLabel = computed(() => selectedOption.value?.label || '请选择')
 
 function closeMenu() {
   open.value = false
+  window.removeEventListener('resize', positionMenu)
+  document.removeEventListener('scroll', positionMenu, true)
 }
 
 async function openMenu(focusLast = false) {
   if (props.disabled || open.value) return
   open.value = true
+  positionMenu()
+  window.addEventListener('resize', positionMenu)
+  document.addEventListener('scroll', positionMenu, true)
   await nextTick()
   const buttons = [...(menu.value?.querySelectorAll('button:not(:disabled)') || [])]
   const selected = menu.value?.querySelector('button[aria-selected="true"]')
@@ -101,7 +124,7 @@ function handleOutsidePointer(event) {
 }
 
 onMounted(() => document.addEventListener('pointerdown', handleOutsidePointer))
-onBeforeUnmount(() => document.removeEventListener('pointerdown', handleOutsidePointer))
+onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown', handleOutsidePointer) })
 </script>
 
 <template>
@@ -124,6 +147,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleOutsideP
       :id="menuId"
       ref="menu"
       class="neo-select-menu"
+      :style="menuStyle"
       role="listbox"
       :aria-label="ariaLabel"
       @keydown="handleMenuKeydown"

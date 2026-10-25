@@ -58,7 +58,7 @@ test('install event estimate, bounded values, collapsed logs, failure and retry'
   const job = deferred();
   const h = harness({ invoke: (name) => name === 'install_runtime' ? job.promise : undefined }); await tick();
   const pending = h.element('installForm').emit('submit');
-  assert.equal(h.element('logDetails').open, false);
+  assert.equal(h.element('logDetails').open, true);
   h.events.get('install-progress')({ payload: { percent: 42, stage: '安装依赖', log: '<b>raw</b>' } });
   assert.equal(h.element('progressBar').style.transform, 'scaleX(0.42)');
   assert.match(h.element('progressTrack').attributes['aria-valuetext'], /安装依赖，42%/);
@@ -157,7 +157,7 @@ test('installed startup page updates Web and Core with backend stopped', async (
   const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo', web_version: '0.1.10', core_version: '0.2.36' }, invoke(name) {
     if (name === 'update_runtime') return { web_version: '0.1.11', core_version: '0.2.37' };
   } }); await tick();
-  assert.equal(h.element('readyTitle').textContent, 'Neo 启动页');
+  assert.equal(h.element('readyTitle').textContent, '启动页');
   assert.equal(h.element('installButton').hidden, true);
   assert.match(h.element('versionStatus').textContent, /Web 0\.1\.10 \/ Core 0\.2\.36/);
   assert.equal(h.element('updateRuntime').disabled, false);
@@ -224,7 +224,7 @@ test('failed startup-page update returns to installed controls without reinstall
   assert.match(h.element('versionStatus').textContent, /Web .*Core/);
   await h.element('updateRuntime').emit('click');
   assert.equal(h.element('progressTitle').textContent, '更新未完成');
-  assert.equal(h.element('retryButton').textContent, '返回启动页');
+  assert.equal(h.element('retryButton').attributes['aria-label'], '返回启动页');
   await h.element('retryButton').emit('click');
   assert.equal(h.document.body.dataset.state, 'ready');
   assert.equal(h.element('updateRuntime').disabled, false);
@@ -288,7 +288,7 @@ test('unreadable configuration fails visibly without enabling fresh install', as
 test('native directory disclosure starts closed and submit needs no explicit selection', () => {
   const html = readFileSync(`${__dirname}/../../ui/index.html`, 'utf8');
   assert.match(html, /<details id="pathOptions">/);
-  assert.match(html, /<summary id="pathSummary">更改目录<\/summary>/);
+  assert.match(html, /<span id="pathSummary" class="sr-only">更改目录<\/span>/);
   assert.match(html, /<details id="pathOptions">[\s\S]*id="installPath"[\s\S]*id="browseButton"[\s\S]*<\/details>/);
   assert.ok(html.indexOf('id="pathDisplay"') < html.indexOf('id="pathOptions"'));
   assert.doesNotMatch(html.match(/<input id="installPath"[^>]+>/)[0], /required/);

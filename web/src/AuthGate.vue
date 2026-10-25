@@ -129,9 +129,9 @@ onBeforeUnmount(() => {
 .auth-screen .auth-card .icon-field input { width: 100%; height: 100%; padding: 0 54px 0 52px; border: 1px solid #52617a !important; border-radius: 0 !important; background: #101420 !important; color: #f7f7fb !important; caret-color: #9ee8f8; font-family: inherit !important; font-size: 16px; outline: none; box-shadow: none !important; }
 .field-icon { position: absolute; left: 17px; top: 20px; pointer-events: none; color: #abbfd2; transition: color .25s, transform .3s; }
 .field-line { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; background: linear-gradient(90deg, #e995c4, #9ce8f5) !important; transform: scaleX(0); transition: transform .35s cubic-bezier(.2,.8,.2,1); }
-.auth-screen .auth-card .icon-field input:focus { border-color: #92dce8 !important; box-shadow: 0 0 0 3px #92dce817 !important; }
+.auth-screen .auth-card .icon-field input:focus { border-color: #92dce8 !important; box-shadow: none !important; }
 .icon-field:focus-within .field-icon { color: #c8f7ff; transform: translateY(-2px); }
-.icon-field:focus-within .field-line { transform: scaleX(1); }
+.icon-field:focus-within .field-line { transform: scaleX(0); }
 .password-toggle, .retry-button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; padding: 0; border-radius: 0 !important; background: transparent !important; color: #abbfd2; }
 .password-toggle { position: absolute; right: 7px; top: 9px; }
 .password-toggle svg { width: 19px; height: 19px; }

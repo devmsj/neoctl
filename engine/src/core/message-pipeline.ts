@@ -201,8 +201,8 @@ export function appendSystemContext<T extends object>(systemPrompt: string, syst
 function splitSystemContextForPromptCache<TSystem extends object>(systemContext: TSystem): { stableSystemContext: Record<string, unknown>; dynamicSystemContext: Record<string, unknown> } {
   const entries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
   return {
-    stableSystemContext: Object.fromEntries(entries.filter(([key]) => key !== "cwd")),
-    dynamicSystemContext: Object.fromEntries(entries.filter(([key]) => key === "cwd")),
+    stableSystemContext: Object.fromEntries(entries.filter(([key]) => !["cwd", "Workspace scope changed", "workspaceMemory"].includes(key))),
+    dynamicSystemContext: Object.fromEntries(entries.filter(([key]) => ["cwd", "Workspace scope changed", "workspaceMemory"].includes(key))),
   };
 }
 

@@ -1,6 +1,8 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as smd from 'streaming-markdown'
+import { createStreamingHighlighter } from '../streaming-highlight.mjs'
+import { createStreamingMath } from '../streaming-math.mjs'
 import { resourceActionTitle } from '../local-resources.mjs'
 
 const props = defineProps({
@@ -13,6 +15,19 @@ let parser
 let processedText = ''
 let parserSourceText = ''
 let pendingCommitTimer
+let highlighter
+let activeCode
+let mathRenderer
+let activeMath
+let idlePreview
+
+function clearIdlePreview() {
+  idlePreview?.remove()
+  idlePreview = undefined
+}
+
+// Exposed only for diagnostics/tests; no reactive state or per-token UI updates.
+defineExpose({ highlightMetrics: () => highlighter?.metrics })
 
 function cancelPendingCommit() {
   if (pendingCommitTimer) clearTimeout(pendingCommitTimer)
@@ -23,10 +38,17 @@ function schedulePendingCommit() {
   cancelPendingCommit()
   pendingCommitTimer = setTimeout(() => {
     pendingCommitTimer = undefined
-    // streaming-markdown waits for a following character before committing
-    // ambiguous trailing Markdown. Finish the visual buffer after a brief idle
-    // period so pre-tool status text is visible before the tool begins.
-    if (parser?.pending && processedText) rebuild(`${processedText}\n`, processedText)
+    // Preview only an ordinary trailing character; do not feed a synthetic newline
+    // or rebuild the reply. Rebuilds erased all earlier highlights every idle gap.
+    clearIdlePreview()
+    if (!activeCode && !activeMath && parser?.pending && !/[\\`*$\[\]<>_~\r\n]/.test(parser.pending)) {
+      const data = parser.renderer.data
+      const node = data.nodes[data.index]
+      if (node && node !== root.value) {
+        idlePreview = document.createTextNode(parser.pending)
+        node.append(idlePreview)
+      }
+    }
   }, 80)
 }
 
@@ -59,7 +81,37 @@ function createRenderer(element) {
   const renderer = smd.default_renderer(element)
   return {
     ...renderer,
+    add_token(data, type) {
+      smd.default_add_token(data, type)
+      if (type === smd.CODE_FENCE || type === smd.CODE_BLOCK) {
+        activeCode = data.nodes[data.index]
+        highlighter.track(activeCode)
+      }
+      if (type === smd.EQUATION_INLINE || type === smd.EQUATION_BLOCK) {
+        activeMath = data.nodes[data.index]
+        mathRenderer.track(activeMath, type === smd.EQUATION_BLOCK)
+      }
+    },
+    end_token(data) {
+      const node = data.nodes[data.index]
+      if (mathRenderer.has(node)) {
+        mathRenderer.close(node)
+        if (node === activeMath) activeMath = undefined
+      }
+      if (node === activeCode) activeCode = undefined
+      smd.default_end_token(data)
+    },
+    add_text(data, text) {
+      const node = data.nodes[data.index]
+      if (highlighter.has(node)) highlighter.append(node, text)
+      else if (mathRenderer.has(node)) mathRenderer.append(node, text)
+      else smd.default_add_text(data, text)
+    },
     set_attr(data, type, value) {
+      if (type === smd.LANG && highlighter.has(data.nodes[data.index])) {
+        highlighter.language(data.nodes[data.index], value)
+        return
+      }
       const resource = type === smd.HREF ? exposedResource(value) : undefined
       const attributeValue = resource?.url || value
       if ((type === smd.HREF || type === smd.SRC) && !safeUrl(attributeValue)) return
@@ -87,10 +139,29 @@ function createRenderer(element) {
   }
 }
 
+function writeStream(text) {
+  // The upstream parser only recognizes display openers followed by a newline.
+  // Normalize that boundary incrementally (also across chunk splits), never
+  // touching TeX bodies, code spans/fences, or the original message text.
+  const write = chunk => {
+    if (!chunk) return
+    if (parser.token === smd.MAYBE_EQ_BLOCK && chunk[0] !== '\n') smd.parser_write(parser, '\n')
+    smd.parser_write(parser, chunk)
+  }
+  let offset = 0
+  for (const match of text.matchAll(/[$\\\[\]]/g)) {
+    write(text.slice(offset, match.index))
+    write(match[0])
+    offset = match.index + 1
+  }
+  write(text.slice(offset))
+}
+
 function appendText(text) {
   if (!parser) return
   const nextText = String(text || '')
   cancelPendingCommit()
+  clearIdlePreview()
   if (!nextText.startsWith(processedText) || parserSourceText !== processedText) {
     rebuild(nextText)
     schedulePendingCommit()
@@ -99,7 +170,7 @@ function appendText(text) {
   const delta = nextText.slice(processedText.length)
   processedText = nextText
   parserSourceText = nextText
-  if (delta) smd.parser_write(parser, delta)
+  if (delta) writeStream(delta)
   schedulePendingCommit()
 }
 
@@ -107,11 +178,18 @@ function rebuild(text = props.text, sourceText = text) {
   const element = root.value
   if (!element) return
   if (parser) smd.parser_end(parser)
+  highlighter?.dispose()
+  highlighter = createStreamingHighlighter()
+  mathRenderer?.dispose()
+  mathRenderer = createStreamingMath()
+  clearIdlePreview()
+  activeMath = undefined
+  activeCode = undefined
   element.replaceChildren()
   parser = smd.parser(createRenderer(element))
   parserSourceText = String(text || '')
   processedText = String(sourceText || '')
-  if (parserSourceText) smd.parser_write(parser, parserSourceText)
+  if (parserSourceText) writeStream(parserSourceText)
 }
 
 onMounted(() => {
@@ -132,6 +210,11 @@ watch(() => JSON.stringify(props.exposedResources), () => {
 onBeforeUnmount(() => {
   cancelPendingCommit()
   if (parser) smd.parser_end(parser)
+  highlighter?.dispose()
+  highlighter = undefined
+  mathRenderer?.dispose()
+  mathRenderer = undefined
+  clearIdlePreview()
   parser = undefined
 })
 </script>

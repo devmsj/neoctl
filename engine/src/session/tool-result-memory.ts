@@ -335,7 +335,7 @@ function formatTextEditOutputPreview(output: Record<string, unknown>): string {
     lineEnding ? `line endings: ${lineEnding}` : undefined,
     encoding ? `encoding: ${encoding}` : undefined,
   ].filter((value): value is string => Boolean(value));
-  if (details.length > 0) lines.push(details.join(" · "));
+  if (details.length > 0) lines.push(details.join("  "));
 
   if (patch.length > 0) {
     lines.push("patch:");
@@ -385,7 +385,7 @@ function formatGrepOutputPreview(output: Record<string, unknown>): string {
     `query: ${output.query}`,
   ];
   if (typeof output.grepPath === "string") lines.push(`path: ${output.grepPath}`);
-  lines.push(`matches: ${countParts.join(" · ")}`);
+  lines.push(`matches: ${countParts.join("  ")}`);
   if (matches.length === 0) {
     lines.push("no matches");
     return lines.join("\n");

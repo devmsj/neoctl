@@ -20,7 +20,7 @@ test('delete confirms, preserves failures, and returns from an empty final page'
     return true
   })
   try {
-    await f.page.getByRole('button', { name: '模型配置', exact: true }).first().click()
+    await f.page.getByRole('button', { name: '全局配置', exact: true }).first().click()
     await f.page.locator('.settings-prompt-entry').filter({ hasText: '框架改进建议' }).click()
     await f.page.locator('.feedback-item').first().waitFor()
     await f.page.getByRole('button', { name: '下一页', exact: true }).click()
