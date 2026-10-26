@@ -18,12 +18,16 @@ let initialized = false;
 let installedDir = '';
 let defaultDir = '';
 let backendRunning = false;
+let runtimeComplete = false;
 let externalRuntime = false;
 let retryAction = 'initialize';
 let phase = 'booting';
 let cleanupPending = false;
 let directoryNeedsCleanup = false;
 let estimate = 0;
+let entryTimer = null, finishEntryWait = null;
+let lastProgressMessage = '';
+const ENTRY_DURATION = 2000;
 
 function on(target, event, handler) {
   target.addEventListener(event, handler);
@@ -34,6 +38,7 @@ function showView(id, state, focus = true) {
   if (disposed) return;
   phase = state;
   document.body.dataset.state = state;
+  document.body.dataset.light = state === 'ready' ? (installedDir ? 'ready' : 'welcome') : state === 'error' ? 'error' : 'busy';
   views.forEach((view) => { view.hidden = view.id !== id; });
   if (focus) $(`#${id.replace('View', 'Title')}`)?.focus({ preventScroll: true });
 }
@@ -44,7 +49,7 @@ function setBusy(value) {
   $('#clearInstallDirectory').disabled = value || Boolean(installedDir);
   browseButton.disabled = value || !initialized || Boolean(installedDir);
   pathInput.disabled = value || !initialized;
-  enterButton.disabled = value || !installedDir || (externalRuntime && !backendRunning);
+  enterButton.disabled = value || !installedDir || !runtimeComplete || (externalRuntime && !backendRunning);
   $('#startBackend').disabled = value || !installedDir || backendRunning;
   $('#stopBackend').disabled = value || !backendRunning;
   updateButton.disabled = value || !installedDir || externalRuntime;
@@ -65,15 +70,18 @@ function appendLog(line) {
 function applyProgress(payload = {}) {
   if (disposed || !['installing', 'updating'].includes(phase)) return;
   const value = Number(payload.percent);
-  if (Number.isFinite(value)) estimate = Math.max(0, Math.min(100, value));
-  $('#progressTitle').textContent = payload.title || '正在安装';
+  if (Number.isFinite(value)) estimate = Math.max(estimate, Math.max(0, Math.min(100, value)));
+  $('#progressTitle').textContent = phase === 'updating' ? '正在更新运行环境' : '正在安装工作台';
   $('#progressMessage').textContent = payload.message || '';
-  $('#progressStage').textContent = payload.stage || '准备中';
+  if (payload.stage) $('#progressStage').textContent = payload.stage;
+  $('#progressTrack').dataset.active = String(estimate >= 30 && estimate < 72);
+  $('#progressTrack').setAttribute('aria-label', phase === 'updating' ? '更新阶段进度' : '安装阶段进度');
   $('#progressPercent').textContent = `${Math.round(estimate)}%`;
   $('#progressBar').style.transform = `scaleX(${estimate / 100})`;
   $('#progressTrack').setAttribute('aria-valuenow', String(estimate));
   $('#progressTrack').setAttribute('aria-valuetext', `${payload.stage || '准备中'}，${Math.round(estimate)}%`);
-  if (payload.message) appendLog(payload.message);
+  if (payload.message && payload.message !== lastProgressMessage) appendLog(payload.message);
+  if (payload.message) lastProgressMessage = payload.message;
   if (payload.log && payload.log !== payload.message) appendLog(payload.log);
 }
 
@@ -87,6 +95,7 @@ function fail(error, action) {
   appendLog(error);
   $('#logDetails').open = true;
   const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
+  $('#retryLabel').textContent = retryLabel;
   retryButton.setAttribute('aria-label', retryLabel);
   retryButton.setAttribute('title', retryLabel);
   retryButton.hidden = false;
@@ -105,7 +114,7 @@ async function subscribe(event, handler) {
 function updatePathDisplay() {
   const path = pathInput.value.trim() || defaultDir;
   $('#pathDisplay').textContent = path;
-  $('#pathName').textContent = path.split(/[\\/]/).filter(Boolean).at(-1) || path || '—';
+  $('#pathName').textContent = path || '—';
   $('#pathName').setAttribute('title', path);
   $('#pathOptions').setAttribute('aria-label', installedDir ? '查看数据位置' : '更改安装位置');
 }
@@ -114,16 +123,15 @@ on(pathInput, 'input', () => { directoryNeedsCleanup = false; $('#clearInstallDi
 function setVersions(state) {
   const web = state.web_version || '未知', core = state.core_version || '未知';
   $('#versionStatus').textContent = installedDir ? `Web ${web} / Core ${core}` : '';
-  $('#webVersion').textContent = web;
-  $('#coreVersion').textContent = core;
-  $('#versionBadges').hidden = !installedDir;
 }
 
 function applyBootstrap(state) {
   // Any configured path is existing data, even if runtime validation failed.
   if (state.installed && !state.install_dir) throw new Error('已有安装缺少数据位置，请检查配置后重试。');
   externalRuntime = state.external_runtime === true;
+  runtimeComplete = state.installed === true;
   installedDir = state.install_dir || '';
+  document.body.dataset.installed = String(Boolean(installedDir));
   $('#startBackend').hidden = true;
   $('#stopBackend').hidden = externalRuntime;
   updateButton.hidden = externalRuntime;
@@ -137,8 +145,8 @@ function applyBootstrap(state) {
   installButton.hidden = Boolean(installedDir);
   browseButton.disabled = Boolean(installedDir);
   pathInput.readOnly = Boolean(installedDir);
-  $('#readyTitle').textContent = installedDir ? '启动页' : '安装';
-  $('#readyMessage').textContent = installedDir ? '' : '首次安装需联网。';
+  $('#readyTitle').textContent = installedDir ? (externalRuntime ? '本地开发服务' : state.installed ? 'Neo Desktop' : '运行环境需要更新') : '安装工作台';
+  $('#readyMessage').textContent = installedDir ? (state.installed ? '' : '保留原位置与工作数据，请更新运行环境。') : '首次安装需联网。';
   setVersions(state);
   $('#backendControls').hidden = !installedDir;
   setCleanup(state.cleanup_pending ? ['检测到上次更新的清理或恢复任务，将重试删除非当前版本。'] : []);
@@ -210,8 +218,8 @@ async function launch(installDir) {
   showView('launchView', 'launching');
   $('#launchMessage').textContent = '正在启动本地服务…';
   try {
-    await api.core.invoke('launch_runtime', { installDir });
-    if (!disposed) $('#launchMessage').textContent = '正在进入工作台…';
+    await api.core.invoke('launch_runtime', { installDir, deferNavigation: true });
+    if (!disposed) await enterWithLight();
   } catch (error) {
     fail(error, 'launch');
   } finally {
@@ -232,7 +240,8 @@ on($('#installForm'), 'submit', async (event) => {
   setBusy(true);
   installLog.textContent = '';
   $('#logDetails').hidden = true;
-  $('#logDetails').open = true;
+  $('#logDetails').open = false;
+  estimate = 0; lastProgressMessage = '';
   retryButton.hidden = true;
   showView('progressView', 'installing');
   applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在准备安装…', log: '正在准备内置 Node.js，将联网获取最新 Web 与其兼容的 Core…' });
@@ -257,13 +266,16 @@ on(updateButton, 'click', async () => {
   setBusy(true);
   installLog.textContent = '';
   $('#logDetails').hidden = true;
-  $('#logDetails').open = true;
+  $('#logDetails').open = false;
+  estimate = 0; lastProgressMessage = '';
   retryButton.hidden = true;
   showView('progressView', 'updating');
   applyProgress({ percent: 0, title: '准备更新 Web 和 Core', stage: '准备中', message: '正在连接软件源…' });
   try {
     const versions = await api.core.invoke('update_runtime');
     if (disposed) return;
+    runtimeComplete = true;
+    $('#readyTitle').textContent = 'Neo Desktop';
     setVersions(versions);
     setCleanup(versions.cleanup_pending || []);
     $('#readyMessage').textContent = cleanupPending ? '新版本已启用，旧版本清理未完成。' : '更新完成，旧版本已删除。';
@@ -291,10 +303,28 @@ on(browseButton, 'click', async () => {
     if (!disposed) { setBusy(false); browseButton.focus(); }
   }
 });
+async function enterWithLight() {
+  if (disposed) return;
+  phase = 'entering';
+  document.body.dataset.state = 'entering';
+  document.body.dataset.light = 'entering';
+  $('.shell').inert = true;
+  await new Promise(resolve => {
+    finishEntryWait = resolve;
+    entryTimer = setTimeout(resolve, ENTRY_DURATION);
+  });
+  entryTimer = null; finishEntryWait = null;
+  if (disposed) return;
+  try { await api.core.invoke('enter_application'); }
+  finally { if (!disposed) $('.shell').inert = false; }
+}
 on(enterButton, 'click', async () => {
-  if (busy || !installedDir || (externalRuntime && !backendRunning)) return;
+  if (busy || disposed || !installedDir || !runtimeComplete || (externalRuntime && !backendRunning)) return;
+  if (!backendRunning) return launch(installedDir);
   setBusy(true);
-  try { await api.core.invoke('enter_application'); } catch(error) { if (!disposed) { $('#readyMessage').textContent = '未能进入，详情见日志。'; appendLog(error); $('#logDetails').open = true; await refreshBackend(); } } finally { if (!disposed) setBusy(false); }
+  try { await enterWithLight(); }
+  catch (error) { if (!disposed) { fail(error, 'launch'); await refreshBackend(); } }
+  finally { if (!disposed) setBusy(false); }
 });
 on(retryButton, 'click', () => {
   if (busy || disposed) return;
@@ -315,6 +345,8 @@ on(document, 'visibilitychange', () => {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  if (entryTimer !== null) clearTimeout(entryTimer);
+  finishEntryWait?.(); finishEntryWait = null;
   cleanups.splice(0).forEach((cleanup) => {
     try { cleanup(); } catch { /* WebView may already be disconnected. */ }
   });
@@ -329,7 +361,7 @@ async function refreshBackend() {
   const status = backendRunning ? '已就绪' : externalRuntime ? '开发服务未连接' : '未启动';
   enterButton.setAttribute('title', backendRunning ? '进入应用' : '启动并进入');
   enterButton.setAttribute('aria-label', backendRunning ? '进入应用' : '启动并进入');
-  $('#enterLabel').textContent = backendRunning ? '进入' : '启动';
+  $('#enterLabel').textContent = backendRunning ? '进入工作台' : '启动工作台';
   $('#stopBackend').hidden = externalRuntime || !backendRunning;
   $('#backendStatus').textContent = status;
   $('#logDetails').hidden = !installLog.textContent.trim();

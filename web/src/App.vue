@@ -14,7 +14,8 @@ import { executionLabel } from './execution-label.mjs'
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
 import { createDemoTrigger } from './demo-trigger.js'
-import { isDesktop, resourceActionTitle, revealResource } from './local-resources.mjs'
+import { isDesktop, resourceActionTitle, openResource, openExternalLink } from './local-resources.mjs'
+import { imageFileType } from './attachment-input.mjs'
 import { connectDesktopFileDrops } from './desktop-file-drop.mjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { marked } from './markdown.mjs'
@@ -39,6 +40,8 @@ import { formatDuration, receiveTimings, timingElapsedMs, executionElapsedMs } f
 import CwdTreeNode from './components/CwdTreeNode.vue'
 import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
+import ExecutionSignal from './components/ExecutionSignal.vue'
+import { executionSignal } from './execution-signal.mjs'
 import { createUploadProgress } from './upload-progress.mjs'
 import { uploadFileChunks } from './chunk-upload.mjs'
 import { createOriginalDimensions, originalDimensionFacts } from './image-original-dimensions.mjs'
@@ -438,6 +441,7 @@ const transcriptLoadingLabel = computed(() => executionLabel({
   imageQueued: !!liveImageCreateLine.value && lineElapsedText(liveImageCreateLine.value) === '排队中',
   outputKind: state.status?.modelOutput?.kind,
 }))
+const transcriptSignal = computed(() => executionSignal(state.status, state.lines, state.runControl.state, state.sessionResumeLoading))
 const transcriptElapsedMs = computed(() => {
   if (state.sessionResumeLoading) return undefined
   const elapsed = executionElapsedMs(state.runControl, state.timingTick, state.connected)
@@ -472,7 +476,7 @@ const selectedModelSettings = computed(() => {
     reasoning: Object.hasOwn(pending, 'reasoning') || Object.hasOwn(pending, 'model') ? pending.reasoning : current.reasoning,
   }
 })
-const modelName = computed(() => formatModelDisplay(selectedModelSettings.value.model, selectedModelSettings.value.reasoning?.effort))
+const modelName = computed(() => formatModelDisplay(selectedModelSettings.value.model))
 const selectedFastMode = computed(() => state.fastModeMutating ? state.fastModeDraft : (state.pendingSessionSettings.fastMode ?? state.fastMode))
 const modelOptions = computed(() => [...new Set([
   selectedModelSettings.value.model, state.modelSettings?.model, ...(state.catalog.modelIds || []),
@@ -708,8 +712,15 @@ onMounted(async () => {
   disconnectDesktopFileDrops = connectDesktopFileDrops({
     getTarget: () => composerForm.value,
     onHover: (active) => { state.composerDropActive = active; state.composerDropMode = active ? 'files' : 'prompt' },
-    onFiles: (files) => {
-      for (const file of files) state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
+    onFiles: async (files) => {
+      for (const file of files) {
+        if (file.mimeType?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) {
+          const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(file.absolutePath))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+          const response = await appFetch(runtimeUrl('/api/local-images/' + encoded))
+          if (!response.ok) throw new Error(file.name + '：图片内容无法读取')
+          await uploadFiles([new File([await response.blob()], file.name, { type: response.headers.get('Content-Type') || '' })])
+        } else state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
+      }
       composer.value?.focus()
       notify(`已添加 ${files.length} 个文件`)
     },
@@ -2572,14 +2583,21 @@ function handleDocumentImageClick(event) {
 }
 
 async function handleDocumentResourceClick(event) {
-  const anchor = event.target instanceof Element ? event.target.closest('a[data-resource-download="true"]') : null
-  if (!(anchor instanceof HTMLAnchorElement)) return
+  const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
+  if (!(anchor instanceof HTMLAnchorElement) || event.defaultPrevented) return
+  if (anchor.dataset.resourceDownload !== 'true') {
+    if (isDesktop() && /^https?:|^mailto:/i.test(anchor.href) && (anchor.target === '_blank' || new URL(anchor.href).origin !== location.origin)) {
+      event.preventDefault()
+      try { await openExternalLink(anchor.href) } catch (error) { notify(error.message || String(error)) }
+    }
+    return
+  }
   event.preventDefault()
   event.stopPropagation()
   if (isDesktop()) {
-    try { await revealResource(anchor.href, { fetch: appFetch }) }
-    catch (error) { notify(error instanceof Error ? error.message : String(error || '无法打开所在文件夹')) }
-    return // Never silently download a second copy after a native reveal failure.
+    try { await openResource(anchor.href, { fetch: appFetch }) }
+    catch (error) { notify(error instanceof Error ? error.message : String(error || '无法打开文件')) }
+    return // Never silently download a second copy after a native open failure.
   }
   const expiresAt = Number(anchor.dataset.resourceExpiresAt)
   if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
@@ -3467,12 +3485,12 @@ function renderLineResources(line) {
     const expires = item.expiresAt ? formatDownloadExpiry(item.expiresAt) : ''
     const meta = [size, expires].filter(Boolean).join('  ')
     const downloadable = item.kind === 'download' || item.downloadName
-    const action = downloadable ? '下载' : '打开'
+    const action = downloadable && !isDesktop() ? '下载' : '打开'
     const download = downloadable ? ` download="${escapeHtml(item.downloadName || item.label || '')}"` : ' target="_blank" rel="noreferrer noopener"'
     if (downloadable) {
       const compactSize = escapeHtml(size.replace(/\s+/g, ''))
       const expiresAt = Number(item.expiresAt) || 0
-      return `<a class="resource-file-link" title="${escapeHtml(resourceActionTitle(item.label || item.downloadName))}" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
+      return `<a class="resource-file-link" title="${escapeHtml(resourceActionTitle(item.label || item.downloadName))}" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span><span class="resource-file-action">${isDesktop() ? '' : '下载'}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
     }
     return `<a class="resource-card resource-${escapeHtml(item.kind || 'link')}" href="${href}"${download}><span class="resource-icon" aria-hidden="true"></span><span class="resource-main"><strong>${label}</strong><span>${escapeHtml(meta || (downloadable ? '文件已就绪' : '资源已就绪'))}</span></span><span class="resource-action"><span>${action}</span><i aria-hidden="true">${downloadable ? '↓' : '↗'}</i></span></a>`
   }).join('')
@@ -3514,6 +3532,7 @@ function enhanceExposedResourceLinks(html, resources) {
       anchor.removeAttribute('target')
       anchor.removeAttribute('rel')
       anchor.setAttribute('title', resourceActionTitle(item.label || item.downloadName))
+      anchor.dataset.resourceAction = isDesktop() ? '' : '下载'
       anchor.dataset.resourceDownload = 'true'
       anchor.dataset.resourceExpiresAt = String(Number(item.expiresAt) || 0)
       if (item.sizeBytes) anchor.dataset.resourceSize = `(${formatBytes(item.sizeBytes).replace(/\s+/g, '')})`
@@ -3618,7 +3637,7 @@ function renderImageGrid(images) {
     const href = escapeHtml(item.originalUrl || item.previewUrl)
     const src = escapeHtml(item.previewUrl)
     const download = escapeHtml(imageDownloadName(item, index))
-    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}">下载</a></figure>`
+    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}" data-resource-download="true" title="${escapeHtml(resourceActionTitle(caption))}">${isDesktop() ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V5h6l2 2h10v13H3V7Zm0 3h18"/></svg>' : '下载'}</a></figure>`
   }).join('')
   return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
@@ -3925,21 +3944,23 @@ function toggleTheme() {
 }
 
 async function handlePaste(event) {
-  const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith('image/'))
+  const files = Array.from(event.clipboardData?.files || [])
   if (!files.length) return
   event.preventDefault()
-  const compressionRates = []
-  for (const file of files) {
-    const id = ++state.attachmentCounter
-    const label = `[img#${id}]`
-    const payload = await fileToDataUrlPayload(file)
-    if (payload.compressionRate > 0) {
-      compressionRates.push(payload.compressionRate)
-    }
-    state.attachments.push({ kind: 'image', imageId: createClientImageId(), label, mimeType: payload.mimeType, data: payload.data, previewUrl: payload.previewUrl, name: file.name || `图片 ${id}` })
+  // A clipboard may contain both files and text. Preventing the native paste
+  // for files must not discard the accompanying text or its whitespace.
+  const text = event.clipboardData?.getData('text/plain') || ''
+  if (text) {
+    const target = event.target
+    const start = target.selectionStart ?? input.value.length
+    const end = target.selectionEnd ?? start
+    const pasted = text.replace(/\r\n?/g, '\n')
+    input.value = input.value.slice(0, start) + pasted + input.value.slice(end)
+    await nextTick()
+    target.setSelectionRange(start + pasted.length, start + pasted.length)
+    autosize()
   }
-  notify(`已添加 ${files.length} 张图片附件`)
-  if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
+  await uploadFiles(files)
 }
 
 function triggerFilePicker() {
@@ -3962,8 +3983,9 @@ async function uploadFiles(files) {
     const uploaded = []
     const compressionRates = []
     for (const [index, file] of files.entries()) {
-      if (file.type.startsWith('image/')) {
-        const payload = await fileToDataUrlPayload(file, (fraction) => progress.update(index, fraction * 0.9))
+      const actualImageType = await imageFileType(file)
+      if (actualImageType) {
+        const payload = await fileToDataUrlPayload(new File([file], file.name, { type: actualImageType }), (fraction) => progress.update(index, fraction * 0.9))
         const label = `[img#${++state.attachmentCounter}]`
         if (payload.compressionRate > 0) compressionRates.push(payload.compressionRate)
         uploaded.push({
@@ -3974,6 +3996,7 @@ async function uploadFiles(files) {
           mimeType: payload.mimeType,
           data: payload.data,
           previewUrl: payload.previewUrl,
+          size: estimateBase64Bytes(payload.data),
         })
         progress.complete(index)
         continue
@@ -3988,6 +4011,7 @@ async function uploadFiles(files) {
         size: Number(result.file.size || file.size || 0),
         absolutePath: result.file.absolutePath,
         relativePath: result.file.relativePath || '',
+        url: result.file.url || '',
       })
       progress.complete(index)
     }
@@ -4012,7 +4036,7 @@ function createClientImageId() {
 function textWithAttachmentLabels(text, attachments) {
   if (!attachments.length) return text
   const suffix = attachments.map((attachment) => attachment.label).join(' ')
-  return text.trim() ? `${text.trim()}\n\n${suffix}` : suffix
+  return text ? `${text}\n\n${suffix}` : suffix
 }
 
 function stripImageLabels(text) {
@@ -4091,12 +4115,29 @@ function observationImages(line){
   const images=(state.lines||[]).flatMap(directLineImagePreviews)
   return dedupeImages(referencedImages(line,images))
 }
+function lineFileAttachments(line) {
+  if (line?.kind !== 'user') return []
+  const files = userMessageGroup(line).flatMap(item => item.files || [])
+  return [...new Map(files.map(file => [file.url || file.absolutePath, file])).values()].filter(file => !isImageFileReference(file))
+}
+function isImageFileReference(file) {
+  return String(file?.mimeType || '').startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(file?.name || '')
+}
+function historicalFileImages(line) {
+  if (line?.kind !== 'user') return []
+  return (line.files || []).filter(isImageFileReference).map(file => ({
+    kind: 'image', name: file.name, label: file.name, sizeBytes: file.size, available: true,
+    imageId: `file:${file.url}`, mimeType: file.mimeType,
+    previewUrl: runtimeUrl(`${file.url}?preview=1`), originalUrl: runtimeUrl(`${file.url}?preview=1`),
+  }))
+}
+
 function lineImagePreviews(line) {
   if (isImageCreateLine(line)) return imageCreateLineImages(line)
   const group = line?.kind === 'user' ? userMessageGroup(line) : line?.toolUseId ? [line, ...(state.lines || []).filter(item=>item.parentToolUseId===line.toolUseId && item.image)] : [line]
   const images = []
   for (const item of group) {
-    images.push(...directLineImagePreviews(item))
+    images.push(...directLineImagePreviews(item), ...historicalFileImages(item))
     for (const label of historyView.value==='rows' && line?.toolName ? [] : imageLabelsFromText(item?.text)) {
       const sessionId = String(state.session?.sessionId || runtimeSessionId || '')
       const candidates = state.messageImagePreviews.filter((image) => image.sessionId === sessionId && image.label === label)
@@ -4131,7 +4172,7 @@ function userMessageGroup(line) {
 }
 
 function userGroupHasImages(group) {
-  return group.some((line) => directLineImagePreviews(line).length > 0 || imageLabelsFromText(line?.text).length > 0)
+  return group.some((line) => line.files?.length || directLineImagePreviews(line).length > 0 || imageLabelsFromText(line?.text).length > 0)
 }
 
 function userMessageOwner(group) {
@@ -4235,9 +4276,10 @@ function imageCaption(item, index) {
 }
 
 function imageDownloadName(item, index) {
+  if (item?.imageId?.startsWith('file:')) return item.name || `image-${index + 1}`
   const ext = mimeExtension(item?.mimeType)
   const base = (item?.name || item?.label || `image-${index + 1}`).replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '') || `image-${index + 1}`
-  return /\.[a-z0-9]{2,5}$/i.test(base) ? base : `${base}.${ext}`
+  return `${base.replace(/\.[a-z0-9]{2,5}$/i, '')}.${ext}`
 }
 
 function mimeExtension(mimeType) {
@@ -4332,10 +4374,8 @@ async function normalizeImageDataUrlPayload(dataUrl, fallbackMimeType = 'image/p
   const original = parseImageDataUrl(dataUrl, fallbackMimeType)
   const originalBytes = estimateBase64Bytes(original.base64)
   const image = await loadImageFromDataUrl(original.dataUrl).catch(() => undefined)
-  if (!image) {
-    const base64 = normalizeBase64Data(original.base64)
-    if (!base64) throw new Error('图片格式异常，无法读取为有效图片')
-    return { mimeType: original.mimeType, data: base64, previewUrl: `data:${original.mimeType};base64,${base64}`, compressionRate: 0 }
+  if (!image || !(image.naturalWidth || image.width) || !(image.naturalHeight || image.height)) {
+    throw new Error('图片内容损坏或无法解码，请重新导出后添加')
   }
 
   const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
@@ -4826,17 +4866,17 @@ function createMobileSession() {
             </section>
 
             <div ref="messageList" class="virtual-message-list" :class="{'rows-history':historyView==='rows'}" :style="{ height: `${virtualMessageTotalHeight}px` }">
+            <ToolTurnConnector v-if="historyView==='rows'" :connections="turnConnections" :host="messageList" />
             <template v-for="virtualRow in virtualMessageRows" :key="virtualRow.key">
               <div
                 :ref="measureVirtualMessageElement"
                 class="virtual-message-row"
                 :data-index="virtualRow.index"
+                :data-line-id="visibleLines[virtualRow.index]?.id"
                 :style="{ transform: `translateY(${virtualRow.start - virtualScrollMargin}px)` }"
               >
               <template v-for="line in [visibleLines[virtualRow.index]]" :key="line.id">
-                <Transition name="tool-turn">
-                  <ToolTurnConnector v-if="turnConnections.has(line.id)" :connection="turnConnections.get(line.id)" />
-                </Transition>
+
               <div v-if="historyView==='rows' && isActivityLine(line)" class="tool-history-entry" :class="{'is-tool-group-start':!isActivityLine(visibleLines[virtualRow.index-1]) && visibleLines[virtualRow.index-1]?.kind!=='thinking'}">
                 <ToolActivityRow :line="line" :entering="activityEntranceIds.has(line.id)" @entered="activityEntranceIds.delete(line.id)" :terminal-task="activityTerminalTask(line)" :pinned="activityPinned===line.id" :paused="activityPaused" :images="lineImagePreviews(line)" :download-name="imageDownloadName" :resource-url="pluginResourceUrl" :resource-height="pluginResourceHeight" @observe="toggleActivityObservation" @details="openToolDetail" />
                 <div v-if="line.id===activityPinned" :ref="setActivityPinnedAnchor" class="tool-pinned-observation-anchor"></div>
@@ -4983,7 +5023,7 @@ function createMobileSession() {
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <div class="image-card-actions">
-                          <a v-if="item.available && item.previewUrl" class="image-download" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)">下载</a>
+                          <a v-if="item.available && item.previewUrl" class="image-download" :title="resourceActionTitle(imageCaption(item, index))" :aria-label="resourceActionTitle(imageCaption(item, index))" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)" data-resource-download="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg>{{ isDesktop() ? '' : '下载' }}<span v-if="item.sizeBytes !== undefined" class="attachment-size">{{ formatBytes(item.sizeBytes) }}</span></a>
                           <button v-if="index === 0 && isImageCreateResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                         </div>
                       </figure>
@@ -5055,6 +5095,13 @@ function createMobileSession() {
                     <StreamingMarkdown :text="line.text || ''" :exposed-resources="exposedResourcesBeforeLine(line)" />
                   </div>
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
+                  <div v-if="lineFileAttachments(line).length" class="message-file-attachments">
+                    <a v-for="file in lineFileAttachments(line)" :key="file.url" class="message-file-attachment" :href="appUrl(runtimeUrl(file.url))" :download="file.name" data-resource-download="true" :title="resourceActionTitle(file.name)">
+                      <ChromeIcon name="file" :size="16" />
+                      <span class="attachment-file-info"><strong>{{ file.name }}</strong><span>{{ formatBytes(file.size) }}</span></span>
+                      <span class="attachment-file-action">{{ isDesktop() ? '' : '下载' }}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg></span>
+                    </a>
+                  </div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
                     <div v-if="images.length" class="message-image-attachments">
                       <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
@@ -5063,7 +5110,7 @@ function createMobileSession() {
                         </button>
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
-                        <a v-if="item.available && item.previewUrl" class="image-download" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)">下载</a>
+                        <a v-if="item.available && item.previewUrl" class="image-download" :title="resourceActionTitle(imageCaption(item, index))" :aria-label="resourceActionTitle(imageCaption(item, index))" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)" data-resource-download="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg>{{ isDesktop() ? '' : '下载' }}<span v-if="item.sizeBytes !== undefined" class="attachment-size">{{ formatBytes(item.sizeBytes) }}</span></a>
                       </figure>
                     </div>
                   </template>
@@ -5084,14 +5131,17 @@ function createMobileSession() {
             </Teleport>
             <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
               <div class="message-loading-body">
-                <ElapsedClock :elapsed-ms="transcriptElapsedMs" />
+                <ElapsedClock :elapsed-ms="transcriptElapsedMs" :completed="state.coreQueryTiming?.outcome === 'completed'" />
               </div>
             </div>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
-                <FlipStatusText class="message-loading-label" :text="transcriptLoadingLabel" />
-                <!-- 撒粉暂时停用：<DustStatusText class="message-loading-label" :text="transcriptLoadingLabel" /> -->
-                <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" style="margin-inline-start: 10px" />
+                <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" />
+                <span v-if="transcriptElapsedMs !== undefined" class="execution-signal-divider" aria-hidden="true"></span>
+                <button v-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" title="继续执行" @click="state.runControl.canResume && toggleRunPause()">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
+                </button>
+                <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="state.session?.sessionId" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />
               </div>
               <!-- 彩色旋转方块暂时停用，保留模板和样式以便恢复。
               <span class="message-loading-emblem" aria-hidden="true">
@@ -5144,8 +5194,8 @@ function createMobileSession() {
             <textarea ref="composer" v-model="input" placeholder="有什么想做的？" aria-label="消息" @keydown="handleKeydown" @paste="handlePaste" @input="autosize" @compositionend="handleComposerCompositionEnd"></textarea>
             <div class="composer-footer">
               <div id="composer-session-metrics" class="composer-metrics" aria-label="运行状态指标">
-                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :title="modelName" aria-label="选择模型" @click="openModelModal"><em>模型</em><strong>{{ modelName }}</strong></button>
-                <div class="composer-usage" role="group" aria-label="用量">
+                <div class="composer-usage" role="group" aria-label="模型与用量">
+                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :title="modelName" aria-label="选择模型" @click="openModelModal"><strong>{{ modelName }}</strong></button>
                 <button type="button" class="metric-chip numeric context-window-trigger" title="上下文窗口" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
                 <span class="metric-chip numeric" title="输入 Token"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
                 <span class="metric-chip numeric" title="输出 Token"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>

@@ -105,7 +105,7 @@ test('independent updater owns npm installation and commit follows health check'
   const updater = read('src-tauri/src/bin/neoctl-updater.rs');
   assert.match(rust, /Command::new\(updater_path\(app\)\?\)/);
   assert.doesNotMatch(rust, /fn run_npm_install/);
-  assert.match(updater, /--install-strategy=nested/);
+  assert.match(read('src-tauri/src/package-download.cjs'), /--install-strategy=nested/);
   assert.match(updater, /semver\.satisfies/);
   assert.match(updater, /runtime_store::commit/);
   assert.ok(rust.indexOf('launch_version(app, &window') < rust.indexOf('write_all(b"commit'));

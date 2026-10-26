@@ -53,7 +53,7 @@ test('browser mode preserves download behavior without probing native capabiliti
 test('desktop negotiates an arbitrary plugin URL with HEAD and reveals original path without GET/blob', async () => {
   const { scope, calls } = desktop();
   const file = 'C:\\用户\\原文件 [a],b.txt';
-  assert.equal(resourceActionTitle('报告', scope), '在所在文件夹中显示 报告');
+  assert.equal(resourceActionTitle('报告', scope), '打开所在文件夹：报告');
   assert.equal(await revealResource('/custom-plugin/resources/any-id?token=abc', { scope, fetch: async (url, init) => {
     assert.equal(url, origin + '/custom-plugin/resources/any-id?token=abc');
     assert.equal(init.method, 'HEAD');
@@ -96,6 +96,6 @@ test('static, streaming and tool-result links share desktop titles; click branch
   assert.match(streaming, /resourceActionTitle\(resource.label \|\| resource.downloadName\)/);
   assert.match(app, /title="\$\{escapeHtml\(resourceActionTitle/);
   const handler = app.slice(app.indexOf('async function handleDocumentResourceClick'), app.indexOf('function openImagePreview'));
-  assert.ok(handler.indexOf('await revealResource') < handler.indexOf('await appFetch(anchor.href)'));
+  assert.ok(handler.indexOf('await openResource') < handler.indexOf('await appFetch(anchor.href)'));
   assert.match(handler, /return \/\/ Never silently download/);
 });

@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as smd from 'streaming-markdown'
 import { createStreamingHighlighter } from '../streaming-highlight.mjs'
 import { createStreamingMath } from '../streaming-math.mjs'
-import { resourceActionTitle } from '../local-resources.mjs'
+import { resourceActionTitle, isDesktop } from '../local-resources.mjs'
 
 const props = defineProps({
   text: { type: String, default: '' },
@@ -125,6 +125,7 @@ function createRenderer(element) {
             link.setAttribute('title', resourceActionTitle(resource.label || resource.downloadName))
             link.removeAttribute('target')
             link.removeAttribute('rel')
+            link.dataset.resourceAction = isDesktop() ? '' : '下载'
             link.dataset.resourceDownload = 'true'
             link.dataset.resourceExpiresAt = String(Number(resource.expiresAt) || 0)
             const size = compactFileSize(resource.sizeBytes)

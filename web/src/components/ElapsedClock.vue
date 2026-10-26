@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import { formatDuration } from '../core-timing.mjs'
 
-const props = defineProps({ elapsedMs: { type: Number, default: undefined }, showZero: Boolean })
+const props = defineProps({ elapsedMs: { type: Number, default: undefined }, showZero: Boolean, completed: Boolean })
 const duration = computed(() => formatDuration(props.elapsedMs) || (props.showZero && Number.isFinite(props.elapsedMs) ? '0s' : ''))
 // Keep the angle unwrapped: 59s -> 60s is 354deg -> 360deg, never a reverse sweep.
 const angle = computed(() => Math.floor(Math.max(0, props.elapsedMs || 0) / 1000) * 6)
 </script>
 
 <template>
-  <span v-if="duration" class="elapsed-clock" :aria-label="`用时 ${duration}`">
+  <span v-if="duration" class="elapsed-clock" :class="{ 'is-completed': completed }" :aria-label="`用时 ${duration}`">
     <svg class="elapsed-clock-face" viewBox="0 0 40 40" aria-hidden="true">
       <circle class="clock-rim" cx="20" cy="20" r="18" />
       <circle class="clock-well" cx="20" cy="20" r="15.5" />
@@ -74,4 +74,13 @@ const angle = computed(() => Math.floor(Math.max(0, props.elapsedMs || 0) / 1000
   --clock-pin: #f5d1e4;
   --clock-pin-edge: #342c36;
 }
+/* Successful completion uses a softer green across the whole clock. */
+.elapsed-clock.is-completed { --clock-complete: #64a780; }
+:global(:root[data-theme='dark'] .elapsed-clock.is-completed) { --clock-complete: #94cba5; }
+.elapsed-clock.is-completed .clock-rim,
+.elapsed-clock.is-completed .clock-well,
+.elapsed-clock.is-completed .clock-ticks line,
+.elapsed-clock.is-completed .clock-hand line { stroke: var(--clock-complete); }
+.elapsed-clock.is-completed .clock-pin { fill: var(--clock-complete); stroke: var(--clock-complete); }
+.elapsed-clock.is-completed .elapsed-clock-value { color: var(--clock-complete); opacity: 1; }
 </style>

@@ -1,3 +1,4 @@
+import { pngPixel } from "../fixtures/png-pixel.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,8 +9,8 @@ import { SessionStore } from "../../src/session/session-store.js";
 import { toDisplayImageBlock } from "../../src/ui/display-message.js";
 import type { Message, MessageBlock } from "../../src/types/messages.js";
 
-const PIXEL_A = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-const PIXEL_B = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlHkAAAAASUVORK5CYII=";
+const PIXEL_A = pngPixel(0).toString("base64");
+const PIXEL_B = pngPixel(160).toString("base64");
 
 async function main(): Promise<void> {
   const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoctl-image-integrity-"));

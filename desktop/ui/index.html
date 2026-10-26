@@ -8,7 +8,25 @@
   <link rel="stylesheet" href="./styles.css" />
   <script src="./app.js" defer></script>
 </head>
-<body data-state="booting">
+<body data-state="booting" data-light="welcome" data-installed="false">
+  <div class="lightstage" aria-hidden="true">
+    <svg viewBox="0 0 1200 760" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="beam-fade" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#dedfce" stop-opacity=".15"/><stop offset=".28" stop-color="#d4d8bf" stop-opacity=".06"/><stop offset=".7" stop-color="#c3c9a9" stop-opacity=".025"/><stop offset="1" stop-color="#d6dcc3" stop-opacity=".07"/></linearGradient>
+        <linearGradient id="core-fade" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f1f0db" stop-opacity=".16"/><stop offset=".42" stop-color="#d4dbc0" stop-opacity=".018"/><stop offset="1" stop-color="#d4dbc0" stop-opacity="0"/></linearGradient>
+        <radialGradient id="pool-fade"><stop stop-color="#d3dabf" stop-opacity=".11"/><stop offset=".42" stop-color="#b5c29e" stop-opacity=".055"/><stop offset="1" stop-color="#b5c29e" stop-opacity="0"/></radialGradient>
+        <radialGradient id="air-fade"><stop stop-color="#c6cfb0" stop-opacity=".052"/><stop offset="1" stop-color="#c6cfb0" stop-opacity="0"/></radialGradient>
+        <filter id="soft" x="-80%" y="-30%" width="260%" height="170%"><feGaussianBlur stdDeviation="20"/></filter>
+        <filter id="soft-core" x="-80%" y="-30%" width="260%" height="170%"><feGaussianBlur stdDeviation="7"/></filter>
+        <filter id="pool-soft" x="-30%" y="-90%" width="160%" height="280%"><feGaussianBlur stdDeviation="12"/></filter>
+      </defs>
+      <ellipse class="haze" cx="600" cy="380" rx="440" ry="360" fill="url(#air-fade)"/>
+      <g class="beam"><path d="M570-100 630-100 895 660 Q600 715 305 660Z" fill="url(#beam-fade)" filter="url(#soft)"/><path d="m594-70 12 0 124 645-260 0Z" fill="url(#core-fade)" filter="url(#soft-core)"/></g>
+      <g class="pool"><ellipse cx="600" cy="655" rx="330" ry="50" fill="url(#pool-fade)" filter="url(#pool-soft)"/><ellipse cx="600" cy="650" rx="245" ry="18" fill="url(#pool-fade)" opacity=".55"/></g>
+    </svg>
+  </div>
+  <div class="vignette"></div>
+
   <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" /></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
@@ -25,7 +43,7 @@
   <main class="shell">
     <section class="installer-card" aria-label="启动控制">
       <section id="readyView" class="view" aria-labelledby="readyTitle">
-        <h1 id="readyTitle" class="sr-only" tabindex="-1">安装</h1>
+        <h1 id="readyTitle" tabindex="-1">安装工作台</h1>
         <form id="installForm">
           <div class="ready-heading">
             <div id="runtimeIndicator" class="runtime-indicator" data-running="false" title="正在连接" aria-label="运行状态">
@@ -33,13 +51,12 @@
               <span class="runtime-dot" aria-hidden="true"></span>
               <span id="backendStatus" role="status">正在连接</span>
             </div>
-            <button id="enterButton" class="icon-button primary-action" type="button" title="进入应用" aria-label="进入应用" hidden><span id="enterLabel">进入</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button>
-            <button id="installButton" class="icon-button primary-action" type="submit" title="安装并启动" aria-label="安装并启动" disabled><svg class="icon" aria-hidden="true"><use href="#i-download" /></svg><span>安装</span></button>
+            <button id="enterButton" class="primary-action" type="button" title="进入应用" aria-label="进入应用" hidden><span id="enterLabel">进入工作台</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button>
+            <button id="installButton" class="primary-action" type="submit" title="安装并启动" aria-label="安装并启动" disabled><span>开始安装</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button>
           </div>
-          <div id="versionBadges" class="version-badges" aria-label="版本" hidden><span>Web <strong id="webVersion">—</strong></span><span>Core <strong id="coreVersion">—</strong></span></div>
           <p id="pathDisplay" class="sr-only"></p>
           <details id="pathOptions">
-            <summary class="path-summary" title="数据位置"><svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg><span id="pathName">—</span><span id="pathSummary" class="sr-only">更改目录</span><svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
+            <summary class="path-summary" title="数据位置"><svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg><span id="pathName">—</span><span id="pathSummary">更改</span><svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
             <div class="path-editor">
               <label for="installPath" class="sr-only">数据位置</label>
               <div class="path-control">
@@ -51,14 +68,14 @@
           <p id="readyMessage" class="status-message" role="status" aria-live="polite"></p>
           <p id="versionStatus" class="sr-only" role="status"></p>
           <div class="control-dock">
-            <button id="clearInstallDirectory" class="icon-button danger" type="button" title="清空此目录（删除全部内容）" aria-label="清空此目录（删除全部内容）" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg></button>
+            <button id="clearInstallDirectory" class="text-button danger" type="button" title="清空此目录（删除全部内容）" aria-label="清空此目录（删除全部内容）" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg><span>清空后安装</span></button>
 
             <div id="backendControls" class="backend-controls" hidden>
               <button id="startBackend" class="icon-button" type="button" title="启动核心和后台" aria-label="启动核心和后台"><svg class="icon" aria-hidden="true"><use href="#i-power" /></svg></button>
-              <button id="stopBackend" class="icon-button" type="button" title="关闭核心和后台" aria-label="关闭核心和后台" disabled><svg class="icon" aria-hidden="true"><use href="#i-stop" /></svg></button>
+              <button id="stopBackend" class="text-button" type="button" title="关闭核心和后台" aria-label="关闭核心和后台" disabled>关闭后台</button>
 
-              <button id="updateRuntime" class="icon-button" type="button" title="更新 Web 和 Core" aria-label="更新 Web 和 Core" disabled><svg class="icon" aria-hidden="true"><use href="#i-update" /></svg></button>
-              <button id="cleanupRuntime" class="icon-button" type="button" title="重试清理旧版本" aria-label="重试清理旧版本" hidden><svg class="icon" aria-hidden="true"><use href="#i-clean" /></svg></button>
+              <button id="updateRuntime" class="text-button" type="button" title="更新 Web 和 Core" aria-label="更新 Web 和 Core" disabled>更新 Web / Core</button>
+              <button id="cleanupRuntime" class="text-button" type="button" title="重试清理旧版本" aria-label="重试清理旧版本" hidden>重试清理</button>
             </div>
 
           </div>
@@ -66,18 +83,19 @@
         </form>
       </section>
       <section id="progressView" class="view" aria-labelledby="progressTitle" hidden>
-        <div class="phase-heading"><span class="phase-orbit" aria-hidden="true"></span><h2 id="progressTitle" tabindex="-1">准备运行环境</h2><strong id="progressPercent">0%</strong></div>
+        <div class="phase-heading"><h2 id="progressTitle" tabindex="-1">正在安装工作台</h2></div>
         <p id="progressMessage" class="status-message" role="status" aria-live="polite">正在准备安装…</p>
+        <div class="progress-copy"><span id="progressStage">准备中</span><strong id="progressPercent" title="按实际执行阶段计算，不代表下载字节比例">0%</strong></div>
         <div id="progressTrack" class="progress-track" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div>
-        <div class="progress-meta"><span id="progressStage">初始化</span><button id="retryButton" class="icon-button" type="button" title="返回并重试" aria-label="返回并重试" hidden><svg class="icon" aria-hidden="true"><use href="#i-update" /></svg></button></div>
+        <div class="progress-meta"><button id="retryButton" class="primary-action" type="button" title="返回并重试" aria-label="返回并重试" hidden><span id="retryLabel">重新尝试</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button></div>
       </section>
       <section id="launchView" class="view" aria-labelledby="launchTitle" hidden>
-        <div class="phase-heading"><span class="phase-orbit" aria-hidden="true"></span><h2 id="launchTitle" tabindex="-1">启动中</h2></div>
-        <p id="launchMessage" class="status-message" role="status" aria-live="polite">正在启动…</p>
+        <div class="phase-heading"><h2 id="launchTitle" tabindex="-1">正在开启工作台</h2></div>
+        <p id="launchMessage" class="progress-copy" role="status" aria-live="polite">启动本地服务</p><div class="progress-track indeterminate" role="progressbar" aria-label="启动本地服务" aria-valuetext="正在启动"><span></span></div>
       </section>
     </section>
-    <details id="logDetails" class="observation" open hidden>
-      <summary title="展开或收起运行日志"><svg class="icon" aria-hidden="true"><use href="#i-terminal" /></svg><span class="sr-only">运行日志</span><span class="log-signal" aria-hidden="true"><i></i><i></i><i></i></span><svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
+    <details id="logDetails" class="observation" hidden>
+      <summary title="展开或收起运行日志">运行记录<svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
       <div class="log-surface"><pre id="installLog" tabindex="0" aria-label="运行日志"></pre></div>
     </details>
   </main>

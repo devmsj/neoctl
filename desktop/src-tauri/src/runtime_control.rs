@@ -28,6 +28,10 @@ fn check_attached(app: &AppHandle, backend: &str) -> Result<(), String> {
     let expected = crate::read_runtime_versions(&crate::runtime_store::current(&root)?)?.core_version;
     crate::health_check::wait(backend, &expected, std::time::Duration::from_millis(900))
 }
+pub(crate) async fn prepare_attached(app: AppHandle) -> Result<(), String> {
+    let (_, backend) = attached_target(&app).ok_or("开发服务未配置")?;
+    tauri::async_runtime::spawn_blocking(move || check_attached(&app, &backend)).await.map_err(|e| e.to_string())?
+}
 #[tauri::command]
 pub async fn runtime_status(app: AppHandle) -> bool {
     if let Some((_, backend)) = attached_target(&app) {

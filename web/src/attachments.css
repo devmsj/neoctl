@@ -1,0 +1,71 @@
+/* Shared attachment surfaces: quiet borders, theme tokens, no legacy hard shadows. */
+:root[data-theme] .message-image-attachments:not(.image2-output-images) {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 196px));
+  gap: 10px; width: min(100%, 640px); margin-top: 12px;
+}
+:root[data-theme] .message-image-attachment {
+  min-width: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--muted) 19%, transparent);
+  border-radius: 12px; background: var(--panel-soft); box-shadow: none; transform: none;
+}
+:root[data-theme] .message-image-attachment .image-preview-trigger {
+  display: block; border: 0; border-radius: 0; padding: 0; box-shadow: none; transform: none;
+  background: transparent; overflow: hidden;
+}
+:root[data-theme] .message-image-attachment img { background: transparent; object-fit: contain; }
+:root[data-theme] .message-image-attachment figcaption {
+  padding: 9px 11px 2px; color: var(--muted); font-weight: 450; font-size: 11px; line-height: 1.5;
+}
+:root[data-theme] .message-image-attachment .image-download {
+  margin: 2px 11px 9px; padding: 3px 0; min-height: 25px; gap: 6px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--text) !important;
+  font-size: 12px; font-weight: 450; box-shadow: none; transform: none; text-decoration: none;
+}
+:root[data-theme] .message-image-attachment .image-download:hover { color: var(--muted) !important; background: transparent; }
+.image-download svg, .attachment-file-action svg { width: 15px; height: 15px; flex: 0 0 15px; }
+.attachment-size { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
+.message-file-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+:root[data-theme] a.message-file-attachment {
+  display: flex; align-items: center; gap: 8px; width: fit-content; max-width: min(100%, 320px); min-width: 0;
+  min-height: 38px; padding: 7px 10px !important; border: 1px solid var(--chrome-line-soft) !important;
+  border-radius: 6px !important; background: transparent !important; color: var(--chrome-text) !important; text-decoration: none !important;
+  transition: border-color .16s ease, background .16s ease; box-shadow: none !important; transform: none !important; outline: none;
+  font-weight: 400;
+}
+:root[data-theme] a.message-file-attachment:hover { border-color: color-mix(in srgb, var(--muted) 46%, transparent); }
+.attachment-file-info { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; flex: 1; }
+:root[data-theme] a.message-file-attachment::before, :root[data-theme] a.message-file-attachment::after { content: none !important; }
+:root[data-theme] a.message-file-attachment:hover { background: var(--chrome-hover) !important; }
+:root[data-theme] a.message-file-attachment:focus-visible { outline: 1px solid var(--chrome-accent); outline-offset: 2px; }
+:root[data-desktop='true'] .attachment-file-action { margin-left: 3px; }
+:root[data-theme] .message-file-attachment > svg { width: 16px; height: 16px; flex: 0 0 16px; color: var(--chrome-faint); }
+.attachment-file-info strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file-info > span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.attachment-file-action { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); white-space: nowrap; }
+:root[data-theme] .image-attachment { border-radius: 10px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent); background: var(--panel-soft); box-shadow: none; }
+:root[data-theme] .image-attachment img { object-fit: contain; background: transparent; }
+:root[data-theme] .image-attachment figcaption { color: var(--muted); background: transparent; font-weight: 450; }
+:root[data-theme] :is(.message-file-attachment, .image-preview-trigger, .image-download):focus-visible { outline: 2px solid var(--muted); outline-offset: 3px; }
+
+/* Native-only resource actions. Browser download behavior and link styling stay intact. */
+:root[data-desktop='true'] :is(.resource-file-link, a.inline-resource-download) {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 4px 0;
+  color: var(--text) !important; text-decoration: none !important; font-weight: 500;
+}
+:root[data-desktop='true'] .resource-file-name { font-size: 13px; font-weight: 500; text-decoration: none; }
+:root[data-desktop='true'] .resource-file-size,
+:root[data-desktop='true'] :is(.message-text, .streaming-markdown-content) a.inline-resource-download::after {
+  opacity: 1; transform: none; color: var(--muted); font-size: 11px; font-weight: 400;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.resource-file-action { display: none; }
+:root[data-desktop='true'] .resource-file-action { display: none; }
+:root[data-desktop='true'] :is(.resource-file-link, a.inline-resource-download)::before {
+  content: ''; display: inline-block; width: 15px; height: 15px; flex: 0 0 15px;
+  align-self: center; background: currentColor; clip-path: none; border-radius: 0;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7V5h6l2 2h10v13H3V7Zm0 3h18'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+:root[data-desktop='true'] a.inline-resource-download::after { content: attr(data-resource-size); }
+:root[data-desktop='true'] :is(.resource-file-link, a.inline-resource-download):hover { color: var(--muted) !important; }
+@media (max-width: 540px) {
+  :root[data-theme] .message-image-attachments:not(.image2-output-images) { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+}

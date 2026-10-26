@@ -24,6 +24,7 @@ export const WebRuntimeRouter = webModule.WebRuntimeRouter;
 export const createWebRuntime = webModule.createWebRuntime;
 export const runWebServer = webModule.runWebServer;
 export const handleWebRequest = webModule.handleWebRequest;
+export const validateImageBytes = webModule.validateImageBytes;
 export const coreRuntimeInfo = Object.freeze({
   source,
   version: await readCoreVersion(),

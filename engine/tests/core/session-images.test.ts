@@ -1,3 +1,4 @@
+import { pngPixel } from "../fixtures/png-pixel.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs/promises";
@@ -17,8 +18,8 @@ import type { ToolUseContext } from "../../src/tools/tool.js";
 import { createTextMessage, type Message, type ImageMessageBlock } from "../../src/types/messages.js";
 import type { ModelStreamEvent } from "../../src/model/model-gateway.js";
 
-const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=";
-const other = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const png = pngPixel(0).toString("base64");
+const other = pngPixel(160).toString("base64");
 function imageMessage(id: string, block: Partial<ImageMessageBlock> = {}): Message {
   return { id, role: "user", createdAt: new Date().toISOString(), isMeta: true, metadata: { imageRetention: "next_turn" }, blocks: [{ type: "image", mimeType: "image/png", data: png, label: "same.png", ...block }] };
 }

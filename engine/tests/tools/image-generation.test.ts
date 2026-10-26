@@ -1,3 +1,4 @@
+import { pngPixel } from "../fixtures/png-pixel.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -13,7 +14,7 @@ import type { ToolUseContext } from "../../src/tools/tool.js";
 
 const base = { semanticName: "red-mug-icon", prompt: "A red mug icon" };
 // Small real PNG used by existing image history tests.
-const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=";
+const png = pngPixel().toString("base64");
 const source = { base64: png, mimeType: "image/png" };
 const context: ToolUseContext = { agentId: "image-test", tools: new ToolRegistry(), appState: new InMemoryAppState("image-test", process.cwd()), emit() {} };
 

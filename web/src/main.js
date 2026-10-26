@@ -16,3 +16,6 @@ createApp(App).mount('#app')
 
 import './workspace-pages.css'
 import './workspace-layout.css'
+import './attachments.css'
+import { isDesktop } from './local-resources.mjs'
+document.documentElement.dataset.desktop = String(isDesktop())

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateImageInput } from "./image-input.js";
 import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -119,6 +120,11 @@ async function persistImageBlock(block: ImageBlock, options: PersistMessageImage
     };
   }
 
+  const validated = validateImageInput(inline);
+  if (block.mimeType !== validated.mimeType || (inline.startsWith("data:") && !inline.startsWith(`data:${validated.mimeType};`))) {
+    block = { ...block, mimeType: validated.mimeType, data: validated.data };
+    return persistImageBlock(block, options);
+  }
   const parsed = requireValidImagePayload(inline, block.mimeType);
   const contentHash = hashBytes(parsed.bytes);
   const storedBytes = Buffer.byteLength(inline, "utf8");

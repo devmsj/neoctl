@@ -5,9 +5,11 @@ import ActivityPlan from './ActivityPlan.vue'
 import TerminalOutputReader from '../TerminalOutputReader.vue'
 import TerminalText from './TerminalText.vue'
 import ToolActivityIcon from './ToolActivityIcon.vue'
+import { createObservationIdle } from '../observation-idle.mjs'
 import { appUrl } from '../app-url.mjs'
 const props=defineProps({renderText:Function,line:Object,images:{type:Array,default:()=>[]},paused:Boolean,ownerSessionId:String,terminalRevision:Number,variant:{type:String,default:'main'}})
 const emit=defineEmits(['height'])
+const idleHidden=ref(false)
 const root=ref(null)
 let sizeObserver
 // Report Vue content height before paint, avoiding a second frame of
@@ -21,21 +23,34 @@ const terminalRecord=ref(null)
 const terminalRun=computed(()=>content.value.mode==='terminal' ? props.line?.observation?.session_id || props.line?.activity?.input?.session_id : null)
 const commandPhase=computed(()=>terminalPhase(props.line,terminalRecord.value))
 watch(()=>[props.line?.id,terminalRun.value],()=>{terminalRecord.value=null})
-function followOutput(){if(viewport.value&&!manual&&!props.paused)viewport.value.scrollTop=viewport.value.scrollHeight}
+function followOutput(){if(viewport.value&&!manual&&!props.paused)viewport.value.scrollTop=viewport.value.scrollHeight;idle.changed();nextTick(idle.check)}
 let frame=0,manual=false,scrollGeneration=0
 function manualScroll(){if(props.variant==='pinned'){manual=true;cancel()}}
 function manualKey(event){if(['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key))manualScroll()}
 function cancel(){scrollGeneration++;cancelAnimationFrame(frame);frame=0}
+const idle=createObservationIdle({
+ atBottom:()=>{const el=viewport.value;return !!el && !props.paused && el.scrollHeight-el.clientHeight-el.scrollTop<=2},
+ onHidden:value=>{idleHidden.value=value;nextTick(reportHeight)},
+})
+let contentObserver
+onMounted(()=>{
+ contentObserver=new MutationObserver(()=>{idle.changed();nextTick(idle.check)})
+ if(viewport.value)contentObserver.observe(viewport.value,{childList:true,subtree:true,characterData:true})
+ idle.check()
+})
+watch(()=>JSON.stringify([props.line?.id,content.value,phase.value,props.terminalRevision,props.images,props.paused]),()=>{idle.changed();nextTick(idle.check)},{flush:'post'})
+onBeforeUnmount(()=>{idle.dispose();contentObserver?.disconnect()})
 watch(()=>[props.line?.id,content.value.mode,content.value.text,content.value.items,props.images.map(i=>i.imageId||i.previewUrl).join(','),props.paused],async(values,old)=>{
  cancel();const generation=scrollGeneration;if(values[0]!==old?.[0])manual=false
  await nextTick();const el=viewport.value;if(generation!==scrollGeneration||!el||manual||props.paused)return
- if(content.value.mode==='read'&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const start=performance.now();el.scrollTop=0;const scroll=now=>{el.scrollTop=(el.scrollHeight-el.clientHeight)*Math.min(1,(now-start)/1800);if(now-start<1800)frame=requestAnimationFrame(scroll)};frame=requestAnimationFrame(scroll)}
+ if(content.value.mode==='read'&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const start=performance.now();el.scrollTop=0;const scroll=now=>{el.scrollTop=(el.scrollHeight-el.clientHeight)*Math.min(1,(now-start)/1800);if(now-start<1800)frame=requestAnimationFrame(scroll);else idle.check()};frame=requestAnimationFrame(scroll)}
  else if(!['plan'].includes(content.value.mode))el.scrollTop=el.scrollHeight
+ idle.check()
 },{immediate:true})
 onBeforeUnmount(cancel)
 </script>
-<template><section ref="root" class="tool-observation" :class="[ 'is-'+variant, {'is-rich':content.mode==='plan'||images.length,'is-paused':paused}]" :inert="variant==='main'" :data-phase="phase" :aria-label="content.draft?'生成草稿':'活动内容'">
-<div ref="viewport" class="tool-observation-viewport" :tabindex="variant==='pinned'?0:undefined" @wheel="manualScroll" @touchstart="manualScroll" @keydown="manualKey" @observation-output="followOutput">
+<template><Transition name="observation-idle" @after-leave="reportHeight" @after-enter="reportHeight"><section v-show="!idleHidden" ref="root" class="tool-observation" :class="[ 'is-'+variant, {'is-rich':content.mode==='plan'||images.length,'is-paused':paused}]" :inert="variant==='main'" :data-phase="phase" :aria-label="content.draft?'生成草稿':'活动内容'">
+<div ref="viewport" class="tool-observation-viewport" :tabindex="variant==='pinned'?0:undefined" @scroll="idle.check" @load.capture="idle.changed" @wheel="manualScroll" @touchstart="manualScroll" @keydown="manualKey" @observation-output="followOutput">
 <div v-if="content.mode==='thinking' && renderText" class="observation-thinking" v-html="renderText(line)"></div>
 <ActivityPlan v-else-if="content.mode==='plan'" :items="content.items"/>
 <div v-else-if="content.mode==='entries'" class="observation-list"><div v-for="(entry,i) in content.entries" :key="i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path v-if="entry.type==='directory'" d="M3 7V4h7l3 3h8v13H3z"/><path v-else d="M6 3h8l4 4v14H6zM14 3v5h4"/></svg><span>{{entry.name||entry.path}}</span></div></div>
@@ -47,8 +62,11 @@ onBeforeUnmount(cancel)
 <pre v-else-if="content.mode==='diff'" class="observation-diff" :class="{'is-draft':content.draft}"><span v-for="(text,i) in (content.text.trimEnd()?content.text.trimEnd().split('\n'):[])" :key="i" :class="text.startsWith('+')?'added':text.startsWith('-')?'removed':''">{{text}}</span></pre>
 <ToolActivityIcon v-else-if="line?.toolName==='image_create' && !content.text" name="image_create" :phase="phase" :paused="paused"/>
 <pre v-else>{{content.text.trimEnd()}}</pre>
-</div></section></template>
+</div></section></Transition></template>
 <style>
+.observation-idle-enter-active,.observation-idle-leave-active{transition:opacity .22s ease,max-height .3s ease,margin .3s ease,padding .3s ease;overflow:hidden;max-height:430px}
+.observation-idle-enter-from,.observation-idle-leave-to{opacity:0;max-height:0!important;margin-top:0!important;margin-bottom:0!important;padding-top:0!important;padding-bottom:0!important;border-top-width:0!important;border-bottom-width:0!important}
+@media(prefers-reduced-motion:reduce){.observation-idle-enter-active,.observation-idle-leave-active{transition:none}}
 .tool-observation{margin:0 0 0 var(--activity-content-inset,30px);padding:6px 0 0;max-width:900px;min-width:0;color:var(--text);background:none;border:0}.tool-observation-viewport{height:auto;max-height:190px;padding:0;overflow:hidden;scrollbar-width:none;overscroll-behavior:contain;font:11px/18px Consolas,'Microsoft YaHei',monospace;opacity:.86}.tool-observation.is-main{pointer-events:none;user-select:none}.tool-observation.is-main .tool-observation-viewport{opacity:.68;mask-image:linear-gradient(to bottom,rgba(0,0,0,.3),#000 min(7px,20%),#000 max(calc(100% - 7px),80%),rgba(0,0,0,.25))}.tool-observation.is-pinned{width:fit-content;max-width:min(900px,calc(100% - var(--activity-content-inset,30px) + 9px));margin-left:calc(var(--activity-content-inset,30px) - 9px);margin-top:6px;padding:6px 8px;border:1px dashed color-mix(in srgb,currentColor 30%,transparent);border-radius:4px}.tool-observation.is-pinned .tool-observation-viewport{opacity:.9;mask-image:none;overflow:auto;outline-offset:2px}.tool-observation-viewport::-webkit-scrollbar{display:none}.tool-observation pre{font:inherit;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.tool-observation.is-rich .tool-observation-viewport{height:auto;max-height:360px}.observation-thumbnails{display:flex;gap:10px;flex-wrap:wrap}.observation-thumbnails figure{margin:0;width:220px;flex-shrink:0;max-width:100%}.observation-thumbnails img{width:100%;height:132px;object-fit:contain;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:5px;padding:4px}.observation-thumbnails figcaption{font:inherit;line-height:18px}.observation-diff span{display:block;min-height:18px}.observation-diff .added{color:var(--green);background:color-mix(in srgb,var(--green) 7%,transparent)}.observation-diff .removed{color:var(--red);background:color-mix(in srgb,var(--red) 6%,transparent)}.observation-diff.is-draft{opacity:.75}.observation-command{min-width:0}.command-running{height:2px;width:72px;background:linear-gradient(90deg,transparent,var(--purple),transparent);background-size:50% 100%;background-repeat:no-repeat;animation:command-flow 1.4s linear infinite;margin:4px 0 6px}.is-paused *{animation-play-state:paused!important}@keyframes command-flow{from{background-position:-100px 0}to{background-position:200px 0}}@media(prefers-reduced-motion:reduce){.command-running{animation:none!important}}@media(max-width:600px){.tool-observation.is-pinned{max-width:calc(100% - var(--activity-content-inset,30px) + 9px)}.tool-observation-viewport{max-height:170px}.tool-observation.is-rich .tool-observation-viewport{height:auto;max-height:300px}}
 .tool-observation pre:empty{display:none}.observation-matches section:last-child,.observation-search a:last-child,.observation-search p:last-child,.activity-plan li:last-child>.activity-plan{margin-bottom:0}.observation-list>div{display:flex;gap:6px;align-items:center;min-height:22px}.observation-list svg{width:14px;height:14px;flex-shrink:0}.tool-observation .activity-icon{width:16px;height:16px;stroke-width:2.4}.tool-observation .observation-list .activity-icon{width:14px;height:14px}.observation-matches section{margin-bottom:8px}.observation-matches small{font-size:10px;opacity:.6}.observation-search a{display:block;color:inherit;text-decoration:none;margin-bottom:8px}.observation-search p{margin:2px 0;opacity:.65}
 .tool-observation .observation-thinking{font:inherit;color:inherit;overflow-wrap:anywhere}

@@ -27,6 +27,9 @@ fn send(v: serde_json::Value) {
 fn log(text: impl AsRef<str>) {
     send(serde_json::json!({"event":"log","message":text.as_ref()}));
 }
+fn progress(percent: u8, stage: &str, message: &str) {
+    send(serde_json::json!({"event":"progress","percent":percent,"stage":stage,"message":message}));
+}
 fn copy(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|e| e.to_string())?;
     for e in fs::read_dir(source).map_err(|e| e.to_string())? {
@@ -63,6 +66,7 @@ fn run() -> Result<(), String> {
     for warning in prior {
         log(warning);
     }
+    progress(8, "准备独立版本", "检查更新事务与已有版本。");
     let tx = runtime_store::begin(&root)?;
     let candidate = runtime_store::release(&root, &tx.candidate)?;
     fs::create_dir(&candidate).map_err(|e| e.to_string())?;
@@ -72,7 +76,9 @@ fn run() -> Result<(), String> {
     }
     fs::write(candidate.join("package.json"),serde_json::to_vec_pretty(&serde_json::json!({"name":"neoctl-desktop-runtime","private":true,"version":"1.0.0","dependencies":{"neoctl-web":if bundled{"file:packages/neoctl-web.tgz"}else{"latest"}}})).unwrap()).map_err(|e|e.to_string())?;
     log("正在独立版本目录准备 Node.js；不会覆盖旧版本。");
+    progress(14, "准备 Node.js", "复制内置运行环境。");
     copy(&resources.join("node"), &candidate.join("node"))?;
+    progress(22, "Node.js 已就绪", "准备依赖解析。");
     if bundled {
         fs::create_dir(candidate.join("packages")).map_err(|e| e.to_string())?;
         fs::copy(
@@ -91,18 +97,9 @@ fn run() -> Result<(), String> {
         &candidate,
         node_isolation::Phase::Install,
     )?;
-    cmd.arg(npm)
-        .args([
-            "install",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            "--foreground-scripts",
-            "--install-strategy=nested",
-            "--loglevel=http",
-            "--registry",
-            REGISTRY,
-        ])
+    cmd.args(["-e", include_str!("../package-download.cjs")])
+        .arg(npm)
+        .arg(&candidate)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = managed_process::ManagedChild::spawn(&mut cmd).map_err(|e| e.to_string())?;
@@ -110,6 +107,13 @@ fn run() -> Result<(), String> {
     let err = child.stderr.take().ok_or("npm stderr missing")?;
     let a = std::thread::spawn(move || {
         for line in io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(payload) = line.strip_prefix("@neo-progress ") {
+                if let Ok(mut event) = serde_json::from_str::<serde_json::Value>(payload) {
+                    event["event"] = "progress".into();
+                    send(event);
+                    continue;
+                }
+            }
             log(line);
         }
     });
@@ -125,6 +129,7 @@ fn run() -> Result<(), String> {
     if !status.success() {
         return Err(format!("npm 安装失败：{status}；旧版本未改变"));
     }
+    progress(82, "校验版本兼容性", "检查 Web 与 Core 版本及入口文件。");
     // Resolve actual installed manifests and verify Web's declared Core range using this release's npm semver.
     let script = r#"const fs=require('fs'),p=require('path');const root=process.argv[1];const w=p.join(root,'node_modules/neoctl-web');const web=require(p.join(w,'package.json'));const core=require(require.resolve('neoctl/package.json',{paths:[w]}));const semver=require(p.join(root,'node/node_modules/npm/node_modules/semver'));if(!semver.satisfies(core.version,web.dependencies.neoctl))throw Error('Core version incompatible');if(!fs.existsSync(p.join(w,'server.mjs')))throw Error('server missing');console.log(JSON.stringify({web_version:web.version,core_version:core.version,core_requirement:web.dependencies.neoctl}));"#;
     let mut check = Command::new(&node);
@@ -155,6 +160,7 @@ fn run() -> Result<(), String> {
     let versions: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     let receipt = serde_json::json!({"schema":1,"web_package":format!("neoctl-web@{}",versions["web_version"].as_str().unwrap_or("")),"installed_at":tx.candidate,"registry":REGISTRY,"web_version":versions["web_version"],"core_version":versions["core_version"],"core_requirement":versions["core_requirement"],"source":if bundled{"bundled"}else{"registry-latest"}});
     runtime_store::atomic_json(&candidate.join("neo-desktop-runtime.json"), &receipt)?;
+    progress(86, "候选版本已准备", "等待后台健康检查。");
     send(serde_json::json!({"event":"ready","candidate":tx.candidate,"versions":versions}));
     // Parent owns backend health check. EOF/abort never changes current.json.
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -171,7 +177,9 @@ fn run() -> Result<(), String> {
         send(serde_json::json!({"event":"aborted","warnings":warnings}));
         return Ok(());
     }
+    progress(96, "切换当前版本", "后台已通过健康检查，提交新版本。");
     runtime_store::commit(&root, &tx)?;
+    progress(98, "清理旧版本", "保留当前运行版本与工作数据。");
     // Commit is the success boundary. Cleanup problems are explicit, retryable warnings.
     let warnings = runtime_store::cleanup(&root).unwrap_or_else(|e| vec![e]);
     send(serde_json::json!({"event":"done","versions":versions,"warnings":warnings}));

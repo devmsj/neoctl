@@ -3,6 +3,7 @@ import { createReadStream, readFileSync, statSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { validateImageInput } from "./image-input.js";
 import { randomUUID, createHash } from "node:crypto";
 import type { Message, ImageMessageBlock } from "../types/messages.js";
 import { persistMessageImages, resolveImageBlockDataSync } from "./image-storage.js";
@@ -235,9 +236,13 @@ export class SessionImageStore {
       if (record.type === "message" && record.message) {
         const message = record.message as Message;
         // Old inline-only transcripts also need durable payloads; existing stored files stay read-only.
-        const blocks = await Promise.all(message.blocks.map(async block => block.type === "image" && !block.storage?.path && block.data
-          ? (await persistMessageImages([block], { sessionDir: this.sessionDir, agentId: this.agentId }))[0]
-          : block));
+        const blocks = await Promise.all(message.blocks.map(async block => {
+          if (block.type !== "image" || block.storage?.path || !block.data) return block;
+          // Keep legacy corrupt entries discoverable, but never let them prevent reopening a session.
+          // Model serialization and image_inspect independently refuse their pixels.
+          try { validateImageInput(block.data); } catch { return block; }
+          return (await persistMessageImages([block], { sessionDir: this.sessionDir, agentId: this.agentId }))[0];
+        }));
         for (const entry of buildImageRegistry([{ ...message, blocks }]).images) sources.set(occurrenceKey(entry), entry);
       }
       if (record.type === "compact" && Array.isArray(record.replacementMessages)) {

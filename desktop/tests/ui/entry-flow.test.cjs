@@ -8,7 +8,7 @@ function fixture({external=false,running=false,failEntry=false}={}) {
   const node=id=>{if(elements.has(id))return elements.get(id);const handlers={};const n={id,hidden:false,value:'',textContent:'',dataset:{},attributes:{},style:{},scrollHeight:0,scrollTop:0,clientHeight:0,addEventListener(k,f){handlers[k]=f},removeEventListener(){},setAttribute(k,v){this.attributes[k]=v},focus(){},classList:{toggle(){}},emit(k){return handlers[k]?.({preventDefault(){}})}};elements.set(id,n);return n};
   const document=node('document');document.body=node('body');document.querySelector=s=>node(s.slice(1));document.querySelectorAll=()=>['readyView','progressView','launchView'].map(node);
   const window=node('window');window.__TAURI__={core:{invoke:async name=>{calls.push(name);if(name==='bootstrap_state')return {installed:true,auto_launch:false,external_runtime:external,install_dir:'D:\\Existing'};if(name==='runtime_status')return running;if(name==='enter_application'&&failEntry)throw Error('entry failed')}},event:{listen:async(name,fn)=>{events[name]=fn;return()=>{}}}};
-  vm.runInNewContext(source,{window,document,setInterval(){},clearInterval(){},console});return {node,calls,events};
+  vm.runInNewContext(source,{window,document,setInterval(){},clearInterval(){},setTimeout: fn => { queueMicrotask(fn); return 1; },clearTimeout(){},console});return {node,calls,events};
 }
 test('attached server enters without start/update ownership and hides empty logs',async()=>{
   const h=fixture({external:true,running:true});await new Promise(setImmediate);

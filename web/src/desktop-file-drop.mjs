@@ -33,7 +33,7 @@ export function connectDesktopFileDrops({ getTarget, onHover, onFiles, onError, 
     pending.add(event.id);
     try {
       const files = await core.invoke('plugin:local-resources|take_file_drop', { id: event.id });
-      if (!disposed && files.length) onFiles(files);
+      if (!disposed && files.length) await onFiles(files);
     } catch (error) {
       if (!disposed) onError(error);
     } finally {

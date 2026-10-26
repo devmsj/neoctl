@@ -1,3 +1,4 @@
+import { demoImage } from "./demo-image.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { DEMO_VIDEO_BASE64 } from "./demo-video.js";
@@ -177,15 +178,13 @@ export class DemoTools {
   private async image(input: any, context: ToolUseContext): Promise<ToolResult> {
     if (input.mode === "edit") for (const ref of input.imageRefs ?? [this.latestImage]) resolveContextImage(context, ref);
     const number = ++this.imageNumber;
-    const color = number % 2 ? "#dd74ae" : "#73cbd5";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540"><rect width="960" height="540" fill="#252c38"/><circle cx="760" cy="120" r="150" fill="${color}" opacity=".22"/><path d="M0 440L180 230 360 400 590 190 960 460V540H0Z" fill="${color}" opacity=".65"/><path d="M0 490L290 340 460 460 720 280 960 440V540H0Z" fill="${color}"/><text x="64" y="110" font-family="sans-serif" font-size="44" fill="white">AURORA / ${number.toString().padStart(2, "0")}</text><text x="66" y="154" font-family="sans-serif" font-size="20" fill="#ddd">Persistent images and context continuity</text></svg>`;
     const message = createTextMessage("attachment", "");
-    message.blocks = [{ type: "image", mimeType: "image/svg+xml", data: Buffer.from(svg).toString("base64"), label: `Aurora-${number}` }];
+    message.blocks = [{ type: "image", mimeType: "image/png", data: demoImage(number).toString("base64"), label: `Aurora-${number}` }];
     const stored = await context.imageStore!.persistMessage(message);
     const block = stored.blocks.find(b => b.type === "image")!;
     this.latestImage = block.imageId!; this.firstImage ||= block.imageId!;
     this.firstImageUrl ||= `/api/images/by-id/${encodeURIComponent(block.imageId!)}?sessionId=${encodeURIComponent(context.session!.sessionId)}`;
-    return { ok: true, output: { provider: "openai", simulated: true, model: "demo", mode: input.mode ?? "generate", prompt: input.prompt, semanticName: input.semanticName, size: "960x540", quality: "auto", outputFormat: "svg", background: "opaque", images: [{ index: 0, imageId: block.imageId, imageAlias: block.imageAlias, label: block.label, storagePath: block.storage?.path, base64: block.data, mimeType: block.mimeType, width: 960, height: 540 }], warnings: [] } };
+    return { ok: true, output: { provider: "openai", simulated: true, model: "demo", mode: input.mode ?? "generate", prompt: input.prompt, semanticName: input.semanticName, size: "960x540", quality: "auto", outputFormat: "png", background: "opaque", images: [{ index: 0, imageId: block.imageId, imageAlias: block.imageAlias, label: block.label, storagePath: block.storage?.path, base64: block.data, mimeType: block.mimeType, width: 960, height: 540 }], warnings: [] } };
   }
 
   private terminal(name: string, input: any, context: ToolUseContext, options: ToolCallOptions<any>): ToolResult {

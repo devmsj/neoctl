@@ -4,9 +4,18 @@ export function isDesktop(scope = globalThis.window) {
 }
 
 export function resourceActionTitle(label, scope = globalThis.window) {
-  return `${isDesktop(scope) ? '在所在文件夹中显示' : '下载'} ${label || '资源'}`;
+  return isDesktop(scope) ? `打开所在文件夹：${label || '资源'}` : `下载 ${label || '资源'}`;
 }
 
+export async function openExternalLink(href, scope = globalThis.window) {
+  if (!isDesktop(scope)) return false;
+  const url = new URL(href);
+  if (!['http:', 'https:', 'mailto:'].includes(url.protocol) || url.username || url.password) throw new Error('不支持此链接类型');
+  await scope.__TAURI__.core.invoke('plugin:local-resources|open_external', { url: url.href });
+  return true;
+}
+// Desktop resource actions always reveal the original file, never launch its contents.
+export function openResource(href, options = {}) { return revealResource(href, options); }
 export async function revealResource(href, { scope = globalThis.window, fetch = globalThis.fetch } = {}) {
   if (!isDesktop(scope)) return false;
   const url = new URL(href, scope.location.origin);

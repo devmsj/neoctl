@@ -29,8 +29,14 @@
 :root[data-theme] .composer .metric-chip strong { color: var(--chrome-muted); font: 12px/18px var(--mono); font-variant-numeric: tabular-nums; }
 :root[data-theme] .composer .model-chip { align-items: baseline; }
 :root[data-theme] .composer .model-chip strong { color: var(--chrome-text); max-width: 100%; white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; }
-:root[data-theme] .composer .composer-usage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 12px; min-width: 0; }
-:root[data-theme] .composer .composer-usage .metric-chip { white-space: nowrap; }
+:root[data-theme] .composer .composer-usage { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 0; min-width: 0; max-width: 100%; }
+:root[data-theme] .composer .composer-usage .numeric { flex: 0 0 auto; }
+:root[data-theme] .composer .composer-usage .model-chip strong { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:root[data-theme] .composer .composer-usage .metric-chip { position: relative; min-height: 26px; padding: 4px 6px; gap: 4px; white-space: nowrap; }
+:root[data-theme] .composer .composer-usage .metric-chip + .metric-chip::before {
+  content: ''; position: absolute; left: 0; top: 50%; width: 1px; height: 10px;
+  transform: translateY(-50%); background: color-mix(in srgb, var(--chrome-faint) 30%, transparent); pointer-events: none;
+}
 :root[data-theme] .composer .composer-usage strong { text-align: left; }
 :root[data-theme] .composer .composer-actions { display: flex; justify-self: end; flex-wrap: nowrap; align-items: center; gap: 4px; margin: 0; }
 :root[data-theme] .composer .compress-wrap { display: flex; margin: 0 8px 0 0; }
@@ -62,14 +68,6 @@
 :root[data-theme] .composer :is(.file-attachment, .image-attachment) button:hover { color: var(--chrome-danger) !important; background: var(--chrome-hover) !important; }
 :root[data-theme] .composer .image-attachment img { border-radius: 5px 5px 0 0; }
 :root[data-theme] .composer .image-attachment figcaption { font-size: 11px; line-height: 1.5; }
-@container (max-width: 620px) {
-  :root[data-theme] .composer .composer-metrics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
-  :root[data-theme] .composer .model-chip { justify-self: start; }
-  :root[data-theme] .composer .composer-usage { gap: 0 16px; }
-}
-@container (max-width: 340px) {
-  :root[data-theme] .composer .composer-usage { gap: 0 6px; }
-}
 @media (max-width: 760px), (pointer: coarse) {
   :root[data-theme] .composer .composer-actions :is(button, .compact-button) { width: 36px; min-width: 36px; height: 36px; min-height: 36px; flex-basis: 36px; }
   :root[data-theme] .composer { padding: 10px 12px; }

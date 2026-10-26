@@ -1,3 +1,4 @@
+import { pngPixel } from "../fixtures/png-pixel.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -94,11 +95,14 @@ test("Web demo atomically requires empty idle session and records user inputs wi
   assert.deepEqual(await repl.submit("这条消息只记录，不回复"), { ok: true });
   assert.deepEqual(await repl.submitImmediately("/reset"), { ok: true, interrupted: false });
   const imageId = 'image_12345678-1234-4234-8234-123456789abc';
-  assert.equal((await repl.submit('附图只记录 user attachment', [{ kind: 'image', imageId, label: 'user attachment', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFqkAAAAASUVORK5CYII=' }])).ok, true);
+  assert.equal((await repl.submit('附图只记录 user attachment', [{ kind: 'image', imageId, label: 'user attachment', mimeType: 'image/png', data: pngPixel().toString("base64") }])).ok, true);
   await settle(repl);
   assert.ok(repl.imagePayloadById(imageId), 'submitted image should be readable');
   await repl.submit('附带文件', [{ kind: 'file', name: 'note.txt', absolutePath: path.join(f.root, 'note.txt'), mimeType: 'text/plain', size: 4 }]);
   assert.ok(f.engine.getDisplayEntries().some(entry => entry.type === 'message' && entry.message.blocks.some(block => block.type === 'text' && block.text.includes('<<ATTACHMENT_MANIFEST>>'))), 'file attachment metadata is retained');
+  const pastedText = '\n  pasted first line\n\n\tindented line  \n';
+  await repl.submit(pastedText);
+  assert.ok(f.engine.getDisplayEntries().some(entry => entry.type === 'message' && entry.message.blocks.some(block => block.type === 'text' && block.text === pastedText)), 'pasted whitespace survives storage');
   const before = repl.snapshot().lines.filter(line => line.kind === "assistant").length;
   await repl.submit("演示结束后也不回复");
   assert.equal(repl.snapshot().lines.filter(line => line.kind === "assistant").length, before);
@@ -111,6 +115,7 @@ test("Web demo atomically requires empty idle session and records user inputs wi
   await reloaded.initialize();
   const replay = new WebRepl({ ...f.runtime, engine: reloaded });
   assert.equal(replay.snapshot().demoMode, true);
+  assert.ok(replay.snapshot().lines.some(line => line.kind === 'user' && line.text === pastedText), 'pasted whitespace survives session reload');
   assert.ok(replay.imagePayloadById(imageId), 'submitted image survives reload');
   assert.ok(replay.snapshot().lines.some(line => line.text === "演示结束后也不回复"));
   await replay.submit("reload input");
@@ -119,6 +124,22 @@ test("Web demo atomically requires empty idle session and records user inputs wi
   await replay.newSession();
   assert.equal(replay.snapshot().demoMode, false);
   assert.equal((await repl.startDemo(sessionId)).ok, false);
+});
+
+test("response wait age survives status snapshots and clears on output", async t => {
+  const f = await fixture(t);
+  const repl = new WebRepl(f.runtime);
+  const control = repl as unknown as { setStatus(status: Record<string, unknown>): void };
+  control.setStatus({ phase: 'calling_model', activityTick: 1 });
+  const started = repl.snapshot().status.responseWaitStartedAt;
+  assert.equal(typeof started, 'number');
+  control.setStatus({ phase: 'calling_model', activityTick: 2 });
+  assert.equal(repl.snapshot().status.responseWaitStartedAt, started);
+  control.setStatus({ phase: 'calling_model', modelOutput: { kind: 'text' }, activityTick: 3 });
+  assert.equal(repl.snapshot().status.responseWaitStartedAt, undefined);
+  control.setStatus({ phase: 'running_tools', activityTick: 4 });
+  assert.equal(repl.snapshot().status.responseWaitStartedAt, undefined);
+  assert.equal(f.realCalls(), 0);
 });
 
 test("nonempty session is rejected without mutating history", async t => {

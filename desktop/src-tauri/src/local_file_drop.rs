@@ -49,6 +49,20 @@ pub(crate) struct FileReference {
     absolute_path: String,
 }
 
+fn image_mime(path: &std::path::Path) -> &'static str {
+    use std::io::Read;
+    let mut header = [0u8; 1024];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut header)).unwrap_or(0);
+    let bytes = &header[..n];
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { return "image/png"; }
+    if bytes.starts_with(&[255, 216, 255]) { return "image/jpeg"; }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") { return "image/gif"; }
+    if n >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" { return "image/webp"; }
+    if bytes.starts_with(b"BM") { return "image/bmp"; }
+    if String::from_utf8_lossy(bytes).contains("<svg") { return "image/svg+xml"; }
+    "application/octet-stream"
+}
+
 fn reference(path: &std::path::Path) -> Result<FileReference, String> {
     let file = super::local_resources::existing_local_file(path)?;
     let metadata = std::fs::metadata(&file).map_err(|_| "原文件已移动、删除或无法访问")?;
@@ -59,8 +73,8 @@ fn reference(path: &std::path::Path) -> Result<FileReference, String> {
             .ok_or("文件名无效")?
             .to_string_lossy()
             .into_owned(),
-        // Images are references too, not inline image uploads.
-        mime_type: "application/octet-stream",
+        // Only sniff a small header here; the web input pipeline validates/decodes images.
+        mime_type: image_mime(&file),
         size: metadata.len(),
         absolute_path: file.to_str().ok_or("文件路径编码无效")?.to_owned(),
     })

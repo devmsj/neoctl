@@ -5,6 +5,7 @@ fn main() {
                 "local-resources",
                 tauri_build::InlinedPlugin::new().commands(&[
                     "reveal_file",
+                    "open_external",
                     "watch_file_drops",
                     "unwatch_file_drops",
                     "take_file_drop",

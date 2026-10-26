@@ -40,7 +40,7 @@ function harness(options = {}) {
   const intervals = new Set();
   const setInterval = (fn) => { intervals.add(fn); return fn; };
   const clearInterval = (fn) => intervals.delete(fn);
-  vm.runInNewContext(source, { window, document, console, setInterval, clearInterval });
+  vm.runInNewContext(source, { window, document, console, setInterval, clearInterval, setTimeout: fn => { queueMicrotask(fn); return 1; }, clearTimeout() {} });
   return { element, document, window, calls, events, get removals() { return removals; } };
 }
 
@@ -58,7 +58,7 @@ test('install event estimate, bounded values, collapsed logs, failure and retry'
   const job = deferred();
   const h = harness({ invoke: (name) => name === 'install_runtime' ? job.promise : undefined }); await tick();
   const pending = h.element('installForm').emit('submit');
-  assert.equal(h.element('logDetails').open, true);
+  assert.equal(h.element('logDetails').open, false);
   h.events.get('install-progress')({ payload: { percent: 42, stage: '安装依赖', log: '<b>raw</b>' } });
   assert.equal(h.element('progressBar').style.transform, 'scaleX(0.42)');
   assert.match(h.element('progressTrack').attributes['aria-valuetext'], /安装依赖，42%/);
@@ -91,8 +91,8 @@ test('successful install refreshes final path before launch, blocks duplicate su
   await h.element('installForm').emit('submit');
   job.resolve(); await pending;
   assert.equal(h.calls.filter((call) => call.name === 'install_runtime').length, 1);
-  assert.equal(h.calls.at(-1).name, 'launch_runtime');
-  assert.equal(h.calls.at(-1).args.installDir, 'E:\\Fallback');
+  assert.equal(h.calls.at(-1).name, 'enter_application');
+  assert.equal(h.calls.findLast(c => c.name === 'launch_runtime').args.installDir, 'E:\\Fallback');
   assert.equal(h.element('installPath').value, 'E:\\Fallback');
   assert.match(h.element('pathDisplay').textContent, /Fallback/);
   assert.equal(h.element('installPath').readOnly, true);
@@ -102,7 +102,7 @@ test('installed auto-launch and launch retry never reinstall', async () => {
   const h = harness({ state: { installed: true, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo' }, invoke(name) { if (name === 'launch_runtime' && ++attempts === 1) return Promise.reject('busy port'); } }); await tick();
   assert.equal(h.element('progressTitle').textContent, '启动未完成');
   await h.element('retryButton').emit('click');
-  assert.equal(h.document.body.dataset.state, 'launching');
+  assert.equal(h.document.body.dataset.state, 'entering');
   assert.equal(h.calls.filter((call) => call.name === 'launch_runtime').length, 2);
   assert.equal(h.calls.some((call) => call.name === 'install_runtime'), false);
 });
@@ -157,7 +157,7 @@ test('installed startup page updates Web and Core with backend stopped', async (
   const h = harness({ state: { installed: true, auto_launch: false, install_dir: 'D:\\Existing', default_install_dir: 'C:\\Neo', web_version: '0.1.10', core_version: '0.2.36' }, invoke(name) {
     if (name === 'update_runtime') return { web_version: '0.1.11', core_version: '0.2.37' };
   } }); await tick();
-  assert.equal(h.element('readyTitle').textContent, '启动页');
+  assert.equal(h.element('readyTitle').textContent, 'Neo Desktop');
   assert.equal(h.element('installButton').hidden, true);
   assert.match(h.element('versionStatus').textContent, /Web 0\.1\.10 \/ Core 0\.2\.36/);
   assert.equal(h.element('updateRuntime').disabled, false);
@@ -260,7 +260,7 @@ test('final bootstrap failure retries state only and never launches stale select
   assert.match(h.element('installLog').textContent, /config unavailable/);
   await h.element('retryButton').emit('click');
   assert.equal(h.calls.filter(c => c.name === 'install_runtime').length, 1);
-  assert.equal(h.calls.at(-1).args.installDir, 'E:/Final');
+  assert.equal(h.calls.findLast(c => c.name === 'launch_runtime').args.installDir, 'E:/Final');
 });
 
 test('configured but incomplete installation remains read-only without auto launch', async () => {
@@ -288,7 +288,7 @@ test('unreadable configuration fails visibly without enabling fresh install', as
 test('native directory disclosure starts closed and submit needs no explicit selection', () => {
   const html = readFileSync(`${__dirname}/../../ui/index.html`, 'utf8');
   assert.match(html, /<details id="pathOptions">/);
-  assert.match(html, /<span id="pathSummary" class="sr-only">更改目录<\/span>/);
+  assert.match(html, /<span id="pathSummary">更改<\/span>/);
   assert.match(html, /<details id="pathOptions">[\s\S]*id="installPath"[\s\S]*id="browseButton"[\s\S]*<\/details>/);
   assert.ok(html.indexOf('id="pathDisplay"') < html.indexOf('id="pathOptions"'));
   assert.doesNotMatch(html.match(/<input id="installPath"[^>]+>/)[0], /required/);
@@ -320,4 +320,10 @@ test('cancelled or failed clear never enables installation or reports success', 
     assert.equal(h.calls.some(c => c.name === 'install_runtime'), false);
     assert.doesNotMatch(h.element('readyMessage').textContent, /已验证目录为空/);
   }
+});
+
+test('ready branding is Neo Desktop and removed management UI has no handlers', () => {
+ const html=readFileSync(__dirname+'/../../ui/index.html','utf8');
+ assert.doesNotMatch(html,/id="(?:managementMenu|dataLocation|versionBadges)"/);
+ assert.doesNotMatch(source,/managementMenu|dataLocation|你的工作台/);
 });

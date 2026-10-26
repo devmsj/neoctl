@@ -58,6 +58,30 @@ async fn reveal_file(window: WebviewWindow, path: String) -> Result<(), String> 
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
+    authorize(&window)?;
+    let parsed = tauri::Url::parse(&url).map_err(|_| "链接无效")?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("不支持此链接类型".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || shell_open(std::ffi::OsStr::new(&url)))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[cfg(windows)]
+fn shell_open(target: &std::ffi::OsStr) -> Result<(), String> {
+    use std::{os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let target: Vec<u16> = target.encode_wide().chain(Some(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let result = unsafe { ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), 1) };
+    if result as isize <= 32 { return Err("无法打开，请确认已安装关联应用".into()); }
+    Ok(())
+}
+#[cfg(not(windows))]
+fn shell_open(_target: &std::ffi::OsStr) -> Result<(), String> { Err("当前平台暂不支持本地打开".into()) }
+
 #[cfg(windows)]
 fn reveal(path: &Path) -> Result<(), String> {
     use std::{os::windows::ffi::OsStrExt, ptr};
@@ -128,6 +152,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         })
         .invoke_handler(tauri::generate_handler![
             reveal_file,
+            open_external,
             crate::local_file_drop::watch_file_drops,
             crate::local_file_drop::unwatch_file_drops,
             crate::local_file_drop::take_file_drop

@@ -12,7 +12,7 @@ const exe = process.env.NEO_TEST_UPDATER || path.join(desktop, 'src-tauri/target
 const base = await mkdtemp(path.join(tmpdir(), 'neo-updater-protocol-'));
 const root = path.join(base, 'app'), resources = path.join(base, 'resources');
 let blocker;
-const fixtureNpm = `const fs=require('fs'),p=require('path');const root=process.cwd();const web=p.join(root,'node_modules/neoctl-web');const core=p.join(web,'node_modules/neoctl');fs.mkdirSync(core,{recursive:true});fs.writeFileSync(p.join(web,'package.json'),JSON.stringify({name:'neoctl-web',version:'1.0.0',dependencies:{neoctl:'^2.0.0'}}));fs.writeFileSync(p.join(core,'package.json'),JSON.stringify({name:'neoctl',version:'2.0.0'}));fs.writeFileSync(p.join(web,'server.mjs'),'// isolated protocol test fixture');`;
+const fixtureNpm = `const fs=require('fs'),p=require('path');const root=process.cwd();fs.writeFileSync(p.join(root,'package-lock.json'),JSON.stringify({lockfileVersion:3,packages:{}}));const web=p.join(root,'node_modules/neoctl-web');const core=p.join(web,'node_modules/neoctl');fs.mkdirSync(core,{recursive:true});fs.writeFileSync(p.join(web,'package.json'),JSON.stringify({name:'neoctl-web',version:'1.0.0',dependencies:{neoctl:'^2.0.0'}}));fs.writeFileSync(p.join(core,'package.json'),JSON.stringify({name:'neoctl',version:'2.0.0'}));fs.writeFileSync(p.join(web,'server.mjs'),'// isolated protocol test fixture');`;
 async function invoke(operation, onReady) {
   const child = spawn(exe, [operation, root, resources, 'bundled'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code)); });
@@ -39,6 +39,10 @@ try {
   await mkdir(path.join(resources, 'payload'), { recursive: true });
   await copyFile(path.join(desktop, 'resources/node/node.exe'), path.join(resources, 'node/node.exe'));
   await cp(path.join(desktop, 'resources/node/node_modules/npm/node_modules/semver'), path.join(resources, 'node/node_modules/npm/node_modules/semver'), { recursive: true });
+  for (const [name, source] of [['pacote', 'exports.tarball={stream(){throw Error("offline fixture must not download")}}'], ['npm-install-checks', 'exports.checkPlatform=()=>{}']]) {
+    const dir = path.join(resources, 'node/node_modules/npm/node_modules', name);
+    await mkdir(dir, { recursive: true }); await writeFile(path.join(dir, 'index.js'), source);
+  }
   await writeFile(path.join(resources, 'node/node_modules/npm/bin/npm-cli.js'), fixtureNpm);
   await writeFile(path.join(resources, 'payload/neoctl-web.tgz'), 'offline fixture npm does not unpack');
   await mkdir(path.join(root, 'data'), { recursive: true });

@@ -13,7 +13,7 @@ export function toolConnectionGroups(lines = []) {
     const first = members[0], last = members.at(-1), branches = new Set(members)
     const connections = new Map()
     for (let i = first; i <= last; i++) connections.set(lines[i].id, {
-      first: i === first, last: i === last, branch: branches.has(i), moving: true,
+      groupKey: lines[first].id, first: i === first, last: i === last, branch: branches.has(i), moving: true,
     })
     groups.push({ key: lines[first].id, connections })
   }

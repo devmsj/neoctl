@@ -27,6 +27,19 @@
   --syntax-comment: #929fae;
   --syntax-deletion: #e2a0ab;
 }
+:root[data-theme] .message-loading-body:has(.execution-signal, .execution-resume) { display: flex; align-items: center; gap: 12px; }
+:root[data-theme] .execution-resume { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0 !important; border-radius: 5px !important; background: transparent !important; color: var(--chrome-accent); box-shadow: none !important; cursor: pointer; }
+:root[data-theme] .execution-resume:hover:not(:disabled) { background: var(--chrome-hover) !important; }
+.execution-resume svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.execution-resume:disabled { opacity: .4; cursor: default; }
+.execution-resume:focus-visible { outline: 1px solid var(--chrome-accent); outline-offset: 3px; }
+.execution-signal-divider { width: 1px; height: 12px; flex: 0 0 1px; background: var(--chrome-line-soft); }
+/* User text is literal, not Markdown: retain pasted lines, blank lines and indentation. */
+:root[data-theme] .message.user .message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
 :root[data-theme] :is(.message-text, .markdown) {
   min-width: 0;
   --md-h1-size: 22px;

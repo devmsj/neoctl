@@ -3,6 +3,14 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const files = [
+  'attachments-browser.test.mjs',
+  'composer-metrics-browser.test.mjs',
+  'elapsed-clock-browser.test.mjs',
+  'execution-resume-browser.test.mjs',
+  'execution-signal-browser.test.mjs',
+  'observation-idle-browser.test.mjs',
+  'tool-connector-browser.test.mjs',
+  'user-text-format-browser.test.mjs',
   'streaming-highlight-browser.test.mjs',
   'composer-ime-browser.test.mjs',
   'small-desktop-browser.test.mjs',

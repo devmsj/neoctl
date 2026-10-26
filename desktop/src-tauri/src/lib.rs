@@ -282,13 +282,17 @@ async fn launch_runtime(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     install_dir: String,
+    defer_navigation: Option<bool>,
 ) -> Result<(), String> {
     if runtime_control::attached_target(&app).is_some() {
+        if defer_navigation.unwrap_or(false) {
+            return runtime_control::prepare_attached(app).await;
+        }
         return runtime_control::enter_application(app, window).await;
     }
     let child_slot = state.child.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        launch_runtime_blocking(&app, &window, child_slot, PathBuf::from(install_dir), true)
+        launch_runtime_blocking(&app, &window, child_slot, PathBuf::from(install_dir), !defer_navigation.unwrap_or(false))
     })
     .await
     .map_err(|error| format!("启动任务异常结束：{error}"))?
@@ -366,6 +370,7 @@ fn install_runtime_blocking(
         },
     );
 
+    emit_progress(app, 5, "准备运行环境", "检查目录与配置写入权限", "检查存储权限", None);
     ensure_owner(app, &install_dir)?;
     let result = (|| {
         fs::create_dir_all(install_dir.join("data/workspaces"))
@@ -446,14 +451,15 @@ fn run_independent_update(
             let event: serde_json::Value =
                 serde_json::from_str(&line).map_err(|e| format!("更新器协议错误：{e}"))?;
             match event["event"].as_str().unwrap_or("") {
-                "log" => emit_progress(
-                    app,
-                    40,
-                    "准备独立版本",
-                    "下载和安装新版本，不覆盖旧文件",
-                    "安装依赖",
-                    event["message"].as_str().map(str::to_string),
-                ),
+                "log" => {
+                    let _ = app.emit("runtime-log", serde_json::json!({"line":event["message"].as_str().unwrap_or("")}));
+                }
+                "progress" => {
+                    let percent = event["percent"].as_u64().unwrap_or(0).min(99) as u8;
+                    emit_progress(app, percent, "准备运行环境",
+                        event["message"].as_str().unwrap_or(""),
+                        event["stage"].as_str().unwrap_or("准备中"), None);
+                }
                 "error" => return Err(event["message"].as_str().unwrap_or("更新器失败").into()),
                 "ready" => {
                     let id = event["candidate"].as_str().ok_or("候选版本缺失")?;
@@ -464,7 +470,7 @@ fn run_independent_update(
                     let candidate = runtime_store::release(root, id)?;
                     emit_progress(
                         app,
-                        90,
+                        88,
                         "验证新版本",
                         "正在启动候选后台并检查健康状态",
                         "健康检查",
@@ -481,6 +487,7 @@ fn run_independent_update(
                         false,
                         Some(candidate),
                     )?;
+                    emit_progress(app, 94, "验证新版本", "候选后台与 Core 版本检查通过", "健康检查通过", None);
                     activated = Some(id.to_string());
                     updater
                         .stdin

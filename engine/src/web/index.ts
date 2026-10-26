@@ -11,9 +11,14 @@ import { subagentHeader, subagentStatusFacts } from "./status-semantics.js";
 import { handlePromptConfigRequest } from "./prompt-config-protocol.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import os from "node:os";
+import { messageFileAttachments, type DisplayFileAttachment } from "./file-attachments.js";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { dockerEnabled } from "../execution/docker.js";
+import { executionFs } from "../execution/filesystem.js";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { readSessionPrompt, updateSessionPrompt, SessionPromptError } from "./session-prompt-protocol.js";
@@ -57,6 +62,8 @@ import { createAgentContentDetailResolver, type AgentContentRequest } from "./ag
 import { toolDetailFieldsFromDetail } from "./tool-detail-fields.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
+import { validateImageInput } from "../core/image-input.js";
+export { validateImageBytes } from "../core/image-input.js";
 import { resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
 import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./plan-payload.js";
 import { createWebRuntimeContextPayload, type WebRuntimeContextPayload } from "./runtime-context-protocol.js";
@@ -189,6 +196,7 @@ function sumUsageTokens(left: number | undefined, right: number | undefined): nu
 }
 
 interface UiLineImage {
+  sizeBytes?: number;
   src?: string;
   originalSrc?: string;
   imageId?: string;
@@ -279,6 +287,7 @@ interface UiToolStream {
 }
 
 interface UiLine {
+  files?: DisplayFileAttachment[];
   connectPreviousTool?: boolean;
   id: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
@@ -323,6 +332,8 @@ function actionFailure(errorCode: string, error: string): WebActionFailure {
 interface UiStatus {
   // Transient observation only: never part of messages or model requests.
   modelOutput?: { kind: "text" } | { kind: "tool_call"; callId: string; name?: string };
+  // UI-only waiting age, retained in snapshots but never sent to the model.
+  responseWaitStartedAt?: number;
   queryTiming?: TimingRecord;
   toolTimings?: TimingRecord[];
   phase: string;
@@ -1536,6 +1547,13 @@ export class WebRepl {
     }
   }
 
+  fileAttachment(messageId: string, index: number): DisplayFileAttachment | undefined {
+    for (const entry of this.runtime.engine.getDisplayEntries()) {
+      if (entry.type === "message" && entry.message.id === messageId) return messageFileAttachments(entry.message)[index];
+    }
+    return undefined;
+  }
+
   imagePayload(messageId: string, blockIndex: number): { body: Buffer; mimeType: string } | undefined {
     if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
     let block: Extract<MessageBlock, { type: "image" }> | undefined;
@@ -1835,6 +1853,11 @@ export class WebRepl {
   }
 
   private setStatus(next: UiStatus): void {
+    const waiting = next.phase === "calling_model" && !next.modelOutput;
+    const wasWaiting = this.status.phase === "calling_model" && !this.status.modelOutput;
+    next = { ...next, responseWaitStartedAt: waiting
+      ? (wasWaiting ? this.status.responseWaitStartedAt ?? Date.now() : Date.now())
+      : undefined };
     this.status = next;
     this.broadcastSync();
   }
@@ -2509,7 +2532,17 @@ export class WebRepl {
         stopAfterTurn: () => this.queuedInput !== undefined,
       };
       const stream = continuationOnly ? engine.continueExecution(options) : engine.sendUserText(promptPayload.text, options);
+      let attachedDisplay = false;
       for await (const event of stream) {
+        if (!attachedDisplay && attachments.length && !continuationOnly && this.runtime.engine === engine) {
+          const stored = [...engine.getDisplayEntries()].reverse().find(entry => entry.type === "message" && entry.message.role === "user" && !entry.message.isMeta);
+          const optimistic = this.lines.find(line => line.messageId === optimisticMessageId);
+          if (stored?.type === "message" && optimistic) {
+            this.replaceLine(optimistic.id, { messageId: stored.message.id, files: messageFileAttachments(stored.message) });
+            renderMessageImages(stored.message, line => this.append(line));
+            attachedDisplay = true;
+          }
+        }
         if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {
@@ -2854,15 +2887,38 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const body = await readJsonBody<{ overrides?: unknown }>(req);
       return sendJson(res, await repl.setSessionPlugins(body.overrides));
     }
+    const fileMatch = /^\/api\/message-files\/([^/]+)\/(\d+)$/u.exec(url.pathname);
+    if ((req.method === "GET" || req.method === "HEAD") && fileMatch) {
+      const file = repl.fileAttachment(decodeURIComponent(fileMatch[1]!), Number(fileMatch[2]));
+      if (!file) return sendJson(res, { error: "attachment not found" }, 404);
+      try {
+        const stat = await executionFs.stat(file.absolutePath);
+        if (!stat.isFile()) throw new Error("not a file");
+        if (url.searchParams.get("preview") === "1") {
+          const body = await executionFs.readFile(file.absolutePath);
+          const actual = validateImageInput(body.toString("base64"));
+          res.writeHead(200, { "Content-Type": actual.mimeType, "Content-Length": String(body.length), "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-cache", ...nativeResourceHeaders(req, file.absolutePath) });
+          res.end(req.method === "HEAD" ? undefined : body);
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": String(stat.size),
+          "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+          "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", ...nativeResourceHeaders(req, file.absolutePath) });
+        if (req.method === "HEAD") res.end();
+        else if (dockerEnabled()) res.end(await executionFs.readFile(file.absolutePath));
+        else createReadStream(file.absolutePath).on("error", () => res.destroy()).pipe(res);
+      } catch { sendJson(res, { error: "attachment unavailable" }, 404); }
+      return;
+    }
     const imageIdMatch = /^\/api\/images\/by-id\/([^/]+)$/u.exec(url.pathname);
-    if (req.method === "GET" && imageIdMatch) {
+    if ((req.method === "GET" || req.method === "HEAD") && imageIdMatch) {
       const payload = repl.imagePayloadById(decodeURIComponent(imageIdMatch[1]));
-      return payload ? sendImage(res, payload) : sendJson(res, { error: "image not found" }, 404);
+      return payload ? sendImage(res, payload, req) : sendJson(res, { error: "image not found" }, 404);
     }
     const imageMatch = /^\/api\/images\/([^/]+)\/(\d+)$/u.exec(url.pathname);
-    if (req.method === "GET" && imageMatch) {
+    if ((req.method === "GET" || req.method === "HEAD") && imageMatch) {
       const payload = repl.imagePayload(decodeURIComponent(imageMatch[1]), Number(imageMatch[2]));
-      return payload ? sendImage(res, payload) : sendJson(res, { error: "image not found" }, 404);
+      return payload ? sendImage(res, payload, req) : sendJson(res, { error: "image not found" }, 404);
     }
     if (req.method === "GET" && url.pathname === "/api/app-prompt") return sendJson(res, repl.appPrompt());
     if (req.method === "POST" && url.pathname === "/api/app-prompt") {
@@ -2968,16 +3024,33 @@ function imagePayloadForBlock(block: Extract<MessageBlock, { type: "image" }>): 
   const base64 = (dataUrl?.[2] ?? resolved).replace(/\s+/gu, "");
   if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return undefined;
   const body = Buffer.from(base64, "base64");
-  return body.length ? { body, mimeType } : undefined;
+  try { return body.length ? { body, mimeType: validateImageInput(base64).mimeType } : undefined; } catch { return undefined; }
 }
 
-function sendImage(res: ServerResponse, payload: { body: Buffer; mimeType: string }): void {
+function nativeResourceHeaders(req: IncomingMessage, filePath: string): Record<string, string> {
+  if (process.env.NEO_DESKTOP_LOCAL_RESOURCES !== "1" || dockerEnabled() || req.method !== "HEAD" || req.headers["x-neo-resource-action"] !== "reveal") return {};
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "") || req.headers["sec-fetch-site"] === "cross-site") return {};
+  if (req.headers.origin) { try { if (new URL(req.headers.origin).host !== req.headers.host) return {}; } catch { return {}; } }
+  return { "X-Neo-Resource-Path": encodeURIComponent(filePath), Vary: "X-Neo-Resource-Action" };
+}
+async function sendImage(res: ServerResponse, payload: { body: Buffer; mimeType: string }, req: IncomingMessage): Promise<void> {
+  let headers: Record<string, string> = {};
+  if (Object.keys(nativeResourceHeaders(req, "probe")).length) {
+    const directory = path.join(os.tmpdir(), "neo-desktop-images");
+    await fs.mkdir(directory, { recursive: true });
+    const name = createHash("sha256").update(payload.body).digest("hex") + "." + payload.mimeType.split("/")[1];
+    const target = path.join(directory, name);
+    await fs.writeFile(target, payload.body);
+    headers = nativeResourceHeaders(req, target);
+  }
   res.writeHead(200, {
+    ...headers,
+    "X-Content-Type-Options": "nosniff",
     "Content-Type": payload.mimeType,
     "Content-Length": String(payload.body.length),
     "Cache-Control": "private, max-age=31536000, immutable",
   });
-  res.end(payload.body);
+  res.end(req.method === "HEAD" ? undefined : payload.body);
 }
 
 async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
@@ -2993,7 +3066,8 @@ function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
     if (!isRecord(item)) return [];
     if (item.kind === "image" && typeof item.label === "string" && /^\[img#\d+\]$/.test(item.label) && typeof item.mimeType === "string" && item.mimeType.startsWith("image/") && typeof item.data === "string") {
       const imageId = typeof item.imageId === "string" && /^image_[0-9a-f-]{36}$/iu.test(item.imageId) ? item.imageId : createImageId();
-      return [{ kind: "image", imageId, label: item.label, mimeType: item.mimeType, data: item.data }];
+      const image = validateImageInput(item.data);
+      return [{ kind: "image", imageId, label: item.label, mimeType: image.mimeType, data: image.data }];
     }
     if (item.kind === "file" && typeof item.name === "string" && typeof item.mimeType === "string" && typeof item.size === "number" && Number.isFinite(item.size) && typeof item.absolutePath === "string" && path.isAbsolute(item.absolutePath)) {
       return [{
@@ -3110,7 +3184,7 @@ function buildWebPromptPayload(displayText: string, attachments: readonly WebAtt
   const activeAttachments = candidateAttachments;
   const fileManifest = buildWebFileAttachmentManifest(attachments.filter((attachment): attachment is WebFileAttachmentPayload => attachment.kind === "file"));
   if (activeAttachments.length === 0) {
-    const text = [displayText.trim(), fileManifest].filter(Boolean).join("\n\n");
+    const text = [displayText, fileManifest].filter(Boolean).join("\n\n");
     return { text, displayText };
   }
   const blocks: MessageBlock[] = [];
@@ -3561,7 +3635,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       const kind = kindForRole(message.role);
       if (kind === "meta") continue;
       if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, messageId: message.id, previewStyle: "summary" });
-      else append({ kind, text: block.text, messageId: message.id });
+      else append({ kind, text: block.text, messageId: message.id, ...(kind === "user" ? { files: messageFileAttachments(message) } : {}) });
       rendered = true;
     } else if (block.type === "image") {
       const line = imageLineForBlock(message.role, block, message.id, blockIndex);
@@ -3595,6 +3669,8 @@ function renderToolResultMessage(message: Message, append: (line: Omit<UiLine, "
 
 function renderMessageImages(message: Message, append: (line: Omit<UiLine, "id">) => number, messageId = message.id): boolean {
   let rendered = false;
+  const files = messageFileAttachments(message);
+  if (files.length) { append({ kind: "user", text: "", messageId, files }); rendered = true; }
   const parentToolName = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   const parentToolUseId = message.blocks.find((block) => block.type === "tool_result")?.toolUseId;
   for (const [blockIndex, block] of message.blocks.entries()) {
@@ -3629,6 +3705,7 @@ function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, {
       mimeType: block.mimeType,
       available: resolution.available,
       error: resolution.available ? undefined : resolution.error,
+      sizeBytes: resolution.available ? Buffer.from(resolution.data.replace(/^data:[^;,]+;base64,/iu, ""), "base64").length : undefined,
       blockIndex,
     },
   };

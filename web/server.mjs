@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const { containerMode, workspaceFs, deliverUpload, verifyExecutionBackend } = await import('./execution-backend.mjs');
 await verifyExecutionBackend();
-const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } = await import('./core-runtime.mjs');
+const { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer, validateImageBytes } = await import('./core-runtime.mjs');
 const { createPluginManager } = await import('./plugin-manager.mjs');
 const { createWebPluginSettings } = await import('./plugin-settings.mjs');
 const { createWebToolSettings } = await import('./tool-settings.mjs');
@@ -188,9 +188,9 @@ async function routeRequest(req, res) {
       return sendJson(res, { ok: true, items: ordered });
     }
     if (await chunkUploads(req, res, url)) return;
-    if (req.method === 'GET' && url.pathname.startsWith('/api/uploads/')) {
+    if (['GET', 'HEAD'].includes(req.method) && url.pathname.startsWith('/api/uploads/')) {
       const storedName = decodeURIComponent(url.pathname.slice('/api/uploads/'.length));
-      return serveUploadedFile(res, storedName);
+      return serveUploadedFile(res, storedName, req);
     }
     if (req.method === 'GET' && url.pathname.startsWith('/api/local-images/')) {
       const encodedPath = decodeURIComponent(url.pathname.slice('/api/local-images/'.length));
@@ -378,7 +378,7 @@ async function storeUploadedFile(payload) {
   };
 }
 
-async function serveUploadedFile(res, storedName) {
+async function serveUploadedFile(res, storedName, req) {
   const safeName = path.basename(String(storedName || '').trim());
   if (!safeName || safeName !== storedName) {
     res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -396,11 +396,15 @@ async function serveUploadedFile(res, storedName) {
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) throw new Error('not a file');
     res.writeHead(200, {
+      ...localResourceHeaders(req, filePath),
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`,
       'Content-Length': String(stat.size),
       'Content-Type': mime[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
       'Cache-Control': 'public, max-age=31536000, immutable',
     });
-    fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
+    if (req.method === 'HEAD') res.end();
+    else fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('not found');
@@ -417,33 +421,18 @@ async function serveLocalImage(res, encodedPath) {
     return;
   }
   const absolutePath = path.resolve(filePath);
-  const contentType = mime[path.extname(absolutePath).toLowerCase()] || 'application/octet-stream';
-  if (!contentType.startsWith('image/')) {
-    res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('not an image');
-    return;
-  }
+  if (!path.isAbsolute(filePath)) { res.writeHead(400); res.end('invalid image path'); return; }
   try {
-    if (containerMode) {
-      const body = await workspaceFs.readFile(absolutePath);
-      res.writeHead(200, { "Content-Type": contentType, "Content-Length": body.length, "Cache-Control": "no-store" });
-      res.end(body);
-      return;
-    }
-    const fileStat = await fsp.stat(absolutePath);
-    if (!fileStat.isFile()) throw new Error('not a file');
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Content-Length': String(fileStat.size),
-      'Cache-Control': 'no-store',
-    });
-    fs.createReadStream(absolutePath)
-      .on('error', () => res.destroy())
-      .pipe(res);
-  } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('not found');
-  }
+    const body = containerMode ? await workspaceFs.readFile(absolutePath) : await fsp.readFile(absolutePath);
+    let contentType;
+    // BMP/SVG are decoded and converted by the browser before model submission.
+    if (body.subarray(0, 2).toString('ascii') === 'BM') contentType = 'image/bmp';
+    else if (/<svg[\s>]/i.test(body.subarray(0, 1024).toString('utf8'))) contentType = 'image/svg+xml';
+    else contentType = validateImageBytes(body);
+    res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': String(body.length),
+      'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'no-store' });
+    res.end(body);
+  } catch { res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('invalid or unavailable image'); }
 }
 
 function sanitizeUploadName(value) {
