@@ -48,6 +48,7 @@ const files = [
   'tool-activity.test.mjs',
   'terminal-ansi.test.mjs',
   'transcript-follow.test.mjs',
+  'transcript-lookup.test.mjs',
   'upload-progress.test.mjs',
   'ui-separators.test.mjs',
 ].map(file => `tests/${file}`);

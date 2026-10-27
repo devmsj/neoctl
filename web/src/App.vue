@@ -9,6 +9,7 @@ import ToolActivityIcon from "./components/ToolActivityIcon.vue"
 import ToolObservation from "./components/ToolObservation.vue"
 import { isActivityLine, agentObservation } from "./tool-activity.mjs"
 import { useToolObservation, hasUnansweredToolActivity } from "./use-tool-observation.mjs"
+import { createTranscriptLookup } from './transcript-lookup.mjs'
 import { composerRunAction } from './run-control.mjs'
 import { executionLabel } from './execution-label.mjs'
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
@@ -608,6 +609,7 @@ function measureObservationRow(anchor) {
   // observation content change must update its row before that frame paints.
   messageVirtualizer.value.resizeItem(Number(row.dataset.index),row.offsetHeight)
 }
+const transcriptLookup = createTranscriptLookup(() => state.lines)
 const activityLines = computed(()=>(state.lines || []).filter(line=>!shouldHideLine(line) || (historyView.value==='rows' && isActivityLine(line) && line.toolName?.startsWith('subagent_'))))
 const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>state.session?.sessionId,line=>runtimeActivitySignal(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
 function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
@@ -3614,22 +3616,7 @@ function renderLineResources(line) {
 }
 
 function exposedResourcesBeforeLine(line) {
-  if (line?.kind !== 'assistant') return []
-  const lines = state.lines || []
-  const lineIndex = lines.findIndex((item) => String(item?.id) === String(line?.id))
-  const end = lineIndex >= 0 ? lineIndex : lines.length
-  const resources = []
-  const seen = new Set()
-  for (let index = 0; index < end; index += 1) {
-    const item = lines[index]
-    if (item?.live) continue
-    for (const resource of lineResources(item)) {
-      if (seen.has(resource.url)) continue
-      seen.add(resource.url)
-      resources.push(resource)
-    }
-  }
-  return resources
+  return transcriptLookup.resourcesBefore(line)
 }
 
 function enhanceExposedResourceLinks(html, resources) {
@@ -4254,7 +4241,7 @@ function historicalFileImages(line) {
 
 function lineImagePreviews(line) {
   if (isImageCreateLine(line)) return imageCreateLineImages(line)
-  const group = line?.kind === 'user' ? userMessageGroup(line) : line?.toolUseId ? [line, ...(state.lines || []).filter(item=>item.parentToolUseId===line.toolUseId && item.image)] : [line]
+  const group = line?.kind === 'user' ? userMessageGroup(line) : line?.toolUseId ? [line, ...transcriptLookup.toolImages(line)] : [line]
   const images = []
   for (const item of group) {
     images.push(...directLineImagePreviews(item), ...historicalFileImages(item))
@@ -4284,11 +4271,7 @@ function directLineImagePreviews(line) {
 }
 
 function userMessageGroup(line) {
-  if (line?.kind !== 'user') return [line]
-  const messageId = String(line?.messageId || '')
-  if (!messageId) return [line]
-  const lines = state.lines || []
-  return lines.filter((item) => item?.kind === 'user' && String(item?.messageId || '') === messageId)
+  return transcriptLookup.userGroup(line)
 }
 
 function userGroupHasImages(group) {

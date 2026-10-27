@@ -1,14 +1,13 @@
-# Neo Desktop 0.1.29
+# Neo Desktop 0.1.30
 
-Includes Web 0.1.26 and Core 0.2.50.
+Includes Web 0.1.27 and Core 0.2.51.
 
-- Faster session management with cached transcript summaries, server-side search and real ten-session pagination. No eager session restoration.
-- Sidebar quick switching with date groups, on-demand scrolling pagination, consistent pink loading rings and a half-second, uniform one-pixel selection frame.
-- Session-title context menus offer protected, confirmed deletion. Desktop replaces the native WebView context menu while ordinary browser menus remain available on the Web.
-- Context compaction displays its own animated status icon and streams the actual summary text into the observation panel without adding chat messages.
-- Model, CPA, tools and plugins move into dedicated settings pages. Prompt settings are named "提示词"; the unused desktop sidebar prompt-management entry is hidden.
-- User images appear as borderless thumbnails with click-to-preview. User file attachments show only their filename, without buttons or borders. Original text spacing is preserved without extra image-label gaps.
-- Static outline hover for session-management rows and aligned launcher action icons.
-- Expanded session pagination, switching, deletion, compaction streaming, attachment and responsive UI regression coverage.
+- Reduce input lag during streaming in long conversations by indexing user-message groups, tool images and previously exposed resources instead of repeatedly scanning transcript history. Existing rendering, animations and attachment visibility are preserved.
+- Desktop folder drops append paths as text; file drops retain attachment handling.
+- Sending while a desktop session is running queues the message by default, matching Enter. Explicit immediate-send still interrupts; Web behavior is unchanged.
+- Queued messages show normal text, borderless image previews and minimal filenames without internal image labels. Pending image previews survive page reloads while the backend queue exists.
+- Sidebar running indicators remain visible when switching sessions and clear when runs finish, without eagerly restoring historical sessions.
+- Image generation and editing observation panels show only the model-written prompt rather than argument JSON.
+- Add transcript-index correctness tests and an explicit synthetic streaming/input performance benchmark, plus desktop queue, folder-drop, running-session and image-prompt browser regressions.
 
 The release workflow verifies published npm versions, tests Core/Web/Desktop, builds the Windows x64 installer, and verifies actual installation and upgrade before publishing artifacts.
