@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const files = [
   'attachments-browser.test.mjs',
+  'chrome-theme-browser.test.mjs',
   'composer-metrics-browser.test.mjs',
   'elapsed-clock-browser.test.mjs',
   'execution-resume-browser.test.mjs',
@@ -15,6 +16,11 @@ const files = [
   'composer-ime-browser.test.mjs',
   'small-desktop-browser.test.mjs',
   'global-settings-browser.test.mjs',
+  'session-loading-browser.test.mjs',
+  'session-pagination-browser.test.mjs',
+  'session-quick-list-browser.test.mjs',
+  'session-context-menu-browser.test.mjs',
+  'compaction-stream-browser.test.mjs',
   'context-chrome-browser.test.mjs',
   'workspace-layout-browser.test.mjs',
   'workspace-pages-browser.test.mjs',

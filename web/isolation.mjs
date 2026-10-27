@@ -86,7 +86,14 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
         const engine = new core.QueryEngine({ agentId: 'main', cwd: path.join(workspaceRoot, 'users', owner.username), session: { rootDir: path.join(dataRoot, 'isolated-users', owner.username, 'sessions') } });
         groups.push({ user: { ...publicUser(owner), deleted: owner.deleted === true }, sessions: await engine.listSessions(Number.POSITIVE_INFINITY) });
       }
-      jsonReply(res, { groups }); return;
+      const paging = core.sessionPageOptions(url.searchParams);
+      if (paging) {
+        const sessions = groups.flatMap(group => group.sessions.map(session => ({
+          ...session, ownerUsername: group.user.username, ownerDeleted: group.user.deleted === true,
+        })));
+        jsonReply(res, core.paginateSessions(sessions, paging));
+      } else jsonReply(res, { groups });
+      return;
     }
     throw httpError(404, '接口不存在');
   }

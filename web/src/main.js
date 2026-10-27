@@ -19,3 +19,8 @@ import './workspace-layout.css'
 import './attachments.css'
 import { isDesktop } from './local-resources.mjs'
 document.documentElement.dataset.desktop = String(isDesktop())
+
+// Only the desktop shell suppresses the embedded browser's native context menu.
+document.addEventListener('contextmenu', event => {
+  if (isDesktop()) event.preventDefault()
+})

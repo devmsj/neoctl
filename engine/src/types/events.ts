@@ -58,6 +58,7 @@ export type AgentEvent =
   | { type: "state"; phase: string; detail?: string }
   | { type: "assistant.output.done" }
   | { type: "context.metrics"; metrics: ContextMetrics }
+  | { type: "context.compaction.delta"; text: string }
   | { type: "context.compacted"; compaction: CompactionReport }
   | { type: "assistant.delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking.delta"; text: string }

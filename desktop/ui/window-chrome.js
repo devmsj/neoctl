@@ -1,5 +1,9 @@
 // Shared frontend chrome for both the bootstrap page and the local workspace.
 (() => {
+  // Keep native WebView/Edge menus out of desktop surfaces; app handlers still run.
+  document.addEventListener('contextmenu', event => {
+    if (window.__TAURI_INTERNALS__?.invoke || window.__TAURI__?.core?.invoke) event.preventDefault();
+  }, true);
   const mount = () => {
     const invoke = window.__TAURI_INTERNALS__?.invoke || window.__TAURI__?.core?.invoke;
     if (!invoke || document.querySelector('neo-window-chrome')) return;

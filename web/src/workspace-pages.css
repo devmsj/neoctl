@@ -66,3 +66,17 @@
   :root[data-theme] .panel-page .prompt-editor-current { flex: 1; min-width: 80px; }
   :root[data-theme] .panel-page .session-count { white-space: nowrap; }
 }
+
+/* Session-list hover uses an inset frame without shifting row geometry. */
+:root[data-theme] .panel-page .session-card {
+  transition: none !important;
+  animation: none !important;
+}
+:root[data-theme] .panel-page .session-card:hover {
+  outline: 1px solid var(--chrome-accent) !important;
+  outline-offset: -1px;
+  border-bottom-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+}

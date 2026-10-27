@@ -1,6 +1,7 @@
 export function executionSignal(status = {}, lines = [], runState = '', loading = false) {
   if (loading) return { mode: 'loading', tools: [] }
   if (['paused', 'interrupted', 'resuming'].includes(runState)) return { mode: 'paused', tools: [] }
+  if (status.phase === 'compacting') return { mode: 'compacting', tools: [] }
   if (status.phase === 'calling_model' && !status.modelOutput) return { mode: 'waiting', tools: [] }
   let start = lines.length - 1
   while (start >= 0 && lines[start].kind !== 'user') start--

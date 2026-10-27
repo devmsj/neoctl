@@ -58,6 +58,31 @@ test('disabled defaults preserve unauthenticated legacy routes; invalid configs 
   assert.deepEqual(await loadIsolationConfig(path.join(f.root, 'missing-default')), { enabled: false });
 });
 
+test('sessions paginate and search on the server without crossing user boundaries', async t => {
+  const f = await fixture(t), admin = await f.login('Admin'), alice = await f.login('Alice');
+  for (const owner of ['Alice', 'Bob']) {
+    for (let i = 0; i < 13; i++) {
+      const sessionId = `${owner}-page-${i}`;
+      const folder = path.join(f.root, 'isolated-users', owner, 'sessions', sessionId);
+      await fs.mkdir(folder, { recursive: true });
+      await fs.writeFile(path.join(folder, 'transcript.jsonl'), JSON.stringify({ type: 'title', sessionId, agentId: 'main', title: `${owner} title ${i}`, createdAt: new Date().toISOString() }) + '\n');
+    }
+  }
+  const first = await (await f.request('/api/sessions?page=1&pageSize=10', alice)).json();
+  const second = await (await f.request('/api/sessions?page=2&pageSize=10', alice)).json();
+  assert.equal(first.total, 13); assert.equal(first.sessions.length, 10); assert.equal(second.sessions.length, 3);
+  assert.equal(new Set([...first.sessions, ...second.sessions].map(s => s.sessionId)).size, 13);
+  assert.ok([...first.sessions, ...second.sessions].every(s => s.sessionId.startsWith('Alice-')));
+  const hidden = await (await f.request('/api/sessions?page=1&pageSize=10&q=Bob', alice)).json();
+  assert.equal(hidden.total, 0);
+  const combined = await (await f.request('/api/admin/sessions?page=2&pageSize=10', admin)).json();
+  assert.equal(combined.total, 26); assert.equal(combined.sessions.length, 10); assert.equal(combined.groups, undefined);
+  assert.ok(combined.sessions.every(s => s.ownerUsername === 'Alice' || s.ownerUsername === 'Bob'));
+  const search = await (await f.request('/api/admin/sessions?page=99&pageSize=10&q=Bob', admin)).json();
+  assert.equal(search.total, 13); assert.equal(search.page, 2); assert.equal(search.sessions.length, 3);
+  assert.ok(search.sessions.every(s => s.ownerUsername === 'Bob'));
+});
+
 test('framework feedback is local, paginated and admin-only across owners', async t => {
   const f = await fixture(t), admin = await f.login('Admin'), alice = await f.login('Alice');
   const { FrameworkFeedbackStore } = await import('../../engine/dist/tools/builtins/framework-feedback-tool.js');

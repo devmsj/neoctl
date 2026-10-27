@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { paginateSessions, sessionPageOptions, type SessionPageOptions } from "../session/session-pagination.js";
 import {applyToolInputChanges, type ToolInputChange} from "../model/tool-input-stream.js";
 import { toolActivity, type ToolActivity } from "./tool-activity.js";
 import { toolObservationResult } from "./tool-observation-result.js";
@@ -330,6 +331,7 @@ function actionFailure(errorCode: string, error: string): WebActionFailure {
 }
 
 interface UiStatus {
+  compactionText?: string;
   // Transient observation only: never part of messages or model requests.
   modelOutput?: { kind: "text" } | { kind: "tool_call"; callId: string; name?: string };
   // UI-only waiting age, retained in snapshots but never sent to the model.
@@ -1432,10 +1434,10 @@ export class WebRepl {
     }).catch(() => undefined);
   }
 
-  async listSessions() {
+  async listSessions(options?: SessionPageOptions) {
     const sessions = await this.runtime.engine.listSessions(Number.POSITIVE_INFINITY);
     const runningSessionIds = [...this.backgroundSessionRuns.keys()];
-    return { sessions, runningSessionIds };
+    return { ...(options ? paginateSessions(sessions, options) : { sessions }), runningSessionIds };
   }
 
   async resumeSession(sessionId: string): Promise<WebActionResult> {
@@ -1667,11 +1669,15 @@ export class WebRepl {
     if (showProgress) {
       this.compactingSession = engine;
       this.busy = true;
-      this.setStatus({ ...this.status, phase: "compacting", detail: "manualcompact: generating context summary", activityTick: this.status.activityTick + 1 });
+      this.setStatus({ ...this.status, phase: "compacting", compactionText: "", detail: "manualcompact: generating context summary", activityTick: this.status.activityTick + 1 });
     }
     try {
       // An idle click executes now through the settings barrier, not the chat/input queue.
-      const result = await engine.updateSessionSettings({ compact: true }, { abortSignal: controller?.signal });
+      const result = await engine.updateSessionSettings({ compact: true }, { abortSignal: controller?.signal, onCompactionDelta: text => {
+        if (showProgress && this.runtime.engine === engine && this.foregroundRunToken === runToken && !controller?.signal.aborted) {
+          this.handleEvent({ type: "context.compaction.delta", text });
+        }
+      } });
       if (this.runtime.engine === engine && this.foregroundRunToken === runToken) {
         if (result.compaction?.report) this.appendCompaction(result.compaction.report);
         if (!result.deferred) await this.refreshSessionSettingMetrics(engine);
@@ -1853,6 +1859,7 @@ export class WebRepl {
   }
 
   private setStatus(next: UiStatus): void {
+    if (next.phase !== "compacting") next = { ...next, compactionText: undefined };
     const waiting = next.phase === "calling_model" && !next.modelOutput;
     const wasWaiting = this.status.phase === "calling_model" && !this.status.modelOutput;
     next = { ...next, responseWaitStartedAt: waiting
@@ -2281,6 +2288,7 @@ export class WebRepl {
       else this.liveToolLineIds.set(event.toolUse.id,this.append(patch));
       return;
     }
+    if(event.type === "context.compaction.delta") { this.queueDeltaStatus(); return; }
     if(event.type === "tool_call.delta") { this.queueDeltaStatus(); return; }
     if (event.type === "context.compacted") {
       this.appendCompaction(event.compaction);
@@ -2594,10 +2602,12 @@ export class WebRepl {
     this.activeAbortController = abortController;
     this.interruptArmed = false;
     this.setBusy(true);
-    this.setStatus({ ...this.status, phase: "compacting", detail: type === "compact" ? "manual compact" : "pure compact", activityTick: this.status.activityTick + 1 });
+    this.setStatus({ ...this.status, phase: "compacting", compactionText: "", detail: type === "compact" ? "manual compact" : "pure compact", activityTick: this.status.activityTick + 1 });
     try {
       const result = type === "compact"
-        ? await this.runtime.engine.compact({ abortSignal: abortController.signal })
+        ? await this.runtime.engine.compact({ abortSignal: abortController.signal, onCompactionDelta: text => {
+          if (this.foregroundRunToken === runToken && !abortController.signal.aborted) this.handleEvent({ type: "context.compaction.delta", text });
+        } })
         : await this.runtime.engine.pureCompact({ abortSignal: abortController.signal });
       if (this.foregroundRunToken !== runToken) return;
       const metrics = await this.runtime.engine.contextMetrics();
@@ -2966,7 +2976,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     if (req.method === "POST" && url.pathname === "/api/interrupt") return sendJson(res, await repl.interrupt());
     if (req.method === "POST" && url.pathname === "/api/queue/cancel") return sendJson(res, repl.cancelQueue());
     if (req.method === "POST" && url.pathname === "/api/queue/send-now") return sendJson(res, await repl.sendQueuedNow());
-    if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions());
+    if (req.method === "GET" && url.pathname === "/api/sessions") return sendJson(res, await repl.listSessions(sessionPageOptions(url.searchParams)));
     if (req.method === "POST" && url.pathname === "/api/sessions/resume") {
       const body = await readJsonBody<{ sessionId?: string }>(req);
       return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));
@@ -3309,7 +3319,8 @@ function toolStreamStepStatus(phase: string | undefined): UiToolStreamStep["stat
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
-  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, modelOutput: undefined, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
+  if (event.type === "context.compaction.delta") return { ...status, phase: "compacting", compactionText: (status.compactionText || "") + event.text, activityTick: status.activityTick + 1 };
+  if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, compactionText: event.phase === "compacting" && status.phase === "compacting" ? status.compactionText : undefined, modelOutput: undefined, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
   if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
   if (event.type === "usage") return { ...status, usage: event.usage, inputTokenUpdatedAt: event.usage.inputTokens !== undefined ? Date.now() : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.usage.outputTokens !== undefined ? Date.now() : status.outputTokenUpdatedAt, activityTick: status.activityTick + 1 };

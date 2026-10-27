@@ -56,7 +56,7 @@ export interface QueryOptions {
   /** Safe boundary before context construction, never inside streaming/retries/tools.
    * Compaction is calculated from these authoritative query messages, not engine history.
    */
-  beforeTurn?: (messages: readonly Message[], onCompactionStart?: CompactionStarted) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
+  beforeTurn?: (messages: readonly Message[], onCompactionStart?: CompactionStarted, onCompactionDelta?: (text: string) => void) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
   /** Synchronous inbox handoff immediately before a model request. */
   takePendingMessages?: () => Message[];
   agentId: string;
@@ -220,7 +220,7 @@ async function* queryLoop(
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
-    const update = yield* withCompactionProgress(started => options.beforeTurn?.(state.messages, started), options.abortSignal);
+    const update = yield* withCompactionProgress((started, delta) => options.beforeTurn?.(state.messages, started, delta), options.abortSignal);
     const settings = update?.settings;
     if (settings) {
       if (Object.hasOwn(settings, "model")) {
@@ -276,14 +276,14 @@ async function* queryLoop(
       });
       const systemPrompt = context.systemPrompt;
       const requestContextForTurn = options.requestContext;
-      const prepared = yield* withCompactionProgress(started => prepareMessagesForQuery(state, context, dependencies, compactor, {
+      const prepared = yield* withCompactionProgress((started, delta) => prepareMessagesForQuery(state, context, dependencies, compactor, {
         model: state.currentModel ?? options.model,
         contextWindowTokensOverride: options.contextWindowTokensOverride,
         systemPrompt,
         toolDefinitions,
         toolUseContext: toolContext,
         requestContext: requestContextForTurn,
-      }, started, options.abortSignal), options.abortSignal);
+      }, started, options.abortSignal, delta), options.abortSignal);
       options.abortSignal?.throwIfAborted();
       if (prepared.compaction?.changed) {
         state = { ...state, messages: prepared.compactedMessages };
@@ -374,6 +374,7 @@ async function prepareMessagesForQuery(
   telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown> },
   onCompactionStart?: CompactionStarted,
   abortSignal?: AbortSignal,
+  onCompactionDelta?: (text: string) => void,
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -414,6 +415,7 @@ async function prepareMessagesForQuery(
   const compaction = withCompactionReport(await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
     onCompactionStart,
+    onCompactionDelta,
     abortSignal,
     imageRegistry: dependencies.imageStore?.snapshot(),
     estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
@@ -554,8 +556,8 @@ async function* callModelForTurn(
         summaryMaxChars: escalatedSummaryMax,
       };
       const compacted = withCompactionReport(
-        yield* withCompactionProgress(started => {
-          const budget = { ...reactiveBudget, onCompactionStart: started };
+        yield* withCompactionProgress((started, delta) => {
+          const budget = { ...reactiveBudget, onCompactionStart: started, onCompactionDelta: delta };
           const pending = compactor.reactiveCompact?.(state.messages, normalized, budget) ?? compactor.compact(state.messages, budget);
           started("reactive_compact");
           return pending;

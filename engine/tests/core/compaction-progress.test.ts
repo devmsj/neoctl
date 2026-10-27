@@ -15,12 +15,14 @@ function gate() {
 }
 
 test("automatic compaction publishes compacting while the summary model is still blocked", { timeout: 5000 }, async t => {
-  const summaryOpened = gate(), summaryRelease = gate(), progress = gate();
+  const summaryOpened = gate(), summaryRelease = gate(), progress = gate(), textProgress = gate();
   t.after(() => summaryRelease.release());
   const events: AgentEvent[] = [];
   const gateway: ModelGateway = { async *stream(request): AsyncIterable<ModelStreamEvent> {
     if (request.queryOrigin === "compact") {
       summaryOpened.release();
+      yield { type: "assistant_delta", text: "Preserve " };
+      yield { type: "assistant_delta", text: "the user request" };
       await summaryRelease.promise;
       yield { type: "assistant_message", message: createTextMessage("assistant", "Preserve the user request") };
       yield { type: "response_completed", responseId: "summary" };
@@ -33,11 +35,13 @@ test("automatic compaction publishes compacting while the summary model is still
   const run = (async () => {
     for await (const event of engine.sendUserText("Retain this request and continue working")) {
       events.push(event);
+      if (event.type === "context.compaction.delta" && events.filter(e => e.type === "context.compaction.delta").map(e => e.text).join("") === "Preserve the user request") textProgress.release();
       if (event.type === "state" && event.phase === "compacting") progress.release();
     }
   })();
   await summaryOpened.promise;
   await progress.promise;
+  await textProgress.promise;
   const lastState = events.filter(event => event.type === "state").at(-1);
   assert.equal(lastState?.phase, "compacting");
   assert.match(lastState?.detail ?? "", /autocompact/);
@@ -45,6 +49,23 @@ test("automatic compaction publishes compacting while the summary model is still
   summaryRelease.release();
   await run;
   assert.equal(events.filter(event => event.type === "context.compacted").length, 1);
+});
+
+test("manual compaction streams text without duplicating the final assistant message", async () => {
+  const text: string[] = [];
+  const gateway: ModelGateway = { async *stream(request): AsyncIterable<ModelStreamEvent> {
+    if (request.queryOrigin === "compact") {
+      yield { type: "assistant_delta", text: "Manual " };
+      yield { type: "assistant_delta", text: "summary" };
+      yield { type: "assistant_message", message: createTextMessage("assistant", "Manual summary") };
+      yield { type: "response_completed", responseId: "manual-summary" };
+    } else yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
+  } };
+  const engine = new QueryEngine({ modelGateway: gateway, tools: new ToolRegistry(), contextWindowTokensOverride: 100000 });
+  for await (const _ of engine.sendUserText("Keep this request")) { /* establish history */ }
+  const result = await engine.compact({ onCompactionDelta: chunk => text.push(chunk) });
+  assert.equal(result.changed, true);
+  assert.equal(text.join(""), "Manual summary");
 });
 
 test("a normal budget check does not claim compaction started", async () => {

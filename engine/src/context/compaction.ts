@@ -10,6 +10,7 @@ export interface ContextBudgetOptions {
   /** Authoritative session resource snapshot; boundaries are only compatibility views. */
   imageRegistry?: ImageRegistry;
   /** Emitted before summary work starts; a budget check alone must not emit this. */
+  onCompactionDelta?: (text: string) => void;
   onCompactionStart?: (reason: Exclude<CompactionReason, "none">) => void;
   snipMaxChars?: number;
   microCompactMaxChars?: number;
@@ -161,8 +162,11 @@ export class ModelDrivenCompactor implements Compactor {
         compact: true,
       },
     }), options.abortSignal)) {
-      if (event.type === "assistant_delta") streamedText += event.text;
-      if (event.type === "assistant_message") finalAssistantText = extractText(event.message).trim() || finalAssistantText;
+      if (event.type === "assistant_delta") { streamedText += event.text; options.onCompactionDelta?.(event.text); }
+      if (event.type === "assistant_message") {
+        finalAssistantText = extractText(event.message).trim() || finalAssistantText;
+        if (!streamedText && finalAssistantText) { options.onCompactionDelta?.(finalAssistantText); streamedText = finalAssistantText; }
+      }
       if (event.type === "response_completed") completed = true;
       if (event.type === "response_incomplete") throw new Error(`Model compaction response was incomplete: ${event.reason ?? "unknown reason"}`);
       if (event.type === "error") throw event.error;

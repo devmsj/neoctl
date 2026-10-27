@@ -24,6 +24,9 @@ import TerminalOutputReader from './TerminalOutputReader.vue'
 import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import ChromeIcon from './components/ChromeIcon.vue'
+import LoadingRing from './components/LoadingRing.vue'
+import SessionQuickList from './components/SessionQuickList.vue'
+import SessionContextMenu from './components/SessionContextMenu.vue'
 import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
 import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
@@ -343,6 +346,29 @@ const state = reactive({
 const input = ref('')
 const sessionSearch = ref('')
 const sessionPage = ref(1)
+const quickListRevision = ref(0)
+const quickPendingKey = ref('')
+let sessionOpenVersion = 0, sessionOpenController
+const quickCurrentSession = computed(() => state.session?.sessionId ? {
+  ...state.session, title: currentTitle.value,
+  ...(adminViewing.value ? { ownerUsername: authState.adminOwnerUsername } : {}),
+} : null)
+async function loadQuickPage({ page, pageSize, q, signal }) {
+  const url = new URL(adminViewing.value ? '/api/admin/sessions' : runtimeUrl('/api/sessions'), location.href)
+  url.searchParams.set('page', String(page)); url.searchParams.set('pageSize', String(pageSize))
+  if (q) url.searchParams.set('q', q)
+  const response = await appFetch(url.pathname + url.search, { signal })
+  const body = await response.json()
+  if (!response.ok || body.error) throw requestError(body, response.status)
+  return body
+}
+function openQuickSession(session) { return resumeSession(session, { quick: true }) }
+
+const sessionTotal = ref(0)
+const sessionTotalCount = ref(0)
+let sessionListRequest = 0
+let sessionSearchTimer
+let sessionListAbort
 const adminUsername = ref('')
 const theme = ref(resolveInitialTheme())
 const composer = ref(null)
@@ -531,24 +557,7 @@ async function handleComposerAction() {
   if (composerRunning.value) return interruptAndSubmit()
   return submit()
 }
-const filteredSessions = computed(() => {
-  const query = sessionSearch.value.trim().toLocaleLowerCase()
-  const sessions = state.sessions || []
-  if (!query) return sessions
-  return sessions.filter((session) => [
-    displaySessionTitle(session),
-    session.ownerUsername,
-    session.title,
-    session.sessionId,
-    session.updatedAt,
-    session.createdAt,
-  ].some((value) => String(value || '').toLocaleLowerCase().includes(query)))
-})
-const sessionTotalPages = computed(() => Math.max(1, Math.ceil(filteredSessions.value.length / SESSION_PAGE_SIZE)))
-const paginatedSessions = computed(() => {
-  const start = (sessionPage.value - 1) * SESSION_PAGE_SIZE
-  return filteredSessions.value.slice(start, start + SESSION_PAGE_SIZE)
-})
+const sessionTotalPages = computed(() => Math.max(1, Math.ceil(sessionTotal.value / SESSION_PAGE_SIZE)))
 const sessionPageNumbers = computed(() => {
   const total = sessionTotalPages.value
   const start = Math.max(1, Math.min(sessionPage.value - 2, total - 4))
@@ -581,7 +590,8 @@ const { pinned: activityPinned, lastId: activityLastId, observed: activityObserv
 function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
 const observedActivityLine=computed(()=>projectActivityObservation(activityObserved.value))
 const pinnedActivityLine=computed(()=>projectActivityObservation(activityPinnedLine.value))
-const showMainObservation=computed(()=>!!activityObserved.value && activityObserved.value.id!==activityPinned.value && hasUnansweredToolActivity(activityLines.value))
+const compactionObservation = computed(() => state.status?.phase === 'compacting' ? { id: `compaction:${state.session?.sessionId}`, kind: 'system', text: state.status.compactionText || '', live: true } : null)
+const showMainObservation=computed(()=>!compactionObservation.value && !!activityObserved.value && activityObserved.value.id!==activityPinned.value && hasUnansweredToolActivity(activityLines.value))
 const visibleLines = computed(() => {
   if (state.sessionResumeLoading) return []
   const lines = activityLines.value
@@ -674,11 +684,14 @@ watch(realSessionTitle, (title) => {
 watch(currentTitle, updateSessionTitleMarquee, { immediate: true })
 
 watch(sessionSearch, () => {
+  clearTimeout(sessionSearchTimer)
+  // Invalidate immediately: an older page must not flash while search is debouncing.
+  sessionListRequest++
+  sessionListAbort?.abort()
   sessionPage.value = 1
-})
-
-watch(sessionTotalPages, (total) => {
-  if (sessionPage.value > total) sessionPage.value = total
+  if (state.activePanel !== 'sessions') return
+  state.sessionsLoading = true
+  sessionSearchTimer = setTimeout(() => loadSessionPage(1), 250)
 })
 
 watch(() => state.backgroundTaskDetail?.output, async () => {
@@ -752,6 +765,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  sessionOpenVersion++; sessionOpenController?.abort()
   disconnectDesktopFileDrops?.()
   if (es) es.close()
   transcriptFollow.dispose()
@@ -1679,7 +1693,7 @@ async function submit() {
   if (!state.demoMode && text.trim() === '/login') {
     input.value = ''
     resetComposerHeight()
-    await openLogin()
+    await openLogin(undefined, false, 'model')
     return
   }
   if (!state.demoMode && text.trim() === '/new') {
@@ -2007,29 +2021,39 @@ function toggleFastMode() {
 
 async function openSessions() {
   state.activePanel = 'sessions'
+  await loadSessionPage(sessionPage.value)
+}
+
+async function loadSessionPage(page = 1) {
+  clearTimeout(sessionSearchTimer)
+  sessionListAbort?.abort()
+  const controller = new AbortController()
+  sessionListAbort = controller
+  const version = ++sessionListRequest
   state.sessionsLoading = true
   try {
-    if (adminViewing.value) {
-      const res = await appFetch('/api/admin/sessions')
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok || body?.error) throw requestError(body, res.status)
-      state.sessions = (body.groups || []).flatMap(group => (group.sessions || []).map(session => ({
-        ...session,
-        ownerUsername: group.user.username,
-        ownerDeleted: group.user.deleted === true,
-      })))
-      state.runningSessionIds = []
-    } else {
-      const res = await appFetch(runtimeUrl('/api/sessions'))
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
-      state.sessions = body.sessions || []
-      state.runningSessionIds = body.runningSessionIds || []
-    }
+    const url = new URL(adminViewing.value ? '/api/admin/sessions' : runtimeUrl('/api/sessions'), location.href)
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('pageSize', String(SESSION_PAGE_SIZE))
+    if (sessionSearch.value.trim()) url.searchParams.set('q', sessionSearch.value.trim())
+    const res = await appFetch(url.pathname + url.search, { signal: controller.signal })
+    const body = await res.json().catch(() => ({}))
+    if (version !== sessionListRequest) return
+    if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
+    state.sessions = body.sessions || []
+    sessionTotal.value = body.total ?? state.sessions.length
+    sessionTotalCount.value = body.totalCount ?? sessionTotal.value
+    sessionPage.value = body.page ?? page
+    state.runningSessionIds = body.runningSessionIds || []
   } catch (error) {
-    notifyActionError(error, '加载会话失败')
+    if (version === sessionListRequest && error.name !== 'AbortError') {
+      state.sessions = []
+      sessionTotal.value = 0
+      sessionTotalCount.value = 0
+      notifyActionError(error, '加载会话失败')
+    }
   } finally {
-    state.sessionsLoading = false
+    if (version === sessionListRequest) state.sessionsLoading = false
   }
 }
 
@@ -2084,31 +2108,55 @@ async function deleteManagedUser(user) {
   }
 }
 
-async function resumeSession(sessionOrId) {
+async function resumeSession(sessionOrId, { quick = false } = {}) {
   const session = typeof sessionOrId === 'object' ? sessionOrId : { sessionId: sessionOrId }
   const sessionId = session.sessionId
-  const previousTabId = runtimeTabId
-  const previousSessionId = runtimeSessionId
-  const previousOwnerUsername = authState.adminOwnerUsername
-  if (adminViewing.value && session.ownerUsername) {
-    authState.adminOwnerUsername = session.ownerUsername
-    sessionStorage.setItem(ADMIN_OWNER_STORAGE_KEY, session.ownerUsername)
-  }
-  state.pendingResumeSessionId = sessionId
-  state.sessionResumeLoading = true
-  const connected = await bindRuntimeSession(sessionId)
-  if (connected) {
+  const owner = adminViewing.value ? session.ownerUsername || authState.adminOwnerUsername : ''
+  const key = `${owner}:${sessionId}`
+  if (quickPendingKey.value === key) return
+  if (isCurrentSession(sessionId) && (!adminViewing.value || owner === authState.adminOwnerUsername) && !quickPendingKey.value) {
     state.activePanel = 'chat'
-    notify(adminViewing.value ? `已打开 ${session.ownerUsername} 的会话` : '已打开会话')
-  } else {
-    authState.adminOwnerUsername = previousOwnerUsername
-    if (previousOwnerUsername) sessionStorage.setItem(ADMIN_OWNER_STORAGE_KEY, previousOwnerUsername)
-    else sessionStorage.removeItem(ADMIN_OWNER_STORAGE_KEY)
-    const restored = await restoreRuntimeBinding(previousTabId, previousSessionId)
-    notify(restored ? '打开会话失败，已恢复原会话' : '打开会话失败，运行时连接已断开')
+    return
   }
-  state.sessionResumeLoading = false
-  state.pendingResumeSessionId = ''
+  sessionOpenController?.abort()
+  const controller = new AbortController(), version = ++sessionOpenVersion
+  sessionOpenController = controller
+  quickPendingKey.value = key
+  state.pendingResumeSessionId = sessionId
+  // Keep the current transcript visible while fetching a quick-switch target.
+  state.sessionResumeLoading = !quick
+  try {
+    const target = new URL(runtimeUrl('/api/state'), location.href)
+    target.searchParams.set('sessionId', sessionId)
+    if (owner) target.searchParams.set('ownerUsername', owner)
+    // runtimeUrl already applies the app base; preserve the explicitly selected admin owner.
+    const response = await fetch(target.href, { signal: controller.signal })
+    if (response.status === 401) window.dispatchEvent(new Event('neo-auth-required'))
+    const snapshot = await response.json()
+    if (version !== sessionOpenVersion) return
+    if (!response.ok || snapshot.error || snapshot.session?.sessionId !== sessionId) throw requestError(snapshot, response.status)
+    disconnectRuntimeEvents()
+    resetSessionSettingsUi()
+    if (adminViewing.value) {
+      authState.adminOwnerUsername = owner
+      sessionStorage.setItem(ADMIN_OWNER_STORAGE_KEY, owner)
+    }
+    runtimeSessionId = sessionId
+    allowRuntimeSessionChange = false
+    sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
+    applySync(snapshot)
+    state.activePanel = 'chat'
+    connectEvents()
+    if (!quick) notify(adminViewing.value ? `已打开 ${owner} 的会话` : '已打开会话')
+  } catch (error) {
+    if (version === sessionOpenVersion && error.name !== 'AbortError') notifyActionError(error, '打开会话失败，保留原会话')
+  } finally {
+    if (version === sessionOpenVersion) {
+      state.sessionResumeLoading = false
+      state.pendingResumeSessionId = ''
+      quickPendingKey.value = ''
+    }
+  }
 }
 
 async function fetchCpaState() {
@@ -2150,6 +2198,7 @@ async function fetchMemoryState() {
 
 async function newSession() {
   if (adminViewing.value) return
+  sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
   resetSessionSettingsUi()
   const previousTabId = runtimeTabId
   const previousSessionId = runtimeSessionId
@@ -2164,6 +2213,7 @@ async function newSession() {
   const connected = await fetchState({ silent: true })
   if (connected) {
     state.activePanel = 'chat'
+    quickListRevision.value++
     notify('已创建新会话')
     connectEvents()
   } else {
@@ -2181,16 +2231,32 @@ function isRunningSession(sessionId) {
   return state.runningSessionIds.includes(sessionId)
 }
 
-async function deleteSession(sessionId) {
-  const session = state.sessions.find((item) => item.sessionId === sessionId)
-  if (isCurrentSession(sessionId)) {
-    notify(ACTION_ERROR_MESSAGES.SESSION_ACTIVE)
-    return
+const sessionContextTarget = ref(null)
+function sessionDeleteReason(session) {
+  if (!session) return ''
+  if (adminViewing.value) return '管理员查看模式不可删除会话'
+  if (state.sessionResumeLoading || quickPendingKey.value) return '请等待会话切换完成'
+  if (isCurrentSession(session.sessionId)) return '当前会话不可删除'
+  if (isRunningSession(session.sessionId)) return '运行中的会话不可删除'
+  return ''
+}
+const sessionContextReason = computed(() => sessionDeleteReason(sessionContextTarget.value?.session))
+function openSessionContext(event, session) {
+  const bounds = event.currentTarget?.getBoundingClientRect()
+  const keyboard = event.type === 'keydown' || (!event.clientX && !event.clientY)
+  sessionContextTarget.value = {
+    session, origin: event.currentTarget,
+    x: keyboard ? bounds?.left || 8 : event.clientX,
+    y: keyboard ? bounds?.bottom || 8 : event.clientY,
   }
-  if (isRunningSession(sessionId)) {
-    notify(ACTION_ERROR_MESSAGES.SESSION_RUNNING)
-    return
-  }
+}
+watch(() => state.activePanel, () => { sessionContextTarget.value = null })
+
+async function deleteSession(sessionOrId) {
+  const session = typeof sessionOrId === 'object' ? sessionOrId : state.sessions.find(item => item.sessionId === sessionOrId) || {sessionId:sessionOrId}
+  const sessionId = session.sessionId
+  const reason = sessionDeleteReason(session)
+  if (reason) { notify(reason); return }
   const confirmed = await requestConfirmation({
     title: '删除会话？',
     message: `“${session?.title || sessionId || '这个会话'}”删除后无法恢复。`,
@@ -2198,21 +2264,38 @@ async function deleteSession(sessionId) {
     tone: 'danger',
   })
   if (!confirmed) return
+  const changedReason = sessionDeleteReason(session)
+  if (changedReason) { notify(changedReason); return }
   try {
     await postJson('/api/sessions/delete', { sessionId })
-    await openSessions()
+    if (state.activePanel === 'sessions') await loadSessionPage(sessionPage.value)
+    quickListRevision.value++
     notify('会话已删除')
   } catch (error) {
     notifyActionError(error, '删除会话失败')
   }
 }
 
-async function openLogin(provider, providerOnly = false) {
+const settingsTitles = { prompt: '提示词', model: '模型', cpa: 'CPA', tools: '工具', plugins: '插件', feedback: '框架改进建议' }
+async function navigateSettings(page) {
+  const previous = state.settingsPage
+  state.settingsPage = page
+  await nextTick()
+  const root = document.querySelector('.settings-page')
+  const target = page ? root?.querySelector('h2') : root?.querySelector(`[data-settings-page="${previous}"]`)
+  if (target) {
+    if (page) target.setAttribute('tabindex', '-1')
+    target.focus({ preventScroll: true })
+    target.scrollIntoView({ block: 'nearest' })
+  }
+}
+
+async function openLogin(provider, providerOnly = false, page = '') {
   if (!canConfigureModel.value) return
   state.activePanel = 'settings'
   if (state.loginSaving || state.loginLoading) return
   state.loginLoading = true
-  state.settingsPage = ''
+  state.settingsPage = providerOnly ? 'model' : page
   const previousProvider = state.login?.provider
   const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
   try {
@@ -4040,7 +4123,11 @@ function textWithAttachmentLabels(text, attachments) {
 }
 
 function stripImageLabels(text) {
-  return String(text).replace(/\[img#\d+\]/g, '')
+  // textWithAttachmentLabels appends exactly two newlines before its metadata.
+  // Remove that separator with the suffix, not the user's own trailing whitespace.
+  return String(text)
+    .replace(/(?:\r?\n){2}(?:\[img#\d+\][ \t]*)+$/, '')
+    .replace(/\[img#\d+\]/g, '')
 }
 
 function stripImageOperationHint(text) {
@@ -4730,16 +4817,9 @@ function createMobileSession() {
         </button>
       </nav>
 
-      <button :class="['sidebar-card', 'session-entry', { working: composerRunning }]" type="button" @click="state.activePanel = 'chat'" :title="currentTitle">
+      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="state.runningSessionIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" @open="openQuickSession" @context="openSessionContext" />
 
-        <span class="session-entry-main">
-          <span ref="sessionTitleViewport" :class="['session-title-line', { marquee: titleShouldMarquee }]">
-            <strong ref="sessionTitleText">{{ currentTitle }}</strong>
-            <strong v-if="titleShouldMarquee" aria-hidden="true">{{ currentTitle }}</strong>
-          </span>
-        </span>
-      </button>
-
+      <!-- 提示词管理侧栏入口暂时隐藏，保留模板及功能以便恢复。
       <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
         <div class="prompt-stack-head">
           <button type="button" class="mini-button chrome-label" @click="openPromptManager()"><ChromeIcon name="prompts" /><span>提示词管理</span></button>
@@ -4768,6 +4848,7 @@ function createMobileSession() {
           </article>
         </div>
       </section>
+      -->
 
       <div v-if="authState.isolation" class="sidebar-footer">
         <button
@@ -4838,7 +4919,7 @@ function createMobileSession() {
               </span>
             </span>
           </button>
-          <button v-if="canConfigureModel" class="ghost desktop-config-button" @click="openLogin()">配置模型</button>
+          <button v-if="canConfigureModel" class="ghost desktop-config-button" @click="openLogin(undefined, false, 'model')">配置模型</button>
           <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
         </div>
       </header>
@@ -5096,21 +5177,15 @@ function createMobileSession() {
                   </div>
                   <div v-else-if="!removeOmittedImageDetails(line)" class="message-text markdown" v-html="renderLine(line)"></div>
                   <div v-if="lineFileAttachments(line).length" class="message-file-attachments">
-                    <a v-for="file in lineFileAttachments(line)" :key="file.url" class="message-file-attachment" :href="appUrl(runtimeUrl(file.url))" :download="file.name" data-resource-download="true" :title="resourceActionTitle(file.name)">
-                      <ChromeIcon name="file" :size="16" />
-                      <span class="attachment-file-info"><strong>{{ file.name }}</strong><span>{{ formatBytes(file.size) }}</span></span>
-                      <span class="attachment-file-action">{{ isDesktop() ? '' : '下载' }}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg></span>
-                    </a>
+                    <span v-for="file in lineFileAttachments(line)" :key="file.url" class="message-file-attachment">{{ file.name }}</span>
                   </div>
                   <template v-for="images in [lineImagePreviews(line)]" :key="`${line.id}-images`">
-                    <div v-if="images.length" class="message-image-attachments">
+                    <div v-if="images.length" class="message-image-attachments chat-image-thumbnails">
                       <figure v-for="(item, index) in images" :key="imagePreviewIdentity(item) || item.previewUrl || index" :class="['message-image-attachment', { 'image-unavailable': !item.available }]">
-                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="appUrl(item.originalUrl || item.previewUrl)" :aria-label="`预览 ${imageCaption(item, index)}`">
-                          <img :src="appUrl(item.previewUrl)" :alt="imageCaption(item, index)" loading="lazy" decoding="async" />
+                        <button v-if="item.available && item.previewUrl" type="button" class="image-preview-trigger" :data-preview-src="appUrl(item.originalUrl || item.previewUrl)" aria-label="放大预览图片">
+                          <img :src="appUrl(item.previewUrl)" alt="图片" loading="lazy" decoding="async" />
                         </button>
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
-                        <figcaption>{{ imageCaption(item, index) }}</figcaption>
-                        <a v-if="item.available && item.previewUrl" class="image-download" :title="resourceActionTitle(imageCaption(item, index))" :aria-label="resourceActionTitle(imageCaption(item, index))" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)" data-resource-download="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg>{{ isDesktop() ? '' : '下载' }}<span v-if="item.sizeBytes !== undefined" class="attachment-size">{{ formatBytes(item.sizeBytes) }}</span></a>
                       </figure>
                     </div>
                   </template>
@@ -5129,6 +5204,7 @@ function createMobileSession() {
             <Teleport v-if="historyView==='rows' && activityPinnedAnchor" :to="activityPinnedAnchor">
               <ToolObservation @height="measureObservationRow(activityPinnedAnchor)" :render-text="renderLine" v-if="pinnedActivityLine" variant="pinned" :line="pinnedActivityLine" :terminal-revision="terminalOutputRevisions.get(pinnedActivityLine?.observation?.session_id || pinnedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="state.session?.sessionId" :images="observationImages(activityPinnedLine)" :paused="activityPaused" />
             </Teleport>
+            <ToolObservation v-if="compactionObservation" class="compaction-observation" variant="main" :line="compactionObservation" :owner-session-id="state.session?.sessionId" :paused="activityPaused" />
             <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :completed="state.coreQueryTiming?.outcome === 'completed'" />
@@ -5243,7 +5319,7 @@ function createMobileSession() {
                   :title="composerActionLabel"
                   @click="handleComposerAction"
                 >
-                  <svg v-if="composerAction.action === 'waiting'" class="composer-button-icon composer-wait-icon" data-action="waiting" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" opacity=".25" /><path d="M10 3.5a6.5 6.5 0 0 1 6.5 6.5" /></svg>
+                  <LoadingRing v-if="composerAction.action === 'waiting'" class="composer-button-icon" data-action="waiting" />
                   <svg v-else-if="composerAction.action === 'send'" class="composer-button-icon" data-action="send" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5" /></svg>
                   <svg v-else-if="composerAction.action === 'interrupt-send'" class="composer-button-icon" data-action="interrupt-send" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5v10M11 16V4m-4 4 4-4 4 4" /></svg>
                   <svg v-else-if="composerAction.action === 'send-now'" class="composer-button-icon" data-action="send-now" viewBox="0 0 20 20" aria-hidden="true"><path d="m4 5 7 5-7 5Zm10 0v10" /></svg>
@@ -5358,15 +5434,14 @@ function createMobileSession() {
             <label class="session-search" aria-label="搜索会话">
               <input v-model="sessionSearch" type="search" placeholder="搜索标题或 ID" autocomplete="off" />
             </label>
-            <span class="session-count">{{ sessionSearch.trim() ? `${filteredSessions.length} / ${state.sessions.length}` : `${state.sessions.length} 个会话` }}</span>
+            <span class="session-count">{{ sessionSearch.trim() ? `${sessionTotal} / ${sessionTotalCount}` : `${sessionTotalCount} 个会话` }}</span>
           </div>
-          <div v-if="state.sessionsLoading" class="empty-state">正在加载会话…</div>
-          <div v-else-if="!state.sessions.length" class="empty-state">暂无会话</div>
-          <div v-else-if="!filteredSessions.length" class="empty-state">没有匹配的会话</div>
+          <div v-if="state.sessionsLoading" class="empty-state" role="status" aria-label="正在加载会话"><LoadingRing /></div>
+          <div v-else-if="!state.sessions.length" class="empty-state">{{ sessionSearch.trim() ? '没有匹配的会话' : '暂无会话' }}</div>
           <div v-else class="session-list">
-            <article v-for="session in paginatedSessions" :key="`${session.ownerUsername || ''}:${session.sessionId}`" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
+            <article v-for="session in state.sessions" :key="`${session.ownerUsername || ''}:${session.sessionId}`" :class="['session-card', { current: isCurrentSession(session.sessionId), running: isRunningSession(session.sessionId) }]">
               <div class="session-card-main">
-                <div class="session-card-title">
+                <div class="session-card-title" @contextmenu.prevent.stop="openSessionContext($event, session)" @keydown.shift.f10.prevent.stop="openSessionContext($event, session)" tabindex="0">
                   <strong>{{ displaySessionTitle(session) }}</strong>
                   <span v-if="adminViewing" class="current-pill">{{ session.ownerUsername }}{{ session.ownerDeleted ? '（已删除）' : '' }}</span>
                   <span v-if="isCurrentSession(session.sessionId) && (!adminViewing || authState.adminOwnerUsername === session.ownerUsername)" class="current-pill">当前</span>
@@ -5378,22 +5453,22 @@ function createMobileSession() {
                 </div>
               </div>
               <div class="session-actions">
-                <button class="page-icon-button" :disabled="state.sessionResumeLoading || state.sessionsLoading" :title="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中' : '打开'" aria-label="打开会话" @click="resumeSession(session)"><ChromeIcon :name="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? 'clock' : 'apply'" /></button>
+                <button class="page-icon-button" :disabled="state.sessionResumeLoading || state.sessionsLoading" :title="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中' : '打开'" aria-label="打开会话" :aria-busy="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" @click="resumeSession(session)"><LoadingRing v-if="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" /><ChromeIcon v-else name="apply" /></button>
                 <button v-if="!adminViewing" class="danger page-icon-button" title="删除会话" aria-label="删除会话" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)"><ChromeIcon name="trash" /></button>
               </div>
             </article>
           </div>
-          <nav v-if="!state.sessionsLoading && filteredSessions.length && sessionTotalPages > 1" class="session-pagination" aria-label="会话分页">
-            <button type="button" :disabled="sessionPage === 1" @click="sessionPage -= 1" title="上一页" aria-label="上一页"><ChromeIcon name="back" /></button>
+          <nav v-if="!state.sessionsLoading && sessionTotal && sessionTotalPages > 1" class="session-pagination" aria-label="会话分页">
+            <button type="button" :disabled="sessionPage === 1" @click="loadSessionPage(sessionPage - 1)" title="上一页" aria-label="上一页"><ChromeIcon name="back" /></button>
             <button
               v-for="page in sessionPageNumbers"
               :key="page"
               type="button"
               :class="{ active: page === sessionPage }"
               :aria-current="page === sessionPage ? 'page' : undefined"
-              @click="sessionPage = page"
+              @click="page !== sessionPage && loadSessionPage(page)"
             >{{ page }}</button>
-            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="sessionPage += 1" title="下一页" aria-label="下一页"><ChromeIcon name="apply" /></button>
+            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="loadSessionPage(sessionPage + 1)" title="下一页" aria-label="下一页"><ChromeIcon name="apply" /></button>
           </nav>
         </div>
       </section>
@@ -5497,8 +5572,8 @@ function createMobileSession() {
           <template v-if="canConfigureModel && state.settingsPage === 'prompt'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="state.settingsPage = ''"><ChromeIcon name="back" /></button>
-                <h2>提示词配置</h2>
+                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
+                <h2>提示词</h2>
               </div>
             </div>
             <PromptConfigEditor :endpoint="appUrl('/api/prompt-config')" @saved="onPromptConfigSaved" />
@@ -5506,22 +5581,22 @@ function createMobileSession() {
           <template v-else-if="state.settingsPage === 'feedback'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="state.settingsPage = ''"><ChromeIcon name="back" /></button>
+                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
                 <h2>框架改进建议</h2>
               </div>
             </div>
             <FrameworkFeedbackList :endpoint="runtimeUrl('/api/framework-feedback')" :confirm-delete="requestConfirmation" />
           </template>
-          <template v-else>
-          <div class="page-head settings-page-head">
-            <h2>全局配置</h2>
-          </div>
-          <div v-if="!state.login" class="empty-state">正在加载配置…</div>
-          <div v-else class="settings-form">
-            <button v-if="canConfigureModel" type="button" class="settings-prompt-entry" @click="state.settingsPage = 'prompt'">
-              <strong>提示词配置</strong><span aria-hidden="true">›</span>
-            </button>
-            <form class="settings-card settings-model-card" aria-label="模型配置" @submit.prevent="saveLogin">
+          <template v-else-if="['model', 'cpa', 'tools', 'plugins'].includes(state.settingsPage)">
+            <div class="page-head settings-page-head">
+              <div class="settings-subpage-title">
+                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
+                <h2 tabindex="-1">{{ settingsTitles[state.settingsPage] }}</h2>
+              </div>
+            </div>
+            <div v-if="state.settingsPage === 'model' && !state.login" class="empty-state">正在加载配置…</div>
+            <div class="settings-form">
+            <form v-if="state.settingsPage === 'model' && state.login" class="settings-card settings-model-card" aria-label="模型配置" @submit.prevent="saveLogin">
               <header class="settings-card-head"><strong>模型</strong><SettingsSaveButton label="保存模型配置" :busy="state.loginSaving" :disabled="state.loginLoading" /></header>
               <div class="settings-field-grid">
                 <label class="settings-field">
@@ -5548,7 +5623,7 @@ function createMobileSession() {
               </div>
             </form>
 
-            <form v-if="canConfigureModel" class="settings-card settings-cpa-card" aria-label="CPA 配置" @submit.prevent="saveCpaConfig">
+            <form v-if="state.settingsPage === 'cpa'" class="settings-card settings-cpa-card" aria-label="CPA 配置" @submit.prevent="saveCpaConfig">
               <header class="settings-card-head"><strong>CPA</strong><SettingsSaveButton label="保存 CPA 配置" :busy="state.cpaSaving" :disabled="!state.cpaConfig.loaded" /></header>
               <div class="settings-field-grid">
                 <label class="settings-field">
@@ -5562,7 +5637,7 @@ function createMobileSession() {
               </div>
             </form>
 
-            <form v-if="canConfigureModel" class="settings-card settings-tools-card" aria-label="全局工具" @submit.prevent="saveGlobalTools">
+            <form v-if="state.settingsPage === 'tools'" class="settings-card settings-tools-card" aria-label="全局工具" @submit.prevent="saveGlobalTools">
               <header class="settings-card-head">
                 <strong>工具</strong>
                 <SettingsSaveButton label="保存全局工具" :busy="state.globalTools.loading" :disabled="state.busy" />
@@ -5578,7 +5653,7 @@ function createMobileSession() {
               </div>
             </form>
 
-            <form v-if="canConfigureModel" class="settings-card settings-plugins-card" aria-label="全局插件" @submit.prevent="saveGlobalPlugins">
+            <form v-if="state.settingsPage === 'plugins'" class="settings-card settings-plugins-card" aria-label="全局插件" @submit.prevent="saveGlobalPlugins">
               <header class="settings-card-head">
                 <strong>插件</strong>
                 <!-- <button v-if="state.globalPlugins.installationSupported" type="button" class="mini-button" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="installPlugin">安装可信插件</button> -->
@@ -5595,10 +5670,15 @@ function createMobileSession() {
                 </div>
               </div>
             </form>
-            <button type="button" class="settings-prompt-entry" @click="state.settingsPage = 'feedback'">
-              <strong>框架改进建议</strong><span aria-hidden="true">›</span>
-            </button>
-          </div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="page-head settings-page-head"><h2 tabindex="-1">全局配置</h2></div>
+            <nav class="settings-form" aria-label="配置分类">
+              <button v-for="(title, page) in settingsTitles" :key="page" type="button" class="settings-prompt-entry" :data-settings-page="page" @click="navigateSettings(page)">
+                <strong>{{ title }}</strong><span aria-hidden="true">›</span>
+              </button>
+            </nav>
           </template>
         </div>
       </section>
@@ -6005,6 +6085,7 @@ function createMobileSession() {
       </section>
     </div>
   </Teleport>
+  <SessionContextMenu v-if="sessionContextTarget" :target="sessionContextTarget" :disabled-reason="sessionContextReason" @close="sessionContextTarget = null" @delete="deleteSession" />
 </template>
 
 <style>

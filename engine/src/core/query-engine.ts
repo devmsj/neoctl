@@ -407,9 +407,9 @@ export class QueryEngine {
         } : undefined,
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
-        beforeTurn: (messages, started) => {
+        beforeTurn: (messages, started, delta) => {
           if (!this.simulation) this.options.refreshTools?.(this);
-          return this.consumeSessionSettings(messages, started, compactor);
+          return this.consumeSessionSettings(messages, started, compactor, delta);
         },
       };
 
@@ -476,7 +476,7 @@ export class QueryEngine {
   }
 
   /** Queue instance-local settings; no prompt messages or provider-global mutation. */
-  async updateSessionSettings(patch: SessionSettingsPatch, options: { abortSignal?: AbortSignal } = {}): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
+  async updateSessionSettings(patch: SessionSettingsPatch, options: { abortSignal?: AbortSignal; onCompactionDelta?: (text: string) => void } = {}): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
     const normalized: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "model")) normalized.model = patch.model?.trim() || undefined;
     if (Object.hasOwn(patch, "reasoning")) normalized.reasoning = cloneReasoningConfig(patch.reasoning);
@@ -497,7 +497,7 @@ export class QueryEngine {
       const previousExecution = this.getExecutionState();
       if (normalized.compact) this.setExecutionState({ status: "running", resumeCompaction: true });
       try {
-        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(options.abortSignal));
+        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(options.abortSignal), options.onCompactionDelta);
         options.abortSignal?.throwIfAborted();
         if (update?.compaction) this.applyCompactionResult(update.compaction);
         if (normalized.compact) this.setExecutionState({ status: previousExecution?.status ?? "completed", reason: previousExecution?.reason });
@@ -559,14 +559,14 @@ export class QueryEngine {
     return patch;
   }
 
-  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted, compactor?: Compactor): Promise<BeforeTurnUpdate | undefined> {
+  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted, compactor?: Compactor, delta?: (text: string) => void): Promise<BeforeTurnUpdate | undefined> {
     const patch = { ...this.pendingSessionSettings, ...(this.executionState?.resumeCompaction ? { compact: true } : {}) };
     if (!Object.keys(patch).length) return undefined;
     this.pendingSessionSettings = {};
-    return this.applySessionSettings(patch, messages, started, compactor);
+    return this.applySessionSettings(patch, messages, started, compactor, delta);
   }
 
-  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted, activeCompactor?: Compactor): Promise<BeforeTurnUpdate | undefined> {
+  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted, activeCompactor?: Compactor, delta?: (text: string) => void): Promise<BeforeTurnUpdate | undefined> {
     const changed: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
@@ -590,7 +590,7 @@ export class QueryEngine {
     let compaction: CompactionResult | undefined;
     if (patch.compact) {
       const compactor = activeCompactor ?? this.cancellableCompactor();
-      const budget = { ...this.options.contextBudget, onCompactionStart: started, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
+      const budget = { ...this.options.contextBudget, onCompactionStart: started, onCompactionDelta: delta, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
       compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
     }
     return Object.keys(changed).length || compaction ? { settings: changed, compaction } : undefined;
@@ -686,7 +686,7 @@ export class QueryEngine {
     this.notifySessionTitleChange(this.sessionStore?.snapshot());
   }
 
-  async compact(options: { abortSignal?: AbortSignal } = {}): Promise<CompactionResult> {
+  async compact(options: { abortSignal?: AbortSignal; onCompactionDelta?: (text: string) => void } = {}): Promise<CompactionResult> {
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
     const result = await this.updateSessionSettings({ compact: true }, options);
     return result.compaction ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" };

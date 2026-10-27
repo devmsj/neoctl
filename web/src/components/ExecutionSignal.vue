@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import ToolActivityIcon from './ToolActivityIcon.vue'
+import ChromeIcon from './ChromeIcon.vue'
 import { waitDotStyle } from '../execution-signal.mjs'
 const props = defineProps({ mode: String, tools: { type: Array, default: () => [] }, waitStartedAt: Number, sessionKey: String, paused: Boolean, label: String })
 const tick = ref(Date.now()), entered = ref(Date.now()), index = ref(0)
@@ -20,6 +21,7 @@ onUnmounted(() => { clearInterval(timer); clearInterval(rotation) })
     <svg v-if="mode === 'waiting' || mode === 'loading'" class="signal-matrix" viewBox="0 0 28 28" aria-hidden="true" :style="{ '--age': `${mode === 'waiting' ? age : 0}%` }">
       <circle v-for="i in 9" :key="i" :cx="7 + ((i - 1) % 3) * 7" :cy="7 + Math.floor((i - 1) / 3) * 7" r="1.4" :style="waitDotStyle(i - 1, mode === 'waiting' ? elapsed : 0)" />
     </svg>
+    <ChromeIcon v-else-if="mode === 'compacting'" class="signal-tool signal-compacting" name="compact" />
     <ToolActivityIcon v-else-if="mode === 'tools' && tool" :key="tool" class="signal-tool" :name="tool" phase="completed" />
     <svg v-else-if="mode === 'paused'" class="signal-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12" /></svg>
     <svg v-else class="signal-symbol signal-working" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h10M5 17h6" /></svg>

@@ -38,7 +38,7 @@ for (const mode of ["auto", "reactive", "manual", "queued"] as const) {
       requests.push(request);
       if (request.queryOrigin === 'compact') {
         const n = ++summaries;
-        if (n === 1) { opened.resolve(); await release.promise; }
+        if (n === 1) { opened.resolve(); yield { type: 'assistant_delta', text: 'LIVE SUMMARY' }; await release.promise; }
         yield { type: 'assistant_message', message: createTextMessage('assistant', n === 1 ? 'STALE SUMMARY' : 'FRESH SUMMARY') };
         yield { type: 'response_completed', responseId: `summary-${n}` };
       } else {
@@ -68,6 +68,9 @@ for (const mode of ["auto", "reactive", "manual", "queued"] as const) {
       await repl.submit('continue original task');
     } else await repl.submit('original task');
     await opened.promise;
+    await waitFor(() => repl.snapshot().status.compactionText === 'LIVE SUMMARY');
+    assert.equal(repl.snapshot().status.phase, 'compacting');
+    assert.ok(!repl.snapshot().lines.some(line => line.text.includes('LIVE SUMMARY')), 'summary progress must not become assistant chat or prompt history');
     const before = JSON.stringify(engine.getHistoryMessages());
     const userCount = engine.getHistoryMessages().filter(m => m.role === 'user' && !m.isMeta).length;
     const ordinaryBefore = ordinary;

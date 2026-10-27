@@ -42,6 +42,7 @@ export * from "./model/env.js";
 export * from "./model/errors.js";
 export * from "./tools/tool.js";
 export * from "./session/session-store.js";
+export * from "./session/session-pagination.js";
 export * from "./session/session-export.js";
 export * from "./session/tool-result-memory.js";
 export * from "./session/simple-session-runtime.js";

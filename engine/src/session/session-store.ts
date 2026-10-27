@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { readTranscriptSummary, forgetTranscriptSummary } from "./session-summary.js";
 import { isExecutionState, type ExecutionState } from "../core/execution-state.js";
 import { isTimingRecord, restoredTiming, type TimingRecord } from "../core/query-timing.js";
 import fsp from "node:fs/promises";
@@ -184,31 +185,28 @@ export class SessionStore {
     const root = resolveSessionRoot(options);
     checkSessionDirectory(root);
     const entries = await fsp.readdir(root, { withFileTypes: true }).catch(() => []);
-    const summaries = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory())
-        .map(async (entry) => {
-          const sessionId = normalizeRequestedSessionId(entry.name)!;
-          const sessionDir = path.join(root, sessionId);
-          checkSessionPaths(sessionDir);
-          const transcriptPath = path.join(sessionDir, "transcript.jsonl");
-          const stat = await fsp.stat(transcriptPath).catch(() => undefined);
-          if (!stat) return undefined;
-          const loaded = await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true });
-          const summary: SessionSummaryWithUpdatedAtMs = {
-            sessionId,
-            sessionDir,
-            transcriptPath,
-            updatedAt: stat.mtime.toISOString(),
-            updatedAtMs: stat.mtimeMs,
-            entryCount: loaded.entries,
-            messages: loaded.messages.length,
-            contentReplacements: loaded.replacements.length,
-          };
-          if (loaded.title) summary.title = loaded.title;
-          return summary;
-        }),
-    );
+    const directories = entries.filter((entry) => entry.isDirectory());
+    const summaries: (SessionSummaryWithUpdatedAtMs | undefined)[] = new Array(directories.length);
+    let cursor = 0;
+    // Bound disk reads and transient JSON allocations; warm lists only stat files.
+    await Promise.all(Array.from({ length: Math.min(8, directories.length) }, async () => {
+      while (cursor < directories.length) {
+        const index = cursor++;
+        const sessionId = normalizeRequestedSessionId(directories[index]!.name)!;
+        const sessionDir = path.join(root, sessionId);
+        checkSessionPaths(sessionDir);
+        const transcriptPath = path.join(sessionDir, "transcript.jsonl");
+        const stat = await fsp.lstat(transcriptPath).catch(() => undefined);
+        if (!stat) { forgetTranscriptSummary(transcriptPath); continue; }
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error("Unsafe session transcript");
+        const facts = await readTranscriptSummary(transcriptPath, stat, options.agentId);
+        summaries[index] = {
+          sessionId, sessionDir, transcriptPath,
+          updatedAt: stat.mtime.toISOString(), updatedAtMs: stat.mtimeMs,
+          ...facts,
+        };
+      }
+    }));
 
     return summaries
       .filter(isSessionSummaryWithUpdatedAtMs)
@@ -230,6 +228,7 @@ export class SessionStore {
     if (!stat) return false;
     if (!stat.isDirectory()) throw new Error(`session path is not a directory: ${sessionDir}`);
     await fsp.rm(sessionDir, { recursive: true, force: true });
+    forgetTranscriptSummary(path.join(sessionDir, "transcript.jsonl"));
     return true;
   }
 

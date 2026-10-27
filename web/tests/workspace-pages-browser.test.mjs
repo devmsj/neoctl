@@ -12,7 +12,12 @@ test('scope manager keeps absolute paths, icon actions and minimal session/promp
   if(url.pathname==='/api/cwd/remove'){paths=paths.filter(p=>p!==req.postDataJSON().path);await route.fulfill({json:{ok:true,paths,cwd}});return true}
   if(url.pathname==='/api/cwd/add'){if(!paths.includes(req.postDataJSON().path))paths.push(req.postDataJSON().path);await route.fulfill({json:{ok:true,paths,cwd}});return true}
   if(url.pathname==='/api/cwd'){await route.fulfill({json:{ok:true,cwd:'D:\\projects',parent:'D:\\',entries:[{name:'new-project',path:'D:\\projects\\new-project'}],locations:[{id:'d',kind:'drive',label:'D:',path:'D:\\'}]}});return true}
-  if(url.pathname==='/api/sessions'){await route.fulfill({json:{sessions:Array.from({length:13},(_,i)=>({sessionId:i?'session-long-identifier-'+i:'obs-session',title:i?'Review streaming code and mathematical expressions '+i:'当前会话',updatedAt:'2026-10-23T10:00:00Z'}))}});return true}
+  if(url.pathname==='/api/sessions'){
+   const all=Array.from({length:13},(_,i)=>({sessionId:i?'session-long-identifier-'+i:'obs-session',title:i?'Review streaming code and mathematical expressions '+i:'当前会话',updatedAt:'2026-10-23T10:00:00Z'}));
+   const q=(url.searchParams.get('q')||'').toLowerCase(),page=Number(url.searchParams.get('page')||1),pageSize=10;
+   const matches=all.filter(s=>!q||[s.title,s.sessionId].some(v=>v.toLowerCase().includes(q)));
+   await route.fulfill({json:{sessions:matches.slice((page-1)*pageSize,page*pageSize),total:matches.length,totalCount:all.length,page,pageSize}});return true
+  }
   if(url.pathname==='/api/prompt-library'){await route.fulfill({json:{items:[{id:'one',title:'代码审查',content:'检查修改和回归测试',usage:'开发'}]}});return true}
  });
  try{
@@ -35,7 +40,11 @@ test('scope manager keeps absolute paths, icon actions and minimal session/promp
    assert.ok(await page.locator('.sessions-page').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
    await page.screenshot({path:join(tmpdir(),`neo-sessions-minimal-${theme}-${width}.png`)});
    if(width<=760){await page.locator('.mobile-nav-menu > summary').click();await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'提示词',exact:true}).click()}
-   else await page.locator('.prompt-stack-head button').click();
+   else {
+    assert.equal(await page.locator('.prompt-stack').count(),0);
+    await page.locator('.quick-session[aria-current="true"]').click();
+    continue;
+   }
    await page.locator('.prompt-editor-panel').waitFor();assert.ok((await page.locator('.prompt-editor-toolbar-actions button').allTextContents()).every(v=>!v.trim()));
    await page.screenshot({path:join(tmpdir(),`neo-prompts-minimal-${theme}-${width}.png`)});
    await page.getByRole('button',{name:'回到对话',exact:true}).click();

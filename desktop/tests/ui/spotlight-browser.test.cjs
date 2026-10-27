@@ -4,6 +4,18 @@ const page=await browser.newPage({viewport:{width:1180,height:760}}),errors=[];p
 await page.addInitScript(()=>{window.calls=[];window.events={};window.__TAURI__={core:{invoke:async(n,a)=>{calls.push({n,a,time:performance.now()});if(n==='bootstrap_state')return{installed:true,auto_launch:false,install_dir:'D:/Neo',web_version:'0.1.24',core_version:'0.2.48'};if(n==='runtime_status')return true;if(n==='update_runtime')return new Promise((r,j)=>window.update={resolve:r,reject:j});}},event:{listen:async(n,f)=>{events[n]=f;return()=>{}}}};});
 const url=pathToFileURL(path.join(__dirname,'../../ui/index.html')).href;await page.goto(url);await page.waitForFunction(()=>document.body.dataset.state==='ready');
 assert.equal(await page.locator('#runtimeIndicator').isVisible(),false);
+// Measure the destructive action without invoking it or touching a real directory.
+for(const width of [1180,760,480]){
+ await page.setViewportSize({width,height:760});
+ const layout=await page.locator('#clearInstallDirectory').evaluate(el=>{
+  el.hidden=false;
+  const icon=el.querySelector('svg').getBoundingClientRect(),text=el.querySelector('span').getBoundingClientRect();
+  const style=getComputedStyle(el);el.hidden=true;
+  return{offset:Math.abs(icon.y+icon.height/2-text.y-text.height/2),gap:text.x-icon.right,iconWidth:icon.width,display:style.display,hidden:getComputedStyle(el).display};
+ });
+ assert.ok(layout.offset<=.5,JSON.stringify({width,...layout}));assert.equal(layout.gap,6);assert.equal(layout.iconWidth,16);assert.equal(layout.hidden,'none');
+}
+await page.setViewportSize({width:1180,height:760});
 await page.screenshot({path:path.join(__dirname,'../../.cache/spotlight-real-manager.png')});
 await page.locator('#updateRuntime').click();await page.waitForTimeout(700);
 await page.evaluate(()=>{window.refs={view:document.querySelector('#progressView'),bar:document.querySelector('#progressBar')};events['runtime-log']({payload:{line:Array.from({length:120},(_,i)=>'Log '+i).join('\n')}});});

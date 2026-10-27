@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
-export async function createObservabilityBrowser(snapshot, handleApi) {
+export async function createObservabilityBrowser(snapshot, handleApi, options = {}) {
   const require = createRequire(import.meta.url)
   let playwright
   for (const path of [process.env.PLAYWRIGHT_CORE_PATH, '../../desktop/.cache/ui-test/node_modules/playwright-core', join(tmpdir(), 'neoctl-observability-tests/node_modules/playwright-core'), 'playwright-core'].filter(Boolean)) {
@@ -27,7 +27,7 @@ export async function createObservabilityBrowser(snapshot, handleApi) {
   let browser
   try {
     browser = await playwright.chromium.launch({ channel: process.env.BROWSER_CHANNEL || 'msedge', headless: true })
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+    const page = await browser.newPage({ viewport: options.viewport || { width: 1440, height: 1000 } })
     const requests = []
     const errors = []
     page.on('pageerror', error => errors.push(error.message))

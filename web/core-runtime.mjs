@@ -18,6 +18,8 @@ const [coreModule, webModule] = await Promise.all([
 ]);
 
 export const QueryEngine = coreModule.QueryEngine;
+export const paginateSessions = coreModule.paginateSessions;
+export const sessionPageOptions = coreModule.sessionPageOptions;
 export const loadNeoPlugins = coreModule.loadNeoPlugins;
 export const WebRepl = webModule.WebRepl;
 export const WebRuntimeRouter = webModule.WebRuntimeRouter;
