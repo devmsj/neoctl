@@ -75,3 +75,11 @@
 @media (max-width: 540px) {
   :root[data-theme] .message-image-attachments:not(.image2-output-images) { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 }
+
+:root[data-theme] .queued-message-preview { white-space: normal; }
+.queued-message-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 54px; overflow: auto; scrollbar-width: none; }
+.queued-message-text::-webkit-scrollbar { display: none; }
+:root[data-theme] .queued-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
+:root[data-theme] .queued-images .message-image-attachment { width: auto; margin: 0; }
+:root[data-theme] .queued-images img { max-height: 64px; max-width: 96px; }
+:root[data-theme] .queued-message .message-file-attachments { margin-top: 3px; }

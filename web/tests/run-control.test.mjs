@@ -24,3 +24,10 @@ test('accepted continuation blocks duplicate submissions, completed does not off
   assert.equal(composerRunAction({ running: false }).disabled, true)
   assert.equal(composerRunAction({ pending: true, control: { canResume: true } }).disabled, true)
 })
+
+test('desktop draft queues by default and queued-only composer keeps pause', () => {
+ const base={running:true,queueByDefault:true,control:{canPause:true}}
+ assert.equal(composerRunAction({...base,hasDraft:true}).action,'send')
+ assert.equal(composerRunAction({...base,queued:'pending'}).action,'pause')
+ assert.equal(composerRunAction({...base,hasDraft:true,uploading:true}).disabled,true)
+})

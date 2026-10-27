@@ -64,17 +64,17 @@ fn image_mime(path: &std::path::Path) -> &'static str {
 }
 
 fn reference(path: &std::path::Path) -> Result<FileReference, String> {
-    let file = super::local_resources::existing_local_file(path)?;
+    let file = super::local_resources::existing_local_path(path)?;
     let metadata = std::fs::metadata(&file).map_err(|_| "原文件已移动、删除或无法访问")?;
     Ok(FileReference {
-        kind: "file",
+        kind: if metadata.is_dir() { "directory" } else { "file" },
         name: file
             .file_name()
-            .ok_or("文件名无效")?
+            .unwrap_or(file.as_os_str())
             .to_string_lossy()
             .into_owned(),
         // Only sniff a small header here; the web input pipeline validates/decodes images.
-        mime_type: image_mime(&file),
+        mime_type: if metadata.is_dir() { "inode/directory" } else { image_mime(&file) },
         size: metadata.len(),
         absolute_path: file.to_str().ok_or("文件路径编码无效")?.to_owned(),
     })

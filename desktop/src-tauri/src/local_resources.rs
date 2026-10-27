@@ -10,7 +10,7 @@ fn trusted_runtime_origin(current: &tauri::Url, runtime: &str) -> bool {
     })
 }
 
-pub(crate) fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn existing_local_path(path: &Path) -> Result<PathBuf, String> {
     // Reject URLs, relative paths, UNC shares and device namespaces before touching the filesystem.
     #[cfg(windows)]
     {
@@ -25,10 +25,18 @@ pub(crate) fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
     }
     let metadata =
         std::fs::metadata(path).map_err(|_| "原文件已移动、删除或无法访问".to_string())?;
-    if !metadata.is_file() {
+    if !metadata.is_file() && !metadata.is_dir() {
         return Err("资源不是普通文件".into());
     }
     Ok(path.to_path_buf())
+}
+
+pub(crate) fn existing_local_file(path: &Path) -> Result<PathBuf, String> {
+    let file = existing_local_path(path)?;
+    if !std::fs::metadata(&file).map_err(|_| "原文件无法访问")?.is_file() {
+        return Err("资源不是普通文件".into());
+    }
+    Ok(file)
 }
 
 pub(crate) fn authorize(window: &WebviewWindow) -> Result<(), String> {

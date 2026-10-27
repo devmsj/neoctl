@@ -122,3 +122,12 @@ test('fixed two second playback never resets or replays from updates, replies, s
  playback.reset();playback.update(group,true);assert.equal(shown.size,0,'loaded history does not play');
  playback.reset();playback.update(group);assert.equal(shown.size,2);playback.reset();assert.equal(shown.size,0);
 });
+
+test('image observation shows only prompt through drafting, execution and completion',()=>{
+ for(const mode of ['edit','generate']) for(const phase of ['generating','queued','running','completed','failed']) {
+  const input={mode,prompt:'保留主体\n  调整光照',imageRefs:['img_1'],quality:'high'}
+  const item=line('image_create',input,phase,{text:JSON.stringify(input),observation:{url:'result.png'},toolStream:{output:'{"status":"running"}'},toolDisplay:{previews:[{content:'{"model":"image-model"}'}]}})
+  assert.deepEqual(activityContent(item),{mode:'text',text:input.prompt})
+  assert.deepEqual(activityContent({...item,activity:{phase,input:{mode}}}),{mode:'text',text:''})
+ }
+})

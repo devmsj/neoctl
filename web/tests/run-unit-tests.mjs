@@ -21,6 +21,7 @@ const files = [
   'image-original-dimensions.test.mjs',
   'interrupt-regression.test.mjs',
   'run-control.test.mjs',
+  'queued-attachments.test.mjs',
   'execution-label.test.mjs',
   'isolation-startup.test.mjs',
   'isolation.test.mjs',

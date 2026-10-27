@@ -30,6 +30,8 @@ export function activityContent(line) {
   if (!line) return { mode: 'text', text: '' }
   if (line.kind === 'thinking') return { mode: 'thinking', text: line.text || '' }
   const p = line.activity?.input || {}, phase = activityPhase(line), draft = phase === 'generating'
+  // Image operations show only the model's prompt, never parameter/result JSON.
+  if (line.toolName === 'image_create') return { mode: 'text', text: typeof p.prompt === 'string' ? p.prompt : '' }
   const previews = line.toolDisplay?.previews || []
   const stream = line.toolStream || {}, result = line.observation || {}
   const output = stream.chunks?.length ? stream.chunks.map(c => c.text || '').join('') : [stream.stdout,stream.stderr,stream.output].filter(Boolean).join('\n')

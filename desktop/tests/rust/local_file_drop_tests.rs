@@ -54,7 +54,11 @@ fn references_preserve_original_paths_and_contents_without_copying() {
         assert!(reference(&file).is_err());
     }
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
-    assert!(reference(&root).is_err());
+    let directory = reference(&root).unwrap();
+    assert_eq!(directory.kind, "directory");
+    assert_eq!(directory.absolute_path, root.to_str().unwrap());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    assert!(super::super::local_resources::existing_local_file(&root).is_err());
     assert!(reference(std::path::Path::new("relative.txt")).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -873,6 +873,12 @@ export class WebRuntimeRouter {
     return (await this.get(scope)).snapshot(includeCatalog);
   }
 
+  async runningSessionIds(): Promise<string[]> {
+    // Inspect only existing runtime instances: never restore sessions or read transcripts.
+    const entries = await Promise.allSettled([...this.repls.values()]);
+    return [...new Set(entries.flatMap(entry => entry.status === "fulfilled" ? entry.value.runningSessionIds() : []))];
+  }
+
   async reloadModelConfig(): Promise<void> {
     const repls = await Promise.all([...this.repls.values()]);
     await Promise.all(repls.map(repl => repl.reloadModelConfig()));
@@ -1124,6 +1130,16 @@ export class WebRepl {
     return page.ok ? this.runtime.engine.redactDisplayValue({ sessionId, runId, ...page.value }) : undefined;
   }
 
+  runningSessionIds(): string[] {
+    const id = this.runtime.engine.snapshot().session?.sessionId;
+    return [...new Set([...this.backgroundSessionRuns.keys(), ...(this.busy && !this.runControl().canResume && id ? [id] : [])])];
+  }
+
+  queuedImage(imageId: string): { body: Buffer; mimeType: string } | undefined {
+    const attachment = this.queuedAttachments?.find(item => item.kind === "image" && item.imageId === imageId);
+    return attachment?.kind === "image" ? imagePayloadForBlock({ type: "image", ...attachment }) : undefined;
+  }
+
   snapshot(includeCatalog = false) {
     const backgroundTasks = this.backgroundTasks();
     const engineSnapshot = this.runtime.engine.snapshot();
@@ -1140,12 +1156,16 @@ export class WebRepl {
       runControl: this.runControl(),
       demoMode: this.isDemo(),
       queuedInput: this.queuedInput,
+      // Preview metadata only. Base64 image contents must not inflate every status snapshot.
+      queuedAttachments: (this.queuedAttachments ?? []).map(item => item.kind === "image"
+        ? { kind: "image" as const, imageId: item.imageId, previewUrl: `/api/queue/images/${encodeURIComponent(item.imageId)}` }
+        : { kind: "file" as const, name: item.name }),
       backgroundTaskCount: backgroundTasks.length,
       backgroundTasks,
       terminalTaskHistory: this.terminalTaskHistory(),
       agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((task) => this.agentTaskSnapshot(task)),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
-      runningSessionIds: [...this.backgroundSessionRuns.keys()],
+      runningSessionIds: this.runningSessionIds(),
       session: engineSnapshot.session,
       modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning },
       pendingSessionSettings,
@@ -1436,7 +1456,7 @@ export class WebRepl {
 
   async listSessions(options?: SessionPageOptions) {
     const sessions = await this.runtime.engine.listSessions(Number.POSITIVE_INFINITY);
-    const runningSessionIds = [...this.backgroundSessionRuns.keys()];
+    const runningSessionIds = this.runningSessionIds();
     return { ...(options ? paginateSessions(sessions, options) : { sessions }), runningSessionIds };
   }
 
@@ -2805,6 +2825,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     if (["/api/tool-call-detail", "/api/terminal-output", "/api/agent-content"].includes(url.pathname) && !allowToolDetailRequest(req.headers.origin, req.headers.host, req.headers["sec-fetch-site"] as string | undefined)) {
       return sendJson(res, { error: "详情访问被拒绝" }, 403);
     }
+    if (req.method === "GET" && url.pathname === "/api/sessions/running") return sendJson(res, { runningSessionIds: await router.runningSessionIds() });
     const scope = webRuntimeScopeFromUrl(url);
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
@@ -2830,6 +2851,11 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       res.setHeader("Cache-Control", "no-store");
       const page = repl.terminalOutput(url.searchParams.get("sessionId") ?? "", url.searchParams.get("runId") ?? "", url.searchParams.get("stream") ?? "stdout", Number(url.searchParams.get("offset") ?? 0), Number(url.searchParams.get("limitBytes") ?? 65536), url.searchParams.get("tail") === "true");
       return page ? sendJson(res, page) : sendJson(res, { error: "终端输出不可获取或无权访问" }, 404);
+    }
+    const queuedImageMatch = /^\/api\/queue\/images\/(image_[0-9a-f-]{36})$/iu.exec(url.pathname);
+    if (req.method === "GET" && queuedImageMatch) {
+      const image = repl.queuedImage(queuedImageMatch[1]!);
+      return image ? sendImage(res, image, req) : sendJson(res, { error: "图片不可用" }, 404);
     }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());

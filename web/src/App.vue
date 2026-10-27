@@ -261,6 +261,7 @@ const state = reactive({
   runControl: { state: 'idle', canPause: false, canResume: false },
   demoMode: false,
   queuedInput: undefined,
+  queuedAttachments: [],
   backgroundTaskCount: 0,
   backgroundTasks: [],
   agentTaskHistory: [],
@@ -544,17 +545,39 @@ const allBackgroundTasks = computed(() => {
   })
 })
 const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
+const queuedDisplayText = computed(() => stripHiddenAttachmentManifest(stripImageOperationHint(stripImageLabels(state.queuedInput || ''))).replace(/\[file#\d+\]/g, ''))
+const queuedImages = computed(() => state.queuedAttachments.filter(item => item.kind === 'image' && item.previewUrl))
+const queuedFiles = computed(() => state.queuedAttachments.filter(item => item.kind === 'file'))
+const liveRunningIds = ref([])
+const quickRunningIds = computed(() => [...new Set([
+  ...liveRunningIds.value, ...state.runningSessionIds,
+  ...(composerRunning.value && !state.runControl.canResume && state.session?.sessionId ? [state.session.sessionId] : []),
+])])
+let runningStatusTimer, runningStatusController, runningStatusVersion = 0
+async function refreshRunningSessions() {
+  if (document.hidden) return
+  const version = ++runningStatusVersion
+  runningStatusController?.abort()
+  runningStatusController = new AbortController()
+  try {
+    const response = await appFetch(runtimeUrl('/api/sessions/running'), { signal: runningStatusController.signal })
+    const body = await response.json()
+    if (response.ok && version === runningStatusVersion && Array.isArray(body.runningSessionIds)) liveRunningIds.value = body.runningSessionIds
+  } catch {}
+}
+watch(() => authState.adminOwnerUsername, () => { liveRunningIds.value = []; void refreshRunningSessions() })
+watch(() => [state.busy, state.session?.sessionId], () => { void refreshRunningSessions() })
 const composerHasDraft = computed(() => Boolean(input.value.trim() || state.attachments.length))
 const composerAction = computed(() => composerRunAction({
   running: composerRunning.value && !(state.demoMode && composerHasDraft.value),
   control: state.runControl, hasDraft: composerHasDraft.value, queued: state.queuedInput,
-  pending: composerActionPending.value, uploading: state.uploadingFiles,
+  pending: composerActionPending.value, uploading: state.uploadingFiles, queueByDefault: isDesktop(),
 }))
 const composerActionLabel = computed(() => composerAction.value.label)
 async function handleComposerAction() {
   if (composerAction.value.disabled) return
   if (composerAction.value.action === 'continue' || composerAction.value.action === 'pause') return toggleRunPause()
-  if (composerRunning.value) return interruptAndSubmit()
+  if (composerRunning.value && !isDesktop()) return interruptAndSubmit()
   return submit()
 }
 const sessionTotalPages = computed(() => Math.max(1, Math.ceil(sessionTotal.value / SESSION_PAGE_SIZE)))
@@ -727,6 +750,10 @@ onMounted(async () => {
     onHover: (active) => { state.composerDropActive = active; state.composerDropMode = active ? 'files' : 'prompt' },
     onFiles: async (files) => {
       for (const file of files) {
+        if (file.kind === 'directory') {
+          input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + file.absolutePath
+          continue
+        }
         if (file.mimeType?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) {
           const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(file.absolutePath))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
           const response = await appFetch(runtimeUrl('/api/local-images/' + encoded))
@@ -734,8 +761,10 @@ onMounted(async () => {
           await uploadFiles([new File([await response.blob()], file.name, { type: response.headers.get('Content-Type') || '' })])
         } else state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
       }
+      await nextTick()
+      autosize()
       composer.value?.focus()
-      notify(`已添加 ${files.length} 个文件`)
+      if (files.some(file => file.kind !== 'directory')) notify(`已添加 ${files.filter(file => file.kind !== 'directory').length} 个文件`)
     },
     onError: (error) => notify(String(error?.message || error)),
   })
@@ -750,6 +779,8 @@ onMounted(async () => {
   await Promise.all([fetchState(), fetchClientInfo(), fetchRuntimeContext(), fetchSessionPlugins(), fetchSessionTools(), fetchPromptLibrary(), fetchCpaState(), fetchMemoryState()])
   connectEvents()
   clockTimer = setInterval(() => { state.clockTick = Date.now(); state.timingTick = performance.now() }, 1000)
+  runningStatusTimer = setInterval(refreshRunningSessions, 3000)
+  void refreshRunningSessions()
   cpaStateTimer = setInterval(fetchCpaState, 60_000)
   memoryStateTimer = setInterval(fetchMemoryState, 60_000)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -767,6 +798,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   sessionOpenVersion++; sessionOpenController?.abort()
   disconnectDesktopFileDrops?.()
+  clearInterval(runningStatusTimer); runningStatusVersion++; runningStatusController?.abort()
   if (es) es.close()
   transcriptFollow.dispose()
   if (syncRaf) cancelAnimationFrame(syncRaf)
@@ -1312,6 +1344,7 @@ function applySync(payload) {
   state.busy = !!payload.busy
   state.runControl = payload.runControl ? { ...payload.runControl, receivedAt: performance.now() } : { state: 'idle', canPause: false, canResume: false }
   state.queuedInput = payload.queuedInput
+  state.queuedAttachments = payload.queuedAttachments || []
   state.backgroundTaskCount = payload.backgroundTaskCount || 0
   state.backgroundTasks = payload.backgroundTasks || []
   state.agentTaskHistory = payload.agentTaskHistory || []
@@ -4817,7 +4850,7 @@ function createMobileSession() {
         </button>
       </nav>
 
-      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="state.runningSessionIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" @open="openQuickSession" @context="openSessionContext" />
+      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="quickRunningIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" @open="openQuickSession" @context="openSessionContext" />
 
       <!-- 提示词管理侧栏入口暂时隐藏，保留模板及功能以便恢复。
       <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
@@ -5227,9 +5260,17 @@ function createMobileSession() {
             </div>
           </div>
 
-          <div v-if="state.queuedInput && !adminViewing" class="queued-message" role="group" aria-label="排队消息" :aria-busy="composerActionPending">
+          <div v-if="(state.queuedInput !== undefined || state.queuedAttachments.length) && !adminViewing" class="queued-message" role="group" aria-label="排队消息" :aria-busy="composerActionPending">
             <span class="queued-message-marker" title="等待发送" aria-label="等待发送"><ChromeIcon name="queue" /></span>
-            <span class="queued-message-preview" :title="state.queuedInput" role="status">{{ state.queuedInput }}</span>
+            <div class="queued-message-preview" role="status">
+              <div v-if="queuedDisplayText" class="queued-message-text">{{ queuedDisplayText }}</div>
+              <div v-if="queuedImages.length" class="message-image-attachments chat-image-thumbnails queued-images">
+                <figure v-for="item in queuedImages" :key="item.imageId" class="message-image-attachment">
+                  <button type="button" class="image-preview-trigger" :data-preview-src="runtimeUrl(item.previewUrl)" aria-label="放大预览图片"><img :src="runtimeUrl(item.previewUrl)" alt="图片" /></button>
+                </figure>
+              </div>
+              <div v-if="queuedFiles.length" class="message-file-attachments"><span v-for="(file, index) in queuedFiles" :key="index" class="message-file-attachment">{{ file.name }}</span></div>
+            </div>
             <div class="queued-message-actions">
               <button type="button" :disabled="composerActionPending" title="立即发送" aria-label="立即发送" @click="sendQueuedNow"><ChromeIcon name="sendNow" /></button>
               <button type="button" :disabled="composerActionPending" title="取消排队" aria-label="取消排队" @click="retractQueuedInput"><ChromeIcon name="close" /></button>

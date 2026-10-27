@@ -423,3 +423,14 @@ test('snapshot filtering never mutates original normal-mode data', () => {
   assert.deepEqual(result.catalog.commands, [{ name: '/new' }]);
   assert.equal(original.interactive.login.values.secret, 'private');
 });
+
+test('running status and queued image routes retain account authentication and ownership',async t=>{
+ const f=await fixture(t), alice=await f.login('Alice'), bob=await f.login('Bob')
+ const a=await (await f.request('/api/state?tabId=queue-a',alice)).json()
+ const route='/api/queue/images/image_11111111-1111-4111-a111-111111111111'
+ assert.equal((await f.request('/api/sessions/running')).status,401)
+ assert.equal((await f.request(route)).status,401)
+ assert.deepEqual(await (await f.request('/api/sessions/running',alice)).json(),{runningSessionIds:[]})
+ assert.equal((await f.request(route+'?sessionId='+a.session.sessionId,alice)).status,404)
+ assert.equal((await f.request(route+'?sessionId='+a.session.sessionId,bob)).status,404)
+})
