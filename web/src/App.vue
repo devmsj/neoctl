@@ -12,6 +12,7 @@ import ToolActivityIcon from "./components/ToolActivityIcon.vue"
 import ToolObservation from "./components/ToolObservation.vue"
 import { isActivityLine, agentObservation } from "./tool-activity.mjs"
 import { useToolObservation, hasUnansweredToolActivity } from "./use-tool-observation.mjs"
+import { createRuntimeLines, indexRuntimeTasks } from './runtime-lines.mjs'
 import { createTranscriptLookup } from './transcript-lookup.mjs'
 import { composerRunAction } from './run-control.mjs'
 import { executionLabel } from './execution-label.mjs'
@@ -226,12 +227,13 @@ function rememberRuntimeSession(session, force = false) {
   sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
 }
 
+const runtimeLines = createRuntimeLines()
 const state = reactive({
   connected: false,
   connecting: true,
   coreVersion: '',
   coreEasterEgg: false,
-  lines: [],
+  lines: runtimeLines.lines,
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
   runtimeContext: undefined,
@@ -613,8 +615,9 @@ function measureObservationRow(anchor) {
   messageVirtualizer.value.resizeItem(Number(row.dataset.index),row.offsetHeight)
 }
 const transcriptLookup = createTranscriptLookup(() => state.lines)
+const runtimeTaskIndex = computed(()=>indexRuntimeTasks([...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]))
 const activityLines = computed(()=>(state.lines || []).filter(line=>!shouldHideLine(line) || (historyView.value==='rows' && isActivityLine(line) && line.toolName?.startsWith('subagent_'))))
-const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>state.session?.sessionId,line=>runtimeActivitySignal(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
+const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>state.session?.sessionId,line=>runtimeActivitySignal(line,runtimeTaskIndex.value.forLine(line)).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
 function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
 const observedActivityLine=computed(()=>projectActivityObservation(activityObserved.value))
 const pinnedActivityLine=computed(()=>projectActivityObservation(activityPinnedLine.value))
@@ -1255,10 +1258,9 @@ function paintLineText() {
   const updates = [...pendingLineText]
   pendingLineText.clear()
   for (const [id, buffered] of updates) {
-    const index = state.lines.findIndex((line) => String(line.id) === id)
-    if (index < 0) continue
-    const line = state.lines[index]
-    state.lines[index] = { ...line, text: `${line.text || ''}${buffered}` }
+    const line = runtimeLines.get(id)
+    if (!line) continue
+    runtimeLines.patch(id, { text: `${line.text || ''}${buffered}` })
   }
   if (shouldFollow) scheduleTranscriptScrollBottom()
   if (pendingLineText.size) scheduleLineTextPaint()
@@ -1269,10 +1271,9 @@ function flushLineText(id) {
   const buffered = pendingLineText.get(key)
   if (!buffered) return
   pendingLineText.delete(key)
-  const index = state.lines.findIndex((line) => String(line.id) === key)
-  if (index < 0) return
-  const line = state.lines[index]
-  state.lines[index] = { ...line, text: `${line.text || ''}${buffered}` }
+  const line = runtimeLines.get(key)
+  if (!line) return
+  runtimeLines.patch(key, { text: `${line.text || ''}${buffered}` })
 }
 
 function resetLineTextScheduler() {
@@ -1290,23 +1291,20 @@ function applyDelta(payload) {
   const shouldFollow = transcriptFollow.following
   for (const operation of payload.operations || []) {
     if (operation.type === 'line.append') {
-      if (!state.lines.some((line) => String(line.id) === String(operation.line?.id))) {
-        state.lines.push(operation.line)
+      if (runtimeLines.append(operation.line)) {
         if(isActivityLine(operation.line))activityEntranceIds.add(operation.line.id)
       }
       continue
     }
-    const index = state.lines.findIndex((line) => String(line.id) === String(operation.id))
-    if (index < 0) throw new Error(`找不到增量消息行 ${operation.id}`)
-    const line = state.lines[index]
+    const line = runtimeLines.get(operation.id)
+    if (!line) throw new Error(`找不到增量消息行 ${operation.id}`)
     if (operation.type === 'line.text.append') {
       queueLineText(operation.id, operation.text)
     } else if (operation.type === 'line.activity.input') {
-      state.lines[index]={...line,activity:{...line.activity,phase:'generating',input:applyActivityInput(line.activity?.input||{},operation.changes||[]),truncated:operation.truncated}}
+      runtimeLines.patch(operation.id,{activity:{...line.activity,phase:'generating',input:applyActivityInput(line.activity?.input||{},operation.changes||[]),truncated:operation.truncated}})
     } else if (operation.type === 'line.patch') {
       flushLineText(operation.id)
-      const patchedLine = state.lines[index]
-      state.lines[index] = { ...patchedLine, ...(operation.patch || {}) }
+      runtimeLines.patch(operation.id, operation.patch || {})
     }
   }
   if (payload.status) { state.status = payload.status; syncCoreTimings(payload.status) }
@@ -1362,10 +1360,11 @@ function applySync(payload) {
     resetSessionSettingsUi()
     resetVirtualMessages()
     terminalOutputRevisions.clear()
+    runtimeLines.replace([])
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
     state.attachmentCounter = 0
   }
-  state.lines = incomingSessionId === previousSessionId ? reconcileActivitySnapshot(payload.lines || [], state.lines) : (payload.lines || [])
+  runtimeLines.replace(incomingSessionId === previousSessionId ? reconcileActivitySnapshot(payload.lines || [], state.lines) : (payload.lines || []))
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
   syncMessageImagePreviewsFromLines(state.lines)

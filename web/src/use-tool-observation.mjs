@@ -10,10 +10,11 @@ export function hasUnansweredToolActivity(lines) {
   }
   return false
 }
-// Unchanged full snapshots must not steal focus from the last real update.
+// Membership and content have separate subscriptions. A token changes one row,
+// not the dependency graph of every completed invocation in the transcript.
 export function useToolObservation(lines, session, runtimeSignal = () => []) {
-  const pinned = ref(null), selected = ref(null)
-  let timer, lastSwitch=0, revision=0, seen=new Map(), revisions=new Map()
+  const pinned = ref(null), selected = ref(null), changed = ref(0)
+  let timer, lastSwitch=0, revision=0, revisions=new Map(), subscriptions=new Map()
   const tools=computed(()=>lines.value.filter(isObservationLine))
   const lastId=computed(()=>tools.value.at(-1)?.id)
   const eligible=l=>!(l.toolName==='image_create' && (l.titleStatus==='success'||(!l.live&&l.imageCreate))) && !l.resources?.length
@@ -27,14 +28,27 @@ export function useToolObservation(lines, session, runtimeSignal = () => []) {
     if(!force && selected.value!==null && delay>0){timer=setTimeout(()=>pick(),delay);return}
     selected.value=target.id;lastSwitch=Date.now()
   }
-  watch(session,()=>{clearTimeout(timer);pinned.value=null;selected.value=null;seen.clear();revisions.clear();lastSwitch=0},{flush:'sync'})
-  watch(()=>tools.value.map(l=>[l.id,[l.activity,l.observation,l.toolDisplay,l.toolStream,l.titleStatus,l.text,l.resources,l.timing?.status,...runtimeSignal(l)]]),entries=>{
-    const ids=new Set(entries.map(e=>e[0]))
-    for(const [id,parts] of entries)if(!seen.has(id)||parts.length!==seen.get(id).length||parts.some((part,i)=>seen.get(id)[i]!==part)){seen.set(id,parts);revisions.set(id,++revision)}
-    for(const id of seen.keys())if(!ids.has(id)){seen.delete(id);revisions.delete(id)}
+  function disposeRows(){for(const item of subscriptions.values())item.stop();subscriptions.clear();revisions.clear()}
+  watch(session,()=>{clearTimeout(timer);pinned.value=null;selected.value=null;disposeRows();lastSwitch=0},{flush:'sync'})
+  watch(()=>[session(),tools.value],()=>{
+    const ids=new Set()
+    for(const line of tools.value){
+      ids.add(line.id)
+      if(subscriptions.get(line.id)?.line===line)continue
+      subscriptions.get(line.id)?.stop()
+      const stop=watch(()=>[line.activity,line.observation,line.toolDisplay,line.toolStream,line.titleStatus,line.text,line.resources,line.timing?.status,...runtimeSignal(line)],(parts,old)=>{
+        if(old&&parts.length===old.length&&parts.every((part,i)=>part===old[i]))return
+        revisions.set(line.id,++revision);changed.value++
+      },{immediate:true})
+      subscriptions.set(line.id,{line,stop})
+    }
+    for(const [id,item] of subscriptions)if(!ids.has(id)){item.stop();subscriptions.delete(id);revisions.delete(id)}
+    changed.value++
+  },{immediate:true})
+  watch(changed,()=>{
     if(pinned.value!==null&&!tools.value.some(l=>l.id===pinned.value&&eligible(l)))pinned.value=null
     pick()
   },{immediate:true})
-  onBeforeUnmount(()=>clearTimeout(timer))
+  onBeforeUnmount(()=>{clearTimeout(timer);disposeRows()})
   return {pinned,lastId,observed:computed(()=>tools.value.find(l=>l.id===selected.value)),pinnedLine:computed(()=>tools.value.find(l=>l.id===pinned.value)),toggle(line){if(!eligible(line))return;pinned.value=pinned.value===line.id?null:line.id}}
 }

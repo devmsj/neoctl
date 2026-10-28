@@ -11,10 +11,10 @@ const props=defineProps({renderText:Function,line:Object,images:{type:Array,defa
 const emit=defineEmits(['height'])
 const idleHidden=ref(false)
 const root=ref(null)
-let sizeObserver
+let sizeObserver, lastReportedHeight = -1
 // Report Vue content height before paint, avoiding a second frame of
 // virtual row measurement when an observation grows or shrinks.
-function reportHeight(){emit('height',Math.ceil(root.value?.getBoundingClientRect().height||0))}
+function reportHeight(){const height=Math.ceil(root.value?.getBoundingClientRect().height||0);if(height!==lastReportedHeight){lastReportedHeight=height;emit('height',height)}}
 onUpdated(reportHeight)
 onMounted(()=>{sizeObserver=new ResizeObserver(reportHeight);if(root.value)sizeObserver.observe(root.value);reportHeight()})
 onBeforeUnmount(()=>sizeObserver?.disconnect())
@@ -38,7 +38,7 @@ onMounted(()=>{
  if(viewport.value)contentObserver.observe(viewport.value,{childList:true,subtree:true,characterData:true})
  idle.check()
 })
-watch(()=>JSON.stringify([props.line?.id,content.value,phase.value,props.terminalRevision,props.images,props.paused]),()=>{idle.changed();nextTick(idle.check)},{flush:'post'})
+watch(()=>[props.line?.id,content.value,phase.value,props.terminalRevision,props.images,props.paused],()=>{idle.changed();nextTick(idle.check)},{flush:'post'})
 onBeforeUnmount(()=>{idle.dispose();contentObserver?.disconnect()})
 watch(()=>[props.line?.id,content.value.mode,content.value.text,content.value.items,props.images.map(i=>i.imageId||i.previewUrl).join(','),props.paused],async(values,old)=>{
  cancel();const generation=scrollGeneration;if(values[0]!==old?.[0])manual=false

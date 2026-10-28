@@ -14,6 +14,7 @@ const files = [
   'execution-signal-browser.test.mjs',
   'observation-idle-browser.test.mjs',
   'image-prompt-observation-browser.test.mjs',
+  'runtime-stream-render-browser.test.mjs',
   'tool-connector-browser.test.mjs',
   'user-text-format-browser.test.mjs',
   'streaming-highlight-browser.test.mjs',
