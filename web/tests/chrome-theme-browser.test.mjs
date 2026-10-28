@@ -1,3 +1,4 @@
+import { deriveSurfaces, DEFAULT_COLORS } from '../shared/appearance.mjs'
 import { openGlobalSettings } from './settings-navigation.mjs'
 // Run after npm run build. No model calls or real configuration writes.
 import assert from 'node:assert/strict'
@@ -54,12 +55,13 @@ try {
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark'); await page.waitForTimeout(250)
  const styleOf=async(selector)=>page.locator(selector).first().evaluate(el=>{const s=getComputedStyle(el);return{background:s.backgroundColor,color:s.color,border:s.borderTopWidth,borderColor:s.borderTopColor,radius:s.borderTopLeftRadius,shadow:s.boxShadow,font:s.fontSize,weight:s.fontWeight}})
  const screenshot=async(name)=>{await mkdir('web/.run',{recursive:true});await page.screenshot({path:`web/.run/chrome-${name}.png`})}
- assert.equal((await styleOf('.sidebar')).background,'rgb(21, 25, 31)')
+ const surfaces=deriveSurfaces(DEFAULT_COLORS.dark.background,'dark'), rgb=hex=>'rgb('+[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)).join(', ')+')'
+ assert.equal((await styleOf('.sidebar')).background,rgb(surfaces.panel))
  assert.equal((await styleOf('.composer')).border,'1px')
  assert.equal((await styleOf('.composer')).shadow,'none')
  assert.equal((await styleOf('.composer textarea')).border,'0px')
  assert.equal((await styleOf('.composer textarea')).background,'rgba(0, 0, 0, 0)')
- assert.equal((await styleOf('.right-panel .quota-card')).background,'rgb(21, 25, 31)')
+ assert.equal((await styleOf('.right-panel .quota-card')).background,rgb(surfaces.panel))
  assert.equal((await styleOf('.transcript')).background,'rgb(17, 20, 24)')
  assert.equal((await styleOf('.tool-activity-row')).font,'12px')
  assert.equal((await styleOf('.activity-icon.failed')).color,'rgb(187, 142, 166)')
@@ -79,7 +81,7 @@ try {
  await page.locator('.settings-form').waitFor()
  assert.equal((await styleOf('.settings-card')).border,'1px')
  assert.equal((await styleOf('.settings-card')).shadow,'none')
- assert.equal((await styleOf('.settings-form input')).background,'rgb(25, 30, 37)')
+ assert.equal((await styleOf('.settings-form input')).background,rgb(surfaces.surface))
  assert.equal(await page.locator('.history-view-setting').count(),0,'history view modification is hidden')
  assert.equal(await page.getByText('历史展示',{exact:true}).count(),0)
  await screenshot('dark-settings')
@@ -88,7 +90,7 @@ try {
  await page.locator('.feedback-item').waitFor()
  await page.locator('.feedback-item button').click()
  await page.locator('[role=alertdialog]').waitFor()
- assert.equal((await styleOf('[role=alertdialog]')).background,'rgb(25, 30, 37)')
+ assert.equal((await styleOf('[role=alertdialog]')).background,rgb(surfaces.surface))
  assert.equal((await styleOf('[role=alertdialog]')).border,'1px')
  await screenshot('dark-confirm')
  await page.getByRole('button',{name:'取消',exact:true}).click()
@@ -105,7 +107,7 @@ try {
  await page.getByRole('button',{name:'工作区范围',exact:true}).click()
  await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'添加路径',exact:true}).click()
  await page.locator('.cwd-picker-modal').waitFor()
- assert.equal((await styleOf('.cwd-picker-modal')).background,'rgb(25, 30, 37)')
+ assert.equal((await styleOf('.cwd-picker-modal')).background,rgb(surfaces.surface))
  await screenshot('dark-directory')
  await page.locator('.cwd-picker-modal').getByRole('button',{name:'取消',exact:true}).click()
  await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()

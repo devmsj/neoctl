@@ -1,12 +1,13 @@
-# Neo Desktop 0.1.31
+# Neo Desktop 0.1.32
 
-Includes Web 0.1.28 and Core 0.2.51.
+Includes Web 0.1.29 and Core 0.2.52.
 
-- Add persistent appearance customization with independent light/dark profiles, background images, fonts, layout controls and a single accent color with derived interface colors. Preview changes, save presets and import/export appearance bundles.
-- Validate uploaded image/font contents, isolate appearance resources by account and protect concurrent saves with revision checks. Existing defaults remain unchanged until customized.
-- Unify select controls and integrate appearance tokens throughout the workspace, composer, conversation content and settings.
-- Reduce long-conversation streaming stalls by retaining stable shallow-reactive rows, indexing runtime tasks and updating only the affected observation subscriptions instead of repeatedly invalidating full history.
-- Avoid redundant observation-panel height notifications and serialized content comparisons while preserving rendering, animations and interaction behavior.
-- Add appearance persistence/isolation tests and streaming reactivity/browser regressions. A 330-second debug desktop replay received all 4,117 events without losing the renderer probe; remaining long-markdown layout costs are documented separately.
+- Simplify the session sidebar with compact search, management and new-session actions. Keep footer actions reachable, move theme switching into the menu and provide home navigation from settings and session management.
+- Add themed desktop settings and always-on-top controls, unified custom tooltips, editable font selectors and accent-aware scrollbars.
+- Refine Appearance with outlined category selection, background-derived opaque panels and sidebar colors, independent day/night profiles, distinct code palettes and coordinated table headers. Migrate retired panel color and opacity overrides from existing profiles and presets.
+- Align the activity indicator with the observed tool. Keep clock hands in the chosen accent and turn the face and duration vivid green only after successful completion.
+- Allow deletion of the current idle session after confirmation, release its writer before deleting files and open a fresh session. Protect running sessions, pending writes and multi-window reconnection.
+- Fix a native window lock cycle when returning from the launcher to the workspace; preserve strict origin authorization and asynchronous drag/drop registration.
+- Expand Core, Web, native window and browser regression coverage.
 
-The release workflow verifies published npm versions, tests Core/Web/Desktop, builds the Windows x64 installer, and verifies actual installation and upgrade before publishing artifacts.
+The workflow verifies npm package versions, runs Core/Web/Desktop regressions, builds the Windows x64 installer and tests actual installation and upgrade before publishing release assets.

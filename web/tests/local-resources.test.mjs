@@ -94,7 +94,7 @@ test('static, streaming and tool-result links share desktop titles; click branch
   const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
   const streaming = readFileSync(new URL('../src/components/StreamingMarkdown.vue', import.meta.url), 'utf8');
   assert.match(streaming, /resourceActionTitle\(resource.label \|\| resource.downloadName\)/);
-  assert.match(app, /title="\$\{escapeHtml\(resourceActionTitle/);
+  assert.match(app, /data-tooltip="\$\{escapeHtml\(resourceActionTitle/);
   const handler = app.slice(app.indexOf('async function handleDocumentResourceClick'), app.indexOf('function openImagePreview'));
   assert.ok(handler.indexOf('await openResource') < handler.indexOf('await appFetch(anchor.href)'));
   assert.match(handler, /return \/\/ Never silently download/);
