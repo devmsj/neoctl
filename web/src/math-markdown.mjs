@@ -59,7 +59,7 @@ export function renderMath(root) {
       // Invalid/incomplete streamed formulas stay readable, never execute HTML.
       node.classList.add('math-fallback')
       node.textContent = displayMode ? '$$' + tex + '$$' : '$' + tex + '$'
-      node.title = '公式暂无法解析，显示原文'
+      node.dataset.tooltip = '公式暂无法解析，显示原文'
     }
     const target = code.parentElement?.tagName === 'PRE' ? code.parentElement : code
     target.replaceWith(node)

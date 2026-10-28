@@ -1,6 +1,10 @@
 /* Native scrolling, no wrapper or JS: transcript following and virtual lists stay intact. */
-:root { --scroll-thumb: #bdc1cb; --scroll-thumb-hover: #959ca9; }
-:root[data-theme='dark'] { --scroll-thumb: #3f4856; --scroll-thumb-hover: #647184; scrollbar-color: auto; }
+/* One accent seed, shared by all scrollable surfaces; translucent over images too. */
+:root {
+  --scroll-thumb: color-mix(in srgb, var(--appearance-accent, var(--chrome-accent)) 38%, transparent);
+  --scroll-thumb-hover: color-mix(in srgb, var(--appearance-accent, var(--chrome-accent)) 64%, transparent);
+  --scroll-thumb-active: color-mix(in srgb, var(--appearance-accent, var(--chrome-accent)) 82%, transparent);
+}
 :where(*) { scrollbar-width: auto; scrollbar-color: auto; }
 /* Legacy thin overrides would bypass WebKit thumb/track styling in Chromium. */
 .cwd-picker-tree { scrollbar-width: auto; }
@@ -14,7 +18,7 @@
   min-height: 32px;
 }
 :where(*)::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); border-width: 2px; }
-:where(*)::-webkit-scrollbar-thumb:active { background-color: var(--scroll-thumb-hover); }
+:where(*)::-webkit-scrollbar-thumb:active { background-color: var(--scroll-thumb-active); }
 :where(*)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 :where(*)::-webkit-scrollbar-corner { background: transparent; }
 @supports not selector(::-webkit-scrollbar) {

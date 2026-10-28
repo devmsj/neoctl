@@ -11,7 +11,7 @@ test('admin users preserve roles with aligned icon controls in dark/light and na
   if(p==='/api/admin/users'){await route.fulfill({json:{users:[{username:'Admin',role:'admin'},{username:'Local reviewer',role:'user'}]}});return true}
  });
  try{
-  const {page}=f;await page.locator('.sidebar .nav').getByRole('button',{name:'用户管理',exact:true}).click();await page.locator('.admin-user-list .session-card').first().waitFor();
+  const {page}=f;await page.locator('.sidebar').getByRole('button',{name:'用户管理',exact:true}).click();await page.locator('.admin-user-list .session-card').first().waitFor();
   for(const theme of ['dark','light'])for(const width of [1440,390,320]){
    await page.setViewportSize({width,height:950});await page.evaluate(t=>document.documentElement.dataset.theme=t,theme);
    assert.ok(await page.locator('.admin-users-page').evaluate(el=>el.scrollWidth<=el.clientWidth+1));

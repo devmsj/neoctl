@@ -34,7 +34,7 @@ test('scope manager keeps absolute paths, icon actions and minimal session/promp
    await modal.getByRole('button',{name:'添加路径',exact:true}).click();const picker=page.getByRole('dialog',{name:'选择工作目录',exact:true});await picker.locator('.cwd-tree-row').first().waitFor();await page.keyboard.press('Escape');await modal.waitFor();await page.keyboard.press('Escape');
    assert.equal(await page.locator('body').evaluate(el=>el.classList.contains('cwd-picker-lock')),false);
    if(width<=760){await page.locator('.mobile-nav-menu > summary').click();await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'会话',exact:true}).click()}
-   else await page.locator('.sidebar .nav').getByRole('button',{name:'会话管理',exact:true}).click();
+   else await page.locator('.sidebar').getByRole('button',{name:'会话管理',exact:true}).click();
    await page.locator('.session-card').first().waitFor();assert.ok((await page.locator('.session-actions button').allTextContents()).every(v=>!v.trim()));
    assert.equal(await page.locator('.sessions-page-head p').count(),0);
    assert.ok(await page.locator('.sessions-page').evaluate(el=>el.scrollWidth<=el.clientWidth+1));

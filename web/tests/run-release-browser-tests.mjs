@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 
 const files = [
   'appearance-browser.test.mjs',
+  'appearance-unified-browser.test.mjs',
+  'appearance-surfaces-browser.test.mjs',
   'appearance-resources-browser.test.mjs',
   'attachments-browser.test.mjs',
   'chrome-theme-browser.test.mjs',
@@ -24,6 +26,9 @@ const files = [
   'session-loading-browser.test.mjs',
   'session-pagination-browser.test.mjs',
   'session-quick-list-browser.test.mjs',
+  'sidebar-actions-browser.test.mjs',
+  'home-navigation-browser.test.mjs',
+  'scrollbar-theme-browser.test.mjs',
   'session-context-menu-browser.test.mjs',
   'compaction-stream-browser.test.mjs',
   'context-chrome-browser.test.mjs',

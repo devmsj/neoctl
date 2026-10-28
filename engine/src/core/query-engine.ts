@@ -300,6 +300,12 @@ export class QueryEngine {
     });
   }
 
+  async settleSessionWrites(): Promise<void> {
+    if (this.running) throw new Error("cannot release a running session");
+    await this.sessionInitialization;
+    await this.settingsMutation;
+  }
+
   async deleteSession(sessionId: string): Promise<boolean> {
     if (this.options.session?.enabled === false || !this.options.session) throw new Error("session transcripts are disabled");
     const activeSessionId = this.sessionStore?.sessionId;

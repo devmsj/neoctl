@@ -1,7 +1,7 @@
 /* One restrained rich-text palette for transcript messages and markdown readers. */
 :root {
   --rich-code-bg: var(--appearance-code-bg, #f6f7fa);
-  --rich-code-text: var(--appearance-text, #374151);
+  --rich-code-text: var(--appearance-code-text, var(--appearance-text, #374151));
   --rich-code-line: var(--appearance-line, #e5e8ef);
   --rich-inline-bg: var(--appearance-accent-soft, #f1edf3);
   --rich-inline-text: var(--appearance-accent, #78536e);
@@ -15,7 +15,7 @@
 }
 :root[data-theme='dark'] {
   --rich-code-bg: var(--appearance-code-bg, #1c222b);
-  --rich-code-text: var(--appearance-text, #d3dce8);
+  --rich-code-text: var(--appearance-code-text, var(--appearance-text, #d3dce8));
   --rich-code-line: var(--appearance-line, #2b3542);
   --rich-inline-bg: var(--appearance-accent-soft, #292530);
   --rich-inline-text: var(--appearance-accent, #d2afc5);
@@ -153,7 +153,7 @@
 :root[data-theme] :is(.message-text, .markdown) .markdown-table-scroll { max-width: 100%; margin: 14px 0; overflow: auto; border: var(--appearance-border-width, 1px) solid var(--rich-code-line); border-radius: var(--appearance-radius, 5px); }
 :root[data-theme] :is(.message-text, .markdown) table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.65; }
 :root[data-theme] :is(.message-text, .markdown) :is(th, td) { min-width: 7em; padding: 9px 12px; border: 0; border-bottom: var(--appearance-border-width, 1px) solid var(--rich-code-line); text-align: left; overflow-wrap: normal; word-break: normal; }
-:root[data-theme] :is(.message-text, .markdown) th { background: var(--rich-code-bg); color: var(--chrome-muted); font-weight: 500; }
+:root[data-theme] :is(.message-text, .markdown) th { background: var(--appearance-table-head-bg, color-mix(in srgb, var(--chrome-accent) 9%, var(--chrome-bg))); color: var(--appearance-table-head-text, var(--chrome-text)); font-weight: 500; }
 :root[data-theme] :is(.message-text, .markdown) tbody tr:last-child td { border-bottom: 0; }
 :root[data-theme] :is(.message-text, .markdown) tbody tr:hover { background: color-mix(in srgb, var(--rich-code-bg) 65%, transparent); }
 :root[data-theme] :is(.message-text, .markdown) input[type='checkbox'] { accent-color: var(--chrome-accent); vertical-align: middle; margin: 0 6px 2px 0; }

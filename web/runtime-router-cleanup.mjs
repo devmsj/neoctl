@@ -16,6 +16,7 @@ export function installRuntimeRouterIdleCleanup(options = {}) {
   prototype.get = function getSharedSessionRuntime(scope = {}) {
     const tabId = normalizeScopeValue(scope.tabId);
     const sessionId = normalizeScopeValue(scope.sessionId);
+    this.assertSessionAvailable?.(sessionId);
     const key = sessionId ? `session:${sessionId}` : tabId ? `tab:${tabId}` : '__default__';
     let result = this.repls?.get(key);
 

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { emptyAppearance, normalizeAppearance, derivePalette, contrast, assetReferences } from '../shared/appearance.mjs'
+import { emptyAppearance, normalizeAppearance, derivePalette, deriveSurfaces, DEFAULT_COLORS, contrast, assetReferences } from '../shared/appearance.mjs'
 import { appearanceTokens } from '../src/appearance-tokens.mjs'
 import { createAppearanceStore, createAppearanceRoute, fontExtension } from '../appearance-store.mjs'
 import { validateImageBytes } from '../../engine/dist/core/image-input.js'
@@ -19,7 +19,7 @@ test('schema is versioned, strict and keeps independent day/night seeds', () => 
  const c=emptyAppearance();c.light.accent='#336699';c.dark.accent='#ffaa88'
  assert.deepEqual(normalizeAppearance(c),c)
  for(const bad of [{...c,version:2},{...c,light:{accent:'red'}},{...c,light:{uiFont:'x;url(https://x)'}},{...c,dark:{textSize:NaN}},{...c,dark:{css:'body{}'}},{...c,dark:{backgroundAsset:'../../x'}}]) assert.throws(()=>normalizeAppearance(bad))
- assert.deepEqual(appearanceTokens({},'dark'),{})
+ assert.deepEqual(appearanceTokens({},'dark'),{'--appearance-panel':deriveSurfaces(DEFAULT_COLORS.dark.background,'dark').panel,'--appearance-surface':deriveSurfaces(DEFAULT_COLORS.dark.background,'dark').surface})
  const token=appearanceTokens({accent:'#222222',background:'#111111'},'dark')
  assert.ok(contrast(token['--appearance-accent'],'#111111')>=3)
  assert.equal(c.light.accent,'#336699')
@@ -32,7 +32,7 @@ test('message tint follows the accent unless explicitly customized', () => {
   const custom = appearanceTokens({ accent: '#247f78', userBackground: '#123456', userText: '#ffffff' }, mode)
   assert.equal(custom['--appearance-user-bg'], '#123456'); assert.equal(custom['--appearance-user-text'], '#ffffff')
  }
- assert.deepEqual(appearanceTokens({}, 'light'), {})
+ assert.deepEqual(appearanceTokens({}, 'light'), {'--appearance-panel':'#ffffff','--appearance-surface':'#ffffff'})
 })
 test('one seed derives contrasting semantic interaction colors', () => {
  for(const bg of ['#ffffff','#111418','#777777']) for(const seed of ['#000000','#ffffff','#ff00ff','#0000ff','#ffff00']) {
@@ -93,4 +93,24 @@ test('HTTP enforces methods, revisions, content types and cross-site mutation bo
  const image=await fetch(url+'/assets/'+id)
  assert.equal(image.headers.get('Content-Type'),'image/png');assert.equal(image.headers.get('X-Content-Type-Options'),'nosniff')
  assert.deepEqual(Buffer.from(await image.arrayBuffer()),png)
+})
+
+test('surface colors are opaque derivatives of background; retired overrides migrate across schemes and presets', () => {
+ const legacy={panel:'#ff0000',surface:'#0000ff',panelOpacity:20,surfaceOpacity:35}
+ const c=emptyAppearance();c.light={background:'#bfd7d1',...legacy};c.dark={background:'#101918',...legacy}
+ c.presets=[{name:'legacy',light:{...c.light},dark:{...c.dark}}]
+ const normalized=normalizeAppearance(c)
+ for(const mode of ['light','dark']) {
+  assert.deepEqual(normalized[mode],{background:c[mode].background})
+  assert.deepEqual(normalized.presets[0][mode],normalized[mode])
+  for(const background of ['#bfd7d1','#faf7f1','#101918','#000000','#ffffff']) {
+   const tokens=appearanceTokens({background,...legacy},mode), surfaces=deriveSurfaces(background,mode)
+   assert.equal(tokens['--appearance-panel'],surfaces.panel);assert.equal(tokens['--appearance-surface'],surfaces.surface)
+   assert.match(surfaces.panel,/^#[a-f0-9]{6}$/);assert.match(surfaces.surface,/^#[a-f0-9]{6}$/)
+   assert.deepEqual(appearanceTokens({background,accent:'#ff00ff'},mode)['--appearance-panel'],surfaces.panel)
+  }
+ }
+ assert.notEqual(deriveSurfaces('#bfd7d1','light').panel,deriveSurfaces('#faf7f1','light').panel)
+ assert.throws(()=>normalizeAppearance({...c,light:{panel:'url(x)'}}))
+ assert.throws(()=>normalizeAppearance({...c,dark:{surfaceOpacity:NaN}}))
 })

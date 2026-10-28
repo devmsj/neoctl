@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
@@ -20,7 +21,7 @@ test('delete confirms, preserves failures, and returns from an empty final page'
     return true
   })
   try {
-    await f.page.getByRole('button', { name: '全局配置', exact: true }).first().click()
+    await openGlobalSettings(f.page)
     await f.page.locator('.settings-prompt-entry').filter({ hasText: '框架改进建议' }).click()
     await f.page.locator('.feedback-item').first().waitFor()
     await f.page.getByRole('button', { name: '下一页', exact: true }).click()

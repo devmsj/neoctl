@@ -304,7 +304,7 @@ for (const navigation of ['new-session', 'session-switch']) {
     await f.reader.getByRole('status').waitFor()
     await f.page.keyboard.press('Escape')
     if (navigation === 'new-session') {
-      await keyboardActivate(f.page, f.page.locator('.nav button').first())
+      await keyboardActivate(f.page, f.page.locator('.sidebar').getByRole('button',{name:'新建会话',exact:true}))
     } else {
       await keyboardActivate(f.page, f.page.getByRole('button', { name: '会话管理', exact: true }).first())
       const row = f.page.locator('.session-card').filter({ hasText: 'Session B' })

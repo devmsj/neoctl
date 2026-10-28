@@ -1,9 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import LoadingRing from './LoadingRing.vue'
-const props = defineProps({ loadPage: Function, current: Object, runningIds: { type: Array, default: () => [] }, pendingKey: String, revision: Number, admin: Boolean })
-const emit = defineEmits(['open', 'context'])
-const rows = ref([]), query = ref(''), searchOpen = ref(false), searchInput = ref(null)
+const props = defineProps({ loadPage: Function, current: Object, runningIds: { type: Array, default: () => [] }, pendingKey: String, revision: Number, admin: Boolean, managing: Boolean })
+const emit = defineEmits(['open', 'context', 'new', 'manage'])
+const rows = ref([]), query = ref(''), searchOpen = ref(false), searchInput = ref(null), searchArea = ref(null), searchToggle = ref(null)
 const viewport = ref(null), sentinel = ref(null), loading = ref(false), error = ref(''), finished = ref(false)
 let page = 0, version = 0, controller, observer, resizeObserver, debounce, disposed = false
 const key = item => `${item?.ownerUsername || ''}:${item?.sessionId || ''}`
@@ -60,29 +60,41 @@ watch(() => props.revision, reset)
 async function toggleSearch() {
   searchOpen.value = !searchOpen.value
   if (searchOpen.value) { await nextTick(); searchInput.value?.focus() }
-  else if (query.value) query.value = ''
+
 }
+function closeSearch(event) {
+  if (!searchOpen.value || event.composedPath().includes(searchArea.value) || event.composedPath().includes(searchToggle.value)) return
+  searchOpen.value = false
+}
+function clearSearch() { if (!searchOpen.value && query.value) query.value = '' }
 onMounted(() => {
+  document.addEventListener('click', closeSearch)
   observer = new IntersectionObserver(checkEnd, { root: viewport.value, rootMargin: '0px 0px 36px 0px' })
   observer.observe(sentinel.value)
   resizeObserver = new ResizeObserver(checkEnd); resizeObserver.observe(viewport.value)
   void more()
 })
-onBeforeUnmount(() => { disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
+onBeforeUnmount(() => { document.removeEventListener('click', closeSearch); disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
 </script>
 
 <template>
   <section class="quick-sessions" aria-label="会话快速切换">
-    <div class="quick-head"><span>最近会话</span><button class="quick-search-toggle" type="button" aria-label="搜索最近会话" title="搜索会话" :aria-expanded="searchOpen" @click="toggleSearch"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/></svg></button></div>
-    <div v-if="searchOpen" class="quick-search"><input ref="searchInput" v-model="query" type="search" placeholder="搜索会话" aria-label="搜索最近会话标题" autocomplete="off" @keydown.esc="toggleSearch" /></div>
+    <div class="quick-head">
+      <div class="quick-actions">
+        <button ref="searchToggle" class="quick-action quick-search-toggle" type="button" aria-label="搜索最近会话" data-tooltip="搜索会话" :aria-expanded="searchOpen" @click="toggleSearch"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/></svg></button>
+        <button class="quick-action" type="button" :aria-label="managing ? '返回对话' : '会话管理'" :data-tooltip="managing ? '返回对话' : '会话管理'" :aria-current="managing ? 'page' : undefined" @click="emit('manage')"><svg viewBox="0 0 20 20" aria-hidden="true"><path :d="managing ? 'm2 9 8-7 8 7M4 7v11h12V7M8 18v-6h4v6' : 'M7 5h9M7 10h9M7 15h9M3 5h.5M3 10h.5M3 15h.5'"/></svg></button>
+        <button v-if="!admin" class="quick-action" type="button" aria-label="新建会话" data-tooltip="新建会话" @click="emit('new')"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg></button>
+      </div>
+    </div>
+    <Transition name="quick-search-reveal" @after-leave="clearSearch"><div v-if="searchOpen" ref="searchArea" class="quick-search"><input ref="searchInput" v-model="query" type="search" placeholder="搜索会话" aria-label="搜索最近会话标题" autocomplete="off" @keydown.esc="searchOpen = false; searchToggle?.focus()" /></div></Transition>
     <div ref="viewport" class="quick-scroll" tabindex="0" aria-label="最近会话列表" :aria-busy="loading" @scroll.passive="checkEnd">
       <template v-for="(item, index) in visibleRows" :key="key(item)">
         <div v-if="index === 0 || group(item) !== group(visibleRows[index - 1])" class="quick-group">{{ group(item) }}</div>
-        <button type="button" class="quick-session" :aria-current="key(item) === currentKey ? 'true' : undefined" :aria-busy="pendingKey === key(item)" :title="`${item.title || '未命名会话'}${admin ? ' / ' + item.ownerUsername : ''}`" @click="emit('open', item)" @contextmenu.prevent.stop="emit('context', $event, item)" @keydown.shift.f10.prevent.stop="emit('context', $event, item)">
+        <button type="button" class="quick-session" :aria-current="key(item) === currentKey ? 'true' : undefined" :aria-busy="pendingKey === key(item)" :data-tooltip="`${item.title || '未命名会话'}${admin ? ' / ' + item.ownerUsername : ''}`" @click="emit('open', item)" @contextmenu.prevent.stop="emit('context', $event, item)" @keydown.shift.f10.prevent.stop="emit('context', $event, item)">
           <span class="quick-title">{{ item.title || '未命名会话' }}</span>
           <span v-if="admin" class="quick-owner">{{ item.ownerUsername }}</span>
           <LoadingRing v-if="pendingKey === key(item)" class="quick-loading" />
-          <span v-else-if="runningIds.includes(item.sessionId)" class="quick-running" role="img" aria-label="运行中" title="运行中"><i/><i/></span>
+          <span v-else-if="runningIds.includes(item.sessionId)" class="quick-running" role="img" aria-label="运行中" data-tooltip="运行中"><i/><i/></span>
           <span v-if="key(item) === currentKey" class="quick-selection-frame" aria-hidden="true">
             <span class="frame-top-right" />
             <span class="frame-bottom-left" />
@@ -101,10 +113,18 @@ onBeforeUnmount(() => { disposed = true; version++; controller?.abort(); clearTi
 
 <style scoped>
 .quick-sessions{min-height:0;flex:1;display:flex;flex-direction:column;margin:2px 12px 8px;color:var(--chrome-muted,var(--muted))}
-.quick-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px 8px;flex-shrink:0;font-size:calc(11px * var(--appearance-ui-scale, 1));letter-spacing:.04em}
-.quick-sessions .quick-search-toggle{display:grid;place-items:center;width:28px;height:28px;min-height:0;padding:0;border:0!important;background:none!important;color:inherit!important;box-shadow:none!important}
-.quick-search-toggle svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round}
-.quick-search{padding:0 4px 10px}.quick-search input{width:100%;min-width:0;height:33px!important;padding:0 9px!important;font-size:calc(12px * var(--appearance-ui-scale, 1))!important}
+.quick-head{display:flex;align-items:center;justify-content:flex-end;padding:0 4px 8px 10px;gap:4px;flex-shrink:0;font-size:calc(11px * var(--appearance-ui-scale, 1));letter-spacing:.04em}
+.quick-actions{display:flex;align-items:center;gap:0;flex-shrink:0}
+.quick-sessions .quick-action{display:grid;place-items:center;width:26px;height:28px;min-height:0;padding:0;border:0!important;background:none!important;color:inherit!important;box-shadow:none!important}
+.quick-action svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round}
+.quick-sessions .quick-action:hover,.quick-sessions .quick-action[aria-current="page"]{color:var(--chrome-accent)!important;background:var(--chrome-accent-soft)!important}
+.quick-search{position:relative;margin:0 6px 10px;height:33px;flex-shrink:0;transform-origin:left center;}
+.quick-search::after{content:'';position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--chrome-accent);transform-origin:left center;}
+:root[data-theme] .quick-sessions .quick-search input{width:100%;min-width:0;height:33px;min-height:0;padding:0 3px!important;border:0!important;border-radius:0!important;background:transparent!important;color:var(--chrome-text)!important;outline:none!important;box-shadow:none!important;font-size:calc(12px * var(--appearance-ui-scale,1))!important;}
+.quick-search-reveal-enter-active,.quick-search-reveal-leave-active{transition:clip-path .25s ease,opacity .25s ease,height .25s ease,margin-bottom .25s ease;overflow:hidden;}
+.quick-search-reveal-enter-from,.quick-search-reveal-leave-to{clip-path:inset(0 100% 0 0);opacity:0;height:0;margin-bottom:0;}
+.quick-search-reveal-enter-to,.quick-search-reveal-leave-from{clip-path:inset(0);opacity:1;height:33px;}
+@media(prefers-reduced-motion:reduce){.quick-search-reveal-enter-active,.quick-search-reveal-leave-active{transition:none}}
 .quick-scroll{min-height:0;overflow:auto;overscroll-behavior:contain;flex:1;padding:0 0 14px;scrollbar-width:none;mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent)}
 .quick-scroll::-webkit-scrollbar{display:none}.quick-scroll:focus-visible{outline:1px solid var(--pink);outline-offset:2px}
 .quick-group{color:var(--chrome-muted,var(--muted));opacity:.7;font-size:calc(10px * var(--appearance-ui-scale, 1));line-height:18px;margin:10px 10px 6px;letter-spacing:.06em}.quick-group:first-child{margin-top:1px}

@@ -81,7 +81,7 @@ fn reference(path: &std::path::Path) -> Result<FileReference, String> {
 }
 
 #[tauri::command]
-pub(crate) fn watch_file_drops(
+pub(crate) async fn watch_file_drops(
     window: WebviewWindow,
     channel: Channel<serde_json::Value>,
 ) -> Result<(), String> {
@@ -94,7 +94,7 @@ pub(crate) fn watch_file_drops(
 }
 
 #[tauri::command]
-pub(crate) fn unwatch_file_drops(window: WebviewWindow, channel_id: u32) -> Result<(), String> {
+pub(crate) async fn unwatch_file_drops(window: WebviewWindow, channel_id: u32) -> Result<(), String> {
     super::local_resources::authorize(&window)?;
     let state = window.state::<FileDrops>();
     let mut state = state.0.lock().map_err(|_| "拖拽状态锁错误")?;

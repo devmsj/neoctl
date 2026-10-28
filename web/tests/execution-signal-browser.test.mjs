@@ -21,3 +21,29 @@ test('square waiting signal, real tool icons and clock-only completion', async (
   assert.deepEqual(ui.errors,[])
  } finally {await ui.close()}
 })
+
+test('flashing icon stays with the observation while new updates and pinned previews switch', async () => {
+ const snapshot=observabilitySnapshot({busy:true,status:{phase:'running_tools',currentTool:{name:'plan_update'}},lines:[
+  {id:1,kind:'user',text:'test'},
+  {id:2,kind:'tool',toolName:'plan_update',activity:{phase:'completed',input:{items:[]}},titleStatus:'success'},
+  {id:3,kind:'tool',toolName:'file_read',activity:{phase:'completed',input:{path:'fixture.txt'}},observation:{content:'selected read output'},titleStatus:'success'},
+ ]})
+ const ui=await createObservabilityBrowser(()=>snapshot)
+ try {
+  const p=ui.page
+  await p.addInitScript(()=>{window.EventSource=class extends EventTarget{constructor(){super();window.signalEvents=this;queueMicrotask(()=>this.dispatchEvent(new Event('open')))}close(){}}})
+  await p.reload()
+  await p.locator('.tool-observation.is-main').getByText('selected read output',{exact:true}).waitFor()
+  assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'读取文件')
+  await p.waitForTimeout(2700)
+  assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'读取文件','must not rotate to plan')
+  snapshot.lines.push({id:4,kind:'thinking',text:'current thought',live:true})
+  await p.evaluate(s=>window.signalEvents.dispatchEvent(new MessageEvent('sync',{data:JSON.stringify(s)})),snapshot)
+  await p.locator('.tool-observation.is-main').getByText('current thought',{exact:true}).waitFor()
+  assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'思考')
+  await p.locator('.thinking-activity-row').last().click()
+  await p.locator('.tool-observation.is-pinned').getByText('current thought',{exact:true}).waitFor()
+  assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'思考')
+  assert.deepEqual(ui.errors,[])
+ }finally{await ui.close()}
+})

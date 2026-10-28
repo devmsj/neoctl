@@ -211,7 +211,7 @@ try {
   await assertAlignment();
   assert.equal(await page.locator('.transcript').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(255, 255, 255)');
   assert.equal(await page.locator('.tool-activity-row').last().evaluate(el=>getComputedStyle(el).color),'rgb(66, 76, 89)');
-  await page.getByRole('button',{name:'切换到夜间模式'}).click();
+  await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.getByRole('menuitem',{name:/切换到(夜间|白天)/}).click();
   assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
   await page.waitForTimeout(400);
   assert.equal(await page.locator('.transcript').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(17, 20, 24)');
@@ -284,7 +284,7 @@ try {
   if(process.env.NEO_THINKING_SCREENSHOT)await page.screenshot({path:process.env.NEO_THINKING_SCREENSHOT});
   await deliver([{type:'line.patch',id:'thinking-icon',patch:{live:false}}]);
   assert.equal(await thinking.locator('.motion').first().evaluate(el=>getComputedStyle(el).animationName),'none');
-  await page.getByRole('button',{name:'切换到日间模式'}).click();
+  await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.getByRole('menuitem',{name:/切换到(夜间|白天)/}).click();
   assert.equal(await thinking.evaluate(el=>getComputedStyle(el).color),'rgb(148, 101, 126)');
   // Empty/open and completed/closed thoughts must occupy the same rhythm as tools.
   snapshot.lines=[

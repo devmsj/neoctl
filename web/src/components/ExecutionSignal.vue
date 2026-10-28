@@ -4,20 +4,19 @@ import ToolActivityIcon from './ToolActivityIcon.vue'
 import ChromeIcon from './ChromeIcon.vue'
 import { waitDotStyle } from '../execution-signal.mjs'
 const props = defineProps({ mode: String, tools: { type: Array, default: () => [] }, waitStartedAt: Number, sessionKey: String, paused: Boolean, label: String })
-const tick = ref(Date.now()), entered = ref(Date.now()), index = ref(0)
-watch(() => [props.mode, props.sessionKey, props.waitStartedAt], () => { entered.value = Date.now(); index.value = 0 })
+const tick = ref(Date.now()), entered = ref(Date.now())
+watch(() => [props.mode, props.sessionKey, props.waitStartedAt], () => { entered.value = Date.now() })
 const elapsed = computed(() => Math.max(0, tick.value - (props.waitStartedAt || entered.value)))
 const age = computed(() => Math.min(100, Math.log1p(elapsed.value / 16000) / Math.log1p(180 / 16) * 100))
-const tool = computed(() => props.tools[index.value % Math.max(1, props.tools.length)])
-let timer, rotation
+const tool = computed(() => props.tools[0])
+let timer
 onMounted(() => {
   timer = setInterval(() => { if (!props.paused) tick.value = Date.now() }, 1000)
-  rotation = setInterval(() => { if (!props.paused && props.mode === 'tools') index.value++ }, 2400)
 })
-onUnmounted(() => { clearInterval(timer); clearInterval(rotation) })
+onUnmounted(() => { clearInterval(timer) })
 </script>
 <template>
-  <span class="execution-signal" :class="{ 'is-paused': paused }" :data-mode="mode" role="img" :aria-label="label" :title="label">
+  <span class="execution-signal" :class="{ 'is-paused': paused }" :data-mode="mode" role="img" :aria-label="label" :data-tooltip="label">
     <svg v-if="mode === 'waiting' || mode === 'loading'" class="signal-matrix" viewBox="0 0 28 28" aria-hidden="true" :style="{ '--age': `${mode === 'waiting' ? age : 0}%` }">
       <circle v-for="i in 9" :key="i" :cx="7 + ((i - 1) % 3) * 7" :cy="7 + Math.floor((i - 1) / 3) * 7" r="1.4" :style="waitDotStyle(i - 1, mode === 'waiting' ? elapsed : 0)" />
     </svg>

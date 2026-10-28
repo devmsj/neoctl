@@ -305,7 +305,7 @@ for (const navigation of ['new-session', 'session-switch']) {
     const hold = { owner: 'A', started: false }; hold.gate = new Promise(r => { hold.release = r }); f.state.hold = hold
     await f.open(); await until(() => hold.started, 'Old owner request did not start')
     await page.keyboard.press('Escape')
-    if (navigation === 'new-session') { await page.locator('.nav button').first().focus(); await page.keyboard.press('Enter') }
+    if (navigation === 'new-session') { await page.locator('.sidebar').getByRole('button',{name:'新建会话',exact:true}).focus(); await page.keyboard.press('Enter') }
     else {
       await page.getByRole('button', { name: '会话管理', exact: true }).first().click()
       await page.locator('.session-card').filter({ hasText: 'Session B' }).getByRole('button', { name: '打开', exact: true }).click()

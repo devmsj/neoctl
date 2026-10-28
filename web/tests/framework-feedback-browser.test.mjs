@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
@@ -16,7 +17,7 @@ test('compact bottom entry opens paginated feedback subpage, handles errors and 
     return true
   })
   try {
-    await f.page.getByRole('button', { name: '全局配置', exact: true }).first().click()
+    await openGlobalSettings(f.page)
     const entry = f.page.locator('.settings-prompt-entry').filter({ hasText: '框架改进建议' })
     await entry.waitFor()
     assert.equal((await f.page.locator('.settings-form > :last-child').innerText()).replace(/\s/g, ''), '框架改进建议›')

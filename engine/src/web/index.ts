@@ -848,6 +848,51 @@ function parseResumeFlag(value: string | undefined): boolean {
 
 export class WebRuntimeRouter {
   private readonly repls = new Map<string, Promise<WebRepl>>();
+  private readonly deletedSessions = new Set<string>();
+  private readonly deletingSessions = new Set<string>();
+
+  assertSessionAvailable(sessionId?: string): void {
+    if (sessionId && (this.deletedSessions.has(sessionId) || this.deletingSessions.has(sessionId))) {
+      throw new Error("会话已删除或正在删除");
+    }
+  }
+
+  async deleteSession(scope: WebRuntimeScope, sessionId: string): Promise<WebActionResult<{ replacementSessionId?: string }>> {
+    if (!sessionId) return actionFailure("INVALID_REQUEST", "sessionId is required");
+    if (this.deletingSessions.has(sessionId)) return actionFailure("SESSION_DELETING", "会话正在删除");
+    if (this.deletedSessions.has(sessionId)) return actionFailure("SESSION_NOT_FOUND", "会话已删除");
+    this.deletingSessions.add(sessionId);
+    try {
+      const entries = await Promise.all([...this.repls.entries()].map(async ([key, promise]) => ({ key, promise, repl: await promise.catch(() => undefined) })));
+      const owners = [...new Set(entries.filter(entry => entry.repl?.currentSessionId() === sessionId).map(entry => entry.repl!))];
+      // Shared hubs should have one owner. Never orphan a legacy second writer.
+      if (owners.length > 1) return actionFailure("SESSION_IN_USE", "会话被多个运行实例占用，请先关闭其它窗口");
+      // A cold current-session request must restore its owner without passing the deletion gate.
+      if (!owners.length && scope.sessionId === sessionId) {
+        const key = `session:${sessionId}`;
+        const promise = this.createRuntime({ sessionId, resume: true }).then(runtime => this.createRepl(runtime));
+        this.repls.set(key, promise);
+        try {
+          const repl = await promise;
+          entries.push({ key, promise, repl });
+          owners.push(repl);
+        } catch (error) { this.repls.delete(key); throw error; }
+      }
+      const repl = owners[0] || await this.get(scope);
+      if (entries.some(entry => entry.repl?.runningSessionIds().includes(sessionId))) return actionFailure("SESSION_RUNNING", "运行中的会话不可删除");
+      const result = await repl.deleteSession(sessionId);
+      if (!result.ok) return result;
+      this.deletedSessions.add(sessionId);
+      // Retire every cache alias of the deleted writer, then publish only the replacement key.
+      if (owners.length) {
+        for (const entry of entries) if (entry.repl === repl && this.repls.get(entry.key) === entry.promise) this.repls.delete(entry.key);
+        if (result.replacementSessionId) this.repls.set(`session:${result.replacementSessionId}`, Promise.resolve(repl));
+      }
+      // Publish only after the replacement is routable; SSE clients may reconnect immediately.
+      if (owners.length) repl.publishSessionDeletion(sessionId, result.replacementSessionId);
+      return result;
+    } finally { this.deletingSessions.delete(sessionId); }
+  }
   private readonly createRuntime: (options?: CreateWebRuntimeOptions) => Promise<WebRuntime>;
   private readonly createRepl: (runtime: WebRuntime) => WebRepl;
   private readonly clientRevision = process.env.NEO_CLIENT_REVISION?.trim() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -859,6 +904,7 @@ export class WebRuntimeRouter {
   }
 
   get(scope: WebRuntimeScope = {}): Promise<WebRepl> {
+    this.assertSessionAvailable(scope.sessionId);
     const key = webRuntimeScopeKey(scope);
     let repl = this.repls.get(key);
     if (!repl) {
@@ -941,6 +987,9 @@ function webRuntimeScopeKey(scope: WebRuntimeScope): string {
 }
 
 export class WebRepl {
+  currentSessionId(): string | undefined { return this.runtime.engine.snapshot().session?.sessionId; }
+  private deletingSession = false;
+  private sessionMutations = 0;
   private pendingContinuation: { engine: QueryEngine; text: string; attachments: WebAttachmentPayload[] } | undefined;
   private runControl() {
     const execution = this.runtime.engine.getExecutionState?.();
@@ -1270,18 +1319,20 @@ export class WebRepl {
   }
 
   async setSessionTools(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionTools"]> }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (this.busy) return actionFailure("TOOL_UPDATE_BLOCKED", "cannot change session tools while a response is running");
     if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "tool overrides must be an object");
     const support = this.runtime.toolSupport;
     if (!support) return actionFailure("TOOL_NOT_CONFIGURED", "web tools are not configured");
     const normalized = this.parseToolModes(value, support);
     if (!normalized.ok) return normalized;
+    this.sessionMutations++;
     try {
       await this.applySessionToolOverrides(normalized.value, true);
       return { ok: true, state: this.sessionTools() };
     } catch (error) {
       return actionFailure("TOOL_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
-    }
+    } finally { this.sessionMutations--; }
   }
 
   async loadSessionTools(sessionId: string): Promise<void> {
@@ -1291,6 +1342,7 @@ export class WebRepl {
   }
 
   async setSessionPlugins(value: unknown): Promise<WebActionResult<{ state: ReturnType<WebRepl["sessionPlugins"]> }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (!isRecord(value)) return actionFailure("INVALID_REQUEST", "plugin overrides must be an object");
     const support = this.runtime.pluginSupport;
     if (!support) return actionFailure("PLUGIN_NOT_CONFIGURED", "web plugins are not configured");
@@ -1302,12 +1354,13 @@ export class WebRepl {
       else if (mode === "disabled" || mode === false) overrides[id] = false;
       else if (mode !== "inherit" && mode !== null && mode !== undefined) return actionFailure("PLUGIN_INVALID", `invalid plugin mode: ${id}`);
     }
+    this.sessionMutations++;
     try {
       await this.applySessionPluginOverrides(overrides, true);
       return { ok: true, state: this.sessionPlugins() };
     } catch (error) {
       return actionFailure("PLUGIN_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
-    }
+    } finally { this.sessionMutations--; }
   }
 
   async loadSessionPlugins(sessionId: string): Promise<void> {
@@ -1388,6 +1441,7 @@ export class WebRepl {
   }
 
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (this.runControl().canResume && (!text.trimStart().startsWith("/") || !text.trim())) return this.continueRun(text, attachments);
     if (this.pendingContinuation) return { ok: false, error: "续接请求已接收，请勿重复发送" };
     if (this.isDemo()) return this.recordDemoInput(text, attachments);
@@ -1410,6 +1464,7 @@ export class WebRepl {
   }
 
   async submitImmediately(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true; interrupted: boolean } | { ok: false; error: string }> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (this.runControl().canResume) { const result = this.continueRun(text, attachments); return result.ok ? { ok: true, interrupted: false } : result; }
     if (this.isDemo()) { const result = await this.recordDemoInput(text, attachments); return result.ok ? { ok: true, interrupted: false } : result; }
     if (this.immediateSend) return { ok: false, error: "正在发送，请勿重复提交" };
@@ -1423,6 +1478,7 @@ export class WebRepl {
   }
 
   sendQueuedNow(): Promise<{ ok: true; interrupted: boolean }> {
+    if (this.deletingSession) return Promise.reject(new Error("会话正在删除"));
     if (this.immediateSend) return this.immediateSend;
     const queuedText = this.queuedInput;
     const queuedAttachments = this.queuedAttachments ?? [];
@@ -1461,7 +1517,9 @@ export class WebRepl {
   }
 
   async resumeSession(sessionId: string): Promise<WebActionResult> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (!sessionId) return actionFailure("INVALID_REQUEST", "sessionId is required");
+    this.sessionMutations++;
     try {
       const running = this.backgroundSessionRuns.get(sessionId);
       if (running) {
@@ -1480,10 +1538,12 @@ export class WebRepl {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return actionFailure("SESSION_RESUME_FAILED", message);
-    }
+    } finally { this.sessionMutations--; }
   }
 
   async newSession(): Promise<WebActionResult> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
+    this.sessionMutations++;
     try {
       await this.detachRunningForeground("new session");
       this.runtime.engine = this.runtime.engine.forkForSession(undefined, false);
@@ -1497,10 +1557,10 @@ export class WebRepl {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return actionFailure("SESSION_CREATE_FAILED", message);
-    }
+    } finally { this.sessionMutations--; }
   }
 
-  private async refreshSessionView(): Promise<void> {
+  private async refreshSessionView(publish = true): Promise<void> {
     const metrics = await this.runtime.engine.contextMetrics();
     this.runtime.usage.reset();
     this.status = initialStatus(this.runtime, metrics);
@@ -1512,25 +1572,61 @@ export class WebRepl {
     this.thinkingLineId = undefined;
     this.finalizedThinkingLineId = undefined;
     this.liveToolLineIds.clear();
-    this.broadcastSync();
-    this.publishRuntimeContext();
+    if (publish) {
+      this.broadcastSync();
+      this.publishRuntimeContext();
+    }
   }
 
-  async deleteSession(sessionId: string): Promise<WebActionResult> {
+  async deleteSession(sessionId: string): Promise<WebActionResult<{ replacementSessionId?: string }>> {
     if (!sessionId) return actionFailure("INVALID_REQUEST", "sessionId is required");
-    if (this.runtime.engine.snapshot().session?.sessionId === sessionId) {
-      return actionFailure("SESSION_ACTIVE", "cannot delete the active session");
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
+    if (this.sessionMutations) return actionFailure("SESSION_IN_USE", "会话正在保存或切换，请稍后重试");
+    const active = this.runtime.engine.snapshot().session?.sessionId === sessionId;
+    if (this.backgroundSessionRuns.has(sessionId) || (active && (this.busy || this.foregroundRun || this.compactingSession || this.pendingContinuation || this.immediateSend || this.backgroundTaskCount))) {
+      return actionFailure("SESSION_RUNNING", "运行中的会话不可删除");
     }
-    if (this.backgroundSessionRuns.has(sessionId)) {
-      return actionFailure("SESSION_RUNNING", "cannot delete a running session");
-    }
+    this.deletingSession = true;
+    const previous = this.runtime.engine;
+    let deleted = false;
     try {
-      const deleted = await this.runtime.engine.deleteSession(sessionId);
-      if (!deleted) return actionFailure("SESSION_NOT_FOUND", `session not found: ${sessionId}`);
-      return { ok: true };
+      if (active) {
+        // Retire the writer before removing files; an uninitialized fork owns no directory.
+        await this.runtimeContextPublishQueue;
+        await previous.settleSessionWrites();
+        await this.demoMessageQueues.get(previous);
+        this.queuedInput = undefined; this.queuedAttachments = undefined;
+        this.pendingContinuation = undefined;
+        this.runtime.engine = previous.forkForSession(undefined, false);
+        activateSession(this.runtime);
+      }
+      deleted = await this.runtime.engine.deleteSession(sessionId);
+      if (!deleted) {
+        if (active) { this.runtime.engine = previous; activateSession(this.runtime); }
+        return actionFailure("SESSION_NOT_FOUND", `session not found: ${sessionId}`);
+      }
+      if (!active) return { ok: true };
+      await this.runtime.engine.initialize();
+      activateSession(this.runtime);
+      const replacementSessionId = this.runtime.engine.snapshot().session?.sessionId;
+      if (!replacementSessionId) throw new Error("新会话初始化失败");
+      await Promise.all([this.loadSessionPlugins(replacementSessionId), this.loadSessionTools(replacementSessionId)]);
+      await this.refreshSessionView(false);
+      return { ok: true, replacementSessionId };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return actionFailure("SESSION_DELETE_FAILED", message);
+      if (active && !deleted) { this.runtime.engine = previous; activateSession(this.runtime); }
+      if (active && deleted) {
+        // A deletion cannot be rolled back; never restore the deleted writer.
+        return { ok: true };
+      }
+      return actionFailure("SESSION_DELETE_FAILED", error instanceof Error ? error.message : String(error));
+    } finally { this.deletingSession = false; }
+  }
+
+  publishSessionDeletion(sessionId: string, replacementSessionId?: string): void {
+    for (const subscriber of this.subscribers) {
+      this.send(subscriber, replacementSessionId ? "session.replaced" : "session.deleted", replacementSessionId
+        ? { deletedSessionId: sessionId, sessionId: replacementSessionId } : { sessionId });
     }
   }
 
@@ -1607,6 +1703,7 @@ export class WebRepl {
   }
 
   async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean; deferred: boolean }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     const engine = this.runtime.engine;
     try {
       const { deferred } = await engine.updateSessionSettings({ fastMode: enabled });
@@ -1618,6 +1715,7 @@ export class WebRepl {
   }
 
   async setContextWindowK(value: unknown): Promise<WebActionResult<{ contextWindowK: number; contextWindowTokens: number; deferred: boolean }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (typeof value !== "string" || !/^\d+$/u.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value) * 1000)) {
       return actionFailure("CONTEXT_WINDOW_INVALID", "context window must be a positive integer in k");
     }
@@ -1635,6 +1733,7 @@ export class WebRepl {
   }
 
   async setSessionModel(model: unknown, reasoning: unknown): Promise<WebActionResult<{ modelSettings: { model: string; reasoning?: ReasoningConfig | null }; deferred: boolean }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (typeof model !== "string" || !model.trim() || model.length > 256 || /[\s\x00-\x1f]/u.test(model.trim())) {
       return actionFailure("MODEL_INVALID", "invalid model");
     }
@@ -1665,6 +1764,7 @@ export class WebRepl {
   }
 
   async saveSessionPrompt(body: unknown) {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     const engine = this.runtime.engine;
     const result = await updateSessionPrompt(engine, body);
     if (this.runtime.engine === engine) {
@@ -1676,6 +1776,7 @@ export class WebRepl {
   }
 
   async compactSession(): Promise<WebActionResult<{ deferred: boolean }>> {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     const engine = this.runtime.engine;
     if (this.isDemo()) return actionFailure("DEMO_SCRIPTED", "演示会话由后台安排压缩");
     if (this.compactingSession === engine) return actionFailure("COMPACTION_IN_PROGRESS", "Context compaction is already running");
@@ -1796,6 +1897,7 @@ export class WebRepl {
   }
 
   continueRun(text = "", attachments: WebAttachmentPayload[] = []): WebActionResult {
+    if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     if (!this.runControl().canResume) return actionFailure("INVALID_REQUEST", "没有可恢复的执行，或续接请求已经提交");
     const useQueue = !text.trim() && attachments.length === 0 && this.queuedInput !== undefined;
     const request = { engine: this.runtime.engine,
@@ -2686,6 +2788,7 @@ export class WebRepl {
   }
 
   private publishRuntimeContext(targets?: WebSubscriber[]): void {
+    if (this.deletingSession) return;
     this.runtimeContextPublishQueue = this.runtimeContextPublishQueue.then(async () => {
       const revision = ++this.runtimeContextRevision;
       const payload = await this.buildRuntimeContext(revision);
@@ -2771,6 +2874,7 @@ export class WebRepl {
   }
 
   private broadcastSync(): void {
+    if (this.deletingSession) return;
     this.discardPendingDeltaOperations();
     const payload = this.snapshot(false);
     for (const subscriber of this.subscribers) this.send(subscriber, "sync", payload);
@@ -2827,6 +2931,10 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
     }
     if (req.method === "GET" && url.pathname === "/api/sessions/running") return sendJson(res, { runningSessionIds: await router.runningSessionIds() });
     const scope = webRuntimeScopeFromUrl(url);
+    if (req.method === "POST" && url.pathname === "/api/sessions/delete") {
+      const body = await readJsonBody<{ sessionId?: string }>(req);
+      return sendJson(res, await router.deleteSession(scope, String(body.sessionId ?? "")));
+    }
     const repl = await router.get(scope);
     if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
     if (req.method === "GET" && url.pathname === "/api/tool-call-detail") {
@@ -3008,10 +3116,6 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));
     }
     if (req.method === "POST" && url.pathname === "/api/sessions/new") return sendJson(res, await repl.newSession());
-    if (req.method === "POST" && url.pathname === "/api/sessions/delete") {
-      const body = await readJsonBody<{ sessionId?: string }>(req);
-      return sendJson(res, await repl.deleteSession(String(body.sessionId ?? "")));
-    }
     if (req.method === "GET" && url.pathname === "/api/login") return sendJson(res, repl.loginForm(url.searchParams.get("provider") ?? undefined));
     if (req.method === "POST" && url.pathname === "/api/login") {
       const body = await readJsonBody<{ provider?: string; values?: Record<string, string> }>(req);

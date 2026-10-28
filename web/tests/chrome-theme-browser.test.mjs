@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 // Run after npm run build. No model calls or real configuration writes.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
@@ -73,7 +74,7 @@ try {
  await page.locator('.memory-tooltip').waitFor()
  await page.locator('.composer textarea').focus()
  await screenshot('dark-chat')
- await page.locator('.sidebar .nav button').filter({hasText:'全局配置'}).click()
+ await openGlobalSettings(page)
  await page.getByRole('button',{name:'模型',exact:true}).click()
  await page.locator('.settings-form').waitFor()
  assert.equal((await styleOf('.settings-card')).border,'1px')
@@ -92,7 +93,7 @@ try {
  await screenshot('dark-confirm')
  await page.getByRole('button',{name:'取消',exact:true}).click()
  await page.getByRole('button',{name:'返回全局配置',exact:true}).click()
- await page.locator('.sidebar .nav button').filter({hasText:'会话管理'}).click()
+ await page.locator('.sidebar').getByRole('button',{name:'会话管理',exact:true}).click()
  await page.locator('.session-card').first().waitFor()
  assert.equal((await styleOf('.session-card')).border,'0px')
  assert.equal((await styleOf('.session-card')).shadow,'none')
@@ -108,7 +109,7 @@ try {
  await screenshot('dark-directory')
  await page.locator('.cwd-picker-modal').getByRole('button',{name:'取消',exact:true}).click()
  await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
- await page.locator('.sidebar .theme-toggle').click()
+ await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.getByRole('menuitem',{name:/切换到(夜间|白天)/}).click()
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='light'); await page.waitForTimeout(250)
  assert.equal((await styleOf('.sidebar')).background,'rgb(255, 255, 255)')
  assert.equal((await styleOf('.composer')).background,'rgb(255, 255, 255)')
@@ -118,7 +119,7 @@ try {
  await page.waitForFunction(()=>{const el=document.querySelector('.is-pinned .background-task-live-output');return el&&getComputedStyle(el).color==='rgb(32, 37, 45)'})
  assert.equal(await page.locator('.is-pinned .tool-observation-viewport').evaluate(el=>getComputedStyle(el).opacity),'1')
  await screenshot('light-chat')
- await page.locator('.sidebar .nav button').filter({hasText:'全局配置'}).click()
+ await openGlobalSettings(page)
  await page.getByRole('button',{name:'模型',exact:true}).click()
  await page.locator('.settings-form').waitFor()
  assert.equal((await styleOf('.settings-form input')).background,'rgb(255, 255, 255)')

@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { join } from 'node:path'
@@ -30,7 +31,7 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
   })
   try {
     const { page } = fixture
-    await page.getByRole('button', { name: '全局配置', exact: true }).first().click()
+    await openGlobalSettings(page)
     const root = page.locator('.settings-page'), model = root.locator('.settings-model-card'), cpa = root.locator('.settings-cpa-card'), tool = root.locator('.settings-tools-card'), plugin = root.locator('.settings-plugins-card')
     async function visit(name) {
       const back = root.getByRole('button', { name: '返回全局配置', exact: true })

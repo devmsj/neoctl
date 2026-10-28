@@ -24,7 +24,23 @@
 :root[data-neo-desktop], :root[data-neo-desktop] body { background-color: var(--chrome-bg, var(--bg)); }
 /* The native shell contributes only unobtrusive controls, not a second toolbar. */
 :root[data-neo-desktop] .workspace { padding-top: var(--neo-window-inset, 36px); }
-:root[data-neo-desktop] .sidebar-footer { margin-bottom: 48px; }
+/* The list owns only the remaining track; footer controls never overlay rows. */
+:root[data-theme] .sidebar { padding-top: var(--neo-window-inset, 0px); }
+/* Compact global controls; session actions belong to the list heading. */
+.sidebar-top { display:flex; align-items:center; gap:4px; flex:0 0 48px; padding:6px 18px; }
+:root[data-theme] .sidebar-top .sidebar-top-action { display:grid; place-items:center; width:30px; height:30px; min-height:0; padding:0; border:0 !important; color:var(--chrome-muted) !important; }
+.sidebar-top-action svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+:root[data-theme] .sidebar-top .sidebar-top-action.active { color:var(--chrome-accent) !important; background:var(--chrome-accent-soft) !important; }
+:root[data-theme] .sidebar-footer {
+  flex: 0 0 52px;
+  min-height: 52px;
+  margin-top: 0;
+  padding: 8px 14px 14px;
+  align-items: center;
+  gap: 12px;
+}
+:root[data-theme] .sidebar-footer .logout-icon-button { width: 30px; height: 30px; }
+
 @media (max-width: 820px) {
   :root[data-neo-desktop] .chat-grid { height: calc(100dvh - 48px - var(--neo-window-inset, 36px)); }
 }

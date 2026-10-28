@@ -66,21 +66,21 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
   <div class="feedback-page" :aria-busy="loading || !!deleting">
     <div class="feedback-toolbar">
       <span>共 {{ total }} 条</span>
-      <button type="button" class="mini-button page-icon-button" title="刷新" aria-label="刷新" :disabled="loading || !!deleting" @click="load()"><ChromeIcon name="refresh" /></button>
+      <button type="button" class="mini-button page-icon-button" data-tooltip="刷新" aria-label="刷新" :disabled="loading || !!deleting" @click="load()"><ChromeIcon name="refresh" /></button>
     </div>
     <div v-if="error" class="empty-state" role="alert">{{ error }}</div>
     <div v-if="loading" class="empty-state" role="status">加载中</div>
     <div v-else-if="!items.length" class="empty-state">暂无建议</div>
     <div v-else class="feedback-list">
       <article v-for="item in items" :key="item.id" class="settings-card feedback-item">
-        <header class="settings-card-head"><strong>{{ item.title }}</strong><div class="feedback-item-actions"><time :datetime="item.createdAt">{{ new Date(item.createdAt).toLocaleString() }}</time><button type="button" class="mini-button page-icon-button" title="删除建议" aria-label="删除建议" :disabled="!!deleting || loading" @click="remove(item)"><ChromeIcon name="trash" /></button></div></header>
+        <header class="settings-card-head"><strong>{{ item.title }}</strong><div class="feedback-item-actions"><time :datetime="item.createdAt">{{ new Date(item.createdAt).toLocaleString() }}</time><button type="button" class="mini-button page-icon-button" data-tooltip="删除建议" aria-label="删除建议" :disabled="!!deleting || loading" @click="remove(item)"><ChromeIcon name="trash" /></button></div></header>
         <p>{{ item.body }}</p>
       </article>
     </div>
     <nav class="feedback-pagination" aria-label="建议分页">
-      <button type="button" class="mini-button page-icon-button" title="上一页" aria-label="上一页" :disabled="loading || !!deleting || page <= 1" @click="load(page - 1)"><ChromeIcon name="back" /></button>
+      <button type="button" class="mini-button page-icon-button" data-tooltip="上一页" aria-label="上一页" :disabled="loading || !!deleting || page <= 1" @click="load(page - 1)"><ChromeIcon name="back" /></button>
       <span>{{ page }} / {{ totalPages }}</span>
-      <button type="button" class="mini-button page-icon-button" title="下一页" aria-label="下一页" :disabled="loading || !!deleting || page >= totalPages" @click="load(page + 1)"><ChromeIcon name="apply" /></button>
+      <button type="button" class="mini-button page-icon-button" data-tooltip="下一页" aria-label="下一页" :disabled="loading || !!deleting || page >= totalPages" @click="load(page + 1)"><ChromeIcon name="apply" /></button>
     </nav>
   </div>
 </template>

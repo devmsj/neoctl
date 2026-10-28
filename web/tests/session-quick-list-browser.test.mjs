@@ -13,12 +13,14 @@ test('administrator quick switch uses the selected owner rather than the previou
       const id=url.searchParams.get('sessionId');await route.fulfill({json:observabilitySnapshot({session:{sessionId:id,title:id==='a'?'Alice session':'Bob session'}})});return true
     }
     return false
-  },{viewport:{width:1180,height:760}})
+  },{viewport:{width:1180,height:560}})
   try{
     await f.page.locator('.quick-session').filter({hasText:'Alice session'}).click()
     await f.page.waitForFunction(()=>document.querySelector('.quick-session[aria-current="true"]')?.textContent.includes('Alice'))
     await f.page.locator('.quick-session').filter({hasText:'Bob session'}).click()
     await f.page.waitForFunction(()=>document.querySelector('.quick-session[aria-current="true"]')?.textContent.includes('Bob'))
+    assert.equal(await f.page.locator('.quick-actions').getByRole('button', { name: '新建会话', exact: true }).count(), 0)
+    assert.equal(await f.page.locator('.sidebar-top').getByRole('button', { name: '用户管理', exact: true }).count(), 1)
     assert.deepEqual(owners,['Alice','Bob']);assert.deepEqual(f.errors,[])
   }finally{await f.close()}
 })
@@ -45,10 +47,10 @@ test('sidebar paginates independently, preserves manager navigation and switches
       else await route.fulfill({json:snapshot(url.searchParams.get('sessionId'))});return true
     }
     return false
-  }, {viewport:{width:1180,height:760}})
+  }, {viewport:{width:1180,height:560}})
   try {
     const {page}=f
-    await page.setViewportSize({width:1180,height:760})
+    await page.setViewportSize({width:1180,height:560})
     await page.locator('.quick-session').nth(9).waitFor()
     assert.deepEqual(requests,[{page:1,size:10,q:''}])
     assert.equal(await page.locator('.quick-session').count(),10)
@@ -98,6 +100,21 @@ test('sidebar paginates independently, preserves manager navigation and switches
     assert.ok((await page.locator('.quick-session').textContent()).includes('s24'))
     assert.deepEqual(requests.at(-1),{page:1,size:10,q:'s24'})
     assert.equal(await page.locator('.sessions-page').count(),1)
+    assert.equal(await page.locator('.quick-heading').count(),0)
+    const searchStyle=await page.locator('.quick-search input').evaluate(el=>({border:getComputedStyle(el).borderTopWidth,bg:getComputedStyle(el).backgroundColor}))
+    assert.equal(searchStyle.border,'0px');assert.equal(searchStyle.bg,'rgba(0, 0, 0, 0)')
+    await page.locator('.session-search input').click()
+    await page.locator('.quick-search').waitFor({state:'detached'})
+    await page.getByRole('button',{name:'搜索最近会话',exact:true}).click()
+    await page.getByRole('searchbox',{name:'搜索最近会话标题'}).waitFor()
+    assert.equal(await page.getByRole('searchbox',{name:'搜索最近会话标题'}).inputValue(),'')
+    const reveal=await page.locator('.quick-search').evaluate(el=>({duration:getComputedStyle(el).transitionDuration,origin:getComputedStyle(el,'::after').transformOrigin}))
+    assert.ok(reveal.origin.startsWith('0px'))
+    await page.getByRole('searchbox',{name:'搜索最近会话标题'}).press('Escape')
+    await page.locator('.quick-search').waitFor({state:'detached'})
+    await page.getByRole('button',{name:'搜索最近会话',exact:true}).click()
+    await page.getByRole('searchbox',{name:'搜索最近会话标题'}).fill('s24')
+    await page.waitForFunction(()=>document.querySelectorAll('.quick-session').length===1)
     await page.screenshot({path:new URL('../../desktop/.cache/quick-list-implemented.png',import.meta.url).pathname.replace(/^\/(\w:)/,'$1')})
     for (const theme of ['dark','light']) {
       await page.evaluate(value=>document.documentElement.dataset.theme=value,theme)

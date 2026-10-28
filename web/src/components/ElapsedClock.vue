@@ -28,18 +28,20 @@ const angle = computed(() => Math.floor(Math.max(0, props.elapsedMs || 0) / 1000
 
 <style scoped>
 .elapsed-clock {
-  --clock-rim-edge: #9daab64d;
-  --clock-well-edge: #bec9d57a;
-  --clock-tick: #637384;
-  --clock-major: #344556;
-  --clock-hand: #be477e;
-  --clock-pin: #d66a9a;
-  --clock-pin-edge: #fff0f7;
+  --clock-accent: var(--appearance-accent, var(--chrome-accent, #8c456e));
+  --clock-neutral: var(--chrome-muted, #737983);
+  --clock-rim-edge: color-mix(in srgb, var(--clock-neutral) 30%, transparent);
+  --clock-well-edge: color-mix(in srgb, var(--clock-neutral) 45%, transparent);
+  --clock-tick: var(--clock-neutral);
+  --clock-major: var(--clock-neutral);
+  --clock-hand: var(--clock-accent);
+  --clock-pin: var(--clock-accent);
+  --clock-pin-edge: var(--chrome-bg, var(--bg));
   display: inline-flex;
   align-items: center;
   gap: 2px;
   vertical-align: middle;
-  color: inherit;
+  color: var(--clock-neutral);
   background: transparent;
 }
 .elapsed-clock-face {
@@ -60,27 +62,15 @@ const angle = computed(() => Math.floor(Math.max(0, props.elapsedMs || 0) / 1000
 .elapsed-clock-value {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--appearance-code-font, ui-monospace, SFMono-Regular, Consolas, monospace);
   white-space: nowrap;
   opacity: .85;
 }
-/* Use the existing application theme, not a separate clock preference. */
-:global(:root[data-theme='dark'] .elapsed-clock) {
-  --clock-rim-edge: #aeb9c529;
-  --clock-well-edge: #10182066;
-  --clock-tick: #8996a4;
-  --clock-major: #c6d2dd;
-  --clock-hand: #e28ab7;
-  --clock-pin: #f5d1e4;
-  --clock-pin-edge: #342c36;
-}
-/* Successful completion uses a softer green across the whole clock. */
-.elapsed-clock.is-completed { --clock-complete: #64a780; }
-:global(:root[data-theme='dark'] .elapsed-clock.is-completed) { --clock-complete: #94cba5; }
+/* Only the face and duration signal success; the hand retains the chosen accent. */
+.elapsed-clock.is-completed { --clock-complete: #20b76a; }
+:global(:root[data-theme='dark'] .elapsed-clock.is-completed) { --clock-complete: #4ddd8b; }
 .elapsed-clock.is-completed .clock-rim,
 .elapsed-clock.is-completed .clock-well,
-.elapsed-clock.is-completed .clock-ticks line,
-.elapsed-clock.is-completed .clock-hand line { stroke: var(--clock-complete); }
-.elapsed-clock.is-completed .clock-pin { fill: var(--clock-complete); stroke: var(--clock-complete); }
+.elapsed-clock.is-completed .clock-ticks line { stroke: var(--clock-complete); }
 .elapsed-clock.is-completed .elapsed-clock-value { color: var(--clock-complete); opacity: 1; }
 </style>

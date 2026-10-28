@@ -1,3 +1,4 @@
+import '../shared/theme-tooltip.js'
 import { createApp } from 'vue'
 import './style.css'
 import './neo-brutalist-soft.css'

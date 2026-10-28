@@ -4,6 +4,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 const props = defineProps({
   modelValue: { default: '' },
   options: { type: Array, default: () => [] },
+  editable: Boolean,
+  inputId: String,
   disabled: { type: Boolean, default: false },
   ariaLabel: { type: String, default: '请选择' },
   placeholder: { type: String, default: '请选择' },
@@ -54,8 +56,9 @@ function closeMenu() {
   document.removeEventListener('scroll', positionMenu, true)
 }
 
-async function openMenu(focusLast = false) {
-  if (props.disabled || open.value) return
+async function openMenu(focusLast = false, focusOption = true) {
+  if (props.disabled) return
+  if (open.value) { if (focusOption) menu.value?.querySelector('button:not(:disabled)')?.focus(); return }
   open.value = true
   positionMenu()
   window.addEventListener('resize', positionMenu)
@@ -64,9 +67,14 @@ async function openMenu(focusLast = false) {
   const buttons = [...(menu.value?.querySelectorAll('button:not(:disabled)') || [])]
   const selected = menu.value?.querySelector('button[aria-selected="true"]')
   const target = selected || (focusLast ? buttons.at(-1) : buttons[0])
-  target?.focus()
+  if (focusOption) target?.focus()
 }
 
+function inputValue(event) {
+  emit('update:modelValue', event.target.value)
+  emit('change', event.target.value)
+  void openMenu(false, false)
+}
 function toggleMenu() {
   if (open.value) closeMenu()
   else void openMenu()
@@ -79,10 +87,12 @@ function selectOption(option) {
     emit('update:modelValue', option.value)
     emit('change', option.value)
   }
-  nextTick(() => root.value?.querySelector('.neo-select-trigger')?.focus())
+  nextTick(() => root.value?.querySelector('.neo-select-input, .neo-select-trigger')?.focus())
 }
 
 function handleTriggerKeydown(event) {
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.key === 'Tab' || event.key === 'Enter') { closeMenu(); return }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     void openMenu(event.key === 'ArrowUp')
@@ -116,7 +126,7 @@ function handleMenuKeydown(event) {
     event.preventDefault()
     event.stopPropagation()
     closeMenu()
-    nextTick(() => root.value?.querySelector('.neo-select-trigger')?.focus())
+    nextTick(() => root.value?.querySelector('.neo-select-input, .neo-select-trigger')?.focus())
   } else if (event.key === 'Tab') closeMenu()
 }
 
@@ -130,7 +140,11 @@ onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown',
 
 <template>
   <span ref="root" class="neo-select" :class="{ open, disabled }">
-    <button
+    <div v-if="editable" class="neo-select-editable">
+      <input :id="inputId" class="neo-select-input" :value="modelValue" :disabled="disabled" :placeholder="placeholder" :aria-label="ariaLabel" role="combobox" aria-autocomplete="list" :aria-expanded="open" :aria-controls="menuId" autocomplete="off" maxlength="160" @input="inputValue" @click="openMenu(false, false)" @keydown="handleTriggerKeydown" />
+      <button class="neo-select-trigger neo-select-toggle" type="button" :disabled="disabled" :aria-label="'展开'+ariaLabel" :aria-expanded="open" @click="toggleMenu" @keydown="handleTriggerKeydown"></button>
+    </div>
+    <button v-else
       type="button"
       class="neo-select-trigger"
       :disabled="disabled"

@@ -31,20 +31,14 @@
 :root[data-appearance] :is(button, a, input, textarea):focus-visible { outline-color: var(--appearance-accent-focus, var(--chrome-accent)); }
 @media(max-width:820px) { :root[data-appearance] :is(.message-text, .markdown) pre { font-size: var(--appearance-code-size, 12px); } }
 
-/* Controls deliberately keep legible, fixed-size chrome while the preview and
-   workspace receive the draft. A bad text/background combination cannot trap users. */
+/* The editor shares model-page chrome; the preview alone depicts edited content. */
 :root[data-theme] .appearance-editor {
-  --control-radius: 5px; --control-font: system-ui, "Microsoft YaHei", sans-serif; --control-font-size: 13px;
-  --chrome-bg: #ffffff; --chrome-panel: #ffffff; --chrome-surface: #ffffff; --chrome-raised: #ffffff;
-  --chrome-text: #20252d; --chrome-muted: #556070; --chrome-line: #d5dae2; --chrome-line-soft: #e7e9ee;
-  --chrome-accent: var(--editor-accent, #8c456e); --chrome-accent-soft: var(--editor-accent-soft, #f7e9f1); --chrome-hover: var(--editor-accent-hover, #f5f3f6);
-  color: var(--chrome-text); background: var(--chrome-bg); font: 13px/1.5 system-ui, 'Microsoft YaHei', sans-serif;
-  border-radius: 8px; padding: 0 8px 12px; max-width: 1120px; margin-inline: auto;
-}
-:root[data-theme='dark'] .appearance-editor {
-  --chrome-bg: #111418; --chrome-panel: #15191f; --chrome-surface: #191e25; --chrome-raised: #191e25;
-  --chrome-text: #d7dce3; --chrome-muted: #9aa4b2; --chrome-line: #2b323d; --chrome-line-soft: #242b35;
-  --chrome-accent: var(--editor-accent, #bb8ea6); --chrome-accent-soft: var(--editor-accent-soft, #302630); --chrome-hover: var(--editor-accent-hover, #232a34);
+  --control-radius: var(--appearance-radius, 5px);
+  --control-font: var(--chrome-sans, system-ui, sans-serif);
+  --control-font-size: calc(12px * var(--appearance-ui-scale, 1));
+  color: var(--chrome-text); background: transparent;
+  font: calc(13px * var(--appearance-ui-scale, 1))/1.5 var(--chrome-sans, system-ui, sans-serif);
+  padding: 0 0 12px; max-width: 1120px; margin-inline: auto;
 }
 :root[data-theme] .appearance-editor button:where(:not(.neo-select-trigger):not([role='option'])) { min-height: 32px; padding: 5px 10px; font: inherit; color: var(--chrome-text); background: transparent; border: 1px solid transparent; border-radius: 5px; box-shadow: none; }
 :root[data-theme] .appearance-editor button:where(:not(.neo-select-trigger):not([role='option'])):hover:not(:disabled) { background: var(--chrome-hover); }
@@ -75,7 +69,6 @@
 .appearance-preset-save input { width: 100%; padding: 8px; }
 .appearance-tabs { display: flex; gap: 12px; border-bottom: 1px solid var(--chrome-line-soft); margin: 22px 0; }
 :root[data-theme] .appearance-tabs button { border-radius: 0; padding: 10px 12px; }
-:root[data-theme] .appearance-tabs button[aria-current='page'] { border-bottom-color: var(--chrome-accent); }
 .appearance-body { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(250px, 1.1fr); gap: 28px; align-items: start; }
 .appearance-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
 .appearance-row { display: flex; align-items: center; gap: 10px; min-height: 48px; }
@@ -116,8 +109,6 @@
 .appearance-preview-answer p { margin: 8px 0 var(--appearance-paragraph-spacing, 12px); letter-spacing: var(--appearance-letter-spacing, normal); }
 .appearance-preview-answer a { color: var(--appearance-accent, var(--chrome-accent)); }
 .appearance-preview-answer pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--appearance-code-bg, var(--chrome-surface)); border-radius: var(--appearance-radius, 5px); padding: 12px; font: var(--appearance-code-size, 12px)/1.7 var(--appearance-code-font, ui-monospace, monospace); }
-.appearance-preview-answer code span { color: var(--appearance-syntax-keyword, #b38bbf); }
-.appearance-preview-answer code em { color: var(--appearance-syntax-string, #78a997); font-style: normal; }
 .appearance-preview-input { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 40px; padding: 12px; background: var(--appearance-surface, var(--chrome-surface)); border: var(--appearance-border-width, 1px) solid var(--appearance-line, var(--chrome-line)); border-radius: var(--appearance-radius, 7px); font: 12px/1.5 var(--appearance-ui-font, system-ui, sans-serif); color: var(--appearance-muted, var(--chrome-muted)); }
 :root[data-theme] .appearance-preview-input button { background: var(--appearance-accent-soft, var(--chrome-accent-soft)); color: var(--appearance-accent-onSoft, var(--chrome-accent)); }
 .appearance-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #c97882; }
@@ -131,10 +122,10 @@
 :root[data-theme] .appearance-editor input[type='color'] { width: 40px; min-width: 40px; height: 28px; padding: 2px !important; border: 1px solid var(--chrome-line) !important; }
 :root[data-theme] .appearance-editor input[type='range'] { border: 0 !important; padding: 0 !important; background: transparent !important; }
 :root[data-theme] .appearance-editor .appearance-background-picker { border: 1px dashed var(--chrome-line) !important; }
-:root[data-theme] .appearance-editor .appearance-apply { background: var(--chrome-accent-soft) !important; border: 1px solid var(--chrome-accent) !important; color: var(--editor-accent-on-soft, var(--chrome-accent)) !important; }
+:root[data-theme] .appearance-editor .appearance-apply { background: var(--chrome-accent-soft) !important; border: 1px solid var(--chrome-accent) !important; color: var(--appearance-accent-onSoft, var(--chrome-accent)) !important; }
 :root[data-theme] .appearance-editor .appearance-preview-input button { background: var(--appearance-accent-soft, var(--chrome-accent-soft)) !important; color: var(--appearance-accent-onSoft, var(--chrome-accent)) !important; }
 :root[data-theme] .appearance-mode button[aria-pressed='true'] { border: 1px solid var(--chrome-accent) !important; }
-:root[data-theme] .appearance-tabs button[aria-current='page'] { border-bottom: 1px solid var(--chrome-accent) !important; }
+:root[data-theme] .appearance-editor .appearance-tabs button[aria-current='page'] { border: 1px solid var(--chrome-accent) !important; }
 .appearance-file { display: none; }
 @media(max-width:1100px) { .appearance-body { grid-template-columns: minmax(0, 1fr); } .appearance-preview { position: relative; top: 0; max-width: 560px; } }
 @media(max-width:520px) { .appearance-presets details { margin-left: 0; } .appearance-preset-save { left: 0; right: auto; } .appearance-slider { grid-template-columns: 72px minmax(40px,1fr) 32px 28px; gap: 4px; } }

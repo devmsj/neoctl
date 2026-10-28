@@ -122,7 +122,7 @@ function createRenderer(element) {
           link.classList.add('inline-resource-link', `inline-resource-${resource.kind || 'link'}`)
           if (resource.kind === 'download' || resource.downloadName) {
             link.setAttribute('download', resource.downloadName || resource.label || '')
-            link.setAttribute('title', resourceActionTitle(resource.label || resource.downloadName))
+            link.setAttribute('data-tooltip', resourceActionTitle(resource.label || resource.downloadName))
             link.removeAttribute('target')
             link.removeAttribute('rel')
             link.dataset.resourceAction = isDesktop() ? '' : '下载'

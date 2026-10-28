@@ -65,7 +65,7 @@ try {
   await page.evaluate(s=>window.obs10Sync(s),snapshot);await open()
   snapshot=observabilitySnapshot({session:{sessionId:'other-session',title:'Other'},lines:[line(1,'auto',[image('new','/api/obs10-original2')])]})
   await page.keyboard.press('Escape')
-  await page.locator('.nav button').first().click() // Real UI session change; do not bypass binding guard.
+  await page.locator('.sidebar').getByRole('button',{name:'新建会话',exact:true}).click() // Real UI session change; do not bypass binding guard.
   await page.waitForTimeout(150)
   await open()
   await page.getByText('33 × 19',{exact:true}).waitFor();await page.waitForTimeout(650)

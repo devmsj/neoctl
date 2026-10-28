@@ -50,3 +50,14 @@
 :root[data-theme] .neo-select .neo-select-menu button:disabled { opacity: .4; cursor: not-allowed; }
 /* Runtime lists retain their compact density, using the same control anatomy. */
 .runtime-context-modal { --control-inner-height: 30px; --control-font-size: calc(11px * var(--appearance-ui-scale, 1)); }
+
+/* Editable font names reuse the same listbox, border and arrow as every select. */
+.neo-select-editable { display:flex; min-width:0; }
+:root[data-theme] .neo-select .neo-select-input {
+  flex:1; width:0; min-width:0; min-height:var(--control-inner-height,34px);
+  padding:6px 10px !important; border:0 !important; border-radius:inherit !important;
+  background:transparent !important; color:var(--select-text) !important;
+  font:inherit !important; line-height:20px; outline:none !important; box-shadow:none !important;
+}
+:root[data-theme] .neo-select .neo-select-toggle { flex:0 0 32px; width:32px; padding:0 !important; }
+.appearance-font .neo-select { flex:1; min-width:0; }

@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
@@ -16,7 +17,7 @@ test('personal customization: independent schemes, one accent, previews, cancel,
  try {
   const p=ui.page
   await p.waitForFunction(()=>document.documentElement.dataset.theme==='dark')
-  await p.getByRole('button',{name:'全局配置',exact:true}).first().click()
+  await openGlobalSettings(p)
   await p.locator('[data-settings-page="appearance"]').click()
   const editor=p.locator('.appearance-editor')
   await editor.getByRole('button',{name:'颜色',exact:true}).click()
@@ -59,7 +60,7 @@ test('personal customization: independent schemes, one accent, previews, cancel,
   await editor.getByRole('button',{name:'返回全局配置',exact:true}).click()
   await p.reload()
   await p.waitForFunction(()=>document.documentElement.style.getPropertyValue('--appearance-accent'))
-  await p.getByRole('button',{name:'全局配置',exact:true}).first().click();await p.locator('[data-settings-page="appearance"]').click()
+  await openGlobalSettings(p);await p.locator('[data-settings-page="appearance"]').click()
   await editor.getByRole('button',{name:'布局',exact:true}).click()
   await editor.locator('#appearance-radius').fill('10')
   await editor.getByRole('button',{name:'应用',exact:true}).click()
@@ -86,5 +87,5 @@ test('isolated users can access personal appearance without model settings', asy
   if(url.pathname==='/api/auth/status'){await route.fulfill({json:{isolation:true,user:{username:'Alice',role:'user'}}});return true}
   if(url.pathname==='/api/appearance'){await route.fulfill({json:{config:emptyAppearance(),revision:'0'}});return true}
  })
- try {await ui.page.getByRole('button',{name:'全局配置',exact:true}).first().click();await ui.page.locator('[data-settings-page="appearance"]').click();await ui.page.locator('.appearance-editor').waitFor();assert.equal(ui.requests.filter(r=>r.url.includes('/api/login')).length,0);assert.deepEqual(ui.errors,[])}finally{await ui.close()}
+ try {await openGlobalSettings(ui.page);await ui.page.locator('[data-settings-page="appearance"]').click();await ui.page.locator('.appearance-editor').waitFor();assert.equal(ui.requests.filter(r=>r.url.includes('/api/login')).length,0);assert.deepEqual(ui.errors,[])}finally{await ui.close()}
 })

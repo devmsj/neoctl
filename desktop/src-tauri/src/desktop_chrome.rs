@@ -26,7 +26,12 @@ fn trusted_page(
 
 fn authorize(window: &WebviewWindow) -> Result<(), String> {
     let state = window.state::<crate::DesktopState>();
-    let runtime = state.runtime_url.lock().map_err(|_| "状态锁错误")?;
+    // WebView URL reads dispatch to the UI thread. Never retain the runtime
+    // mutex across that dispatch: UI-side IPC may need the same state lock.
+    let runtime = {
+        let guard = state.runtime_url.lock().map_err(|_| "状态锁错误")?;
+        guard.clone()
+    };
     let current = window.url().map_err(|error| error.to_string())?;
     if window.label() != "main"
         || !trusted_page(
@@ -45,6 +50,8 @@ fn authorize(window: &WebviewWindow) -> Result<(), String> {
 enum WindowAction {
     Minimize,
     ToggleMaximize,
+    TogglePin,
+    PinState,
     Close,
     Drag,
     State,
@@ -62,6 +69,13 @@ async fn window_action(window: WebviewWindow, action: WindowAction) -> Result<bo
                 window.maximize()
             }
         }
+        // Pin actions return the actual native topmost state, not maximized state.
+        WindowAction::TogglePin => {
+            let pinned = window.is_always_on_top().map_err(|error| error.to_string())?;
+            window.set_always_on_top(!pinned).map_err(|error| error.to_string())?;
+            return window.is_always_on_top().map_err(|error| error.to_string());
+        }
+        WindowAction::PinState => return window.is_always_on_top().map_err(|error| error.to_string()),
         // Keep the existing tray/exit confirmation and managed-process cleanup.
         WindowAction::Close => window.close(),
         WindowAction::Drag => window.start_dragging(),
@@ -106,7 +120,7 @@ async fn application_action(
 
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("desktop-chrome")
-        .js_init_script(include_str!("../../ui/window-chrome.js").to_string())
+        .js_init_script(format!("{}\n{}", include_str!("../../../web/shared/theme-tooltip.js"), include_str!("../../ui/window-chrome.js")))
         .invoke_handler(tauri::generate_handler![window_action, application_action, sync_surface])
         .on_event(|app, event| {
             // Wry handles WM_MOVE. Refresh after DPI transitions and refocus too,

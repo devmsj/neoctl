@@ -69,3 +69,21 @@ test('navigating away from a bootstrap tab creates a separate session hub', asyn
   assert.equal(await router.repls.get('tab:tab-b'), bootstrap);
   assert.equal(await router.repls.get('session:existing-session'), target);
 });
+
+test('deleting a shared session retires its old aliases before notifying both tabs', async () => {
+  const { router, created } = createTestRouter();
+  const repl = await router.get({tabId:'deletion-tab'});
+  const old = repl.runtime.engine.snapshot().session.sessionId;
+  await router.get({tabId:'deletion-tab',sessionId:old});
+  await router.get({tabId:'observer-tab',sessionId:old});
+  repl.currentSessionId = () => old;
+  repl.runningSessionIds = () => [];
+  repl.deleteSession = async () => ({ok:true,replacementSessionId:'replacement'});
+  let observer;
+  repl.publishSessionDeletion = () => { observer = router.get({tabId:'observer-tab',sessionId:'replacement'}); };
+  assert.equal((await router.deleteSession({tabId:'deletion-tab',sessionId:old},old)).ok,true);
+  assert.equal(await observer,repl);
+  assert.equal(await router.get({tabId:'deletion-tab',sessionId:'replacement'}),repl);
+  assert.throws(()=>router.get({sessionId:old}),/已删除/);
+  assert.equal(created.length,1);
+});

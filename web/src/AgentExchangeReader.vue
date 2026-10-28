@@ -87,7 +87,7 @@ onBeforeUnmount(() => { epoch++; controller?.abort(); clearTimeout(timer) })
 <template>
   <section class="agent-content-reader agent-parent-messages" aria-label="代理消息">
     <article v-for="item in items" :key="item.id" class="agent-parent-message">
-      <header :title="item.direction" :aria-label="item.direction"><ChromeIcon :name="item.direction.startsWith('主代理') ? 'apply' : 'incoming'" /><strong>{{ item.direction.startsWith('主代理') ? '委派' : '回复' }}</strong></header>
+      <header :data-tooltip="item.direction" :aria-label="item.direction"><ChromeIcon :name="item.direction.startsWith('主代理') ? 'apply' : 'incoming'" /><strong>{{ item.direction.startsWith('主代理') ? '委派' : '回复' }}</strong></header>
       <div v-if="renderMarkdown" class="markdown" v-html="renderMarkdown(item.text)"></div>
       <pre v-else :style="preStyle">{{ item.text }}</pre>
     </article>

@@ -31,6 +31,7 @@ import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import ChromeIcon from './components/ChromeIcon.vue'
 import LoadingRing from './components/LoadingRing.vue'
 import SessionQuickList from './components/SessionQuickList.vue'
+import SidebarActions from './components/SidebarActions.vue'
 import SessionContextMenu from './components/SessionContextMenu.vue'
 import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
@@ -474,7 +475,8 @@ const transcriptLoadingLabel = computed(() => executionLabel({
   imageQueued: !!liveImageCreateLine.value && lineElapsedText(liveImageCreateLine.value) === '排队中',
   outputKind: state.status?.modelOutput?.kind,
 }))
-const transcriptSignal = computed(() => executionSignal(state.status, state.lines, state.runControl.state, state.sessionResumeLoading))
+const transcriptSignal = computed(() => executionSignal(state.status, state.runControl.state, state.sessionResumeLoading,
+  showMainObservation.value ? activityObserved.value : activityPinnedLine.value))
 const transcriptElapsedMs = computed(() => {
   if (state.sessionResumeLoading) return undefined
   const elapsed = executionElapsedMs(state.runControl, state.timingTick, state.connected)
@@ -675,7 +677,7 @@ const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefine
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
 const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
 const isDarkTheme = computed(() => theme.value === 'dark')
-const themeToggleLabel = computed(() => isDarkTheme.value ? '切换到日间模式' : '切换到夜间模式')
+const themeToggleLabel = computed(() => isDarkTheme.value ? '切换到白天' : '切换到夜间')
 const currentCpaQuota = computed(() => {
   if (!state.cpaQuotas.length) return null
   return state.cpaQuotas[state.cpaQuotaIndex % state.cpaQuotas.length] || state.cpaQuotas[0]
@@ -700,6 +702,7 @@ const memoryTrendPath = computed(() => memoryTrendPoints.value.map((point, index
 const memoryHoveredPoint = computed(() => memoryTrendPoints.value[memoryHoverIndex.value] || null)
 
 watch(theme, applyTheme, { immediate: true })
+watch(() => state.activePanel, panel => { document.documentElement.dataset.neoPanel = panel }, { immediate: true })
 const appearanceEditor = ref()
 const appearance = createAppearanceController({
   onTheme: value => { theme.value = value; applyTheme(value) },
@@ -778,6 +781,9 @@ async function logoutUser() {
 }
 
 onMounted(async () => {
+  window.addEventListener('neo:toggle-theme', toggleTheme)
+  window.addEventListener('neo:open-settings', openDesktopSettings)
+  document.documentElement.dataset.neoThemeReady = ''
   void appearance.load()
   disconnectDesktopFileDrops = connectDesktopFileDrops({
     getTarget: () => composerForm.value,
@@ -830,6 +836,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('neo:toggle-theme', toggleTheme)
+  window.removeEventListener('neo:open-settings', openDesktopSettings)
+  delete document.documentElement.dataset.neoThemeReady
+  delete document.documentElement.dataset.neoPanel
   appearance.dispose()
   sessionOpenVersion++; sessionOpenController?.abort()
   disconnectDesktopFileDrops?.()
@@ -1090,6 +1100,15 @@ function connectEvents() {
     } catch {
       // A later sync snapshot repairs malformed or missed output events.
     }
+  })
+  es.addEventListener('session.replaced', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      if (payload.deletedSessionId === runtimeSessionId && payload.sessionId) void openReplacementSession(payload.sessionId)
+    } catch { /* Ignore invalid notifications. */ }
+  })
+  es.addEventListener('session.deleted', (event) => {
+    try { if (JSON.parse(event.data).sessionId === runtimeSessionId) void replaceDeletedSession() } catch { /* Ignore invalid notifications. */ }
   })
   es.addEventListener('client.version', (event) => {
     try {
@@ -2175,6 +2194,7 @@ async function deleteManagedUser(user) {
 }
 
 async function resumeSession(sessionOrId, { quick = false } = {}) {
+  if (sessionDeleting.value) return
   if (!await leaveAppearance()) return
   const session = typeof sessionOrId === 'object' ? sessionOrId : { sessionId: sessionOrId }
   const sessionId = session.sessionId
@@ -2264,6 +2284,7 @@ async function fetchMemoryState() {
 }
 
 async function newSession() {
+  if (sessionDeleting.value && runtimeSessionId) return
   if (!await leaveAppearance()) return
   if (adminViewing.value) return
   sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
@@ -2300,11 +2321,12 @@ function isRunningSession(sessionId) {
 }
 
 const sessionContextTarget = ref(null)
+const sessionDeleting = ref(false)
 function sessionDeleteReason(session) {
   if (!session) return ''
   if (adminViewing.value) return '管理员查看模式不可删除会话'
   if (state.sessionResumeLoading || quickPendingKey.value) return '请等待会话切换完成'
-  if (isCurrentSession(session.sessionId)) return '当前会话不可删除'
+  if (sessionDeleting.value) return '正在删除会话'
   if (isRunningSession(session.sessionId)) return '运行中的会话不可删除'
   return ''
 }
@@ -2320,6 +2342,23 @@ function openSessionContext(event, session) {
 }
 watch(() => state.activePanel, () => { sessionContextTarget.value = null })
 
+async function replaceDeletedSession() {
+  disconnectRuntimeEvents()
+  runtimeSessionId = ''; sessionStorage.removeItem(RUNTIME_SESSION_ID_KEY)
+  state.session = null; runtimeLines.replace([])
+  await newSession()
+}
+
+async function openReplacementSession(sessionId) {
+  sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
+  disconnectRuntimeEvents()
+  rememberRuntimeSession({ sessionId }, true)
+  state.sessionResumeLoading = true
+  state.activePanel = 'chat'
+  try { await fetchState({ silent: true }); quickListRevision.value++; connectEvents() }
+  finally { state.sessionResumeLoading = false }
+}
+
 async function deleteSession(sessionOrId) {
   const session = typeof sessionOrId === 'object' ? sessionOrId : state.sessions.find(item => item.sessionId === sessionOrId) || {sessionId:sessionOrId}
   const sessionId = session.sessionId
@@ -2327,7 +2366,7 @@ async function deleteSession(sessionOrId) {
   if (reason) { notify(reason); return }
   const confirmed = await requestConfirmation({
     title: '删除会话？',
-    message: `“${session?.title || sessionId || '这个会话'}”删除后无法恢复。`,
+    message: `“${session?.title || sessionId || '这个会话'}”删除后无法恢复。${isCurrentSession(sessionId) ? '删除后将打开新会话。' : ''}`,
     confirmLabel: '确认删除',
     tone: 'danger',
   })
@@ -2335,17 +2374,27 @@ async function deleteSession(sessionOrId) {
   const changedReason = sessionDeleteReason(session)
   if (changedReason) { notify(changedReason); return }
   try {
-    await postJson('/api/sessions/delete', { sessionId })
+    sessionDeleting.value = true
+    const current = isCurrentSession(sessionId)
+    if (current) disconnectRuntimeEvents()
+    const result = await postJson('/api/sessions/delete', { sessionId })
+    if (current) {
+      if (result.replacementSessionId) await openReplacementSession(result.replacementSessionId)
+      else {
+        await replaceDeletedSession()
+      }
+    }
     if (state.activePanel === 'sessions') await loadSessionPage(sessionPage.value)
     quickListRevision.value++
     notify('会话已删除')
   } catch (error) {
     notifyActionError(error, '删除会话失败')
-  }
+    if (isCurrentSession(sessionId)) connectEvents()
+  } finally { sessionDeleting.value = false }
 }
 
 const privilegedSettingsTitles = { prompt: '提示词', model: '模型', cpa: 'CPA', tools: '工具', plugins: '插件', feedback: '框架改进建议' }
-const settingsTitles = computed(() => ({ appearance: '客制化', ...(canConfigureModel.value ? privilegedSettingsTitles : {}) }))
+const settingsTitles = computed(() => ({ appearance: '外观', ...(canConfigureModel.value ? privilegedSettingsTitles : {}) }))
 async function navigateSettings(page) {
   if (state.settingsPage === 'appearance' && page !== 'appearance' && !await leaveAppearance()) return
   const previous = state.settingsPage
@@ -2358,6 +2407,19 @@ async function navigateSettings(page) {
     target.focus({ preventScroll: true })
     target.scrollIntoView({ block: 'nearest' })
   }
+}
+
+async function returnToChat() {
+  if (!await leaveAppearance()) return
+  mobileCard.value = ''; closeMobileMenu(); state.activePanel = 'chat'
+}
+function openDesktopSettings() {
+  if (state.activePanel === 'settings') void returnToChat()
+  else void openLogin()
+}
+function toggleSessionManager() {
+  if (state.activePanel === 'sessions') void returnToChat()
+  else void openSessions()
 }
 
 async function openLogin(provider, providerOnly = false, page = '') {
@@ -3644,7 +3706,7 @@ function renderLineResources(line) {
     if (downloadable) {
       const compactSize = escapeHtml(size.replace(/\s+/g, ''))
       const expiresAt = Number(item.expiresAt) || 0
-      return `<a class="resource-file-link" title="${escapeHtml(resourceActionTitle(item.label || item.downloadName))}" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span><span class="resource-file-action">${isDesktop() ? '' : '下载'}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
+      return `<a class="resource-file-link" data-tooltip="${escapeHtml(resourceActionTitle(item.label || item.downloadName))}" href="${href}"${download} data-resource-download="true" data-resource-expires-at="${expiresAt}"><span class="resource-file-name">${label}</span><span class="resource-file-action">${isDesktop() ? '' : '下载'}</span>${compactSize ? `<span class="resource-file-size">(${compactSize})</span>` : ''}</a>`
     }
     return `<a class="resource-card resource-${escapeHtml(item.kind || 'link')}" href="${href}"${download}><span class="resource-icon" aria-hidden="true"></span><span class="resource-main"><strong>${label}</strong><span>${escapeHtml(meta || (downloadable ? '文件已就绪' : '资源已就绪'))}</span></span><span class="resource-action"><span>${action}</span><i aria-hidden="true">${downloadable ? '↓' : '↗'}</i></span></a>`
   }).join('')
@@ -3670,7 +3732,7 @@ function enhanceExposedResourceLinks(html, resources) {
       anchor.setAttribute('download', item.downloadName || item.label || '')
       anchor.removeAttribute('target')
       anchor.removeAttribute('rel')
-      anchor.setAttribute('title', resourceActionTitle(item.label || item.downloadName))
+      anchor.setAttribute('data-tooltip', resourceActionTitle(item.label || item.downloadName))
       anchor.dataset.resourceAction = isDesktop() ? '' : '下载'
       anchor.dataset.resourceDownload = 'true'
       anchor.dataset.resourceExpiresAt = String(Number(item.expiresAt) || 0)
@@ -3776,7 +3838,7 @@ function renderImageGrid(images) {
     const href = escapeHtml(item.originalUrl || item.previewUrl)
     const src = escapeHtml(item.previewUrl)
     const download = escapeHtml(imageDownloadName(item, index))
-    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}" data-resource-download="true" title="${escapeHtml(resourceActionTitle(caption))}">${isDesktop() ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V5h6l2 2h10v13H3V7Zm0 3h18"/></svg>' : '下载'}</a></figure>`
+    return `<figure class="message-image-attachment"><button type="button" class="image-preview-trigger" data-preview-src="${href}" aria-label="预览 ${caption}"><img src="${src}" alt="${caption}" loading="lazy" decoding="async" /></button><figcaption>${caption}</figcaption><a class="image-download" href="${href}" download="${download}" data-resource-download="true" data-tooltip="${escapeHtml(resourceActionTitle(caption))}">${isDesktop() ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V5h6l2 2h10v13H3V7Zm0 3h18"/></svg>' : '下载'}</a></figure>`
   }).join('')
   return `<div class="message-image-attachments image2-output-images">${items}</div>`
 }
@@ -4802,75 +4864,13 @@ function createMobileSession() {
 <template>
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand-row logo-only">
-        <button
-          class="theme-toggle celestial-theme-toggle"
-          type="button"
-          :aria-label="themeToggleLabel"
-          :aria-pressed="isDarkTheme"
-          :title="themeToggleLabel"
-          @click="toggleTheme"
-        >
-          <span class="theme-orbit-scene" aria-hidden="true">
-            <i class="theme-cloud theme-cloud-one"></i>
-            <i class="theme-cloud theme-cloud-two"></i>
-            <i class="theme-star theme-star-one"></i>
-            <i class="theme-star theme-star-two"></i>
-            <i class="theme-star theme-star-three"></i>
-            <span class="theme-orbit-body">
-              <svg class="theme-sun" viewBox="0 0 28 28">
-                <circle cx="14" cy="14" r="5.2" />
-                <path d="M14 2.5v3M14 22.5v3M2.5 14h3M22.5 14h3M5.9 5.9 8 8M20 20l2.1 2.1M22.1 5.9 20 8M8 20l-2.1 2.1" />
-              </svg>
-              <svg class="theme-moon" viewBox="0 0 28 28">
-                <path d="M20.8 18.8A9.2 9.2 0 0 1 9.2 7.2a9.2 9.2 0 1 0 11.6 11.6Z" />
-                <circle cx="10.2" cy="16.8" r="1" />
-                <circle cx="15.4" cy="21" r=".75" />
-              </svg>
-            </span>
-          </span>
-        </button>
-      </div>
-
-      <nav class="nav">
-        <button v-if="!adminViewing" :class="{ active: state.activePanel === 'chat' }" @click="newSession">
-          <span class="nav-button-content">
-            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 4v12M4 10h12" />
-            </svg>
-            <span>新建会话</span>
-          </span>
-        </button>
-        <button :class="{ active: state.activePanel === 'sessions' }" @click="openSessions">
-          <span class="nav-button-content">
-            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M5 4.5h10a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 15 15.5H8l-3.5 2v-3.5A1.5 1.5 0 0 1 3 12.5V6A1.5 1.5 0 0 1 4.5 4.5Z" />
-              <path d="M6.75 8h6.5M6.75 11h4.5" />
-            </svg>
-            <span>会话管理</span>
-          </span>
-        </button>
-        <button v-if="adminViewing" :class="{ active: state.activePanel === 'users' }" @click="openUserManagement">
-          <span class="nav-button-content">
-            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <circle cx="7" cy="7" r="3" />
-              <path d="M2.5 16c.5-3 2-4.5 4.5-4.5s4 1.5 4.5 4.5M13 7h4M15 5v4" />
-            </svg>
-            <span>用户管理</span>
-          </span>
-        </button>
-        <button :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
-          <span class="nav-button-content">
-            <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M10 3.5v2M10 14.5v2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M3.5 10h2M14.5 10h2M5.4 14.6l1.4-1.4M13.2 6.8l1.4-1.4" />
-              <circle cx="10" cy="10" r="2.75" />
-            </svg>
-            <span>全局配置</span>
-          </span>
+      <nav v-if="adminViewing" class="sidebar-top" aria-label="全局导航">
+        <button v-if="adminViewing" type="button" class="sidebar-top-action" :class="{ active: state.activePanel === 'users' }" aria-label="用户管理" data-tooltip="用户管理" @click="openUserManagement">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3"/><path d="M2.5 16c.5-3 2-4.5 4.5-4.5s4 1.5 4.5 4.5M13 7h4M15 5v4"/></svg>
         </button>
       </nav>
 
-      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="quickRunningIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" @open="openQuickSession" @context="openSessionContext" />
+      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="quickRunningIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" :managing="state.activePanel === 'sessions'" @new="newSession" @manage="toggleSessionManager" @open="openQuickSession" @context="openSessionContext" />
 
       <!-- 提示词管理侧栏入口暂时隐藏，保留模板及功能以便恢复。
       <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
@@ -4895,20 +4895,22 @@ function createMobileSession() {
               <strong>{{ item.title }}</strong>
             </div>
             <div class="prompt-card-actions">
-              <button type="button" class="mini-button chrome-icon-button" aria-label="应用" :title="`应用：${item.title}`" @click="applyPromptItem(item)"><ChromeIcon name="apply" /></button>
-              <button type="button" class="mini-button chrome-icon-button" aria-label="编辑" :title="`编辑：${item.title}`" @click="editPromptItem(item)"><ChromeIcon name="edit" /></button>
+              <button type="button" class="mini-button chrome-icon-button" aria-label="应用" :data-tooltip="`应用：${item.title}`" @click="applyPromptItem(item)"><ChromeIcon name="apply" /></button>
+              <button type="button" class="mini-button chrome-icon-button" aria-label="编辑" :data-tooltip="`编辑：${item.title}`" @click="editPromptItem(item)"><ChromeIcon name="edit" /></button>
             </div>
           </article>
         </div>
       </section>
       -->
 
-      <div v-if="authState.isolation" class="sidebar-footer">
+      <div class="sidebar-footer">
+        <SidebarActions :theme-label="themeToggleLabel" :dark="isDarkTheme" @theme="toggleTheme" @settings="openLogin()" />
         <button
+          v-if="authState.isolation"
           class="logout-icon-button"
           type="button"
           aria-label="退出登录"
-          :title="`退出登录（${authState.user?.username}）`"
+          :data-tooltip="`退出登录（${authState.user?.username}）`"
           @click="logoutUser"
         >
           <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
@@ -4923,7 +4925,7 @@ function createMobileSession() {
       <header class="topbar">
         <div class="top-actions">
           <details ref="mobileMenu" class="mobile-nav-menu">
-            <summary aria-label="打开导航菜单" title="导航菜单">
+            <summary aria-label="打开导航菜单" data-tooltip="导航菜单">
               <svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M4 5.5h12M4 10h12M4 14.5h12" />
               </svg>
@@ -4935,6 +4937,7 @@ function createMobileSession() {
               <button v-if="adminViewing" type="button" :class="{ active: state.activePanel === 'users' }" @click="openMobilePanel('users')">用户</button>
               <button v-if="!authState.isolation" type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
               <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">全局配置</button>
+              <button type="button" @click="toggleTheme(); closeMobileMenu()">{{ themeToggleLabel }}</button>
               <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
               <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
                 <span class="core-version-spark spark-a" aria-hidden="true"></span>
@@ -4944,34 +4947,7 @@ function createMobileSession() {
               </div>
             </nav>
           </details>
-          <strong v-if="realSessionTitle" class="mobile-session-title" :title="realSessionTitle">{{ realSessionTitle }}</strong>
-          <button
-            class="ghost mobile-theme-toggle celestial-theme-toggle"
-            type="button"
-            :aria-label="themeToggleLabel"
-            :aria-pressed="isDarkTheme"
-            :title="themeToggleLabel"
-            @click="toggleTheme"
-          >
-            <span class="theme-orbit-scene" aria-hidden="true">
-              <i class="theme-cloud theme-cloud-one"></i>
-              <i class="theme-cloud theme-cloud-two"></i>
-              <i class="theme-star theme-star-one"></i>
-              <i class="theme-star theme-star-two"></i>
-              <i class="theme-star theme-star-three"></i>
-              <span class="theme-orbit-body">
-                <svg class="theme-sun" viewBox="0 0 28 28">
-                  <circle cx="14" cy="14" r="5.2" />
-                  <path d="M14 2.5v3M14 22.5v3M2.5 14h3M22.5 14h3M5.9 5.9 8 8M20 20l2.1 2.1M22.1 5.9 20 8M8 20l-2.1 2.1" />
-                </svg>
-                <svg class="theme-moon" viewBox="0 0 28 28">
-                  <path d="M20.8 18.8A9.2 9.2 0 0 1 9.2 7.2a9.2 9.2 0 1 0 11.6 11.6Z" />
-                  <circle cx="10.2" cy="16.8" r="1" />
-                  <circle cx="15.4" cy="21" r=".75" />
-                </svg>
-              </span>
-            </span>
-          </button>
+          <strong v-if="realSessionTitle" class="mobile-session-title" :data-tooltip="realSessionTitle">{{ realSessionTitle }}</strong>
           <button v-if="canConfigureModel" class="ghost desktop-config-button" @click="openLogin(undefined, false, 'model')">配置模型</button>
           <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
         </div>
@@ -4985,17 +4961,17 @@ function createMobileSession() {
                 <ChromeIcon name="context" /><strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
               </div>
               <div v-if="state.runtimeContext" class="runtime-context-bar-actions">
-                <button v-if="!authState.isolation" type="button" :title="'系统提示词 ' + runtimePromptSections.length" :aria-label="'系统提示词 ' + runtimePromptSections.length" @click="openRuntimeContextModal('prompt')"><ChromeIcon name="prompts" /><strong>{{ runtimePromptSections.length }}</strong></button>
-                <button type="button" :title="'工具 ' + runtimeTools.length" :aria-label="'工具 ' + runtimeTools.length" @click="openRuntimeContextModal('tools')"><ChromeIcon name="tools" /><strong>{{ runtimeTools.length }}</strong></button>
-                <button type="button" :title="'插件 ' + effectiveSessionPluginCount" :aria-label="'插件 ' + effectiveSessionPluginCount" @click="openRuntimeContextModal('plugins')"><ChromeIcon name="plugins" /><strong>{{ effectiveSessionPluginCount }}</strong></button>
+                <button v-if="!authState.isolation" type="button" :data-tooltip="'系统提示词 ' + runtimePromptSections.length" :aria-label="'系统提示词 ' + runtimePromptSections.length" @click="openRuntimeContextModal('prompt')"><ChromeIcon name="prompts" /><strong>{{ runtimePromptSections.length }}</strong></button>
+                <button type="button" :data-tooltip="'工具 ' + runtimeTools.length" :aria-label="'工具 ' + runtimeTools.length" @click="openRuntimeContextModal('tools')"><ChromeIcon name="tools" /><strong>{{ runtimeTools.length }}</strong></button>
+                <button type="button" :data-tooltip="'插件 ' + effectiveSessionPluginCount" :aria-label="'插件 ' + effectiveSessionPluginCount" @click="openRuntimeContextModal('plugins')"><ChromeIcon name="plugins" /><strong>{{ effectiveSessionPluginCount }}</strong></button>
               </div>
-              <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" title="重新加载上下文" aria-label="重新加载上下文" @click="fetchRuntimeContext"><ChromeIcon name="refresh" /></button>
-              <span v-else class="runtime-context-syncing" role="status" aria-label="同步运行上下文" title="同步运行上下文"><ChromeIcon name="refresh" /></span>
+              <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" data-tooltip="重新加载上下文" aria-label="重新加载上下文" @click="fetchRuntimeContext"><ChromeIcon name="refresh" /></button>
+              <span v-else class="runtime-context-syncing" role="status" aria-label="同步运行上下文" data-tooltip="同步运行上下文"><ChromeIcon name="refresh" /></span>
             </section>
             <section v-if="runtimeProjectDocuments.length" class="runtime-context-bar project-context-bar">
               <div class="runtime-context-bar-title"><ChromeIcon name="document" /><strong>项目上下文</strong></div>
               <div class="runtime-context-bar-actions">
-                <button type="button" :title="'项目文档 ' + runtimeProjectDocuments.length" :aria-label="'项目文档 ' + runtimeProjectDocuments.length" @click="openProjectContext"><ChromeIcon name="document" /><strong>{{ runtimeProjectDocuments.length }}</strong></button>
+                <button type="button" :data-tooltip="'项目文档 ' + runtimeProjectDocuments.length" :aria-label="'项目文档 ' + runtimeProjectDocuments.length" @click="openProjectContext"><ChromeIcon name="document" /><strong>{{ runtimeProjectDocuments.length }}</strong></button>
               </div>
             </section>
 
@@ -5057,8 +5033,8 @@ function createMobileSession() {
                       <section v-else-if="isCompactionLine(item)" :class="['compaction-context-bar', { current: item.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(item)" @keydown.enter.prevent="openCompactionDetail(item)" @keydown.space.prevent="openCompactionDetail(item)">
                     <div class="compaction-context-title"><ChromeIcon name="compact" /><strong>上下文已压缩</strong></div>
                     <div class="compaction-context-actions">
-                      <span :title="'摘要 ' + String(item.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
-                      <span v-if="item.compaction.imageCount" :title="'图片引用 ' + item.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ item.compaction.imageCount }}</strong></span>
+                      <span :data-tooltip="'摘要 ' + String(item.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(item.compaction.summary || '').length) }}</strong></span>
+                      <span v-if="item.compaction.imageCount" :data-tooltip="'图片引用 ' + item.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ item.compaction.imageCount }}</strong></span>
                       <ChromeIcon class="context-chevron" name="chevron" />
                     </div>
                   </section>
@@ -5119,8 +5095,8 @@ function createMobileSession() {
                 <section :class="['compaction-context-bar', { current: line.compaction.current }]" role="button" tabindex="0" aria-label="查看压缩上下文" @click="openCompactionDetail(line)" @keydown.enter.prevent="openCompactionDetail(line)" @keydown.space.prevent="openCompactionDetail(line)">
                     <div class="compaction-context-title"><ChromeIcon name="compact" /><strong>上下文已压缩</strong></div>
                     <div class="compaction-context-actions">
-                      <span :title="'摘要 ' + String(line.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
-                      <span v-if="line.compaction.imageCount" :title="'图片引用 ' + line.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ line.compaction.imageCount }}</strong></span>
+                      <span :data-tooltip="'摘要 ' + String(line.compaction.summary || '').length + ' 字符'"><ChromeIcon name="document" /><strong>{{ compactNumber(String(line.compaction.summary || '').length) }}</strong></span>
+                      <span v-if="line.compaction.imageCount" :data-tooltip="'图片引用 ' + line.compaction.imageCount"><ChromeIcon name="image" /><strong>{{ line.compaction.imageCount }}</strong></span>
                       <ChromeIcon class="context-chevron" name="chevron" />
                     </div>
                   </section>
@@ -5157,7 +5133,7 @@ function createMobileSession() {
                         <div v-else class="image-unavailable-placeholder" role="status">图片不可用</div>
                         <figcaption>{{ imageCaption(item, index) }}</figcaption>
                         <div class="image-card-actions">
-                          <a v-if="item.available && item.previewUrl" class="image-download" :title="resourceActionTitle(imageCaption(item, index))" :aria-label="resourceActionTitle(imageCaption(item, index))" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)" data-resource-download="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg>{{ isDesktop() ? '' : '下载' }}<span v-if="item.sizeBytes !== undefined" class="attachment-size">{{ formatBytes(item.sizeBytes) }}</span></a>
+                          <a v-if="item.available && item.previewUrl" class="image-download" :data-tooltip="resourceActionTitle(imageCaption(item, index))" :aria-label="resourceActionTitle(imageCaption(item, index))" :href="appUrl(item.originalUrl || item.previewUrl)" :download="imageDownloadName(item, index)" data-resource-download="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path :d="isDesktop() ? 'M3 7V5h6l2 2h10v13H3V7Zm0 3h18' : 'M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5'" /></svg>{{ isDesktop() ? '' : '下载' }}<span v-if="item.sizeBytes !== undefined" class="attachment-size">{{ formatBytes(item.sizeBytes) }}</span></a>
                           <button v-if="index === 0 && isImageCreateResultLine(line)" type="button" class="image2-detail-button" @click="openToolDetail(line)">详情</button>
                         </div>
                       </figure>
@@ -5267,7 +5243,7 @@ function createMobileSession() {
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" />
                 <span v-if="transcriptElapsedMs !== undefined" class="execution-signal-divider" aria-hidden="true"></span>
-                <button v-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" title="继续执行" @click="state.runControl.canResume && toggleRunPause()">
+                <button v-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" data-tooltip="继续执行" @click="state.runControl.canResume && toggleRunPause()">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
                 </button>
                 <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="state.session?.sessionId" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />
@@ -5281,7 +5257,7 @@ function createMobileSession() {
           </div>
 
           <div v-if="(state.queuedInput !== undefined || state.queuedAttachments.length) && !adminViewing" class="queued-message" role="group" aria-label="排队消息" :aria-busy="composerActionPending">
-            <span class="queued-message-marker" title="等待发送" aria-label="等待发送"><ChromeIcon name="queue" /></span>
+            <span class="queued-message-marker" data-tooltip="等待发送" aria-label="等待发送"><ChromeIcon name="queue" /></span>
             <div class="queued-message-preview" role="status">
               <div v-if="queuedDisplayText" class="queued-message-text">{{ queuedDisplayText }}</div>
               <div v-if="queuedImages.length" class="message-image-attachments chat-image-thumbnails queued-images">
@@ -5292,8 +5268,8 @@ function createMobileSession() {
               <div v-if="queuedFiles.length" class="message-file-attachments"><span v-for="(file, index) in queuedFiles" :key="index" class="message-file-attachment">{{ file.name }}</span></div>
             </div>
             <div class="queued-message-actions">
-              <button type="button" :disabled="composerActionPending" title="立即发送" aria-label="立即发送" @click="sendQueuedNow"><ChromeIcon name="sendNow" /></button>
-              <button type="button" :disabled="composerActionPending" title="取消排队" aria-label="取消排队" @click="retractQueuedInput"><ChromeIcon name="close" /></button>
+              <button type="button" :disabled="composerActionPending" data-tooltip="立即发送" aria-label="立即发送" @click="sendQueuedNow"><ChromeIcon name="sendNow" /></button>
+              <button type="button" :disabled="composerActionPending" data-tooltip="取消排队" aria-label="取消排队" @click="retractQueuedInput"><ChromeIcon name="close" /></button>
             </div>
           </div>
 
@@ -5307,24 +5283,24 @@ function createMobileSession() {
             @drop="handleComposerDrop"
           >
             <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
-              <span class="composer-app-prompt-label" title="当前提示词" aria-label="当前提示词"><ChromeIcon name="prompts" /></span>
+              <span class="composer-app-prompt-label" data-tooltip="当前提示词" aria-label="当前提示词"><ChromeIcon name="prompts" /></span>
               <strong>{{ activeAppPromptTitle }}</strong>
-              <button type="button" class="mini-button danger chrome-icon-button" title="清空当前提示词" aria-label="清空当前提示词" @click="clearAppPrompt"><ChromeIcon name="close" /></button>
+              <button type="button" class="mini-button danger chrome-icon-button" data-tooltip="清空当前提示词" aria-label="清空当前提示词" @click="clearAppPrompt"><ChromeIcon name="close" /></button>
             </div>
             <div v-if="fileAttachments().length" class="attachments file-attachments">
               <figure v-for="(item, index) in fileAttachments()" :key="item.label" class="file-attachment">
                 <figcaption>
-                  <strong :title="item.localReference ? item.absolutePath : undefined">{{ fileAttachmentLabel(item, index) }}</strong>
+                  <strong :data-tooltip="item.localReference ? item.absolutePath : undefined">{{ fileAttachmentLabel(item, index) }}</strong>
                   <span>{{ fileAttachmentMeta(item) }}</span>
                 </figcaption>
-                <button type="button" aria-label="移除附件" title="移除附件" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
+                <button type="button" aria-label="移除附件" data-tooltip="移除附件" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
               </figure>
             </div>
             <div v-if="imageAttachments().length" class="attachments image-attachments">
               <figure v-for="(item, index) in imageAttachments()" :key="item.label" class="image-attachment">
                 <img :src="appUrl(item.previewUrl)" :alt="item.name || `图片 ${index + 1}`" />
                 <figcaption>图片 {{ index + 1 }}</figcaption>
-                <button type="button" aria-label="移除图片" title="移除图片" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
+                <button type="button" aria-label="移除图片" data-tooltip="移除图片" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
               </figure>
             </div>
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
@@ -5332,26 +5308,26 @@ function createMobileSession() {
             <div class="composer-footer">
               <div id="composer-session-metrics" class="composer-metrics" aria-label="运行状态指标">
                 <div class="composer-usage" role="group" aria-label="模型与用量">
-                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :title="modelName" aria-label="选择模型" @click="openModelModal"><strong>{{ modelName }}</strong></button>
-                <button type="button" class="metric-chip numeric context-window-trigger" title="上下文窗口" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
-                <span class="metric-chip numeric" title="输入 Token"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
-                <span class="metric-chip numeric" title="输出 Token"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
+                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :data-tooltip="modelName" aria-label="选择模型" @click="openModelModal"><strong>{{ modelName }}</strong></button>
+                <button type="button" class="metric-chip numeric context-window-trigger" data-tooltip="上下文窗口" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
+                <span class="metric-chip numeric" data-tooltip="输入 Token"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
+                <span class="metric-chip numeric" data-tooltip="输出 Token"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
                 </div>
               </div>
               <div class="composer-actions">
-                <button type="button" class="workspace-scope-trigger" title="工作区范围" aria-label="工作区范围" @click="openWorkspaceScope"><ChromeIcon name="folder" /></button>
+                <button type="button" class="workspace-scope-trigger" data-tooltip="工作区范围" aria-label="工作区范围" @click="openWorkspaceScope"><ChromeIcon name="folder" /></button>
                 <button
                   type="button"
                   :class="['fast-mode-button', { active: selectedFastMode, syncing: state.fastModeMutating }]"
                   :aria-pressed="selectedFastMode"
                   aria-label="快速模式"
-                  :title="selectedFastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
+                  :data-tooltip="selectedFastMode ? '关闭当前会话的快速模式' : '为当前会话启动快速模式'"
                   @click="toggleFastMode"
                 >
                   <ChromeIcon name="fast" />
                 </button>
                 <span class="compress-wrap">
-                  <button type="button" class="compact-button" :class="{ 'is-compacting': state.status?.phase === 'compacting' || (state.compactSaving && !state.busy), 'is-pending': state.pendingSessionSettings.compact || (state.compactSaving && state.busy) }" :title="compactButtonLabel" :aria-label="compactButtonLabel" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession"><ChromeIcon :name="state.pendingSessionSettings.compact || (state.compactSaving && state.busy) ? 'clock' : 'compact'" /></button>
+                  <button type="button" class="compact-button" :class="{ 'is-compacting': state.status?.phase === 'compacting' || (state.compactSaving && !state.busy), 'is-pending': state.pendingSessionSettings.compact || (state.compactSaving && state.busy) }" :data-tooltip="compactButtonLabel" :aria-label="compactButtonLabel" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession"><ChromeIcon :name="state.pendingSessionSettings.compact || (state.compactSaving && state.busy) ? 'clock' : 'compact'" /></button>
                 </span>
 
                 <button
@@ -5361,7 +5337,7 @@ function createMobileSession() {
                   :disabled="state.uploadingFiles"
                   :aria-busy="state.uploadingFiles"
                   :aria-label="state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件'"
-                  :title="state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件'"
+                  :data-tooltip="state.uploadingFiles ? `上传中 ${state.uploadProgress}%` : '上传附件'"
                   @click="triggerFilePicker"
                 >
                   <svg class="composer-button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 10 5-5a3 3 0 0 1 4 4l-7 7a4.25 4.25 0 0 1-6-6l7-7M6 11l6-6" /></svg>
@@ -5369,7 +5345,7 @@ function createMobileSession() {
                 <button
                   v-if="composerRunning && (composerHasDraft || state.queuedInput) && state.runControl.canPause"
                   type="button" class="ghost composer-pause-toggle"
-                  :disabled="composerActionPending" @click="toggleRunPause" title="立即暂停当前执行" aria-label="暂停"
+                  :disabled="composerActionPending" @click="toggleRunPause" data-tooltip="立即暂停当前执行" aria-label="暂停"
                 ><svg class="composer-button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4v12M14 4v12" stroke-width="3" /></svg></button>
                 <button
                   type="button"
@@ -5377,7 +5353,7 @@ function createMobileSession() {
                   :disabled="composerAction.disabled"
                   :aria-busy="composerAction.action === 'waiting'"
                   :aria-label="composerActionLabel"
-                  :title="composerActionLabel"
+                  :data-tooltip="composerActionLabel"
                   @click="handleComposerAction"
                 >
                   <LoadingRing v-if="composerAction.action === 'waiting'" class="composer-button-icon" data-action="waiting" />
@@ -5403,7 +5379,7 @@ function createMobileSession() {
               v-if="primaryBackgroundTask"
               type="button"
               class="background-task-summary"
-              :title="backgroundTaskTitle(primaryBackgroundTask)"
+              :data-tooltip="backgroundTaskTitle(primaryBackgroundTask)"
               @click="openBackgroundTaskDetail(primaryBackgroundTask)"
             >
               <TaskStatusIcon :status="primaryBackgroundTask.status" />
@@ -5419,7 +5395,7 @@ function createMobileSession() {
                   :key="backgroundTaskKey(task)"
                   type="button"
                   class="background-task-summary background-task-history-item"
-                  :title="backgroundTaskTitle(task)"
+                  :data-tooltip="backgroundTaskTitle(task)"
                   @click="openBackgroundTaskDetail(task)"
                 >
                   <TaskStatusIcon :status="task.status" />
@@ -5432,13 +5408,13 @@ function createMobileSession() {
           <section v-if="currentCpaQuota" class="quota-card" data-card="quota">
             <div class="quota-card-head">
               <div>
-                <span class="chrome-label" :title="`周额度：${quotaAccountLabel(currentCpaQuota.account)}
+                <span class="chrome-label" :data-tooltip="`周额度：${quotaAccountLabel(currentCpaQuota.account)}
 续期：${formatQuotaReset(currentCpaQuota.resetAt)}`"><ChromeIcon name="quota" />剩余额度</span>
                 <strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong>
               </div>
               <div v-if="state.cpaQuotas.length > 1" class="quota-card-controls">
                 <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="上一个凭据" @click="rotateCpaQuota(-1)">‹</button>
-                <small :title="quotaAccountLabel(currentCpaQuota.account)">{{ state.cpaQuotaIndex + 1 }}/{{ state.cpaQuotas.length }}</small>
+                <small :data-tooltip="quotaAccountLabel(currentCpaQuota.account)">{{ state.cpaQuotaIndex + 1 }}/{{ state.cpaQuotas.length }}</small>
                 <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="下一个凭据" @click="rotateCpaQuota(1)">›</button>
               </div>
             </div>
@@ -5449,7 +5425,7 @@ function createMobileSession() {
           <section class="quota-card memory-card" data-card="memory">
             <div class="memory-card-head">
               <div>
-                <span class="chrome-label" :title="rightPanelTitle('memory')"><ChromeIcon name="memory" />内存</span>
+                <span class="chrome-label" :data-tooltip="rightPanelTitle('memory')"><ChromeIcon name="memory" />内存</span>
                 <strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong>
               </div>
             </div>
@@ -5489,7 +5465,7 @@ function createMobileSession() {
               <h2>会话管理</h2>
 
             </div>
-            <button v-if="!adminViewing" class="primary page-icon-button" title="新建会话" aria-label="新建会话" @click="newSession"><ChromeIcon name="plus" /></button>
+            <button v-if="!adminViewing" class="primary page-icon-button" data-tooltip="新建会话" aria-label="新建会话" @click="newSession"><ChromeIcon name="plus" /></button>
           </div>
           <div class="session-toolbar">
             <label class="session-search" aria-label="搜索会话">
@@ -5509,18 +5485,18 @@ function createMobileSession() {
                   <span v-else-if="isRunningSession(session.sessionId)" class="live-pill">运行中</span>
                 </div>
                 <div class="session-card-meta">
-                  <code :title="session.sessionId">ID {{ session.sessionId }}</code>
+                  <code :data-tooltip="session.sessionId">ID {{ session.sessionId }}</code>
                   <time :datetime="session.updatedAt || session.createdAt">更新于 {{ formatSessionTime(session.updatedAt || session.createdAt) }}</time>
                 </div>
               </div>
               <div class="session-actions">
-                <button class="page-icon-button" :disabled="state.sessionResumeLoading || state.sessionsLoading" :title="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中' : '打开'" aria-label="打开会话" :aria-busy="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" @click="resumeSession(session)"><LoadingRing v-if="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" /><ChromeIcon v-else name="apply" /></button>
-                <button v-if="!adminViewing" class="danger page-icon-button" title="删除会话" aria-label="删除会话" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)"><ChromeIcon name="trash" /></button>
+                <button class="page-icon-button" :disabled="state.sessionResumeLoading || state.sessionsLoading" :data-tooltip="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading ? '打开中' : '打开'" aria-label="打开会话" :aria-busy="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" @click="resumeSession(session)"><LoadingRing v-if="state.pendingResumeSessionId === session.sessionId && state.sessionResumeLoading" /><ChromeIcon v-else name="apply" /></button>
+                <button v-if="!adminViewing" class="danger page-icon-button" data-tooltip="删除会话" aria-label="删除会话" :disabled="state.sessionResumeLoading || state.sessionsLoading" @click="deleteSession(session.sessionId)"><ChromeIcon name="trash" /></button>
               </div>
             </article>
           </div>
           <nav v-if="!state.sessionsLoading && sessionTotal && sessionTotalPages > 1" class="session-pagination" aria-label="会话分页">
-            <button type="button" :disabled="sessionPage === 1" @click="loadSessionPage(sessionPage - 1)" title="上一页" aria-label="上一页"><ChromeIcon name="back" /></button>
+            <button type="button" :disabled="sessionPage === 1" @click="loadSessionPage(sessionPage - 1)" data-tooltip="上一页" aria-label="上一页"><ChromeIcon name="back" /></button>
             <button
               v-for="page in sessionPageNumbers"
               :key="page"
@@ -5529,7 +5505,7 @@ function createMobileSession() {
               :aria-current="page === sessionPage ? 'page' : undefined"
               @click="page !== sessionPage && loadSessionPage(page)"
             >{{ page }}</button>
-            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="loadSessionPage(sessionPage + 1)" title="下一页" aria-label="下一页"><ChromeIcon name="apply" /></button>
+            <button type="button" :disabled="sessionPage === sessionTotalPages" @click="loadSessionPage(sessionPage + 1)" data-tooltip="下一页" aria-label="下一页"><ChromeIcon name="apply" /></button>
           </nav>
         </div>
       </section>
@@ -5541,7 +5517,7 @@ function createMobileSession() {
           </div>
           <form class="admin-user-form" @submit.prevent="createManagedUser">
             <label>用户名<input v-model="adminUsername" maxlength="100" autocomplete="off" required /></label>
-            <button class="primary page-icon-button" title="创建普通用户" aria-label="创建普通用户" :disabled="state.adminUserBusy"><ChromeIcon name="plus" /></button>
+            <button class="primary page-icon-button" data-tooltip="创建普通用户" aria-label="创建普通用户" :disabled="state.adminUserBusy"><ChromeIcon name="plus" /></button>
           </form>
           <p v-if="state.adminUserError" class="admin-user-error" role="alert">{{ state.adminUserError }}</p>
           <div v-if="state.adminUsersLoading" class="empty-state">正在加载用户…</div>
@@ -5550,7 +5526,7 @@ function createMobileSession() {
               <div class="session-card-main">
                 <div class="session-card-title"><strong>{{ user.username }}</strong><span class="current-pill">{{ user.role === 'admin' ? '超管' : '普通用户' }}</span></div>
               </div>
-              <div class="session-actions"><button v-if="user.role !== 'admin'" class="danger page-icon-button" title="删除账号" aria-label="删除账号" :disabled="state.adminUserBusy" @click="deleteManagedUser(user)"><ChromeIcon name="trash" /></button></div>
+              <div class="session-actions"><button v-if="user.role !== 'admin'" class="danger page-icon-button" data-tooltip="删除账号" aria-label="删除账号" :disabled="state.adminUserBusy" @click="deleteManagedUser(user)"><ChromeIcon name="trash" /></button></div>
             </article>
           </div>
         </div>
@@ -5561,8 +5537,8 @@ function createMobileSession() {
           <div class="page-head">
             <h2>提示词</h2>
             <div class="page-head-actions">
-              <button class="ghost page-icon-button" title="回到对话" aria-label="回到对话" @click="state.activePanel = 'chat'"><ChromeIcon name="back" /></button>
-              <button class="primary page-icon-button" title="新建提示词" aria-label="新建提示词" @click="newPromptItem"><ChromeIcon name="plus" /></button>
+              <button class="ghost page-icon-button" data-tooltip="回到对话" aria-label="回到对话" @click="state.activePanel = 'chat'"><ChromeIcon name="back" /></button>
+              <button class="primary page-icon-button" data-tooltip="新建提示词" aria-label="新建提示词" @click="newPromptItem"><ChromeIcon name="plus" /></button>
             </div>
           </div>
           <div class="prompt-workbench">
@@ -5603,9 +5579,9 @@ function createMobileSession() {
               <div class="prompt-editor-toolbar">
                 <strong class="prompt-editor-current">{{ promptDraft.title || '新提示词' }}</strong>
                 <div class="prompt-editor-toolbar-actions">
-                  <button class="mini-button page-icon-button" type="button" title="应用提示词" aria-label="应用提示词" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)"><ChromeIcon name="apply" /></button>
-                  <button class="mini-button page-icon-button" type="button" title="保存提示词" aria-label="保存提示词" @click="savePromptItem"><ChromeIcon name="save" /></button>
-                  <button class="mini-button danger page-icon-button" type="button" title="删除提示词" aria-label="删除提示词" :disabled="!promptDraft.id" @click="deletePromptItem"><ChromeIcon name="trash" /></button>
+                  <button class="mini-button page-icon-button" type="button" data-tooltip="应用提示词" aria-label="应用提示词" :disabled="!selectedPrompt" @click="selectedPrompt && applyPromptItem(selectedPrompt)"><ChromeIcon name="apply" /></button>
+                  <button class="mini-button page-icon-button" type="button" data-tooltip="保存提示词" aria-label="保存提示词" @click="savePromptItem"><ChromeIcon name="save" /></button>
+                  <button class="mini-button danger page-icon-button" type="button" data-tooltip="删除提示词" aria-label="删除提示词" :disabled="!promptDraft.id" @click="deletePromptItem"><ChromeIcon name="trash" /></button>
                 </div>
               </div>
 
@@ -5634,7 +5610,7 @@ function createMobileSession() {
           <template v-else-if="canConfigureModel && state.settingsPage === 'prompt'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
+                <button type="button" class="settings-icon-button" data-tooltip="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
                 <h2>提示词</h2>
               </div>
             </div>
@@ -5643,7 +5619,7 @@ function createMobileSession() {
           <template v-else-if="state.settingsPage === 'feedback'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
+                <button type="button" class="settings-icon-button" data-tooltip="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
                 <h2>框架改进建议</h2>
               </div>
             </div>
@@ -5652,7 +5628,7 @@ function createMobileSession() {
           <template v-else-if="['model', 'cpa', 'tools', 'plugins'].includes(state.settingsPage)">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
-                <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
+                <button type="button" class="settings-icon-button" data-tooltip="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>
                 <h2 tabindex="-1">{{ settingsTitles[state.settingsPage] }}</h2>
               </div>
             </div>
@@ -5728,7 +5704,7 @@ function createMobileSession() {
                     <input v-model="plugin.configuredEnabled" type="checkbox" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" :aria-label="plugin.name" />
                     <span aria-hidden="true"></span>
                   </span>
-                <button v-if="state.globalPlugins.installationSupported" type="button" class="settings-icon-button plugin-uninstall" :title="'卸载 ' + plugin.name" :aria-label="'卸载 ' + plugin.name" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="uninstallPlugin(plugin)"><ChromeIcon name="trash" /></button>
+                <button v-if="state.globalPlugins.installationSupported" type="button" class="settings-icon-button plugin-uninstall" :data-tooltip="'卸载 ' + plugin.name" :aria-label="'卸载 ' + plugin.name" :disabled="state.globalPlugins.locked || state.globalPlugins.loading" @click="uninstallPlugin(plugin)"><ChromeIcon name="trash" /></button>
                 </div>
               </div>
             </form>
@@ -5764,7 +5740,7 @@ function createMobileSession() {
       :class="['core-version', { celebrating: state.coreEasterEgg }]"
       role="button"
       tabindex="0"
-      :title="`内核版本 ${state.coreVersion}`"
+      :data-tooltip="`内核版本 ${state.coreVersion}`"
       @click="triggerCoreEasterEgg"
       @keydown.enter.prevent="triggerCoreEasterEgg"
       @keydown.space.prevent="triggerCoreEasterEgg"
@@ -5782,15 +5758,15 @@ function createMobileSession() {
         <header class="cwd-picker-head">
           <strong>工作区范围</strong>
           <div class="workspace-scope-actions">
-            <button type="button" class="workspace-scope-add" title="添加路径" aria-label="添加路径" :disabled="state.busy || state.workspaceScope.mutating || state.workspaceScope.loading" @click="openCwdPicker"><ChromeIcon name="plus" /></button>
-            <button type="button" title="关闭" aria-label="关闭" @click="closeWorkspaceScope"><ChromeIcon name="close" /></button>
+            <button type="button" class="workspace-scope-add" data-tooltip="添加路径" aria-label="添加路径" :disabled="state.busy || state.workspaceScope.mutating || state.workspaceScope.loading" @click="openCwdPicker"><ChromeIcon name="plus" /></button>
+            <button type="button" data-tooltip="关闭" aria-label="关闭" @click="closeWorkspaceScope"><ChromeIcon name="close" /></button>
           </div>
         </header>
         <div class="workspace-scope-list" :aria-busy="state.workspaceScope.loading">
           <div v-for="path in state.workspaceScope.paths" :key="path" class="workspace-scope-path">
             <ChromeIcon name="folder" />
             <span>{{ path }}</span>
-            <button type="button" :title="'移除 ' + path" :aria-label="'移除 ' + path" :disabled="state.busy || state.workspaceScope.mutating" @click="removeWorkspacePath(path)"><ChromeIcon name="trash" /></button>
+            <button type="button" :data-tooltip="'移除 ' + path" :aria-label="'移除 ' + path" :disabled="state.busy || state.workspaceScope.mutating" @click="removeWorkspacePath(path)"><ChromeIcon name="trash" /></button>
           </div>
           <span v-if="!state.workspaceScope.paths.length" class="workspace-scope-empty">{{ state.workspaceScope.loading ? '读取中' : '暂无路径' }}</span>
         </div>
@@ -5804,15 +5780,15 @@ function createMobileSession() {
       <section class="cwd-picker-modal" role="dialog" aria-modal="true" aria-label="选择工作目录" @keydown="trapSettingsFocus">
         <header class="cwd-picker-head">
           <strong>添加路径</strong>
-          <button type="button" aria-label="返回" title="返回" @click="closeCwdPicker"><ChromeIcon name="back" /></button>
+          <button type="button" aria-label="返回" data-tooltip="返回" @click="closeCwdPicker"><ChromeIcon name="back" /></button>
         </header>
         <form class="cwd-picker-path" @submit.prevent="browseCwd()">
           <input v-model="state.cwdPicker.input" autocomplete="off" spellcheck="false" aria-label="工作目录路径" />
-          <button type="submit" :disabled="state.cwdPicker.loading" title="前往" aria-label="前往"><ChromeIcon name="apply" /></button>
-          <button type="button" :disabled="state.cwdPicker.mutating" title="新建目录" aria-label="新建目录" @click="createCwdDirectory"><ChromeIcon name="folderPlus" /></button>
+          <button type="submit" :disabled="state.cwdPicker.loading" data-tooltip="前往" aria-label="前往"><ChromeIcon name="apply" /></button>
+          <button type="button" :disabled="state.cwdPicker.mutating" data-tooltip="新建目录" aria-label="新建目录" @click="createCwdDirectory"><ChromeIcon name="folderPlus" /></button>
         </form>
         <div class="cwd-picker-shortcuts">
-          <button v-if="state.cwdPicker.parent" type="button" title="上级目录" aria-label="上级目录" @click="browseCwd(state.cwdPicker.parent)"><ChromeIcon name="back" /></button>
+          <button v-if="state.cwdPicker.parent" type="button" data-tooltip="上级目录" aria-label="上级目录" @click="browseCwd(state.cwdPicker.parent)"><ChromeIcon name="back" /></button>
           <span>{{ state.cwdPicker.selectedPath || state.cwdPicker.cwd }}</span>
         </div>
         <div class="cwd-picker-browser">
@@ -5822,7 +5798,7 @@ function createMobileSession() {
               :key="`${location.id}-${location.path}`"
               type="button"
               :class="{ active: state.cwdPicker.cwd === location.path }"
-              :title="location.path"
+              :data-tooltip="location.path"
               @click="browseCwd(location.path)"
             >
               <ChromeIcon :name="location.kind === 'drive' || location.kind === 'volume' ? 'drive' : location.kind === 'home' ? 'home' : 'folder'" />
@@ -5846,8 +5822,8 @@ function createMobileSession() {
           </div>
         </div>
         <footer class="cwd-picker-actions">
-          <button type="button" title="取消" aria-label="取消" @click="closeCwdPicker"><ChromeIcon name="close" /></button>
-          <button type="button" class="primary" :disabled="state.cwdPicker.mutating || state.cwdPicker.loading" title="选择" aria-label="选择" @click="selectCwd"><ChromeIcon name="check" /></button>
+          <button type="button" data-tooltip="取消" aria-label="取消" @click="closeCwdPicker"><ChromeIcon name="close" /></button>
+          <button type="button" class="primary" :disabled="state.cwdPicker.mutating || state.cwdPicker.loading" data-tooltip="选择" aria-label="选择" @click="selectCwd"><ChromeIcon name="check" /></button>
         </footer>
       </section>
     </div>
@@ -5896,7 +5872,7 @@ function createMobileSession() {
     <div v-if="state.modelModalOpen" class="context-window-backdrop" @click.self="closeModelModal">
       <section class="context-window-modal session-model-modal" role="dialog" aria-modal="true" aria-label="选择模型" @keydown="trapSettingsFocus">
         <form @submit.prevent="saveSessionModel">
-          <header class="session-model-header"><h2>模型</h2><button type="button" class="ghost" aria-label="关闭模型选择" title="关闭" @click="closeModelModal"><ChromeIcon name="close" /></button></header>
+          <header class="session-model-header"><h2>模型</h2><button type="button" class="ghost" aria-label="关闭模型选择" data-tooltip="关闭" @click="closeModelModal"><ChromeIcon name="close" /></button></header>
           <input id="session-model-search" v-model="state.modelSearch" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off" />
           <div class="session-model-list" role="radiogroup" aria-label="模型">
             <label v-for="model in filteredModelOptions" :key="model" class="session-model-option" :class="{ selected: state.modelDraft === model }">
@@ -5913,8 +5889,8 @@ function createMobileSession() {
           </fieldset>
           <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>
           <div class="context-window-actions">
-            <button type="button" class="ghost" title="取消" aria-label="取消" @click="closeModelModal"><ChromeIcon name="close" /></button>
-            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft" :aria-busy="state.modelSaving" :aria-label="state.modelSaving ? '保存中' : '确认'" :title="state.modelSaving ? '保存中' : '确认'"><ChromeIcon :name="state.modelSaving ? 'clock' : 'check'" /></button>
+            <button type="button" class="ghost" data-tooltip="取消" aria-label="取消" @click="closeModelModal"><ChromeIcon name="close" /></button>
+            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft" :aria-busy="state.modelSaving" :aria-label="state.modelSaving ? '保存中' : '确认'" :data-tooltip="state.modelSaving ? '保存中' : '确认'"><ChromeIcon :name="state.modelSaving ? 'clock' : 'check'" /></button>
           </div>
         </form>
       </section>
@@ -5941,8 +5917,8 @@ function createMobileSession() {
           </div>
           <p v-if="state.contextWindowError" class="context-window-error" role="alert">{{ state.contextWindowError }}</p>
           <div class="context-window-actions">
-            <button type="button" class="ghost" title="取消" aria-label="取消" @click="closeContextWindowModal"><ChromeIcon name="close" /></button>
-            <button type="submit" class="primary" :disabled="state.contextWindowSaving" :aria-busy="state.contextWindowSaving" :aria-label="state.contextWindowSaving ? '保存中' : '确认'" :title="state.contextWindowSaving ? '保存中' : '确认'"><ChromeIcon :name="state.contextWindowSaving ? 'clock' : 'check'" /></button>
+            <button type="button" class="ghost" data-tooltip="取消" aria-label="取消" @click="closeContextWindowModal"><ChromeIcon name="close" /></button>
+            <button type="submit" class="primary" :disabled="state.contextWindowSaving" :aria-busy="state.contextWindowSaving" :aria-label="state.contextWindowSaving ? '保存中' : '确认'" :data-tooltip="state.contextWindowSaving ? '保存中' : '确认'"><ChromeIcon :name="state.contextWindowSaving ? 'clock' : 'check'" /></button>
           </div>
         </form>
       </section>
@@ -6078,7 +6054,7 @@ function createMobileSession() {
             <ChromeIcon name="tasks" /><strong>后台任务</strong>
             <span class="background-task-modal-count">{{ allBackgroundTasks.length }}</span>
           </div>
-          <button type="button" class="tool-result-modal-close" aria-label="关闭" title="关闭" @click="closeBackgroundTaskDetail"><ChromeIcon name="close" /></button>
+          <button type="button" class="tool-result-modal-close" aria-label="关闭" data-tooltip="关闭" @click="closeBackgroundTaskDetail"><ChromeIcon name="close" /></button>
         </header>
         <div :class="['tool-result-modal-content', 'background-task-page', { single: allBackgroundTasks.length <= 1 }]">
           <nav v-if="allBackgroundTasks.length > 1" class="background-task-index" aria-label="后台任务列表">
@@ -6088,7 +6064,7 @@ function createMobileSession() {
               type="button"
               :class="['background-task-index-item', { active: backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail) }]"
               :aria-current="backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail) ? 'true' : undefined"
-              :title="backgroundTaskTitle(task)"
+              :data-tooltip="backgroundTaskTitle(task)"
               @click="openBackgroundTaskDetail(task)"
             >
               <TaskStatusIcon :status="task.status" />
@@ -6101,12 +6077,12 @@ function createMobileSession() {
             <header class="background-task-detail-head">
               <div class="background-task-detail-title">
                 <TaskStatusIcon :status="state.backgroundTaskDetail.status" />
-                <strong :title="backgroundTaskTitle(state.backgroundTaskDetail)">{{ backgroundTaskTitle(state.backgroundTaskDetail) }}</strong>
+                <strong :data-tooltip="backgroundTaskTitle(state.backgroundTaskDetail)">{{ backgroundTaskTitle(state.backgroundTaskDetail) }}</strong>
               </div>
 
             </header>
             <dl class="background-task-meta" :class="{ empty: !backgroundTaskElapsed(state.backgroundTaskDetail) }">
-              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt title="耗时" aria-label="耗时"><ChromeIcon name="clock" /></dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
+              <div v-if="backgroundTaskElapsed(state.backgroundTaskDetail)"><dt data-tooltip="耗时" aria-label="耗时"><ChromeIcon name="clock" /></dt><dd>{{ backgroundTaskElapsed(state.backgroundTaskDetail) }}</dd></div>
 
             </dl>
             <div class="background-task-detail-body">

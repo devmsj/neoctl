@@ -63,7 +63,7 @@ try {
  assert.equal(await page.locator('.is-pinned img').count(),0)
  assert.ok(!(await page.locator('.is-pinned').innerText()).includes('never-clipboard'))
  assert.ok(!(await page.locator('.is-pinned').innerText()).includes('\x1b'))
- await page.getByRole('button',{name:'切换到夜间模式'}).click();await page.waitForTimeout(250)
+ await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.getByRole('menuitem',{name:/切换到(夜间|白天)/}).click();await page.waitForTimeout(250)
  assert.equal(await color(page.locator('.is-pinned .terminal-text span').filter({hasText:/colored continuation/})),'rgb(205, 49, 49)')
  assert.equal(await color(page.locator('.is-pinned .terminal-text span').filter({hasText:'truecolor'})),'rgb(10, 120, 230)')
  await page.locator('.background-task-summary').first().click()

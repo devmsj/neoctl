@@ -1,13 +1,13 @@
 // Browser/server contract. Appearance never enters a model request or transcript.
 export const APPEARANCE_VERSION = 1
-export const PALETTE_VERSION = 1
+export const PALETTE_VERSION = 2
 export const ASSET_ID = /^[a-f0-9]{64}\.(png|jpg|webp|gif|woff2?|ttf|otf)$/
-export const COLOR_KEYS = ['accent', 'background', 'panel', 'surface', 'text', 'muted', 'border', 'userBackground', 'userText', 'codeBackground']
+export const COLOR_KEYS = ['accent', 'background', 'text', 'muted', 'border', 'userBackground', 'userText', 'codeBackground']
 export const NUMBERS = {
   uiSize: [11, 20], textSize: [12, 28], codeSize: [10, 24], textWeight: [300, 700], lineHeight: [1.3, 2.4], letterSpacing: [-.5, 2],
   paragraphSpacing: [0, 24], radius: [0, 20], borderWidth: [0, 2], messageGap: [0, 32],
   contentWidth: [380, 1600], sidebarWidth: [168, 360], informationWidth: [176, 380],
-  panelOpacity: [20, 100], surfaceOpacity: [20, 100], backgroundOpacity: [0, 100],
+  backgroundOpacity: [0, 100],
   backgroundBlur: [0, 24], backgroundBrightness: [20, 160], backgroundSaturation: [0, 160], backgroundX: [0, 100], backgroundY: [0, 100],
 }
 export const FONTS = ['uiFont', 'textFont', 'codeFont']
@@ -22,7 +22,14 @@ export function normalizeScheme(value) {
   if (!plain(value)) fail('外观方案格式无效')
   const result = {}
   for (const [key, v] of Object.entries(value)) {
-    if (COLOR_KEYS.includes(key)) {
+    // Retired v1 overrides remain readable/importable, but can no longer affect surfaces.
+    if (key === 'panel' || key === 'surface') {
+      if (typeof v !== 'string' || !/^#[\da-f]{6}$/i.test(v)) fail('颜色格式无效')
+      continue
+    } else if (key === 'panelOpacity' || key === 'surfaceOpacity') {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 20 || v > 100) fail('外观数值超出范围：' + key)
+      continue
+    } else if (COLOR_KEYS.includes(key)) {
       if (typeof v !== 'string' || !/^#[\da-f]{6}$/i.test(v)) fail('颜色格式无效')
       result[key] = v.toLowerCase()
     } else if (NUMBERS[key]) {
@@ -90,4 +97,12 @@ export function derivePalette(accent, background) {
   const foreground = readable(accent, background)
   const soft = mix(background, accent, .14)
   return { accent: foreground, soft, hover: mix(background, accent, .2), pressed: mix(background, accent, .3), focus: readable(accent, background, 3), onSoft: readable(accent, soft), faint: mix(background, foreground, .65) }
+}
+
+// Opaque, restrained elevation steps share one background seed in each day/night scheme.
+export function deriveSurfaces(background, mode) {
+  return {
+    panel: mix(background, '#ffffff', mode === 'dark' ? .025 : .32),
+    surface: mix(background, '#ffffff', mode === 'dark' ? .055 : .48),
+  }
 }

@@ -28,7 +28,7 @@ const emit = defineEmits(['toggle', 'select', 'delete'])
         :aria-expanded="!!expanded[node.path]"
         @click.stop="emit('toggle', node)"
       ><ChromeIcon name="chevron" /></button>
-      <button type="button" class="cwd-tree-name" :title="node.path" @click="emit('select', node)">
+      <button type="button" class="cwd-tree-name" :data-tooltip="node.path" @click="emit('select', node)">
         <ChromeIcon name="folder" />
         <strong>{{ node.name }}</strong>
       </button>

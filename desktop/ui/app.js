@@ -97,7 +97,7 @@ function fail(error, action) {
   const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
   $('#retryLabel').textContent = retryLabel;
   retryButton.setAttribute('aria-label', retryLabel);
-  retryButton.setAttribute('title', retryLabel);
+  retryButton.setAttribute('data-tooltip', retryLabel);
   retryButton.hidden = false;
   showView('progressView', 'error');
   // Reveal the actual failure even when the log panel just became visible.
@@ -115,7 +115,7 @@ function updatePathDisplay() {
   const path = pathInput.value.trim() || defaultDir;
   $('#pathDisplay').textContent = path;
   $('#pathName').textContent = path || '—';
-  $('#pathName').setAttribute('title', path);
+  $('#pathName').setAttribute('data-tooltip', path);
   $('#pathOptions').setAttribute('aria-label', installedDir ? '查看数据位置' : '更改安装位置');
 }
 on(pathInput, 'input', () => { directoryNeedsCleanup = false; $('#clearInstallDirectory').hidden = true; updatePathDisplay(); setBusy(busy); });
@@ -359,14 +359,14 @@ async function refreshBackend() {
   try { backendRunning = (await api.core.invoke('runtime_status')) === true; } catch { backendRunning = false; }
   if (disposed) return;
   const status = backendRunning ? '已就绪' : externalRuntime ? '开发服务未连接' : '未启动';
-  enterButton.setAttribute('title', backendRunning ? '进入应用' : '启动并进入');
+  enterButton.setAttribute('data-tooltip', backendRunning ? '进入应用' : '启动并进入');
   enterButton.setAttribute('aria-label', backendRunning ? '进入应用' : '启动并进入');
   $('#enterLabel').textContent = backendRunning ? '进入工作台' : '启动工作台';
   $('#stopBackend').hidden = externalRuntime || !backendRunning;
   $('#backendStatus').textContent = status;
   $('#logDetails').hidden = !installLog.textContent.trim();
   $('#runtimeIndicator').dataset.running = String(backendRunning);
-  $('#runtimeIndicator').setAttribute('title', status);
+  $('#runtimeIndicator').setAttribute('data-tooltip', status);
   $('#runtimeIndicator').setAttribute('aria-label', status);
   setBusy(busy);
 }

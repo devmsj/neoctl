@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
@@ -22,7 +23,7 @@ test('background persists through service recreation; portable bundle restores a
   t.after(() => ui.close())
   const p = ui.page
   const open = async () => {
-    await p.getByRole('button', { name: '全局配置', exact: true }).first().click()
+    await openGlobalSettings(p)
     await p.locator('[data-settings-page="appearance"]').click()
   }
   await open()
@@ -93,7 +94,7 @@ test('background persists through service recreation; portable bundle restores a
   const assetDir = new URL('../dist/assets/', import.meta.url)
   const font = (await fs.readdir(assetDir)).find(name => /^KaTeX_Main-Regular-.*\.woff2$/.test(name))
   await editor.getByRole('button', { name: '字体', exact: true }).click()
-  await editor.getByTitle('导入正文字体', { exact: true }).click()
+  await editor.locator('[data-tooltip="导入正文字体"]').click()
   await editor.getByLabel('上传字体文件').setInputFiles({ name: 'custom.woff2', mimeType: 'font/woff2', buffer: await fs.readFile(new URL(font, assetDir)) })
   await p.waitForFunction(() => [...document.fonts].some(face => face.family.startsWith('neo-') && face.status === 'loaded'))
   await editor.getByRole('button', { name: '应用', exact: true }).click()

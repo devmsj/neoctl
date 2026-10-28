@@ -54,7 +54,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <div v-if="target" ref="menu" class="session-context-menu" role="menu" aria-label="会话操作" :style="{left:left+'px',top:top+'px'}" @contextmenu.prevent>
-      <button type="button" role="menuitem" :aria-disabled="Boolean(disabledReason)" :title="disabledReason || '删除会话'" @click="remove"><ChromeIcon name="trash"/><span>删除</span></button>
+      <button type="button" role="menuitem" :aria-disabled="Boolean(disabledReason)" :data-tooltip="disabledReason || '删除会话'" @click="remove"><ChromeIcon name="trash"/><span>删除</span></button>
     </div>
   </Teleport>
 </template>

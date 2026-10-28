@@ -298,7 +298,7 @@ test('queued fast toggles and modal responses keep their originating session acr
     await dialog.getByRole('button', { name: '确认' }).click()
     await page.keyboard.press('Escape')
     current = snapshot(false, 'session-b')
-    await page.locator('.nav button').filter({ hasText: '新建' }).first().click()
+    await page.locator('.sidebar').getByRole('button',{name:'新建会话',exact:true}).click()
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent === '已创建新会话')
     await page.locator('.model-trigger:visible').waitFor()
     const postNavigationToast = await page.locator('.toast').textContent()

@@ -1,3 +1,4 @@
+import { openGlobalSettings } from './settings-navigation.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
@@ -35,7 +36,7 @@ async function mount() {
 }
 
 async function openGlobal(page) {
-  await page.getByRole('button', { name: '全局配置', exact: true }).first().click()
+  await openGlobalSettings(page)
   await page.getByRole('button', { name: '提示词配置', exact: true }).click()
   const editor = page.locator('.settings-page .prompt-config-editor')
   await editor.getByRole('textbox', { name: '系统提示词' }).waitFor()
