@@ -59,8 +59,8 @@ onBeforeUnmount(() => {
   </Teleport>
 </template>
 <style>
-.session-context-menu{position:fixed;z-index:10000;width:150px;padding:5px;border:1px solid var(--chrome-line,var(--line));border-radius:6px;background:var(--chrome-surface,var(--panel));box-shadow:0 6px 20px #0003;color:var(--chrome-text,var(--text));font:12px/1.5 var(--chrome-sans,sans-serif)}
-.session-context-menu button{display:flex;align-items:center;gap:9px;width:100%;min-height:32px;padding:7px 10px;border:0!important;border-radius:3px;background:transparent!important;color:var(--chrome-danger,var(--red));box-shadow:none!important;cursor:pointer;font:inherit;transform:none!important;transition:none!important}
+.session-context-menu{position:fixed;z-index:10000;width:150px;padding:5px;border:var(--appearance-border-width, 1px) solid var(--chrome-line,var(--line));border-radius:var(--appearance-radius, 6px);background:var(--chrome-surface,var(--panel));box-shadow:0 6px 20px #0003;color:var(--chrome-text,var(--text));font:12px/1.5 var(--chrome-sans,sans-serif)}
+.session-context-menu button{display:flex;align-items:center;gap:9px;width:100%;min-height:32px;padding:7px 10px;border:0!important;border-radius:var(--appearance-radius, 3px);background:transparent!important;color:var(--chrome-danger,var(--red));box-shadow:none!important;cursor:pointer;font:inherit;transform:none!important;transition:none!important}
 .session-context-menu button .chrome-icon{width:15px;height:15px;flex:0 0 15px}
 .session-context-menu button:is(:hover,:focus-visible){background:var(--chrome-hover)!important;outline:none}
 .session-context-menu button[aria-disabled='true']{color:var(--chrome-muted,var(--muted));opacity:.5;cursor:not-allowed}

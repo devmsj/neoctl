@@ -41,7 +41,7 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
     }
     await root.getByRole('button', { name: '模型', exact: true }).waitFor()
     assert.equal(await root.locator('form').count(), 0)
-    assert.equal(await root.locator('.settings-prompt-entry').count(), 6)
+    assert.equal(await root.locator('.settings-prompt-entry').count(), 7)
     assert.equal(await root.locator('.page-head button').count(), 0)
     assert.equal(await root.getByRole('button', { name: '安装可信插件' }).count(), 0)
     assert.ok(!(await root.innerText()).includes('内置与插件工具默认开启'))

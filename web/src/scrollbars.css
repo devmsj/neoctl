@@ -8,7 +8,7 @@
 :where(*)::-webkit-scrollbar-track { background: transparent; }
 :where(*)::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--appearance-radius, 10px);
   background: var(--scroll-thumb);
   background-clip: padding-box;
   min-height: 32px;

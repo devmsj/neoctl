@@ -17,7 +17,7 @@ function withAdminOwner(value) {
   if (!isIsolationAdmin() || !authState.adminOwnerUsername || (typeof value !== 'string' && !(value instanceof URL))) return value;
   const origin = globalThis.location?.origin || 'http://localhost';
   const target = new URL(String(value), origin);
-  if (target.origin !== origin || !/^\/(api(?:\/|$)|events(?:\/|$))/.test(target.pathname) || /^\/api\/(auth|admin|login|memory|cpa-quota|cpa-config|prompt-config|plugins|tools)(?:\/|$)/.test(target.pathname)) return value;
+  if (target.origin !== origin || !/^\/(api(?:\/|$)|events(?:\/|$))/.test(target.pathname) || /^\/api\/(appearance|auth|admin|login|memory|cpa-quota|cpa-config|prompt-config|plugins|tools)(?:\/|$)/.test(target.pathname)) return value;
   target.searchParams.set('ownerUsername', authState.adminOwnerUsername);
   return `${target.pathname}${target.search}${target.hash}`;
 }

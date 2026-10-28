@@ -1,5 +1,8 @@
 <script setup>
 import "./rows-history.css"
+import "./appearance.css"
+import AppearanceSettings from "./components/AppearanceSettings.vue"
+import { createAppearanceController } from "./appearance-controller.mjs"
 import { reconcileActivitySnapshot, runtimeActivitySignal, terminalObservation, referencedImages } from "./tool-runtime-observation.mjs"
 import { applyActivityInput } from "./tool-input-changes.mjs"
 import ToolActivityRow from "./components/ToolActivityRow.vue"
@@ -145,7 +148,7 @@ const ADMIN_OWNER_STORAGE_KEY = 'neoctl-web.adminOwnerUsername'
 if (isIsolationAdmin()) authState.adminOwnerUsername = sessionStorage.getItem(ADMIN_OWNER_STORAGE_KEY) || ''
 const RUNTIME_TAB_ID_KEY = 'neoctl-web.tabId' + authStorageSuffix()
 const RUNTIME_SESSION_ID_KEY = 'neoctl-web.sessionId' + authStorageSuffix()
-const THEME_STORAGE_KEY = 'neoctl-web.theme'
+const THEME_STORAGE_KEY = 'neoctl-web.theme' + authStorageSuffix()
 const CLIENT_REVISION_STORAGE_KEY = 'neoctl-web.clientRevision'
 const CLIENT_RELOAD_STORAGE_KEY = 'neoctl-web.clientReloadRequest'
 const CLIENT_RELOAD_QUERY_KEY = '__neo_reload'
@@ -694,6 +697,31 @@ const memoryTrendPath = computed(() => memoryTrendPoints.value.map((point, index
 const memoryHoveredPoint = computed(() => memoryTrendPoints.value[memoryHoverIndex.value] || null)
 
 watch(theme, applyTheme, { immediate: true })
+const appearanceEditor = ref()
+const appearance = createAppearanceController({
+  onTheme: value => { theme.value = value; applyTheme(value) },
+  onLayout: remeasureAppearance,
+  notify,
+})
+async function leaveAppearance() { return !appearanceEditor.value || await appearanceEditor.value.beforeLeave() }
+async function remeasureAppearance() {
+  const scroller = transcript.value
+  if (!scroller) return
+  const following = transcriptFollow.following
+  const row = [...scroller.querySelectorAll('.virtual-message-row')].find(el => el.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top)
+  const index = row ? Number(row.dataset.index) : -1
+  const offset = row ? row.getBoundingClientRect().top - scroller.getBoundingClientRect().top : 0
+  resetVirtualMessages()
+  await nextTick()
+  updateVirtualScrollMargin(); autosize()
+  if (following) scheduleTranscriptScrollBottom()
+  else if (index >= 0) {
+    messageVirtualizer.value.scrollToIndex(index, { align: 'start' })
+    await nextTick()
+    const anchor = scroller.querySelector(`[data-index="${index}"]`)
+    if (anchor) scroller.scrollTop += anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+  }
+}
 
 watch([composerRunning, isDarkTheme], ([running, dark]) => {
   const fill = running ? (dark ? '#bef264' : '#a3e635') : (dark ? '#38bdf8' : '#7dd3fc')
@@ -747,6 +775,7 @@ async function logoutUser() {
 }
 
 onMounted(async () => {
+  void appearance.load()
   disconnectDesktopFileDrops = connectDesktopFileDrops({
     getTarget: () => composerForm.value,
     onHover: (active) => { state.composerDropActive = active; state.composerDropMode = active ? 'files' : 'prompt' },
@@ -798,6 +827,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  appearance.dispose()
   sessionOpenVersion++; sessionOpenController?.abort()
   disconnectDesktopFileDrops?.()
   clearInterval(runningStatusTimer); runningStatusVersion++; runningStatusController?.abort()
@@ -1405,8 +1435,8 @@ function togglePromptManager() {
   openPromptManager()
 }
 
-function openPromptManager(promptId) {
-  if (authState.isolation) return
+async function openPromptManager(promptId) {
+  if (authState.isolation || !await leaveAppearance()) return
   state.activePanel = 'prompts'
   state.promptManagerOpen = true
   if (promptId) state.selectedPromptId = promptId
@@ -2055,6 +2085,7 @@ function toggleFastMode() {
 }
 
 async function openSessions() {
+  if (!await leaveAppearance()) return
   state.activePanel = 'sessions'
   await loadSessionPage(sessionPage.value)
 }
@@ -2093,6 +2124,7 @@ async function loadSessionPage(page = 1) {
 }
 
 async function openUserManagement() {
+  if (!await leaveAppearance()) return
   if (!adminViewing.value) return
   state.activePanel = 'users'
   state.adminUsersLoading = true
@@ -2144,6 +2176,7 @@ async function deleteManagedUser(user) {
 }
 
 async function resumeSession(sessionOrId, { quick = false } = {}) {
+  if (!await leaveAppearance()) return
   const session = typeof sessionOrId === 'object' ? sessionOrId : { sessionId: sessionOrId }
   const sessionId = session.sessionId
   const owner = adminViewing.value ? session.ownerUsername || authState.adminOwnerUsername : ''
@@ -2232,6 +2265,7 @@ async function fetchMemoryState() {
 }
 
 async function newSession() {
+  if (!await leaveAppearance()) return
   if (adminViewing.value) return
   sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
   resetSessionSettingsUi()
@@ -2311,8 +2345,10 @@ async function deleteSession(sessionOrId) {
   }
 }
 
-const settingsTitles = { prompt: '提示词', model: '模型', cpa: 'CPA', tools: '工具', plugins: '插件', feedback: '框架改进建议' }
+const privilegedSettingsTitles = { prompt: '提示词', model: '模型', cpa: 'CPA', tools: '工具', plugins: '插件', feedback: '框架改进建议' }
+const settingsTitles = computed(() => ({ appearance: '客制化', ...(canConfigureModel.value ? privilegedSettingsTitles : {}) }))
 async function navigateSettings(page) {
+  if (state.settingsPage === 'appearance' && page !== 'appearance' && !await leaveAppearance()) return
   const previous = state.settingsPage
   state.settingsPage = page
   await nextTick()
@@ -2326,7 +2362,8 @@ async function navigateSettings(page) {
 }
 
 async function openLogin(provider, providerOnly = false, page = '') {
-  if (!canConfigureModel.value) return
+  if (!await leaveAppearance()) return
+  if (!canConfigureModel.value) { state.activePanel = 'settings'; state.settingsPage = ''; return }
   state.activePanel = 'settings'
   if (state.loginSaving || state.loginLoading) return
   state.loginLoading = true
@@ -4043,7 +4080,7 @@ function applyTheme(value) {
 }
 
 function toggleTheme() {
-  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  void appearance.quickToggle()
 }
 
 async function handlePaste(event) {
@@ -4745,7 +4782,8 @@ function handleMobileMenuOutsidePointer(event) {
   if (menu?.open && !event.composedPath().includes(menu)) closeMobileMenu()
 }
 
-function openMobilePanel(panel) {
+async function openMobilePanel(panel) {
+  if (!await leaveAppearance()) return
   mobileCard.value = ''
   closeMobileMenu()
   if (panel === 'sessions') return openSessions()
@@ -4822,7 +4860,7 @@ function createMobileSession() {
             <span>用户管理</span>
           </span>
         </button>
-        <button v-if="canConfigureModel" :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
+        <button :class="{ active: state.activePanel === 'settings' }" @click="openLogin()">
           <span class="nav-button-content">
             <svg class="ui-icon nav-icon" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 3.5v2M10 14.5v2M5.4 5.4l1.4 1.4M13.2 13.2l1.4 1.4M3.5 10h2M14.5 10h2M5.4 14.6l1.4-1.4M13.2 6.8l1.4-1.4" />
@@ -4897,7 +4935,7 @@ function createMobileSession() {
               <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
               <button v-if="adminViewing" type="button" :class="{ active: state.activePanel === 'users' }" @click="openMobilePanel('users')">用户</button>
               <button v-if="!authState.isolation" type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
-              <button v-if="canConfigureModel" type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">全局配置</button>
+              <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">全局配置</button>
               <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
               <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
                 <span class="core-version-spark spark-a" aria-hidden="true"></span>
@@ -5591,9 +5629,10 @@ function createMobileSession() {
         </div>
       </section>
 
-      <section v-else-if="canConfigureModel && state.activePanel === 'settings'" class="content-grid single">
+      <section v-else-if="state.activePanel === 'settings'" class="content-grid single">
         <div class="panel-page settings-page">
-          <template v-if="canConfigureModel && state.settingsPage === 'prompt'">
+          <AppearanceSettings v-if="state.settingsPage === 'appearance'" ref="appearanceEditor" :controller="appearance" :confirm="requestConfirmation" @back="state.settingsPage = ''" />
+          <template v-else-if="canConfigureModel && state.settingsPage === 'prompt'">
             <div class="page-head settings-page-head">
               <div class="settings-subpage-title">
                 <button type="button" class="settings-icon-button" title="返回全局配置" aria-label="返回全局配置" @click="navigateSettings('')"><ChromeIcon name="back" /></button>

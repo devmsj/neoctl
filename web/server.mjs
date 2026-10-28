@@ -1,3 +1,4 @@
+import { createAppearanceStore, createAppearanceRoute } from './appearance-store.mjs';
 import http from 'node:http';
 import { createChunkUploadHandler } from './chunk-uploads.mjs';
 import { createLocalResourceHeaders } from './local-resources.mjs';
@@ -32,6 +33,7 @@ const port = Number(process.env.APP_PORT || process.env.PORT || 5173);
 const runtimeTarget = new URL(process.env.NEO_RUNTIME_TARGET || 'http://127.0.0.1:3101');
 const storage = resolveWebStorage();
 const dataRoot = storage.dataRoot;
+const appearanceRoute = createAppearanceRoute(createAppearanceStore(path.join(dataRoot, 'appearance'), { validateImage: validateImageBytes }));
 const workspaceRoot = containerMode ? '/workspace' : storage.workspaceRoot;
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
@@ -132,6 +134,7 @@ async function routeRequest(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   try {
     if (await isolation.route(req, res, url)) return;
+    if (await appearanceRoute(req, res, url)) return;
     if (await pluginHost.route(req, res, url, { readJsonBody, sendJson, localResourceHeaders })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });

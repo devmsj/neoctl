@@ -1,34 +1,34 @@
 /* One restrained rich-text palette for transcript messages and markdown readers. */
 :root {
-  --rich-code-bg: #f6f7fa;
-  --rich-code-text: #374151;
-  --rich-code-line: #e5e8ef;
-  --rich-inline-bg: #f1edf3;
-  --rich-inline-text: #78536e;
-  --syntax-keyword: #86539b;
-  --syntax-string: #39776a;
-  --syntax-title: #3b6e9a;
-  --syntax-number: #99612f;
-  --syntax-property: #8b536b;
-  --syntax-comment: #646e7e;
+  --rich-code-bg: var(--appearance-code-bg, #f6f7fa);
+  --rich-code-text: var(--appearance-text, #374151);
+  --rich-code-line: var(--appearance-line, #e5e8ef);
+  --rich-inline-bg: var(--appearance-accent-soft, #f1edf3);
+  --rich-inline-text: var(--appearance-accent, #78536e);
+  --syntax-keyword: var(--appearance-syntax-keyword, #86539b);
+  --syntax-string: var(--appearance-syntax-string, #39776a);
+  --syntax-title: var(--appearance-syntax-title, #3b6e9a);
+  --syntax-number: var(--appearance-syntax-number, #99612f);
+  --syntax-property: var(--appearance-syntax-property, #8b536b);
+  --syntax-comment: var(--appearance-syntax-comment, #646e7e);
   --syntax-deletion: #ab4c60;
 }
 :root[data-theme='dark'] {
-  --rich-code-bg: #1c222b;
-  --rich-code-text: #d3dce8;
-  --rich-code-line: #2b3542;
-  --rich-inline-bg: #292530;
-  --rich-inline-text: #d2afc5;
-  --syntax-keyword: #c8a5df;
-  --syntax-string: #9cc6b4;
-  --syntax-title: #9dbfe2;
-  --syntax-number: #d8b48a;
-  --syntax-property: #d4a3b7;
-  --syntax-comment: #929fae;
+  --rich-code-bg: var(--appearance-code-bg, #1c222b);
+  --rich-code-text: var(--appearance-text, #d3dce8);
+  --rich-code-line: var(--appearance-line, #2b3542);
+  --rich-inline-bg: var(--appearance-accent-soft, #292530);
+  --rich-inline-text: var(--appearance-accent, #d2afc5);
+  --syntax-keyword: var(--appearance-syntax-keyword, #c8a5df);
+  --syntax-string: var(--appearance-syntax-string, #9cc6b4);
+  --syntax-title: var(--appearance-syntax-title, #9dbfe2);
+  --syntax-number: var(--appearance-syntax-number, #d8b48a);
+  --syntax-property: var(--appearance-syntax-property, #d4a3b7);
+  --syntax-comment: var(--appearance-syntax-comment, #929fae);
   --syntax-deletion: #e2a0ab;
 }
 :root[data-theme] .message-loading-body:has(.execution-signal, .execution-resume) { display: flex; align-items: center; gap: 12px; }
-:root[data-theme] .execution-resume { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0 !important; border-radius: 5px !important; background: transparent !important; color: var(--chrome-accent); box-shadow: none !important; cursor: pointer; }
+:root[data-theme] .execution-resume { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; background: transparent !important; color: var(--chrome-accent); box-shadow: none !important; cursor: pointer; }
 :root[data-theme] .execution-resume:hover:not(:disabled) { background: var(--chrome-hover) !important; }
 .execution-resume svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .execution-resume:disabled { opacity: .4; cursor: default; }
@@ -74,7 +74,7 @@
 :root[data-theme] :is(.message-text, .markdown) :not(pre) > code {
   padding: 2px 5px;
   border: 0 !important;
-  border-radius: 4px !important;
+  border-radius: var(--appearance-radius, 4px) !important;
   background: var(--rich-inline-bg) !important;
   color: var(--rich-inline-text) !important;
   box-shadow: none !important;
@@ -88,8 +88,8 @@
   min-width: 0;
   margin: 14px 0;
   padding: 14px 16px;
-  border: 1px solid var(--rich-code-line) !important;
-  border-radius: 6px !important;
+  border: var(--appearance-border-width, 1px) solid var(--rich-code-line) !important;
+  border-radius: var(--appearance-radius, 6px) !important;
   background: var(--rich-code-bg) !important;
   color: var(--rich-code-text) !important;
   box-shadow: none !important;
@@ -149,10 +149,10 @@
   background: transparent;
   color: var(--chrome-muted);
 }
-:root[data-theme] :is(.message-text, .markdown) hr { margin: 22px 0; border: 0; border-top: 1px solid var(--chrome-line-soft); }
-:root[data-theme] :is(.message-text, .markdown) .markdown-table-scroll { max-width: 100%; margin: 14px 0; overflow: auto; border: 1px solid var(--rich-code-line); border-radius: 5px; }
+:root[data-theme] :is(.message-text, .markdown) hr { margin: 22px 0; border: 0; border-top: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); }
+:root[data-theme] :is(.message-text, .markdown) .markdown-table-scroll { max-width: 100%; margin: 14px 0; overflow: auto; border: var(--appearance-border-width, 1px) solid var(--rich-code-line); border-radius: var(--appearance-radius, 5px); }
 :root[data-theme] :is(.message-text, .markdown) table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.65; }
-:root[data-theme] :is(.message-text, .markdown) :is(th, td) { min-width: 7em; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--rich-code-line); text-align: left; overflow-wrap: normal; word-break: normal; }
+:root[data-theme] :is(.message-text, .markdown) :is(th, td) { min-width: 7em; padding: 9px 12px; border: 0; border-bottom: var(--appearance-border-width, 1px) solid var(--rich-code-line); text-align: left; overflow-wrap: normal; word-break: normal; }
 :root[data-theme] :is(.message-text, .markdown) th { background: var(--rich-code-bg); color: var(--chrome-muted); font-weight: 500; }
 :root[data-theme] :is(.message-text, .markdown) tbody tr:last-child td { border-bottom: 0; }
 :root[data-theme] :is(.message-text, .markdown) tbody tr:hover { background: color-mix(in srgb, var(--rich-code-bg) 65%, transparent); }
@@ -163,7 +163,7 @@
 :root[data-theme] :is(.message-text, .markdown) .katex { font-size: 1.08em; }
 :root[data-theme] :is(.message-text, .markdown) .math-display { display: block; max-width: 100%; margin: 16px 0; padding: 6px 2px; overflow-x: auto; overflow-y: hidden; }
 :root[data-theme] :is(.message-text, .markdown) .katex-display { margin: 0; }
-:root[data-theme] :is(.message-text, .markdown) .math-fallback { font-family: var(--mono); font-size: .9em; color: var(--chrome-muted); overflow-wrap: anywhere; }
+:root[data-theme] :is(.message-text, .markdown) .math-fallback { font-family: var(--appearance-code-font, var(--mono)); font-size: .9em; color: var(--chrome-muted); overflow-wrap: anywhere; }
 :root[data-theme] :is(.message-text, .markdown) .math-display:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
 @media (max-width: 600px) {
   :root[data-theme] :is(.message-text, .markdown) pre { padding: 12px; font-size: 12px; }

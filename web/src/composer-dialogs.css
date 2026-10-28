@@ -3,29 +3,29 @@
 :root[data-theme] .context-window-modal { max-height: calc(100dvh - 32px); overflow: auto; }
 :root[data-theme] .session-model-modal { width: min(540px, calc(100vw - 32px)); }
 :root[data-theme] .context-window-modal:not(.session-model-modal) { width: min(380px, calc(100vw - 32px)); }
-:root[data-theme] .context-window-modal :is(h2, form > label) { margin: 0; font-size: 15px; font-weight: 550; color: var(--chrome-text); }
+:root[data-theme] .context-window-modal :is(h2, form > label) { margin: 0; font-size: calc(15px * var(--appearance-ui-scale, 1)); font-weight: 550; color: var(--chrome-text); }
 :root[data-theme] .session-model-header { min-height: 32px; }
-:root[data-theme] .session-model-modal #session-model-search { min-height: 38px; padding: 8px 12px; border: 1px solid var(--chrome-line-soft) !important; border-radius: 6px !important; font: 13px/1.5 var(--chrome-sans); box-shadow: none !important; }
+:root[data-theme] .session-model-modal #session-model-search { min-height: 38px; padding: 8px 12px; border: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; border-radius: var(--appearance-radius, 6px) !important; font: 13px/1.5 var(--chrome-sans); box-shadow: none !important; }
 :root[data-theme] .session-model-list { max-height: min(300px, 35dvh); gap: 3px; padding: 3px; border: 0; background: transparent; }
-:root[data-theme] .session-model-modal .session-model-option { min-height: 40px; padding: 9px 10px; gap: 10px; border: 0 !important; border-radius: 5px; font: 12px/1.6 var(--mono); color: var(--chrome-muted); }
+:root[data-theme] .session-model-modal .session-model-option { min-height: 40px; padding: 9px 10px; gap: 10px; border: 0 !important; border-radius: var(--appearance-radius, 5px); font: 12px/1.6 var(--mono); color: var(--chrome-muted); }
 :root[data-theme] .session-model-modal .session-model-option:hover { background: var(--chrome-hover); color: var(--chrome-text); }
 :root[data-theme] .session-model-modal .session-model-option.selected { color: var(--chrome-text); }
 :root[data-theme] .session-model-modal input[type='radio'] { appearance: none; width: 13px; height: 13px; min-height: 13px; flex: 0 0 13px; padding: 0; border: 1px solid var(--chrome-faint) !important; border-radius: 50% !important; background: transparent !important; box-shadow: none !important; cursor: pointer; }
 :root[data-theme] .session-model-modal input[type='radio']:checked { border-color: var(--chrome-accent) !important; background: radial-gradient(circle, var(--chrome-accent) 0 3px, transparent 3.5px) !important; }
-:root[data-theme] .session-model-modal .session-model-option { border-radius: 5px !important; }
+:root[data-theme] .session-model-modal .session-model-option { border-radius: var(--appearance-radius, 5px) !important; }
 :root[data-theme] .session-model-modal .session-model-option span { font-weight: 400 !important; }
-:root[data-theme] .session-model-modal .session-reasoning-options label { border-radius: 5px !important; }
+:root[data-theme] .session-model-modal .session-reasoning-options label { border-radius: var(--appearance-radius, 5px) !important; }
 :root[data-theme] .session-model-modal .session-reasoning-options { gap: 6px; }
-:root[data-theme] .session-reasoning-options legend { font-size: 11px; font-weight: 450; color: var(--chrome-muted); margin-bottom: 10px; }
-:root[data-theme] .session-model-modal .session-reasoning-options label { min-height: 32px; padding: 6px 9px; border: 0 !important; border-radius: 5px; background: var(--chrome-hover); font-size: 12px; font-weight: 400; color: var(--chrome-muted); }
-:root[data-theme] .context-window-input-wrap { border: 1px solid var(--chrome-line) !important; border-radius: 6px !important; background: var(--chrome-surface) !important; box-shadow: none !important; }
+:root[data-theme] .session-reasoning-options legend { font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 450; color: var(--chrome-muted); margin-bottom: 10px; }
+:root[data-theme] .session-model-modal .session-reasoning-options label { min-height: 32px; padding: 6px 9px; border: 0 !important; border-radius: var(--appearance-radius, 5px); background: var(--chrome-hover); font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 400; color: var(--chrome-muted); }
+:root[data-theme] .context-window-input-wrap { border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important; border-radius: var(--appearance-radius, 6px) !important; background: var(--chrome-surface) !important; box-shadow: none !important; }
 :root[data-theme] .context-window-input-wrap:focus-within { border-color: var(--chrome-accent) !important; }
 :root[data-theme] .context-window-modal .context-window-input-wrap input#context-window-input { min-height: 44px; padding: 10px 12px; border: 0 !important; outline: none !important; background: transparent !important; box-shadow: none !important; font: 16px/1.5 var(--mono); }
-:root[data-theme] .context-window-input-wrap span { font-size: 12px; color: var(--chrome-faint); }
-:root[data-theme] :is(.context-window-actions, .cwd-picker-actions) { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--chrome-line-soft); padding-top: 12px; }
+:root[data-theme] .context-window-input-wrap span { font-size: calc(12px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
+:root[data-theme] :is(.context-window-actions, .cwd-picker-actions) { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); padding-top: 12px; }
 :root[data-theme] :is(.context-window-modal, .cwd-picker-modal) :is(.context-window-actions, .cwd-picker-actions, .session-model-header, .cwd-picker-head, .cwd-picker-path, .cwd-picker-shortcuts) > button {
   display: inline-flex; align-items: center; justify-content: center; width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 7px;
-  border: 0 !important; border-radius: 5px !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important;
+  border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important;
 }
 :root[data-theme] :is(.context-window-modal, .cwd-picker-modal) :is(.context-window-actions, .cwd-picker-actions) > .primary { background: var(--chrome-accent-soft) !important; color: var(--chrome-accent) !important; }
 :root[data-theme] .cwd-picker-modal { height: min(560px, calc(100dvh - 32px)); }
@@ -36,11 +36,11 @@
 :root[data-theme] .cwd-picker-shortcuts > span { white-space: normal; overflow-wrap: anywhere; font: 11px/1.6 var(--mono); color: var(--chrome-faint); }
 :root[data-theme] .cwd-picker-browser { grid-template-columns: 150px minmax(0, 1fr); min-height: 180px; }
 :root[data-theme] .cwd-picker-locations { padding: 10px; background: transparent !important; }
-:root[data-theme] .cwd-picker-locations button { min-height: 36px; gap: 8px; padding: 8px; border: 0 !important; border-radius: 5px !important; }
-:root[data-theme] .cwd-picker-locations strong { font-size: 12px; font-weight: 450; }
+:root[data-theme] .cwd-picker-locations button { min-height: 36px; gap: 8px; padding: 8px; border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; }
+:root[data-theme] .cwd-picker-locations strong { font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 450; }
 :root[data-theme] .cwd-picker-locations button.active { background: var(--chrome-accent-soft) !important; color: var(--chrome-accent) !important; }
 :root[data-theme] .cwd-picker-tree { padding: 10px 12px; }
-:root[data-theme] .cwd-tree-row { min-height: 36px; border: 0 !important; border-radius: 5px; gap: 4px; }
+:root[data-theme] .cwd-tree-row { min-height: 36px; border: 0 !important; border-radius: var(--appearance-radius, 5px); gap: 4px; }
 :root[data-theme] .cwd-tree-row.selected { background: var(--chrome-accent-soft) !important; }
 :root[data-theme] .cwd-tree-row :is(.cwd-tree-toggle, .cwd-tree-name, .cwd-tree-delete) { min-height: 32px; border: 0 !important; background: transparent !important; box-shadow: none !important; }
 :root[data-theme] .cwd-tree-toggle { display: inline-flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; padding: 5px; color: var(--chrome-faint); }
@@ -48,7 +48,7 @@
 :root[data-theme] .cwd-tree-name { gap: 8px; padding: 6px; height: auto; align-items: center; }
 :root[data-theme] .cwd-tree-name strong { line-height: 20px; }
 :root[data-theme] .cwd-tree-name .chrome-icon { color: var(--chrome-faint); }
-:root[data-theme] .cwd-tree-name strong { white-space: normal; overflow-wrap: anywhere; font-size: 12px; font-weight: 450; }
+:root[data-theme] .cwd-tree-name strong { white-space: normal; overflow-wrap: anywhere; font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 450; }
 :root[data-theme] .cwd-picker-actions { padding: 12px 18px; }
 :root[data-theme] .compaction-detail-stats { margin-top: 0; padding-bottom: 16px; }
 :root[data-theme] .compaction-detail-content pre { line-height: 1.8; }

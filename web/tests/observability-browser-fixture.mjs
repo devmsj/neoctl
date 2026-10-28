@@ -13,10 +13,12 @@ export async function createObservabilityBrowser(snapshot, handleApi, options = 
     try { playwright = require(path); break } catch {}
   }
   if (!playwright) throw new Error('Set PLAYWRIGHT_CORE_PATH to an installed playwright-core directory')
-  const dist = fileURLToPath(new URL('../dist/', import.meta.url))
+  const dist = options.dist || fileURLToPath(new URL('../dist/', import.meta.url))
   const server = createServer(async (req, res) => {
     try {
-      const pathname = new URL(req.url, 'http://localhost').pathname
+      const url = new URL(req.url, 'http://localhost')
+      if (options.apiHandler && await options.apiHandler(req, res, url)) return
+      const pathname = url.pathname
       const path = resolve(dist, pathname === '/' ? 'index.html' : '.' + pathname)
       if (!path.startsWith(resolve(dist) + sep)) { res.writeHead(403); res.end(); return }
       res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' }[extname(path)] || 'application/octet-stream')

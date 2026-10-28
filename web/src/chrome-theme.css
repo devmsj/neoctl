@@ -1,70 +1,70 @@
 /* Surrounding application chrome. Transcript styles and inherited legacy tokens stay untouched. */
 :root {
-  --chrome-bg: #ffffff;
-  --chrome-panel: #ffffff;
-  --chrome-surface: #ffffff;
-  --chrome-raised: #ffffff;
-  --chrome-hover: #f5f3f6;
-  --chrome-text: #20252d;
-  --chrome-strong: #11151b;
-  --chrome-muted: #424c59;
-  --chrome-faint: #626d7b;
-  --chrome-line: #d5dae2;
-  --chrome-line-soft: #e7e9ee;
-  --chrome-accent: #8c456e;
-  --chrome-accent-soft: #f7e9f1;
+  --chrome-bg: var(--appearance-bg, #ffffff);
+  --chrome-panel: var(--appearance-panel, #ffffff);
+  --chrome-surface: var(--appearance-surface, #ffffff);
+  --chrome-raised: var(--appearance-surface, #ffffff);
+  --chrome-hover: var(--appearance-accent-hover, #f5f3f6);
+  --chrome-text: var(--appearance-text, #20252d);
+  --chrome-strong: var(--appearance-strong, #11151b);
+  --chrome-muted: var(--appearance-muted, #424c59);
+  --chrome-faint: var(--appearance-faint, #626d7b);
+  --chrome-line: var(--appearance-line, #d5dae2);
+  --chrome-line-soft: var(--appearance-line-soft, #e7e9ee);
+  --chrome-accent: var(--appearance-accent, #8c456e);
+  --chrome-accent-soft: var(--appearance-accent-soft, #f7e9f1);
   --chrome-danger: #a85057;
   --chrome-success: #597d6b;
   --chrome-overlay: rgb(24 31 41 / 38%);
-  --chrome-sans: system-ui, 'Microsoft YaHei', sans-serif;
+  --chrome-sans: var(--appearance-ui-font, system-ui, 'Microsoft YaHei', sans-serif);
 }
 :root[data-theme='dark'] {
-  --chrome-bg: #111418;
-  --chrome-panel: #15191f;
-  --chrome-surface: #191e25;
-  --chrome-raised: #202630;
-  --chrome-hover: #232a34;
-  --chrome-text: #d7dce3;
-  --chrome-strong: #eef0f4;
-  --chrome-muted: #9aa4b2;
-  --chrome-faint: #7f8a99;
-  --chrome-line: #2b323d;
-  --chrome-line-soft: #242b35;
-  --chrome-accent: #bb8ea6;
-  --chrome-accent-soft: #302630;
+  --chrome-bg: var(--appearance-bg, #111418);
+  --chrome-panel: var(--appearance-panel, #15191f);
+  --chrome-surface: var(--appearance-surface, #191e25);
+  --chrome-raised: var(--appearance-surface, #202630);
+  --chrome-hover: var(--appearance-accent-hover, #232a34);
+  --chrome-text: var(--appearance-text, #d7dce3);
+  --chrome-strong: var(--appearance-strong, #eef0f4);
+  --chrome-muted: var(--appearance-muted, #9aa4b2);
+  --chrome-faint: var(--appearance-faint, #7f8a99);
+  --chrome-line: var(--appearance-line, #2b323d);
+  --chrome-line-soft: var(--appearance-line-soft, #242b35);
+  --chrome-accent: var(--appearance-accent, #bb8ea6);
+  --chrome-accent-soft: var(--appearance-accent-soft, #302630);
   --chrome-danger: #cd949a;
   --chrome-success: #8baa9b;
   --chrome-overlay: rgb(0 0 0 / 54%);
 }
 /* Scoped aliases also cover teleported dialogs without changing conversation colors. */
 :root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog'], .toast, .core-version) {
-  --bg: var(--chrome-bg);
-  --panel: var(--chrome-panel);
+  --bg: var(--appearance-bg, var(--chrome-bg));
+  --panel: var(--appearance-panel, var(--chrome-panel));
   --panel-soft: var(--chrome-hover);
-  --surface: var(--chrome-surface);
-  --surface-raised: var(--chrome-raised);
+  --surface: var(--appearance-surface, var(--chrome-surface));
+  --surface-raised: var(--appearance-surface, var(--chrome-raised));
   --surface-glass: var(--chrome-surface);
-  --text: var(--chrome-text);
-  --black: var(--chrome-strong);
-  --muted: var(--chrome-muted);
-  --faint: var(--chrome-faint);
-  --line: var(--chrome-line);
-  --line-soft: var(--chrome-line-soft);
-  --purple: var(--chrome-accent);
-  --purple-soft: var(--chrome-accent-soft);
-  --pink: var(--chrome-accent);
-  --sky: var(--chrome-accent);
+  --text: var(--appearance-text, var(--chrome-text));
+  --black: var(--appearance-strong, var(--chrome-strong));
+  --muted: var(--appearance-muted, var(--chrome-muted));
+  --faint: var(--appearance-faint, var(--chrome-faint));
+  --line: var(--appearance-line, var(--chrome-line));
+  --line-soft: var(--appearance-line-soft, var(--chrome-line-soft));
+  --purple: var(--appearance-accent, var(--chrome-accent));
+  --purple-soft: var(--appearance-accent-soft, var(--chrome-accent-soft));
+  --pink: var(--appearance-accent, var(--chrome-accent));
+  --sky: var(--appearance-accent, var(--chrome-accent));
   --lime: var(--chrome-success);
   --green: var(--chrome-success);
   --red: var(--chrome-danger);
-  --sans: var(--chrome-sans);
+  --sans: var(--appearance-ui-font, var(--chrome-sans));
   --soft-shadow: none;
   --soft-shadow-small: none;
   --soft-shadow-large: none;
   --focus-shadow: none;
   color: var(--chrome-text);
-  font-family: var(--chrome-sans);
-  font-size: 13px;
+  font-family: var(--appearance-ui-font, var(--chrome-sans));
+  font-size: calc(13px * var(--appearance-ui-scale, 1));
   line-height: 1.5;
 }
 :root[data-theme] :is(.shell, .workspace) { background: var(--chrome-bg) !important; }
@@ -75,20 +75,20 @@
 }
 :root[data-theme] .sidebar {
   background: var(--chrome-panel) !important;
-  border-right: 1px solid var(--chrome-line) !important;
+  border-right: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
 }
 :root[data-theme] .sidebar .brand-row {
   min-height: 64px;
-  border-bottom: 1px solid var(--chrome-line-soft) !important;
+  border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important;
 }
 :root[data-theme] .sidebar .nav { padding: 16px 12px; gap: 4px; }
 :root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog']) :where(button, summary, a.image-download) {
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 5px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 5px) !important;
   background: transparent !important;
   box-shadow: none !important;
   color: var(--chrome-text) !important;
-  font-family: var(--chrome-sans);
+  font-family: var(--appearance-ui-font, var(--chrome-sans));
   font-weight: 500 !important;
   text-decoration: none;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease !important;
@@ -108,7 +108,7 @@
   padding: 9px 12px;
   border-color: transparent !important;
   color: var(--chrome-muted) !important;
-  font-size: 13px;
+  font-size: calc(13px * var(--appearance-ui-scale, 1));
   text-align: left;
 }
 :root[data-theme] .sidebar .nav button.active,
@@ -118,35 +118,35 @@
   color: var(--chrome-strong) !important;
 }
 :root[data-theme] .sidebar :is(.session-entry, .prompt-stack) {
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 5px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 5px) !important;
   background: transparent !important;
   box-shadow: none !important;
 }
 :root[data-theme] .sidebar .session-entry { min-height: 54px; padding: 12px; }
-:root[data-theme] .sidebar .session-entry strong { font-size: 13px; font-weight: 500; }
+:root[data-theme] .sidebar .session-entry strong { font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 500; }
 :root[data-theme] .sidebar .session-entry-icon { border: 0 !important; background: transparent !important; }
 :root[data-theme] .sidebar .session-diamond { background: var(--chrome-accent) !important; box-shadow: none !important; }
 :root[data-theme] .sidebar .prompt-stack-head {
   min-height: 38px;
   background: transparent !important;
-  border-bottom: 1px solid var(--chrome-line-soft) !important;
+  border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important;
 }
 :root[data-theme] .sidebar .prompt-stack-head .mini-button {
   min-height: 38px;
   border: 0 !important;
   color: var(--chrome-muted) !important;
-  font-size: 12px;
+  font-size: calc(12px * var(--appearance-ui-scale, 1));
 }
 :root[data-theme] .sidebar .prompt-card {
   border: 0 !important;
-  border-bottom: 1px solid var(--chrome-line-soft) !important;
+  border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important;
   background: transparent !important;
   box-shadow: none !important;
   transform: none !important;
 }
 :root[data-theme] .sidebar .prompt-card.active { background: var(--chrome-accent-soft) !important; }
-:root[data-theme] .sidebar :is(.prompt-list-empty, .prompt-card-body strong) { color: var(--chrome-muted); font-size: 12px; font-weight: 400; }
+:root[data-theme] .sidebar :is(.prompt-list-empty, .prompt-card-body strong) { color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 400; }
 :root[data-theme] .sidebar .prompt-card-actions .mini-button { border: 0 !important; min-height: 28px; }
 /* Keep the existing celestial switch motion and silhouettes, but remove its card treatment. */
 :root[data-theme] :is(.sidebar, .topbar) .celestial-theme-toggle,
@@ -157,8 +157,8 @@
   transform: none !important;
 }
 :root[data-theme] .composer {
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 7px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 7px) !important;
   background: var(--chrome-surface) !important;
   box-shadow: none !important;
   padding: 14px 16px;
@@ -169,15 +169,15 @@
   border-radius: 0 !important;
   background: transparent !important;
   color: var(--chrome-text) !important;
-  font-family: var(--chrome-sans) !important;
-  font-size: 14px;
+  font-family: var(--appearance-ui-font, var(--chrome-sans)) !important;
+  font-size: calc(14px * var(--appearance-ui-scale, 1));
   line-height: 22px;
   box-shadow: none !important;
 }
 :root[data-theme] .composer textarea:focus-visible { outline: none !important; }
 :root[data-theme] .composer :is(.composer-cwd, .metric-chip, .fast-mode-button, .compact-button) {
   border: 0 !important;
-  border-radius: 3px !important;
+  border-radius: var(--appearance-radius, 3px) !important;
   background: transparent !important;
   box-shadow: none !important;
   color: var(--chrome-muted) !important;
@@ -193,16 +193,16 @@
 :root[data-theme] .right-panel { gap: 12px; }
 :root[data-theme] .right-panel :is(.background-task-section, .quota-card, .status-card) {
   padding: 14px;
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 5px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 5px) !important;
   background: var(--chrome-panel) !important;
   box-shadow: none !important;
 }
-:root[data-theme] .right-panel :is(.panel-title, .quota-card-head span, .memory-card-head span) { color: var(--chrome-muted); font-size: 12px; font-weight: 500; }
-:root[data-theme] .right-panel :is(.quota-card-head strong, .memory-card-head strong) { color: var(--chrome-strong); font-size: 24px; font-weight: 550; letter-spacing: -.02em; }
+:root[data-theme] .right-panel :is(.panel-title, .quota-card-head span, .memory-card-head span) { color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 500; }
+:root[data-theme] .right-panel :is(.quota-card-head strong, .memory-card-head strong) { color: var(--chrome-strong); font-size: calc(24px * var(--appearance-ui-scale, 1)); font-weight: 550; letter-spacing: -.02em; }
 :root[data-theme] .right-panel :is(small, .background-task-count) { border: 0 !important; background: var(--chrome-hover) !important; color: var(--chrome-muted); font-weight: 400; }
 :root[data-theme] .right-panel .background-task-summary { min-height: 36px; border: 0 !important; padding: 7px 0; }
-:root[data-theme] .right-panel .background-task-summary strong { font-size: 12px; font-weight: 400; }
+:root[data-theme] .right-panel .background-task-summary strong { font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 400; }
 :root[data-theme] .right-panel .background-task-history summary { min-height: 30px; border: 0 !important; }
 :root[data-theme] .right-panel .quota-progress { height: 4px; border: 0 !important; background: var(--chrome-line) !important; }
 :root[data-theme] .right-panel .quota-progress-fill { background: var(--chrome-accent) !important; box-shadow: none !important; }
@@ -214,7 +214,7 @@
 :root[data-theme] .right-panel { gap: 8px; }
 :root[data-theme] .right-panel :is(.background-task-section, .quota-card, .status-card) { padding: 11px 12px; }
 :root[data-theme] .right-panel :is(.memory-card-head, .quota-card-head) > div:first-child { display: flex; align-items: center; justify-content: space-between; flex: 1; min-width: 0; gap: 12px; }
-:root[data-theme] .right-panel :is(.memory-card-head strong, .quota-card-head strong) { font-size: 18px; line-height: 24px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+:root[data-theme] .right-panel :is(.memory-card-head strong, .quota-card-head strong) { font-size: calc(18px * var(--appearance-ui-scale, 1)); line-height: 24px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
 :root[data-theme] .right-panel .memory-chart { height: 30px; margin: 10px 0 0; }
 :root[data-theme] .right-panel .memory-trend { height: 30px; }
 :root[data-theme] .right-panel .memory-trend-empty { min-height: 0; height: 0; overflow: hidden; margin: 0; }
@@ -234,12 +234,12 @@
 :root[data-theme] :is(.sidebar, .composer) .chrome-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0 !important; color: var(--chrome-muted) !important; }
 :root[data-theme] .composer .fast-mode-button { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 4px 6px; }
 :root[data-theme] .composer .fast-mode-button.active { color: var(--chrome-accent) !important; }
-:root[data-theme] .composer-app-prompt { border: 0; border-bottom: 1px solid var(--chrome-line-soft); background: transparent; padding: 0 0 8px; gap: 8px; }
-:root[data-theme] .composer-app-prompt strong { font-size: 12px; font-weight: 500; }
+:root[data-theme] .composer-app-prompt { border: 0; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); background: transparent; padding: 0 0 8px; gap: 8px; }
+:root[data-theme] .composer-app-prompt strong { font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 500; }
 :root[data-theme] .composer textarea::placeholder { color: var(--chrome-faint); opacity: .8; }
 :root[data-theme] .right-panel :is(.background-task-section, .quota-card, .status-card) { border-color: var(--chrome-line-soft) !important; }
 :root[data-theme] .right-panel :is(small, .background-task-count) { background: transparent !important; font-variant-numeric: tabular-nums; }
-:root[data-theme] .right-panel :is(.quota-card-update, .memory-card-foot) { font-size: 10px; color: var(--chrome-faint); }
+:root[data-theme] .right-panel :is(.quota-card-update, .memory-card-foot) { font-size: calc(10px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
 :root[data-theme] .right-panel .quota-card-update { display: flex; justify-content: flex-end; }
 :root[data-theme] .right-panel :is(.quota-card-update, .memory-card-foot) .chrome-icon { width: 12px; height: 12px; flex-basis: 12px; color: inherit; }
 @media (pointer: coarse) {
@@ -247,11 +247,11 @@
   :root[data-theme] .composer .fast-mode-button { min-width: 36px; min-height: 36px; }
 }
 /* Queue controls are deliberately namespaced; never reuse tool phase classes. */
-:root[data-theme] .queued-message { display: flex; align-items: center; gap: 9px; min-width: 0; margin: 0 0 6px; padding: 6px 10px; border-top: 1px solid var(--chrome-line-soft); background: transparent; color: var(--chrome-muted); font: 12px/1.5 var(--chrome-sans); }
+:root[data-theme] .queued-message { display: flex; align-items: center; gap: 9px; min-width: 0; margin: 0 0 6px; padding: 6px 10px; border-top: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); background: transparent; color: var(--chrome-muted); font: 12px/1.5 var(--chrome-sans); }
 :root[data-theme] .queued-message-marker { display: inline-flex; color: var(--chrome-accent); flex: 0 0 auto; }
 :root[data-theme] .queued-message-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 :root[data-theme] .queued-message-actions { display: flex; flex: 0 0 auto; gap: 3px; }
-:root[data-theme] .queued-message-actions button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0 !important; border-radius: 4px !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important; }
+:root[data-theme] .queued-message-actions button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0 !important; border-radius: var(--appearance-radius, 4px) !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important; }
 :root[data-theme] .queued-message-actions button:hover:not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-accent) !important; }
 :root[data-theme] .queued-message-actions button:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
 :root[data-theme] .queued-message-actions button:disabled { opacity: .4; cursor: default; }
@@ -262,21 +262,21 @@
   background: var(--chrome-bg) !important;
   box-shadow: none !important;
 }
-:root[data-theme] .panel-page .page-head { border-bottom: 1px solid var(--chrome-line); padding-bottom: 18px; }
-:root[data-theme] .panel-page .page-head h2 { font-size: 20px; line-height: 1.4; font-weight: 600; letter-spacing: 0; color: var(--chrome-strong); }
-:root[data-theme] .panel-page .page-head p { color: var(--chrome-muted); font-size: 12px; }
+:root[data-theme] .panel-page .page-head { border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line); padding-bottom: 18px; }
+:root[data-theme] .panel-page .page-head h2 { font-size: calc(20px * var(--appearance-ui-scale, 1)); line-height: 1.4; font-weight: 600; letter-spacing: 0; color: var(--chrome-strong); }
+:root[data-theme] .panel-page .page-head p { color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); }
 :root[data-theme] .panel-page :is(.settings-card, .settings-prompt-entry, .prompt-library-panel, .prompt-editor-panel, .session-card, .capability-card) {
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 5px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 5px) !important;
   background: var(--chrome-surface) !important;
   box-shadow: none !important;
   transform: none !important;
 }
 :root[data-theme] .panel-page :is(.settings-card-head, .prompt-library-head, .prompt-editor-toolbar) {
   background: transparent !important;
-  border-bottom: 1px solid var(--chrome-line-soft) !important;
+  border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important;
 }
-:root[data-theme] .panel-page :is(.settings-card-head strong, .settings-prompt-entry strong, .prompt-library-head strong, .prompt-editor-current) { font-size: 13px; font-weight: 550; }
+:root[data-theme] .panel-page :is(.settings-card-head strong, .settings-prompt-entry strong, .prompt-library-head strong, .prompt-editor-current) { font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 550; }
 :root[data-theme] .panel-page .settings-prompt-entry { min-height: 46px; padding: 10px 16px; }
 :root[data-theme] .panel-page .settings-prompt-entry > span { color: var(--chrome-faint); }
 :root[data-theme] .panel-page :is(.plugin-settings-row, .plugin-settings-row:hover) { background: transparent !important; border-color: var(--chrome-line-soft) !important; }
@@ -285,32 +285,27 @@
 :root[data-theme] .panel-page .plugin-toggle input:checked + span { border-color: var(--chrome-accent) !important; background: var(--chrome-accent-soft) !important; }
 :root[data-theme] .panel-page .plugin-toggle input:checked + span::after { background: var(--chrome-accent) !important; }
 :root[data-theme] .panel-page .session-toolbar { padding: 0; border: 0; background: transparent; box-shadow: none; }
-:root[data-theme] .panel-page .session-count { color: var(--chrome-muted); font-family: var(--chrome-sans); font-weight: 400; }
+:root[data-theme] .panel-page .session-count { color: var(--chrome-muted); font-family: var(--appearance-ui-font, var(--chrome-sans)); font-weight: 400; }
 :root[data-theme] .panel-page .session-card::after { display: none; }
 :root[data-theme] .panel-page .session-card.current { background: var(--chrome-accent-soft) !important; }
 :root[data-theme] .panel-page .session-card:hover { border-color: var(--chrome-accent) !important; }
-:root[data-theme] .panel-page .session-card-title strong { font-size: 14px; font-weight: 500; }
-:root[data-theme] .panel-page .session-card :is(code, time) { font-size: 11px; }
+:root[data-theme] .panel-page .session-card-title strong { font-size: calc(14px * var(--appearance-ui-scale, 1)); font-weight: 500; }
+:root[data-theme] .panel-page .session-card :is(code, time) { font-size: calc(11px * var(--appearance-ui-scale, 1)); }
 :root[data-theme] .panel-page :is(.current-pill, .live-pill) { border: 0 !important; background: var(--chrome-hover) !important; color: var(--chrome-muted) !important; box-shadow: none !important; font-weight: 400; }
-:root[data-theme] .panel-page .prompt-library-item { border: 0 !important; border-bottom: 1px solid var(--chrome-line-soft) !important; background: transparent !important; box-shadow: none !important; transform: none !important; }
+:root[data-theme] .panel-page .prompt-library-item { border: 0 !important; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; background: transparent !important; box-shadow: none !important; transform: none !important; }
 :root[data-theme] .panel-page .prompt-library-item.active { background: var(--chrome-accent-soft) !important; }
 /* Form controls and dropdowns share one surface and focus treatment. */
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea:not(.composer textarea), select),
-:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) .neo-select {
+:root[data-theme] :is(.sidebar, .composer, .right-panel, .panel-page, [role='dialog'], [role='alertdialog']) :is(input:not([type='checkbox']):not([type='radio']), textarea:not(.composer textarea), select) {
   border: 1px solid var(--chrome-line) !important;
-  border-radius: 4px !important;
+  border-radius: var(--appearance-radius, 4px) !important;
   background: var(--chrome-surface) !important;
   color: var(--chrome-text) !important;
-  font-family: var(--chrome-sans) !important;
+  font-family: var(--appearance-ui-font, var(--chrome-sans)) !important;
   box-shadow: none !important;
 }
-:root[data-theme] :is(.panel-page, [role='dialog']) :is(.prompt-config-textarea, .project-context-document) { font-family: var(--mono) !important; }
-:root[data-theme] :is(.panel-page, [role='dialog']) :is(input, textarea, .neo-select):focus-within { border-color: var(--chrome-accent) !important; box-shadow: none !important; }
-:root[data-theme] :is(.panel-page, [role='dialog']) .neo-select-trigger { border: 0 !important; background: transparent !important; }
-:root[data-theme] :is(.panel-page, [role='dialog']) .neo-select-menu { border: 1px solid var(--chrome-line) !important; border-radius: 5px !important; background: var(--chrome-raised) !important; box-shadow: none !important; }
-:root[data-theme] :is(.panel-page, [role='dialog']) .neo-select-menu button { border: 0 !important; min-height: 34px; }
-:root[data-theme] :is(.panel-page, [role='dialog']) .neo-select-menu button.selected { background: var(--chrome-accent-soft) !important; }
-:root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) :is(.ghost, .primary, .mini-button, .session-actions button, .session-pagination button) { min-height: 34px; padding: 6px 12px; font-size: 12px; }
+:root[data-theme] :is(.panel-page, [role='dialog']) :is(.prompt-config-textarea, .project-context-document) { font-family: var(--appearance-code-font, var(--mono)) !important; }
+:root[data-theme] :is(.panel-page, [role='dialog']) :is(input, textarea):focus-within { border-color: var(--chrome-accent) !important; box-shadow: none !important; }
+:root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) :is(.ghost, .primary, .mini-button, .session-actions button, .session-pagination button) { min-height: 34px; padding: 6px 12px; font-size: calc(12px * var(--appearance-ui-scale, 1)); }
 :root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) button.danger { color: var(--chrome-danger) !important; background: transparent !important; border-color: var(--chrome-line) !important; }
 :root[data-theme] :is(.panel-page, [role='dialog'], [role='alertdialog']) button.danger:hover:not(:disabled) { border-color: var(--chrome-danger) !important; background: color-mix(in srgb, var(--chrome-danger) 9%, transparent) !important; }
 /* Inputs own one focus border; compound selects highlight their wrapper only. */
@@ -319,22 +314,22 @@
 /* Dialog sizing, focus trapping and behavior remain owned by their original components. */
 :root[data-theme] :is(.cwd-picker-backdrop, .runtime-context-modal-backdrop, .runtime-context-detail-backdrop, .confirm-dialog-backdrop, .context-window-backdrop, .image-preview-backdrop, .tool-result-modal-backdrop) { background: var(--chrome-overlay) !important; }
 :root[data-theme] :is([role='dialog'], [role='alertdialog']) {
-  border: 1px solid var(--chrome-line) !important;
-  border-radius: 8px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important;
+  border-radius: var(--appearance-radius, 8px) !important;
   background: var(--chrome-surface) !important;
   box-shadow: none !important;
 }
-:root[data-theme] [role='dialog'] :is(.cwd-picker-head, .runtime-context-modal-head, .tool-result-modal-head) { background: transparent !important; border-bottom: 1px solid var(--chrome-line-soft) !important; }
-:root[data-theme] [role='dialog'] :is(.cwd-picker-head strong, .runtime-context-modal-head strong, .tool-result-modal-head strong) { font-size: 15px; font-weight: 550; }
+:root[data-theme] [role='dialog'] :is(.cwd-picker-head, .runtime-context-modal-head, .tool-result-modal-head) { background: transparent !important; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; }
+:root[data-theme] [role='dialog'] :is(.cwd-picker-head strong, .runtime-context-modal-head strong, .tool-result-modal-head strong) { font-size: calc(15px * var(--appearance-ui-scale, 1)); font-weight: 550; }
 :root[data-theme] [role='dialog'] :is(.tool-result-modal-close, .runtime-context-modal-head > button, .cwd-picker-head > button) { min-height: 30px; min-width: 30px; border: 0 !important; }
 :root[data-theme] [role='dialog'] :is(.runtime-plugin-row, .runtime-context-index-item, .cwd-picker-locations, .background-task-index) { border-color: var(--chrome-line-soft) !important; background: transparent !important; }
 :root[data-theme] [role='dialog'] :is(.cwd-picker-path, .cwd-picker-shortcuts, .cwd-picker-actions, .tool-result-modal-footer) { border-color: var(--chrome-line-soft) !important; background: transparent !important; }
 :root[data-theme] [role='dialog'] :is(.runtime-context-detail-content pre, .project-context-document, .background-task-command, .terminal-output-body) { background: var(--chrome-panel) !important; border-color: var(--chrome-line-soft) !important; color: var(--chrome-text) !important; box-shadow: none !important; }
 :root[data-theme] [role='dialog'] :is(.session-model-option.selected, .session-reasoning-options .selected, .background-task-index-item.active) { background: var(--chrome-accent-soft) !important; border-color: var(--chrome-line) !important; }
-:root[data-theme] .topbar { background: var(--chrome-panel) !important; border-bottom: 1px solid var(--chrome-line) !important; }
-:root[data-theme] .topbar .mobile-nav-menu nav { background: var(--chrome-surface) !important; border: 1px solid var(--chrome-line) !important; border-radius: 5px !important; box-shadow: none !important; }
-:root[data-theme] .toast { background: var(--chrome-raised) !important; color: var(--chrome-text); border: 1px solid var(--chrome-line); border-radius: 5px !important; box-shadow: none !important; }
-:root[data-theme] .core-version { color: var(--chrome-faint); font-family: var(--chrome-sans); font-size: 11px; font-weight: 400; transform: none; }
+:root[data-theme] .topbar { background: var(--chrome-panel) !important; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line) !important; }
+:root[data-theme] .topbar .mobile-nav-menu nav { background: var(--chrome-surface) !important; border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important; border-radius: var(--appearance-radius, 5px) !important; box-shadow: none !important; }
+:root[data-theme] .toast { background: var(--chrome-raised) !important; color: var(--chrome-text); border: var(--appearance-border-width, 1px) solid var(--chrome-line); border-radius: var(--appearance-radius, 5px) !important; box-shadow: none !important; }
+:root[data-theme] .core-version { color: var(--chrome-faint); font-family: var(--appearance-ui-font, var(--chrome-sans)); font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 400; transform: none; }
 @media (max-width: 820px) {
   :root[data-theme] .composer { padding: 12px; }
   :root[data-theme] .right-panel.mobile-card-open { background: var(--chrome-panel); }

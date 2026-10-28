@@ -43,7 +43,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "postcss": "^8.5.14"
   },
   "bin": {
     "neow": "bin/neow.mjs"
@@ -53,6 +54,8 @@
     "dist",
     "plugins",
     "server.mjs",
+    "appearance-store.mjs",
+    "shared",
     "core-runtime.mjs",
     "execution-backend.mjs",
     "isolation.mjs",

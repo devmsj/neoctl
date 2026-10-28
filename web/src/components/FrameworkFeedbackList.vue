@@ -93,6 +93,6 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
 .feedback-item .settings-card-head { flex-wrap: wrap; gap: 8px; }
 .feedback-item .feedback-item-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .feedback-item strong, .feedback-item p { overflow-wrap: anywhere; }
-.feedback-item time, .feedback-toolbar > span, .feedback-pagination > span { font-size: 12px; opacity: .7; }
+.feedback-item time, .feedback-toolbar > span, .feedback-pagination > span { font-size: calc(12px * var(--appearance-ui-scale, 1)); opacity: .7; }
 .feedback-item p { margin: 0; padding: 16px; white-space: pre-wrap; line-height: 1.65; }
 </style>

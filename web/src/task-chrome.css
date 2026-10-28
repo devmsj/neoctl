@@ -19,13 +19,13 @@
 :root[data-theme] .background-task-modal .background-task-index { padding: 8px; gap: 3px; }
 :root[data-theme] .background-task-modal .background-task-index-item { grid-template-columns: 16px minmax(0, 1fr); gap: 8px; min-height: 38px; padding: 8px; border: 0 !important; border-left: 2px solid transparent !important; }
 :root[data-theme] .background-task-modal .background-task-index-item.active { border-left-color: var(--chrome-accent) !important; }
-:root[data-theme] .background-task-modal .background-task-index-copy strong { font-size: 12px; font-weight: 400; line-height: 20px; }
+:root[data-theme] .background-task-modal .background-task-index-copy strong { font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 400; line-height: 20px; }
 :root[data-theme] .background-task-modal .background-task-detail { background: transparent; }
 :root[data-theme] .background-task-modal .background-task-detail-head { padding: 14px 18px 8px; border: 0; align-items: flex-start; gap: 10px; }
 :root[data-theme] .background-task-modal .background-task-detail-title { gap: 8px; align-items: flex-start; }
 :root[data-theme] .background-task-modal .background-task-detail-title > svg { margin-top: 3px; }
-:root[data-theme] .background-task-modal .background-task-detail-title strong { font-size: 14px; line-height: 22px; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
-:root[data-theme] .background-task-modal .tool-result-modal-status { border: 0; padding: 2px 0; background: transparent; color: var(--chrome-muted); font-size: 11px; font-weight: 400; }
+:root[data-theme] .background-task-modal .background-task-detail-title strong { font-size: calc(14px * var(--appearance-ui-scale, 1)); line-height: 22px; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .background-task-modal .tool-result-modal-status { border: 0; padding: 2px 0; background: transparent; color: var(--chrome-muted); font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 400; }
 :root[data-theme] .background-task-modal .tool-result-modal-status.status-failed { color: var(--chrome-danger); }
 :root[data-theme] .background-task-modal .background-task-meta { padding: 0 18px 12px; background: transparent; border-color: var(--chrome-line-soft); gap: 6px 16px; }
 :root[data-theme] .background-task-modal .background-task-meta.empty { padding-bottom: 4px; }
@@ -36,24 +36,24 @@
 :root[data-theme] .background-task-modal .background-task-meta .chrome-icon { width: 14px; height: 14px; }
 :root[data-theme] .background-task-modal .background-task-detail-body { padding: 14px 18px 18px; }
 :root[data-theme] .background-task-modal .background-task-command-section { border: 0; background: transparent; }
-:root[data-theme] .background-task-modal .background-task-command-section > header { min-height: 24px; padding: 0; border: 0; background: transparent; justify-content: flex-start; font-weight: 400; font-size: 11px; color: var(--chrome-faint); }
-:root[data-theme] .background-task-modal .background-task-command { margin: 6px 0 0; padding: 10px 12px; border: 1px solid var(--chrome-line-soft) !important; border-radius: 4px !important; background: var(--rich-code-bg) !important; color: var(--rich-code-text) !important; box-shadow: none; font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+:root[data-theme] .background-task-modal .background-task-command-section > header { min-height: 24px; padding: 0; border: 0; background: transparent; justify-content: flex-start; font-weight: 400; font-size: calc(11px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
+:root[data-theme] .background-task-modal .background-task-command { margin: 6px 0 0; padding: 10px 12px; border: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; border-radius: var(--appearance-radius, 4px) !important; background: var(--rich-code-bg) !important; color: var(--rich-code-text) !important; box-shadow: none; font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 :root[data-theme] .background-task-modal .terminal-output-reader { border: 0; padding: 0; background: transparent; }
 :root[data-theme] .background-task-modal .background-task-live-output { border: 0; padding: 0; margin: 10px 0 0; background: transparent; color: var(--chrome-text); font: 12px/1.7 var(--mono); box-shadow: none; }
 :root[data-theme] .background-task-modal .terminal-stderr { color: var(--chrome-danger); }
 :root[data-theme] .background-task-modal .agent-parent-messages { gap: 0; border: 0; padding: 0; background: transparent; }
-:root[data-theme] .background-task-modal .agent-parent-message { margin: 0; padding: 14px 0; border: 0; border-bottom: 1px solid var(--chrome-line-soft); background: transparent; box-shadow: none; }
+:root[data-theme] .background-task-modal .agent-parent-message { margin: 0; padding: 14px 0; border: 0; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); background: transparent; box-shadow: none; }
 :root[data-theme] .background-task-modal .agent-parent-message:first-child { padding-top: 0; }
 :root[data-theme] .background-task-modal .agent-parent-message:last-child { border-bottom: 0; padding-bottom: 0; }
-:root[data-theme] .background-task-modal .agent-parent-message > header { display: flex; align-items: center; gap: 6px; margin: 0 0 7px; padding: 0; border: 0; color: var(--chrome-accent); font-size: 11px; }
-:root[data-theme] .background-task-modal .agent-parent-message > header strong { color: var(--chrome-muted); font-size: 11px; font-weight: 400; }
-:root[data-theme] .background-task-modal .agent-parent-message :is(.markdown, pre) { font-size: 14px; line-height: 1.7; }
-:root[data-theme] .background-task-modal .reader-error { color: var(--chrome-danger); font-size: 12px; background: transparent; }
+:root[data-theme] .background-task-modal .agent-parent-message > header { display: flex; align-items: center; gap: 6px; margin: 0 0 7px; padding: 0; border: 0; color: var(--chrome-accent); font-size: calc(11px * var(--appearance-ui-scale, 1)); }
+:root[data-theme] .background-task-modal .agent-parent-message > header strong { color: var(--chrome-muted); font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 400; }
+:root[data-theme] .background-task-modal .agent-parent-message :is(.markdown, pre) { font-size: calc(14px * var(--appearance-ui-scale, 1)); line-height: 1.7; }
+:root[data-theme] .background-task-modal .reader-error { color: var(--chrome-danger); font-size: calc(12px * var(--appearance-ui-scale, 1)); background: transparent; }
 @media (max-width: 820px) {
   :root[data-theme] .background-task-modal { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); }
   :root[data-theme] .background-task-modal .background-task-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   :root[data-theme] .background-task-modal .background-task-page.single { grid-template-rows: minmax(0, 1fr); }
-  :root[data-theme] .background-task-modal .background-task-index { display: flex; flex-direction: row; max-height: none; overflow-x: auto; padding: 6px 8px; border: 0; border-bottom: 1px solid var(--chrome-line-soft); scrollbar-gutter: auto; }
+  :root[data-theme] .background-task-modal .background-task-index { display: flex; flex-direction: row; max-height: none; overflow-x: auto; padding: 6px 8px; border: 0; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); scrollbar-gutter: auto; }
   :root[data-theme] .background-task-modal .background-task-index-item { width: 180px; flex: 0 0 180px; }
   :root[data-theme] .background-task-modal .background-task-detail-head { padding: 12px 12px 8px; }
   :root[data-theme] .background-task-modal .background-task-meta { padding-left: 12px; padding-right: 12px; }

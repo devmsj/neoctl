@@ -1,8 +1,8 @@
 /* Preserve the conversation first; secondary columns give up width gradually. */
 @media (min-width: 821px) {
   :root .shell {
-    --navigation-width: clamp(168px, calc(28vw - 64px), 280px);
-    --information-width: clamp(176px, calc(26vw - 52px), 300px);
+    --navigation-width: var(--appearance-navigation-track, clamp(168px, calc(28vw - 64px), 280px));
+    --information-width: var(--appearance-information-track, clamp(176px, calc(26vw - 52px), 300px));
     grid-template-columns: var(--navigation-width) minmax(0, 1fr);
   }
   :root .chat-grid {

@@ -1,0 +1,52 @@
+/* Shared select chrome. Page styles may set density tokens, not redraw the control.
+   The wrapper owns the only border; trigger and options never own another one. */
+:root[data-theme] .neo-select {
+  --select-line: var(--chrome-line, var(--line));
+  --select-surface: var(--chrome-surface, var(--surface));
+  --select-raised: var(--chrome-raised, var(--surface-raised));
+  --select-text: var(--chrome-text, var(--text));
+  --select-muted: var(--chrome-muted, var(--muted));
+  --select-accent: var(--chrome-accent, var(--purple));
+  --select-hover: var(--chrome-hover, var(--purple-soft));
+  --select-selected: var(--chrome-accent-soft, var(--purple-soft));
+  border: 1px solid var(--select-line) !important;
+  border-radius: var(--control-radius, var(--appearance-radius, 5px)) !important;
+  background: var(--select-surface) !important; color: var(--select-text) !important;
+  font-family: var(--control-font, var(--chrome-sans, var(--sans))) !important;
+  font-size: var(--control-font-size, calc(12px * var(--appearance-ui-scale, 1))) !important;
+  font-weight: 400; box-shadow: none !important;
+}
+:root[data-theme] .neo-select:hover:not(.disabled) { border-color: color-mix(in srgb, var(--select-accent) 45%, var(--select-line)) !important; }
+:root[data-theme] .neo-select:is(.open, :focus-within):not(.disabled) { border-color: var(--select-accent) !important; z-index: 40; }
+:root[data-theme] .neo-select.disabled { opacity: .45; }
+:root[data-theme] .neo-select .neo-select-trigger {
+  display: flex; align-items: center; width: 100%; min-height: var(--control-inner-height, 34px);
+  padding: 6px 32px 6px 10px !important; border: 0 !important;
+  border-radius: inherit !important; background: transparent !important;
+  color: var(--select-text) !important; font: inherit !important; line-height: 20px !important;
+  text-align: left; box-shadow: none !important; outline: 0 !important; transform: none !important;
+}
+:root[data-theme] .neo-select .neo-select-trigger::after { right: 12px; width: 6px; height: 6px; color: var(--select-muted); }
+:root[data-theme] .neo-select:is(.open, :focus-within) .neo-select-trigger::after { color: var(--select-accent); }
+:root[data-theme] .neo-select .neo-select-menu {
+  padding: 4px; gap: 2px; border: 1px solid var(--select-line) !important;
+  border-radius: var(--control-radius, var(--appearance-radius, 5px)) !important;
+  background: var(--select-raised) !important; color: var(--select-text);
+  box-shadow: none !important; scrollbar-width: none; -ms-overflow-style: none;
+}
+.neo-select-menu::-webkit-scrollbar { display: none; }
+:root[data-theme] .neo-select .neo-select-menu button {
+  display: flex; align-items: center; min-height: var(--control-option-height, 32px);
+  padding: 6px 30px 6px 10px !important; border: 0 !important;
+  border-radius: var(--control-radius, var(--appearance-radius, 3px)) !important;
+  background: transparent !important; color: var(--select-text) !important;
+  font: inherit !important; line-height: 20px !important; text-align: left;
+  overflow-wrap: anywhere; box-shadow: none !important; transform: none !important;
+  outline: none !important;
+}
+:root[data-theme] .neo-select .neo-select-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--select-hover) !important; }
+:root[data-theme] .neo-select .neo-select-menu button.selected { background: var(--select-selected) !important; color: var(--select-accent) !important; }
+:root[data-theme] .neo-select .neo-select-menu button.selected::after { border-color: var(--select-accent); }
+:root[data-theme] .neo-select .neo-select-menu button:disabled { opacity: .4; cursor: not-allowed; }
+/* Runtime lists retain their compact density, using the same control anatomy. */
+.runtime-context-modal { --control-inner-height: 30px; --control-font-size: calc(11px * var(--appearance-ui-scale, 1)); }

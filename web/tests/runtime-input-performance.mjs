@@ -6,7 +6,11 @@ const label=process.argv[2]||'baseline', count=Number(process.env.PERF_LINES||12
 const lines=Array.from({length:count},(_,i)=>i%4===0?{id:i,kind:'user',messageId:'m'+i,text:'请分析这段代码，保留格式。'}:i%4===3?{id:i,kind:'assistant',text:'已完成检查。\n\n- 保留现有交互\n- 检查布局与功能'}:{id:i,kind:'tool',toolName:'file_read',toolUseId:'t'+i,titleStatus:'success',text:'result',activity:{phase:'completed',input:{path:'src/file'+i+'.ts'}},observation:{content:'const value = 1;'}})
 lines.push({id:count,kind:'assistant',live:true,text:'正在分析：\n'})
 const snapshot=observabilitySnapshot({busy:true,lines,status:{phase:'responding'},runControl:{state:'running',canPause:true}})
-const ui=await createObservabilityBrowser(snapshot,undefined,{viewport:{width:1180,height:760}})
+const appearance = process.env.PERF_APPEARANCE ? JSON.parse(process.env.PERF_APPEARANCE) : null
+const ui=await createObservabilityBrowser(snapshot,appearance ? async route => {
+ if (new URL(route.request().url()).pathname !== '/api/appearance') return false
+ await route.fulfill({json:{config:appearance,revision:'benchmark'}});return true
+} : undefined,{viewport:{width:1180,height:760}, dist:process.env.PERF_DIST || undefined})
 try{
  const {page}=ui
  await page.addInitScript(()=>{window.EventSource=class{constructor(){window.perfEvents=this;this.listeners={}}addEventListener(k,fn){this.listeners[k]=fn}close(){}}})

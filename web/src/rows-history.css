@@ -1,31 +1,31 @@
 /* Fixed row transcript: conversational spacing and tool observation alignment. */
 .transcript.rows-transcript {
-  --history-background: #ffffff;
-  --history-text: #20252d;
-  --history-strong: #17202b;
-  --history-secondary: #424c59;
-  --history-user-background: #f8f5f8;
-  --history-user-text: #202a36;
-  --history-border: #dce2e9;
-  --history-code-background: #e9edf2;
-  --history-icon: #94657e;
+  --history-background: var(--appearance-bg, #ffffff);
+  --history-text: var(--appearance-text, #20252d);
+  --history-strong: var(--appearance-strong, #17202b);
+  --history-secondary: var(--appearance-muted, #424c59);
+  --history-user-background: var(--appearance-user-bg, #f8f5f8);
+  --history-user-text: var(--appearance-user-text, #202a36);
+  --history-border: var(--appearance-line, #dce2e9);
+  --history-code-background: var(--appearance-code-bg, #e9edf2);
+  --history-icon: var(--appearance-accent, #94657e);
   --conversation-content-inset: 13px;
   --activity-icon-inset: var(--conversation-content-inset);
   --activity-content-inset: calc(var(--activity-icon-inset) + 22px);
-  background: var(--history-background);
+  background: var(--appearance-transcript-bg, var(--history-background));
   color: var(--history-text);
-  font-family: system-ui, 'Microsoft YaHei', sans-serif;
+  font-family: var(--appearance-text-font, system-ui, 'Microsoft YaHei', sans-serif);
 }
 :root[data-theme='dark'] .transcript.rows-transcript {
-  --history-background: #111418;
-  --history-text: #d7dce3;
-  --history-strong: #eef0f4;
-  --history-secondary: #9aa4b2;
-  --history-user-background: #191e25;
-  --history-user-text: #e1e5eb;
-  --history-border: #2b323d;
-  --history-code-background: #202630;
-  --history-icon: #bb8ea6;
+  --history-background: var(--appearance-bg, #111418);
+  --history-text: var(--appearance-text, #d7dce3);
+  --history-strong: var(--appearance-strong, #eef0f4);
+  --history-secondary: var(--appearance-muted, #9aa4b2);
+  --history-user-background: var(--appearance-user-bg, #191e25);
+  --history-user-text: var(--appearance-user-text, #e1e5eb);
+  --history-border: var(--appearance-line, #2b323d);
+  --history-code-background: var(--appearance-code-bg, #202630);
+  --history-icon: var(--appearance-accent, #bb8ea6);
 }
 .rows-history .message.user,
 .rows-history .message.assistant {
@@ -38,16 +38,16 @@
 .rows-history .message.user { padding: 12px 0 8px; }
 .rows-history .message.user > .message-body {
   padding: 8px 12px;
-  border: 1px solid var(--history-border);
-  border-radius: 3px !important;
+  border: var(--appearance-border-width, 1px) solid var(--history-border);
+  border-radius: var(--appearance-radius, 3px) !important;
   background: var(--history-user-background);
 }
 .rows-history .message.assistant { padding: 20px var(--conversation-content-inset) 10px; }
 .rows-history .message.user .message-text,
 .rows-history .message.assistant .message-text {
-  font-size: 15px;
-  line-height: 24px;
-  font-weight: 400;
+  font-size: var(--appearance-text-size, 15px);
+  line-height: var(--appearance-line-height, 24px);
+  font-weight: var(--appearance-text-weight, 400);
   color: var(--history-text);
 }
 .rows-history .message.user .message-text { color: var(--history-user-text); }
@@ -60,12 +60,12 @@
   color: inherit;
   background: var(--history-code-background);
   border: 0;
-  border-radius: 3px !important;
+  border-radius: var(--appearance-radius, 3px) !important;
   padding: 1px 4px;
 }
 .rows-history .message-text pre {
   background: var(--history-user-background);
-  border: 1px solid var(--history-border);
+  border: var(--appearance-border-width, 1px) solid var(--history-border);
   color: var(--history-text);
 }
 .rows-history .tool-history-entry.is-tool-group-start { padding-top: 10px; }
@@ -88,7 +88,7 @@
   margin: 0 0 0 22px;
   padding: 3px 0 5px;
   color: var(--history-secondary);
-  font-family: inherit;
+  font-family: var(--appearance-ui-font, inherit);
   font-size: 11px;
   line-height: 18px;
   font-weight: 400;

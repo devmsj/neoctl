@@ -48,6 +48,31 @@ async function fixture(t, enabled = true, configOverrides = {}, plugins = false)
   return { root, request, login, restart: async () => { mode.close(); await start(); } };
 }
 
+test('appearance is personal, survives restart and ignores administrator owner selection without creating runtimes', async t => {
+  const f = await fixture(t), alice = await f.login('Alice'), bob = await f.login('Bob'), admin = await f.login('Admin');
+  assert.equal((await f.request('/api/appearance')).status, 401);
+  const initial = await (await f.request('/api/appearance', alice)).json();
+  initial.config.dark.accent = '#55aacc';
+  const put = (cookie, body, query = '') => f.request('/api/appearance' + query, cookie, body, { method: 'PUT' });
+  assert.equal((await put(alice, initial)).status, 200);
+  assert.equal((await put(alice, initial)).status, 409);
+  assert.deepEqual((await (await f.request('/api/appearance', bob)).json()).config.dark, {});
+  const own = await (await f.request('/api/appearance?ownerUsername=Alice', admin)).json();
+  assert.deepEqual(own.config.dark, {});
+  own.config.light.accent = '#773355'; assert.equal((await put(admin, own, '?ownerUsername=Alice')).status, 200);
+  const font = Buffer.alloc(32); font.writeUInt32BE(0x00010000); font.writeUInt16BE(1, 4); font.writeUInt32BE(28, 20); font.writeUInt32BE(4, 24);
+  const upload = await f.request('/api/appearance/assets?kind=font', alice, undefined, { method: 'POST', headers: { cookie: alice, 'Content-Type': 'application/octet-stream' }, body: font });
+  assert.equal(upload.status, 201);
+  const resource = '/api/appearance/assets/' + (await upload.json()).id;
+  assert.equal((await f.request(resource)).status, 401);
+  assert.equal((await f.request(resource, alice)).status, 200);
+  assert.equal((await f.request(resource, bob)).status, 404);
+  assert.equal((await f.request(resource + '?ownerUsername=Alice', admin)).status, 404);
+  await f.restart();
+  assert.equal((await (await f.request('/api/appearance', await f.login('Alice'))).json()).config.dark.accent, '#55aacc');
+  await assert.rejects(fs.stat(path.join(f.root, 'isolated-users', 'Alice', 'sessions')), e => e.code === 'ENOENT');
+});
+
 test('disabled defaults preserve unauthenticated legacy routes; invalid configs fail closed', async t => {
   const f = await fixture(t, false);
   assert.deepEqual(await (await f.request('/api/auth/status')).json(), { isolation: false, user: null });

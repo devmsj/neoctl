@@ -101,14 +101,14 @@ onBeforeUnmount(() => { disposed = true; version++; controller?.abort(); clearTi
 
 <style scoped>
 .quick-sessions{min-height:0;flex:1;display:flex;flex-direction:column;margin:2px 12px 8px;color:var(--chrome-muted,var(--muted))}
-.quick-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px 8px;flex-shrink:0;font-size:11px;letter-spacing:.04em}
+.quick-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px 8px;flex-shrink:0;font-size:calc(11px * var(--appearance-ui-scale, 1));letter-spacing:.04em}
 .quick-sessions .quick-search-toggle{display:grid;place-items:center;width:28px;height:28px;min-height:0;padding:0;border:0!important;background:none!important;color:inherit!important;box-shadow:none!important}
 .quick-search-toggle svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round}
-.quick-search{padding:0 4px 10px}.quick-search input{width:100%;min-width:0;height:33px!important;padding:0 9px!important;font-size:12px!important}
+.quick-search{padding:0 4px 10px}.quick-search input{width:100%;min-width:0;height:33px!important;padding:0 9px!important;font-size:calc(12px * var(--appearance-ui-scale, 1))!important}
 .quick-scroll{min-height:0;overflow:auto;overscroll-behavior:contain;flex:1;padding:0 0 14px;scrollbar-width:none;mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent)}
 .quick-scroll::-webkit-scrollbar{display:none}.quick-scroll:focus-visible{outline:1px solid var(--pink);outline-offset:2px}
-.quick-group{color:var(--chrome-muted,var(--muted));opacity:.7;font-size:10px;line-height:18px;margin:10px 10px 6px;letter-spacing:.06em}.quick-group:first-child{margin-top:1px}
-.quick-sessions .quick-session{position:relative;display:flex;align-items:center;width:100%;height:42px;min-height:42px;text-align:left;border:0!important;border-radius:5px!important;padding:0 11px!important;gap:9px;box-shadow:none!important;background:transparent!important;color:var(--chrome-muted,var(--muted))!important;transition:background .16s,color .16s;transform:none!important}
+.quick-group{color:var(--chrome-muted,var(--muted));opacity:.7;font-size:calc(10px * var(--appearance-ui-scale, 1));line-height:18px;margin:10px 10px 6px;letter-spacing:.06em}.quick-group:first-child{margin-top:1px}
+.quick-sessions .quick-session{position:relative;display:flex;align-items:center;width:100%;height:42px;min-height:42px;text-align:left;border:0!important;border-radius:var(--appearance-radius, 5px)!important;padding:0 11px!important;gap:9px;box-shadow:none!important;background:transparent!important;color:var(--chrome-muted,var(--muted))!important;transition:background .16s,color .16s;transform:none!important}
 .quick-sessions .quick-session:hover{color:var(--chrome-text,var(--text))!important;background:color-mix(in srgb,var(--pink) 5%,transparent)!important}
 .quick-sessions .quick-session[aria-current='true']{color:var(--chrome-text,var(--text))!important;background:transparent!important;border-radius:0!important}
 .quick-sessions .quick-selection-frame{position:absolute;inset:0;pointer-events:none;opacity:.75}
@@ -118,8 +118,8 @@ onBeforeUnmount(() => { disposed = true; version++; controller?.abort(); clearTi
 @keyframes quick-frame-top-right{0%{clip-path:inset(0 100% calc(100% - 1px) 0)}85%{clip-path:inset(0 0 calc(100% - 1px) 0)}100%{clip-path:inset(0)}}
 @keyframes quick-frame-bottom-left{0%{clip-path:inset(calc(100% - 1px) 0 0 100%)}85%{clip-path:inset(calc(100% - 1px) 0 0 0)}100%{clip-path:inset(0)}}
 @media(prefers-reduced-motion:reduce){.quick-selection-frame>span{animation:none}}
-.quick-sessions .quick-session[aria-busy='true']{color:var(--pink)!important}.quick-title{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;flex:1;font-size:12px;line-height:18px;font-weight:400}.quick-owner{max-width:48px;overflow:hidden;text-overflow:ellipsis;font-size:10px;opacity:.6}
+.quick-sessions .quick-session[aria-busy='true']{color:var(--pink)!important}.quick-title{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;flex:1;font-size:calc(12px * var(--appearance-ui-scale, 1));line-height:18px;font-weight:400}.quick-owner{max-width:48px;overflow:hidden;text-overflow:ellipsis;font-size:calc(10px * var(--appearance-ui-scale, 1));opacity:.6}
 .quick-sessions .quick-loading{width:12px!important;height:12px!important;flex:0 0 12px;color:var(--pink)!important}.quick-running{display:flex;align-items:center;justify-content:center;gap:3px;width:12px;height:12px;flex:0 0 12px}.quick-running i{width:1px;height:6px;background:var(--pink);animation:quick-pulse 1.5s ease-in-out infinite}.quick-running i+i{animation-delay:.4s}
-.quick-load{min-height:34px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--chrome-muted,var(--muted))}.quick-load .loading-ring{width:15px;height:15px}.quick-sessions .quick-retry{border:0!important;background:none!important;font-size:11px;color:var(--pink)!important;padding:6px!important}.quick-empty{padding:18px 10px;font-size:12px}
+.quick-load{min-height:34px;display:flex;align-items:center;justify-content:center;font-size:calc(10px * var(--appearance-ui-scale, 1));color:var(--chrome-muted,var(--muted))}.quick-load .loading-ring{width:15px;height:15px}.quick-sessions .quick-retry{border:0!important;background:none!important;font-size:calc(11px * var(--appearance-ui-scale, 1));color:var(--pink)!important;padding:6px!important}.quick-empty{padding:18px 10px;font-size:calc(12px * var(--appearance-ui-scale, 1))}
 @keyframes quick-pulse{50%{opacity:.25;transform:scaleY(.5)}}@media(prefers-reduced-motion:reduce){.quick-running i{animation:none}.quick-session{transition:none}}
 </style>

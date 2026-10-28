@@ -2,44 +2,36 @@
 :root[data-theme] .prompt-config-editor { gap: 22px; }
 :root[data-theme] .prompt-edit-region { display: grid; gap: 10px; min-width: 0; }
 :root[data-theme] .prompt-config-toolbar { flex-wrap: nowrap; gap: 8px; }
-:root[data-theme] :is(.prompt-config-scope, .prompt-readonly-heading) { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--chrome-muted); font-size: 12px; }
-:root[data-theme] :is(.prompt-config-scope, .prompt-readonly-heading) strong { font-size: 13px; font-weight: 500; color: var(--chrome-text); }
-:root[data-theme] .prompt-access-label { font-size: 10px; color: var(--chrome-faint); }
+:root[data-theme] :is(.prompt-config-scope, .prompt-readonly-heading) { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); }
+:root[data-theme] :is(.prompt-config-scope, .prompt-readonly-heading) strong { font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 500; color: var(--chrome-text); }
+:root[data-theme] .prompt-access-label { font-size: calc(10px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
 :root[data-theme] .prompt-config-scope .chrome-icon { color: var(--chrome-accent); }
 :root[data-theme] .prompt-config-actions { gap: 4px; flex-wrap: nowrap; }
 :root[data-theme] .prompt-config-actions > button {
   display: inline-flex; align-items: center; justify-content: center; min-width: 32px; width: 32px; min-height: 32px; padding: 6px;
-  border: 0 !important; border-radius: 5px !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important;
+  border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; background: transparent !important; color: var(--chrome-muted) !important; box-shadow: none !important; transform: none !important;
 }
 :root[data-theme] .prompt-config-actions > button:hover:not(:disabled) { background: var(--chrome-hover) !important; }
 :root[data-theme] .prompt-config-actions > button.primary:not(:disabled) { background: var(--chrome-accent-soft) !important; color: var(--chrome-accent) !important; }
 :root[data-theme] .prompt-config-actions > button:disabled { opacity: .4; }
 :root[data-theme] .prompt-draft-mark { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--chrome-accent); }
-:root[data-theme] .prompt-config-note { margin: 0; color: var(--chrome-faint); font-size: 11px; line-height: 1.7; }
+:root[data-theme] .prompt-config-note { margin: 0; color: var(--chrome-faint); font-size: calc(11px * var(--appearance-ui-scale, 1)); line-height: 1.7; }
 :root[data-theme] :is(.panel-page, [role='dialog']) .prompt-config-textarea {
   box-sizing: border-box; width: 100%; min-height: 200px; max-height: 50vh; padding: 14px 16px;
-  border: 1px solid var(--chrome-line) !important; border-radius: 6px !important;
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line) !important; border-radius: var(--appearance-radius, 6px) !important;
   background: var(--chrome-surface) !important; color: var(--chrome-text) !important;
-  font-family: var(--mono) !important; font-size: 13px; font-weight: 400; line-height: 1.8; resize: vertical;
+  font-family: var(--appearance-code-font, var(--mono)) !important; font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 400; line-height: 1.8; resize: vertical;
   outline: none !important; box-shadow: none !important;
 }
 :root[data-theme] :is(.panel-page, [role='dialog']) .prompt-config-textarea:focus { border-color: var(--chrome-accent) !important; }
-:root[data-theme] .prompt-readonly-region { min-width: 0; border-top: 1px solid var(--chrome-line-soft); padding-top: 16px; display: grid; gap: 10px; }
-:root[data-theme] .prompt-pending { color: var(--chrome-accent); font-size: 11px; margin-left: auto; }
-:root[data-theme] .prompt-source-labels { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 10px; line-height: 1.6; color: var(--chrome-faint); overflow-wrap: anywhere; }
+:root[data-theme] .prompt-readonly-region { min-width: 0; border-top: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); padding-top: 16px; display: grid; gap: 10px; }
+:root[data-theme] .prompt-pending { color: var(--chrome-accent); font-size: calc(11px * var(--appearance-ui-scale, 1)); margin-left: auto; }
+:root[data-theme] .prompt-source-labels { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: calc(10px * var(--appearance-ui-scale, 1)); line-height: 1.6; color: var(--chrome-faint); overflow-wrap: anywhere; }
 :root[data-theme] .prompt-config-preview { min-width: 0; }
-:root[data-theme] .prompt-config-preview > summary { display: flex; align-items: center; gap: 6px; min-height: 30px; list-style: none; color: var(--chrome-muted); font-size: 11px; cursor: pointer; }
+:root[data-theme] .prompt-config-preview > summary { display: flex; align-items: center; gap: 6px; min-height: 30px; list-style: none; color: var(--chrome-muted); font-size: calc(11px * var(--appearance-ui-scale, 1)); cursor: pointer; }
 :root[data-theme] .prompt-config-preview > summary::-webkit-details-marker { display: none; }
 :root[data-theme] .prompt-config-preview[open] > summary > .chrome-icon { transform: rotate(90deg); }
 :root[data-theme] .prompt-config-preview pre { margin: 6px 0 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 8px 2px 0; border: 0 !important; background: transparent !important; color: var(--chrome-muted); font: 12px/1.8 var(--mono); box-shadow: none !important; }
-:root[data-theme] .runtime-context-modal .neo-select { border: 1px solid var(--chrome-line-soft) !important; border-radius: 5px !important; background: transparent !important; box-shadow: none !important; }
-:root[data-theme] .runtime-context-modal .neo-select.open { border-color: var(--chrome-accent) !important; }
-:root[data-theme] .runtime-context-modal .neo-select-trigger { min-height: 32px; padding: 5px 28px 5px 10px; color: var(--chrome-muted) !important; font-size: 11px; box-shadow: none !important; }
-:root[data-theme] .runtime-context-modal .neo-select-trigger::after { right: 11px; width: 5px; height: 5px; }
-:root[data-theme] .runtime-context-modal .neo-select-menu { padding: 4px; border-radius: 6px !important; background: var(--chrome-raised) !important; box-shadow: 0 4px 16px #00000012 !important; animation: none; }
-:root[data-theme] .runtime-context-modal .neo-select-menu button { min-height: 32px; padding: 6px 24px 6px 8px; border-radius: 3px !important; background: transparent !important; color: var(--chrome-muted) !important; font-size: 11px; font-weight: 400; box-shadow: none !important; transform: none !important; }
-:root[data-theme] .runtime-context-modal .neo-select-menu button:is(:hover, :focus-visible):not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-text) !important; }
-:root[data-theme] .runtime-context-modal .neo-select-menu button.selected { background: var(--chrome-accent-soft) !important; color: var(--chrome-accent) !important; }
 :root[data-theme] :is(.prompt-config-actions button, .prompt-config-preview summary, .prompt-config-preview pre):focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: 2px; }
 
 /* Override shared dialog button chrome only inside these content controls. */
@@ -54,7 +46,7 @@
   gap: 12px;
   padding: 4px 2px;
   border: 0 !important;
-  border-bottom: 1px solid var(--chrome-line-soft) !important;
+  border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important;
   border-radius: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
@@ -63,14 +55,14 @@
 :root[data-theme] .runtime-context-bar { margin-bottom: 10px; }
 :root[data-theme] :is(.runtime-context-bar-title, .compaction-context-title) { gap: 8px; }
 :root[data-theme] :is(.runtime-context-bar-title, .compaction-context-title) > strong {
-  color: var(--chrome-muted); font-size: 12px; font-weight: 450;
+  color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 450;
 }
 :root[data-theme] .runtime-context-bar-title [data-demo-trigger] { min-height: 32px; }
 :root[data-theme] .runtime-context-bar-actions { gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 :root[data-theme] .runtime-context-bar button {
   min-height: 32px; min-width: 32px; gap: 6px; padding: 4px 8px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0 !important; border-radius: 5px !important;
+  border: 0 !important; border-radius: var(--appearance-radius, 5px) !important;
   background: transparent !important; color: var(--chrome-muted) !important;
   box-shadow: none !important; transform: none !important;
 }
@@ -82,7 +74,7 @@
   background: transparent !important; color: var(--chrome-muted) !important;
   font: 11px/1.4 var(--mono); font-variant-numeric: tabular-nums;
 }
-:root[data-theme] .compaction-context-bar { border-radius: 5px !important; padding-inline: 8px; }
+:root[data-theme] .compaction-context-bar { border-radius: var(--appearance-radius, 5px) !important; padding-inline: 8px; }
 :root[data-theme] .compaction-context-bar[role='button']:hover {
   background: var(--chrome-hover) !important; border-color: var(--chrome-line-soft) !important;
 }
@@ -98,7 +90,7 @@
 :root[data-theme] .composer .compact-button {
   display: inline-flex; align-items: center; justify-content: center;
   width: 32px; min-width: 32px; min-height: 30px; padding: 5px !important;
-  border: 1px solid transparent !important; border-radius: 5px !important;
+  border: var(--appearance-border-width, 1px) solid transparent !important; border-radius: var(--appearance-radius, 5px) !important;
   background: transparent !important; color: var(--chrome-muted) !important;
   box-shadow: none !important; transform: none !important;
 }
@@ -113,27 +105,27 @@
 }
 :root[data-theme] :is(.runtime-context-modal, .runtime-context-detail-modal) .runtime-context-modal-head { padding: 14px 18px; }
 :root[data-theme] .runtime-context-modal-head strong { display: flex; align-items: center; gap: 8px; }
-:root[data-theme] .runtime-context-modal-head > button { display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-radius: 5px !important; box-shadow: none !important; }
+:root[data-theme] .runtime-context-modal-head > button { display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-radius: var(--appearance-radius, 5px) !important; box-shadow: none !important; }
 :root[data-theme] :is(.runtime-context-modal-content, .runtime-context-detail-content) { padding: 18px; }
-:root[data-theme] .compaction-detail-stats { gap: 14px 22px; padding-bottom: 18px; background: transparent !important; border-bottom: 1px solid var(--chrome-line-soft); }
+:root[data-theme] .compaction-detail-stats { gap: 14px 22px; padding-bottom: 18px; background: transparent !important; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft); }
 :root[data-theme] .compaction-detail-stats > div { padding: 0; gap: 4px; background: transparent !important; }
-:root[data-theme] .compaction-detail-stats dt { font-size: 11px; color: var(--chrome-faint); }
-:root[data-theme] .compaction-detail-stats dd { margin: 0; font-size: 12px; line-height: 1.6; color: var(--chrome-text); }
-:root[data-theme] .compaction-detail-content h3 { font-size: 12px; font-weight: 500; color: var(--chrome-muted); }
+:root[data-theme] .compaction-detail-stats dt { font-size: calc(11px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
+:root[data-theme] .compaction-detail-stats dd { margin: 0; font-size: calc(12px * var(--appearance-ui-scale, 1)); line-height: 1.6; color: var(--chrome-text); }
+:root[data-theme] .compaction-detail-content h3 { font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 500; color: var(--chrome-muted); }
 :root[data-theme] [role='dialog'] .runtime-context-detail-content pre {
-  padding: 14px 16px; border: 1px solid var(--chrome-line-soft) !important; border-radius: 6px !important;
+  padding: 14px 16px; border: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; border-radius: var(--appearance-radius, 6px) !important;
   background: var(--chrome-surface) !important; color: var(--chrome-text) !important;
-  font-size: 12px; line-height: 1.8; tab-size: 2; box-shadow: none !important;
+  font-size: calc(12px * var(--appearance-ui-scale, 1)); line-height: 1.8; tab-size: 2; box-shadow: none !important;
 }
 :root[data-theme] .runtime-plugin-list { gap: 0; }
-:root[data-theme] .runtime-plugin-row { min-height: 64px; gap: 16px; padding: 8px 0; border-width: 0 0 1px !important; border-radius: 0 !important; box-shadow: none !important; }
+:root[data-theme] .runtime-plugin-row { min-height: 64px; gap: 16px; padding: 8px 0; border-width: 0 0 var(--appearance-border-width, 1px) !important; border-radius: 0 !important; box-shadow: none !important; }
 :root[data-theme] .runtime-plugin-row:last-child { border-bottom: 0 !important; }
-:root[data-theme] [role='dialog'] .runtime-tool-detail-button { min-height: 44px; gap: 4px; padding: 6px 8px; border-radius: 5px !important; }
+:root[data-theme] [role='dialog'] .runtime-tool-detail-button { min-height: 44px; gap: 4px; padding: 6px 8px; border-radius: var(--appearance-radius, 5px) !important; }
 :root[data-theme] [role='dialog'] .runtime-tool-detail-button:hover:not(:disabled) { background: var(--chrome-hover) !important; }
-:root[data-theme] .runtime-tool-detail-button code { max-width: 100%; overflow-wrap: anywhere; font-size: 12px; font-weight: 450; color: var(--chrome-text); }
+:root[data-theme] .runtime-tool-detail-button code { max-width: 100%; overflow-wrap: anywhere; font-size: calc(12px * var(--appearance-ui-scale, 1)); font-weight: 450; color: var(--chrome-text); }
 :root[data-theme] .runtime-plugin-row > span:not(.neo-select) { padding-inline: 8px; }
 :root[data-theme] .runtime-plugin-row .runtime-plugin-control { width: 120px; flex-basis: 120px; margin-right: 4px; }
-:root[data-theme] .runtime-plugin-row small { font-size: 11px; color: var(--chrome-faint); }
+:root[data-theme] .runtime-plugin-row small { font-size: calc(11px * var(--appearance-ui-scale, 1)); color: var(--chrome-faint); }
 @media (max-width: 600px) {
   :root[data-theme] :is(.runtime-context-bar, .compaction-context-bar) { gap: 6px; }
   :root[data-theme] .runtime-context-bar-actions { gap: 0; }

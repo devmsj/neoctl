@@ -6,6 +6,7 @@ const props = defineProps({
   options: { type: Array, default: () => [] },
   disabled: { type: Boolean, default: false },
   ariaLabel: { type: String, default: '请选择' },
+  placeholder: { type: String, default: '请选择' },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -45,7 +46,7 @@ const normalizedOptions = computed(() => props.options.map((option, index) => {
 }))
 
 const selectedOption = computed(() => normalizedOptions.value.find((option) => Object.is(option.value, props.modelValue)))
-const selectedLabel = computed(() => selectedOption.value?.label || '请选择')
+const selectedLabel = computed(() => selectedOption.value?.label || props.placeholder)
 
 function closeMenu() {
   open.value = false
@@ -176,7 +177,7 @@ onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown',
   min-width: 0;
   display: block;
   box-sizing: border-box;
-  border: 1px solid var(--line);
+  border: var(--appearance-border-width, 1px) solid var(--line);
   background: var(--surface);
   font-weight: 400;
   transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
@@ -210,7 +211,7 @@ onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown',
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--appearance-ui-scale, 1));
   text-align: left;
   cursor: pointer;
 }
@@ -252,7 +253,7 @@ onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown',
   box-sizing: border-box;
   overflow: auto;
   padding: 5px;
-  border: 1px solid color-mix(in srgb, var(--purple) 42%, var(--line));
+  border: var(--appearance-border-width, 1px) solid color-mix(in srgb, var(--purple) 42%, var(--line));
   background: var(--surface-raised);
   box-shadow: 0 14px 34px rgba(0, 0, 0, .18), 0 0 0 1px color-mix(in srgb, var(--purple) 6%, transparent);
   animation: neo-select-menu-enter .14s cubic-bezier(.2, .72, .2, 1) both;
@@ -265,7 +266,7 @@ onBeforeUnmount(() => { closeMenu(); document.removeEventListener('pointerdown',
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--appearance-ui-scale, 1));
   text-align: left;
   cursor: pointer;
 }

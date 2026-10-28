@@ -1,3 +1,4 @@
+import { createAppearanceStore, createAppearanceRoute } from './appearance-store.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -60,6 +61,7 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
   const globalPlugins = pluginSettings || await createWebPluginSettings(path.join(dataRoot, 'plugins.json'));
   const globalTools = toolSettings || await createWebToolSettings(path.join(dataRoot, 'tools.json'));
   const users = new Map();
+  const appearanceRoutes = new Map();
   let modelConfigQueue = Promise.resolve();
   const withModelConfigLock = operation => {
     const result = modelConfigQueue.then(operation);
@@ -226,6 +228,12 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
         if (await auth.route(req, res, url)) return true;
         const session = auth.authenticate(req);
         if (!session) { jsonReply(res, { errorCode: 'AUTH_REQUIRED', error: '请先登录' }, 401); return true; }
+        // Personal UI preferences must not restore a runtime or follow admin ownerUsername.
+        if (url.pathname === '/api/appearance' || url.pathname.startsWith('/api/appearance/')) {
+          const username = session.user.username;
+          if (!appearanceRoutes.has(username)) appearanceRoutes.set(username, createAppearanceRoute(createAppearanceStore(path.join(dataRoot, 'isolated-users', username, 'appearance'), { validateImage: core.validateImageBytes })));
+          return await appearanceRoutes.get(username)(req, res, url);
+        }
         const isAdmin = session.user.role === 'admin';
         if (url.pathname.startsWith('/api/admin/')) {
           if (!isAdmin) throw httpError(403, '仅超管可管理用户');
