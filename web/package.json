@@ -1,6 +1,6 @@
 {
   "name": "neoctl-web",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "Neo browser workspace with an embedded agent runtime.",
   "type": "module",
   "engines": {
