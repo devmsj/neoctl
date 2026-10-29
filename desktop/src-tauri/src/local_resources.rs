@@ -159,6 +159,8 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            crate::native_clipboard::clipboard_read,
+            crate::native_clipboard::clipboard_write,
             reveal_file,
             open_external,
             crate::local_file_drop::watch_file_drops,

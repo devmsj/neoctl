@@ -12,6 +12,8 @@
     ]
   },
   "permissions": [
+    "local-resources:allow-clipboard-read",
+    "local-resources:allow-clipboard-write",
     "local-resources:allow-reveal-file",
     "local-resources:allow-watch-file-drops",
     "local-resources:allow-unwatch-file-drops",

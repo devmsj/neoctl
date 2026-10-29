@@ -8,6 +8,8 @@ const files = [
   'tool-observation-reactivity.test.mjs',
   'appearance.test.mjs',
   'appearance-controller.test.mjs',
+  'appearance-draft.test.mjs',
+  'window-material.test.mjs',
   'attachment-input.test.mjs',
   'observation-idle.test.mjs',
   'execution-signal.test.mjs',

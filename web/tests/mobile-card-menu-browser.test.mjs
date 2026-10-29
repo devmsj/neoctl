@@ -31,7 +31,7 @@ for (const quota of [false, true]) test(`mobile menu opens registered sidebar ca
       assert.equal(await page.locator('.mobile-nav-menu').getAttribute('open'), null)
       await page.locator('.mobile-nav-menu > summary').click()
       const titles = await page.locator('.mobile-nav-menu nav button').allTextContents()
-      assert.deepEqual(titles, ['对话', '新建会话', '会话', '提示词', '全局配置', '切换到夜间', '后台任务', ...(quota ? ['周额度'] : []), '服务端内存'])
+      assert.deepEqual(titles, ['回到对话', '新建会话', '会话管理', '全局配置', '显示控件', '切到夜间', '后台任务', ...(quota ? ['周额度'] : []), '服务端内存'])
       const menuBox = await page.locator('.mobile-nav-menu > summary').boundingBox()
       const dropdownBox = await page.locator('.mobile-nav-menu nav').boundingBox()
       assert.equal(await page.locator('.mobile-theme-toggle').count(), 0)
@@ -45,7 +45,13 @@ for (const quota of [false, true]) test(`mobile menu opens registered sidebar ca
         const read = el => Object.fromEntries(keys.map(key => [key, getComputedStyle(el)[key]]))
         return { mobile: read(document.querySelector('.mobile-core-version')), desktop: read(document.querySelector('body > .core-version')) }
       })
-      assert.deepEqual(styles.mobile, desktopStyle)
+      // Narrow navigation intentionally uses the accent for its version entry.
+      const accent = await page.evaluate(() => {
+        const probe = document.createElement('span'); probe.style.color = 'var(--purple)'; document.body.append(probe)
+        const color = getComputedStyle(probe).color; probe.remove(); return color
+      })
+      assert.equal(styles.mobile.color, accent)
+      assert.deepEqual({ ...styles.mobile, color: desktopStyle.color }, desktopStyle)
       assert.equal(await page.locator('.mobile-core-version .core-version-spark').count(), 3)
       assert.ok(titles.includes('后台任务'))
       assert.ok(titles.includes('服务端内存'))
@@ -58,6 +64,15 @@ for (const quota of [false, true]) test(`mobile menu opens registered sidebar ca
         assert.equal(await page.locator(`.right-panel > [data-card="${id}"]`).isVisible(), true)
         assert.equal(await page.locator('.right-panel > section:visible').count(), 1)
         assert.equal(await page.locator('.right-panel').evaluate(el => el.scrollWidth > el.clientWidth + 1), false)
+        const geometry = await page.locator('.right-panel').evaluate(el => {
+          const card = [...el.querySelectorAll('section')].find(n => getComputedStyle(n).display !== 'none')
+          const head = card.querySelector('.background-task-head, .quota-card-head, .memory-card-head').getBoundingClientRect()
+          const close = el.querySelector('.mobile-card-close'), box = close.getBoundingClientRect()
+          return { headerY:head.y+head.height/2, closeY:box.y+box.height/2, border:getComputedStyle(card).borderTopWidth, background:getComputedStyle(card).backgroundColor, closeBorder:getComputedStyle(close).borderTopWidth, height:el.getBoundingClientRect().height }
+        })
+        assert.ok(Math.abs(geometry.headerY-geometry.closeY)<=2)
+        assert.equal(geometry.border,'0px'); assert.equal(geometry.background,'rgba(0, 0, 0, 0)'); assert.equal(geometry.closeBorder,'0px')
+        if(id==='tasks')assert.ok(geometry.height<120)
         await page.getByRole('button', { name: '关闭卡片', exact: true }).click()
         assert.equal(await page.locator('.right-panel').isVisible(), false)
       }

@@ -23,7 +23,7 @@ for (const desktop of [false, true]) test(`sidebar footer reserves its own track
   const { page } = f
   async function chrome() {
     if (!desktop) return
-    await page.evaluate(() => { window.__TAURI_INTERNALS__ = { invoke: async () => false } })
+    await page.evaluate(() => { window.__TAURI_INTERNALS__ = { invoke: async command => command.endsWith('|system_theme') ? matchMedia('(prefers-color-scheme: dark)').matches : false } })
     await page.addScriptTag({ path: fileURLToPath(new URL('../../desktop/ui/window-chrome.js', import.meta.url)) })
   }
   try {
@@ -68,19 +68,64 @@ for (const desktop of [false, true]) test(`sidebar footer reserves its own track
     await page.locator('.settings-page').waitFor()
     if (!desktop) assert.equal(await page.locator('.sidebar-actions-menu').count(), 0)
     await page.getByRole('button', { name: '应用菜单', exact: true }).click()
-    await page.getByRole('menuitem', { name: '切换到夜间', exact: true }).click()
-    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
-    assert.equal(config.mode, 'dark')
-    await page.reload(); await chrome()
-    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
+    const menu = page.locator(desktop ? 'neo-window-chrome .menu' : '.sidebar-actions-menu')
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), desktop
+      ? ['回到对话', '会话管理', '全局配置', '切到夜间', '返回启动页', '检查核心与 Web 更新', '卸载 Neo Desktop']
+      : ['回到对话', '新建会话', '会话管理', '全局配置', '显示控件', '切到夜间'])
+    await menu.getByRole('menuitem', { name: '会话管理', exact: true }).click()
+    await page.locator('.session-search').waitFor()
     await page.getByRole('button', { name: '应用菜单', exact: true }).click()
-    await page.getByRole('menuitem', { name: '切换到白天', exact: true }).click()
-    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+    await menu.getByRole('menuitem', { name: '回到对话', exact: true }).click()
+    await page.locator('.composer textarea').waitFor()
+    await page.emulateMedia({ colorScheme: 'light' })
+    await page.getByRole('button', { name: '应用菜单', exact: true }).click()
+    const cycle = page.locator(desktop ? 'neo-window-chrome [data-theme-cycle]' : '.sidebar-actions-menu [data-theme-cycle]')
+    assert.equal(await cycle.count(), 1)
+    assert.equal(await page.getByRole('menuitemradio').count(), 0)
+    assert.equal(await cycle.innerText(), '切到夜间')
+    await cycle.focus(); await page.keyboard.press('Enter')
+    await page.waitForFunction(() => document.documentElement.dataset.appearanceMode === 'dark')
+    assert.equal(await cycle.innerText(), '日夜跟随系统')
+    await cycle.click()
+    // No OS change after the click: entering system must immediately resolve its current value.
+    await page.waitForFunction(() => document.documentElement.dataset.appearanceMode === 'system' && document.documentElement.dataset.theme === 'light')
+    assert.equal(await cycle.innerText(), '切到白天')
+    const savedRevision = revision
+    for (const colorScheme of ['dark', 'light', 'dark']) {
+      await page.emulateMedia({ colorScheme })
+      await page.waitForFunction(mode => document.documentElement.dataset.theme === mode, colorScheme)
+      assert.equal(await cycle.innerText(), '切到白天')
+    }
+    assert.equal(revision, savedRevision, 'OS changes do not write preferences')
+    await page.reload(); await chrome()
+    await page.waitForFunction(() => document.documentElement.dataset.appearanceMode === 'system' && document.documentElement.dataset.theme === 'dark')
+    await page.getByRole('button', { name: '应用菜单', exact: true }).click()
+    assert.equal(await cycle.innerText(), '切到白天')
+    await cycle.click()
+    await page.waitForFunction(() => document.documentElement.dataset.appearanceMode === 'light' && document.documentElement.dataset.theme === 'light')
+    assert.equal(await cycle.innerText(), '切到夜间')
+    await page.keyboard.press('Escape')
+    await openGlobalSettings(page)
+    await page.locator('[data-settings-page="appearance"]').click()
+    await page.getByRole('button', { name: '设计外观', exact: true }).click()
+    await page.getByLabel('外观名称', { exact: true }).fill('保留设计')
+    const beforeDesignCycle = revision
+    await page.getByRole('button', { name: '应用菜单', exact: true }).click()
+    await cycle.click(); await page.waitForTimeout(150)
+    assert.equal(config.mode, 'light'); assert.equal(revision, beforeDesignCycle)
+    assert.equal(await page.getByLabel('外观名称', { exact: true }).inputValue(), '保留设计')
+    await page.keyboard.press('Escape')
+    await page.getByLabel('外观名称', { exact: true }).fill('')
+    await page.getByRole('button', { name: '返回外观', exact: true }).click()
     await page.setViewportSize({ width: 390, height: 700 })
     await page.locator('.mobile-nav-menu > summary').click()
-    await page.locator('.mobile-nav-menu').getByRole('button', { name: '切换到夜间', exact: true }).click()
-    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
-    assert.equal(await page.locator('.mobile-nav-menu').getAttribute('open'), null)
+    const mobileCycle = page.locator('.mobile-nav-menu [data-theme-cycle]')
+    assert.equal(await mobileCycle.count(), 1)
+    for (const mode of ['dark', 'system', 'light']) {
+      await mobileCycle.click()
+      await page.waitForFunction(mode => document.documentElement.dataset.appearanceMode === mode, mode)
+    }
+    assert.notEqual(await page.locator('.mobile-nav-menu').getAttribute('open'), null)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })

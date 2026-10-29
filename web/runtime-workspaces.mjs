@@ -48,6 +48,7 @@ export function createWorkspaceRuntimeManager(options) {
   };
 
   class WorkspaceWebRepl extends WebRepl {
+    replCommandsEnabled = false;
     syncScheduled = false;
     scopeMutation = Promise.resolve();
 
@@ -65,8 +66,10 @@ export function createWorkspaceRuntimeManager(options) {
     }
 
     snapshot(includeCatalog = false) {
+      const snapshot = super.snapshot(includeCatalog);
       return {
-        ...super.snapshot(includeCatalog),
+        ...snapshot,
+        ...(snapshot.catalog ? { catalog: { ...snapshot.catalog, commands: [] } } : {}),
         cwd: currentEngineCwd(this.runtime.engine, projectRoot),
         workspacePaths: this.runtime.engine.getWorkspacePaths(),
       };

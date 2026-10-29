@@ -55,6 +55,21 @@ test('atomic persistence, reload, revision conflict and corrupt file preservatio
  await assert.rejects(store.save(c,one.value.revision),e=>e.status===500)
  assert.equal(await fs.readFile(path.join(dir,'settings.json'),'utf8'),'broken')
 })
+test('system preset overrides persist, validate names and reset independently of custom cards', async t => {
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'neo-preset-store-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}))
+ const store=createAppearanceStore(dir),config=emptyAppearance()
+ config.presets=[{builtin:'glass',name:'雾玻璃',light:{accent:'#123456'},dark:{windowFrost:2}},{name:'我的外观',light:{},dark:{}}]
+ const saved=await store.save(config,'0')
+ assert.deepEqual((await createAppearanceStore(dir).read()).config,config)
+ const invalid=structuredClone(config);invalid.presets[0].name='改名'
+ await assert.rejects(store.save(invalid,saved.revision),e=>e.status===400)
+ config.presets=config.presets.filter(p=>!p.builtin)
+ const reset=await store.save(config,saved.revision)
+ assert.deepEqual((await createAppearanceStore(dir).read()).config.presets,config.presets)
+ config.presets=[];await store.save(config,reset.revision)
+ assert.equal((await store.read()).config.presets.length,0)
+})
+
 test('assets inspect real bytes, deduplicate, protect references and never cross users', async t => {
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'neo-assets-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}))
  const a=createAppearanceStore(path.join(dir,'a'),{validateImage:validateImageBytes}),b=createAppearanceStore(path.join(dir,'b'),{validateImage:validateImageBytes})

@@ -2,16 +2,18 @@ import { reactive } from 'vue'
 import { appFetch, appUrl } from './app-url.mjs'
 import { authStorageSuffix } from './auth-state.mjs'
 import { emptyAppearance, normalizeAppearance, assetReferences } from '../shared/appearance.mjs'
+import { withDefaultAppearance } from './appearance-presets.mjs'
+import { isDesktop } from './local-resources.mjs'
 import { appearanceTokens } from './appearance-tokens.mjs'
 
 const clone = value => JSON.parse(JSON.stringify(value))
 export function createAppearanceController({ onTheme, onLayout, notify = () => {} }) {
   const key = 'neoctl-web.appearance.v1' + authStorageSuffix()
-  const state = reactive({ config: emptyAppearance(), revision: '0', loaded: false, loading: false, error: '', previewing: false })
+  const state = reactive({ config: withDefaultAppearance(emptyAppearance(), '0', isDesktop()), revision: '0', loaded: false, loading: false, error: '', previewing: false })
   let disposed = false, requestId = 0, preview, previewMode, frame = 0, layoutTimer = 0, keys = [], loadPromise, savePromise
-  let fontEpoch = 0, lastFonts = '', lastLayout = '', effectiveMode = 'light'
+  let fontEpoch = 0, lastFonts = '', lastLayout = ''
   const fontFaces = new Map(), media = matchMedia('(prefers-color-scheme: dark)')
-  const modeOf = config => config.mode === 'system' ? media.matches ? 'dark' : 'light' : config.mode
+  const modeOf = config => config.mode === 'system' ? (document.documentElement.dataset.neoSystemTheme || (media.matches ? 'dark' : 'light')) : config.mode
   const assetUrl = id => appUrl('/api/appearance/assets/' + id)
   function cache() { try { localStorage.setItem(key, JSON.stringify({ config: state.config, revision: state.revision })) } catch {} }
   function layout() { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => { if (!disposed) onLayout?.() }, 100) }
@@ -36,7 +38,6 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
     frame = 0
     if (disposed) return
     const config = preview || state.config, mode = previewMode || modeOf(config), scheme = config[mode]
-    effectiveMode = mode
     onTheme(mode)
     const root = document.documentElement, tokens = appearanceTokens(scheme, mode, assetUrl)
     if (scheme.sidebarWidth) tokens['--appearance-navigation-track'] = `clamp(168px, ${scheme.sidebarWidth}px, 27vw)`
@@ -47,6 +48,7 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
     if (scheme.backgroundAsset) root.dataset.appearanceBackground = scheme.backgroundScope || 'workspace'
     else delete root.dataset.appearanceBackground
     root.dataset.appearance = 'ready'
+    root.dataset.appearanceMode = state.config.mode
     void fonts(scheme)
     const signature = JSON.stringify(Object.fromEntries(Object.entries(tokens).filter(([k]) => /font|size|width|gap|spacing|height|scale|weight/.test(k))))
     if (signature !== lastLayout) { lastLayout = signature; layout() }
@@ -55,7 +57,7 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
   function restoreCache() {
     try {
       const saved = JSON.parse(localStorage.getItem(key))
-      if (saved?.config) { state.config = normalizeAppearance(saved.config); state.revision = typeof saved.revision === 'string' ? saved.revision : '0' }
+      if (saved?.config) { state.config = withDefaultAppearance(normalizeAppearance(saved.config), saved.revision, isDesktop()); state.revision = typeof saved.revision === 'string' ? saved.revision : '0' }
       else if (!authStorageSuffix()) { const old = localStorage.getItem('neoctl-web.theme'); if (['light', 'dark'].includes(old)) state.config.mode = old }
     } catch {}
     paint()
@@ -72,7 +74,7 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
         if (!res.ok) throw new Error(body.error || '外观加载失败')
         // Old servers/fixtures may not expose the appearance endpoint yet.
         if (!body.config || typeof body.revision !== 'string') throw new Error('当前服务尚不支持外观配置')
-        const config = normalizeAppearance(body.config)
+        const config = withDefaultAppearance(normalizeAppearance(body.config), body.revision, isDesktop())
         if (disposed || request !== requestId) return false
         // One-time migration of the previous local light/dark choice. Save with CAS.
         if (body.revision === '0' && config.mode === 'system' && !authStorageSuffix() && state.config.mode !== 'system') config.mode = state.config.mode
@@ -101,9 +103,11 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
     savePromise = work
     try { return await work } finally { if (savePromise === work) savePromise = undefined }
   }
-  async function quickToggle() {
-    if (state.previewing) { notify('请先应用或取消外观预览'); return }
-    const config = clone(state.config); config.mode = effectiveMode === 'dark' ? 'light' : 'dark'
+  async function setMode(mode) {
+    if (!['light', 'dark', 'system'].includes(mode)) return
+    if (state.previewing) { notify('请先完成或退出外观设计'); return }
+    if (state.config.mode === mode) return
+    const config = clone(state.config); config.mode = mode
     if (!state.loaded) { state.config = config; cache(); paint(); return }
     try { await save(config) } catch (e) { notify(e.message) }
   }
@@ -112,9 +116,9 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
     void load(true)
   }
   restoreCache()
-  media.addEventListener('change', schedule); window.addEventListener('storage', storage)
+  window.addEventListener('neo:system-theme', schedule); media.addEventListener('change', schedule); window.addEventListener('storage', storage)
   return {
-    state, load, save, assetUrl, quickToggle, currentMode: () => modeOf(state.config),
+    state, load, save, assetUrl, setMode, quickToggle: () => setMode({ light: 'dark', dark: 'system', system: 'light' }[state.config.mode]), currentMode: () => modeOf(state.config),
     preview(value, mode) { preview = normalizeAppearance(value); previewMode = mode; state.previewing = true; schedule() },
     cancel() { preview = undefined; previewMode = undefined; state.previewing = false; schedule() },
     async upload(file, kind) {
@@ -159,9 +163,10 @@ export function createAppearanceController({ onTheme, onLayout, notify = () => {
     dispose() {
       if (disposed) return
       disposed = true; ++requestId; ++fontEpoch; cancelAnimationFrame(frame); clearTimeout(layoutTimer)
-      media.removeEventListener('change', schedule); window.removeEventListener('storage', storage)
+      window.removeEventListener('neo:system-theme', schedule); media.removeEventListener('change', schedule); window.removeEventListener('storage', storage)
       for (const face of fontFaces.values()) document.fonts.delete(face)
       for (const k of keys) document.documentElement.style.removeProperty(k)
+      delete document.documentElement.dataset.appearanceMode
       delete document.documentElement.dataset.appearanceBackground; delete document.documentElement.dataset.appearance
     },
   }

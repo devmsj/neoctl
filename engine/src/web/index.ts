@@ -987,6 +987,7 @@ function webRuntimeScopeKey(scope: WebRuntimeScope): string {
 }
 
 export class WebRepl {
+  replCommandsEnabled = true;
   currentSessionId(): string | undefined { return this.runtime.engine.snapshot().session?.sessionId; }
   private deletingSession = false;
   private sessionMutations = 0;
@@ -1442,13 +1443,13 @@ export class WebRepl {
 
   async submit(text: string, attachments: WebAttachmentPayload[] = []): Promise<{ ok: true } | { ok: false; error: string }> {
     if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
-    if (this.runControl().canResume && (!text.trimStart().startsWith("/") || !text.trim())) return this.continueRun(text, attachments);
+    if (this.runControl().canResume && (!this.replCommandsEnabled || !text.trimStart().startsWith("/") || !text.trim())) return this.continueRun(text, attachments);
     if (this.pendingContinuation) return { ok: false, error: "续接请求已接收，请勿重复发送" };
     if (this.isDemo()) return this.recordDemoInput(text, attachments);
     if (this.stoppingRun || this.immediateSend) return { ok: false, error: "正在停止上一轮请求，请稍后发送" };
     const trimmed = text.trim();
     if (!trimmed && attachments.length === 0) return { ok: true };
-    const command = parseReplCommand(text);
+    const command: ReturnType<typeof parseReplCommand> = this.replCommandsEnabled ? parseReplCommand(text) : { type: "input", text };
     if (this.busy && command.type === "new") {
       await this.detachRunningForeground("new session");
     } else if (this.busy && command.type === "sessions") {
@@ -2547,7 +2548,7 @@ export class WebRepl {
   }
 
   private async handleCommandOrPrompt(text: string, attachments: WebAttachmentPayload[] = [], continuationOnly = false): Promise<void> {
-    const command = parseReplCommand(text);
+    const command: ReturnType<typeof parseReplCommand> = this.replCommandsEnabled ? parseReplCommand(text) : { type: "input", text };
     if (command.type === "exit") {
       this.append(systemLine("neo web server is still running. Close this tab or stop the server process with Ctrl+C."));
       return;
@@ -2634,7 +2635,7 @@ export class WebRepl {
       this.append({ kind: "error", text: "/secret is currently available in the interactive REPL only." });
       return;
     }
-    if (text.trimStart().startsWith("/")) {
+    if (this.replCommandsEnabled && text.trimStart().startsWith("/")) {
       this.append({ kind: "error", text: `Unknown or incomplete command: ${text.trim()}\nType /help for commands.` });
       return;
     }

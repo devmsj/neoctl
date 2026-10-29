@@ -42,11 +42,33 @@
       observer=new MutationObserver(()=>{if(!text(target)){hide();return;}tip.textContent=description.textContent=text(target);position();});
       observer.observe(target,{attributes:true,attributeFilter:['data-tooltip']});
     }
+    // Icon controls remain named for assistive technology, but never show a
+    // floating hint (including keyboard focus). Text titles/paths still expand.
+    function iconOnly(node) {
+      if(node.namespaceURI==='http://www.w3.org/2000/svg') return true;
+      const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);
+      let content='', part;
+      while((part=walker.nextNode())) {
+        if(part.parentElement?.closest('svg,[aria-hidden="true"],.sr-only,.visually-hidden'))continue;
+        content+=part.textContent;
+      }
+      return !/[\p{L}]/u.test(content) && (node.matches('button,a,summary,[role="button"]') || !!node.querySelector('svg,img,i') || !!content.trim());
+    }
     function find(event) {
-      for(const node of event.composedPath()) {
-        if(!(node instanceof Element))continue;
-        // External/markdown titles are migrated lazily, before browser tooltip delay.
-        if(node.hasAttribute('title') && node.tagName!=='IFRAME') {node.setAttribute('data-tooltip',node.getAttribute('title'));node.removeAttribute('title');}
+      const path=event.composedPath().filter(node=>node instanceof Element);
+      // Strip legacy native titles before their own browser hover delay, even
+      // when a nested icon will suppress the custom tooltip.
+      for(const node of path) {
+        if(node.hasAttribute('title') && node.tagName!=='IFRAME') {
+          node.setAttribute('data-tooltip',node.getAttribute('title'));node.removeAttribute('title');
+        }
+      }
+      for(const node of path) {
+        if(!text(node) && !node.matches('button,a,summary,[role="button"]'))continue;
+        if(iconOnly(node)) {
+          if(text(node) && !node.hasAttribute('aria-label'))node.setAttribute('aria-label',text(node));
+          return;
+        }
         if(text(node))return node;
       }
     }

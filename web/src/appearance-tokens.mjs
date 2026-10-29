@@ -4,6 +4,8 @@ import { DEFAULT_COLORS, derivePalette, deriveSurfaces, mix, readable, normalize
 export function appearanceTokens(input, mode, assetUrl = id => `/api/appearance/assets/${id}`) {
   const s = normalizeScheme(input), base = DEFAULT_COLORS[mode], out = {}
   const set = (key, value) => { out['--appearance-' + key] = String(value) }
+  if (s.windowTransparency !== undefined) set('window-transparency', s.windowTransparency)
+  if (s.windowFrost !== undefined) set('window-frost', s.windowFrost)
   const surfaces = deriveSurfaces(s.background || base.background, mode)
   const color = key => surfaces[key] || s[key] || base[key]
   if (s.background) set('bg', s.background)

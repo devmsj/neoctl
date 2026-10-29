@@ -13,7 +13,7 @@ test('sidebar and panels derive from day/night backgrounds; legacy controls and 
   await route.fulfill({json:{config,revision}});return true
  })
  try{
-  const p=ui.page;await openGlobalSettings(p);await p.locator('[data-settings-page="appearance"]').click()
+  const p=ui.page;await openGlobalSettings(p);await p.locator('[data-settings-page="appearance"]').click();await p.getByRole('button',{name:'设计外观',exact:true}).click()
   const editor=p.locator('.appearance-editor');await editor.waitFor()
   assert.equal(await editor.locator('#appearance-panelOpacity,#appearance-surfaceOpacity').count(),0)
   assert.equal(await editor.getByText('面板透明度',{exact:true}).count(),0)
@@ -25,9 +25,11 @@ test('sidebar and panels derive from day/night backgrounds; legacy controls and 
   }
   await editor.getByRole('button',{name:'颜色',exact:true}).click()
   assert.equal(await editor.locator('#appearance-color-panel,#appearance-color-surface').count(),0)
-  await editor.getByRole('button',{name:'应用',exact:true}).click()
-  await editor.getByRole('button',{name:'应用',exact:true}).waitFor()
-  await p.waitForFunction(()=>document.querySelector('.appearance-apply')?.disabled)
+  await editor.getByLabel('外观名称',{exact:true}).fill('surface test')
+  await editor.getByRole('button',{name:'完成设计',exact:true}).click()
+  await p.locator('.appearance-preset-grid').waitFor()
+  await p.getByRole('button',{name:'应用surface test',exact:true}).click()
+  await p.waitForFunction(()=>document.querySelector('[aria-label="应用surface test"]').getAttribute('aria-pressed')==='true')
   for(const mode of ['light','dark'])for(const key of ['panel','surface','panelOpacity','surfaceOpacity'])assert.equal(config[mode][key],undefined)
   await p.reload();await p.waitForFunction(()=>document.documentElement.style.getPropertyValue('--appearance-panel')=== '#cee2df')
   assert.deepEqual(ui.errors,[])

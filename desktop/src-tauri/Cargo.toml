@@ -1,6 +1,6 @@
 [package]
 name = "neoctl-desktop"
-version = "0.1.32"
+version = "0.1.33"
 description = "Windows desktop shell for neoctl-web"
 authors = ["neoctl contributors"]
 edition = "2021"
@@ -21,4 +21,7 @@ serde_json = "1"
 rfd = { version = "0.15", features = ["common-controls-v6"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_System_Memory", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+png = "0.17.16"
+base64 = "0.22.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_System_Memory", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

@@ -290,7 +290,12 @@ test('users cannot list, resume, delete or subscribe to another user session, ev
   assert.equal((await f.request('/api/state?sessionId=..%2F..%2Fother', b)).status, 400);
   assert.equal(stateA.interactive.login, undefined);
   for (const route of ['/api/prompt-library', '/api/prompt-config', '/api/session-prompt', '/api/app-prompt', '/api/login', '/api/unknown']) assert.equal((await f.request(route, a)).status, 403, route);
-  for (const text of ['/secret get key', '/env', '/log /tmp', '/export /tmp/leak', '/model different']) assert.equal((await f.request('/api/submit?tabId=shared', a, { text })).status, 403);
+  // Slash text is now literal; attachment boundaries still apply before submission.
+  for (const text of ['/secret get key', '/env', '/log /tmp', '/export /tmp/leak', '/model different']) {
+    const response = await f.request('/api/submit?tabId=shared', a, { text, attachments: [{ kind: 'file', absolutePath: path.join(f.root, 'outside.txt') }] });
+    assert.equal(response.status, 403);
+    assert.doesNotMatch((await response.json()).error, /不支持此命令/);
+  }
   await f.restart();
   assert.equal((await f.request('/api/state', a)).status, 401);
   const a2 = await f.login('Alice');
@@ -445,7 +450,8 @@ test('snapshot filtering never mutates original normal-mode data', () => {
   const original = { interactive: { login: { values: { secret: 'private' } } }, catalog: { envPath: '/secret', commands: [{ name: '/env' }, { name: '/new' }] } };
   const result = sanitizeIsolatedSnapshot(original);
   assert.equal(result.interactive.login, undefined);
-  assert.deepEqual(result.catalog.commands, [{ name: '/new' }]);
+  assert.deepEqual(result.catalog.commands, []);
+  assert.equal(original.catalog.commands.length, 2);
   assert.equal(original.interactive.login.values.secret, 'private');
 });
 

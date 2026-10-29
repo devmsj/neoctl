@@ -1,4 +1,4 @@
-import { deriveSurfaces, DEFAULT_COLORS } from '../shared/appearance.mjs'
+import { deriveSurfaces, DEFAULT_COLORS, emptyAppearance } from '../shared/appearance.mjs'
 import { openGlobalSettings } from './settings-navigation.mjs'
 // Run after npm run build. No model calls or real configuration writes.
 import assert from 'node:assert/strict'
@@ -25,10 +25,12 @@ try {
   {id:'tool',kind:'tool',toolName:'terminal_run',toolUseId:'command',titleStatus:'failure',activity:{phase:'failed',input:{cmd:'Get-ComputerInfo',description:'检查本机运行状态'}},observation:{session_id:'theme-terminal',exit_code:1,stdout:'操作系统  Windows 11\n内存  32 GB\n当前目录  C:\\workspace'}},
   {id:'reply',kind:'assistant',text:'当前目录包含项目源码与运行数据。\n\n系统运行正常，部分诊断信息需要进一步确认。'}]}
  await page.addInitScript(()=>{localStorage.setItem('neo-tool-history-view','folded');localStorage.setItem('neoctl-web.theme','dark');window.EventSource=class{addEventListener(){}close(){}}})
+ let appearance={...emptyAppearance(),mode:'dark'}
  await page.route('**/api/**',route=>{
   const path=new URL(route.request().url()).pathname
   let json={}
-  if(path==='/api/auth/status')json={isolation:false,user:null}
+  if(path==='/api/appearance'){if(route.request().method()==='PUT')appearance=route.request().postDataJSON().config;json={config:appearance,revision:'1'}}
+  else if(path==='/api/auth/status')json={isolation:false,user:null}
   else if(path==='/api/state')json=snapshot
   else if(path==='/api/sessions'){
    const params=new URL(route.request().url()).searchParams
@@ -111,7 +113,7 @@ try {
  await screenshot('dark-directory')
  await page.locator('.cwd-picker-modal').getByRole('button',{name:'取消',exact:true}).click()
  await page.getByRole('dialog',{name:'工作区范围',exact:true}).getByRole('button',{name:'关闭',exact:true}).click()
- await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.getByRole('menuitem',{name:/切换到(夜间|白天)/}).click()
+ await page.getByRole('button',{name:'应用菜单',exact:true}).click(); await page.locator('.sidebar-actions-menu [data-theme-cycle]').click(); await page.waitForFunction(()=>document.documentElement.dataset.appearanceMode==='system')
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='light'); await page.waitForTimeout(250)
  assert.equal((await styleOf('.sidebar')).background,'rgb(255, 255, 255)')
  assert.equal((await styleOf('.composer')).background,'rgb(255, 255, 255)')
@@ -132,7 +134,7 @@ try {
  assert.ok(await page.locator('.settings-page').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'settings fit narrow screen')
  await screenshot('mobile-settings')
  await page.locator('.mobile-nav-menu summary').click()
- await page.locator('.mobile-nav-menu nav button').filter({hasText:/^对话$/}).click()
+ await page.locator('.mobile-nav-menu nav button').filter({hasText:/^回到对话$/}).click()
  await page.locator('.tool-activity-row').waitFor()
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'chat fits narrow screen')
  await screenshot('mobile-chat')

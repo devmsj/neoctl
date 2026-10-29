@@ -3,6 +3,8 @@
 defineProps({ name: String })
 const paths = {
   plus: 'M10 4v12M4 10h12',
+  copy: 'M7 7h10v11H7ZM4 13H2V2h11v2',
+  paste: 'M7 4H4v14h12V4h-3M7 2h6v4H7ZM7 10h6m-6 4h6',
   check: 'm4 10 4 4 8-8',
   folderPlus: 'M2.5 5h5l2 2h8v9h-15ZM10 9v5m-2.5-2.5h5',
   drive: 'M5 3h10l3 11v3H2v-3L5 3Zm-3 11h16M5 15.5h.01m3 0h.01',

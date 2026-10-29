@@ -31,8 +31,12 @@ import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import ChromeIcon from './components/ChromeIcon.vue'
 import LoadingRing from './components/LoadingRing.vue'
 import SessionQuickList from './components/SessionQuickList.vue'
+import ControlVisibility from './components/ControlVisibility.vue'
+import { useControlVisibility } from './control-visibility.mjs'
 import SidebarActions from './components/SidebarActions.vue'
 import SessionContextMenu from './components/SessionContextMenu.vue'
+import TextContextMenu from './components/TextContextMenu.vue'
+import SystemNotice from './components/SystemNotice.vue'
 import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
 import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
@@ -388,11 +392,21 @@ const messageList = ref(null)
 const backgroundTaskOutput = ref(null)
 const mobileMenu = ref(null)
 const mobileCard = ref('')
+const { controls, reset: resetControls } = useControlVisibility(notify)
+const controlsOpen = ref(false)
+function toggleControls() { closeMobileMenu(); controlsOpen.value = !controlsOpen.value }
+function changeControl(key, value) { controls[key] = value }
 const rightPanelCards = computed(() => [
   { id: 'tasks', title: '后台任务' },
   ...(currentCpaQuota.value ? [{ id: 'quota', title: '周额度' }] : []),
   { id: 'memory', title: '服务端内存' },
-])
+].filter(card => controls[card.id]))
+watch(controls, async () => {
+  if (mobileCard.value && !controls[mobileCard.value]) mobileCard.value = ''
+  document.documentElement.dataset.controlsLeft = String(controls.sessions)
+  await nextTick(); remeasureAppearance()
+}, { deep: true })
+watch(controlsOpen, value => { document.documentElement.dataset.controlsOpen = String(value) })
 const rightPanelTitle = id => rightPanelCards.value.find(card => card.id === id)?.title || ''
 function openMobileCard(id) {
   closeMobileMenu()
@@ -677,7 +691,7 @@ const activeAppPrompt = computed(() => state.appPrompt?.activePrompt || undefine
 const activeAppPromptTitle = computed(() => activeAppPrompt.value?.title || activeAppPrompt.value?.id || '')
 const selectedPrompt = computed(() => state.promptLibrary.find((item) => item.id === state.selectedPromptId) || state.promptLibrary[0] || null)
 const isDarkTheme = computed(() => theme.value === 'dark')
-const themeToggleLabel = computed(() => isDarkTheme.value ? '切换到白天' : '切换到夜间')
+const themeModeLabel = computed(() => ({ light: '切到夜间', dark: '日夜跟随系统', system: '切到白天' }[appearance.state.config.mode]))
 const currentCpaQuota = computed(() => {
   if (!state.cpaQuotas.length) return null
   return state.cpaQuotas[state.cpaQuotaIndex % state.cpaQuotas.length] || state.cpaQuotas[0]
@@ -781,7 +795,10 @@ async function logoutUser() {
 }
 
 onMounted(async () => {
-  window.addEventListener('neo:toggle-theme', toggleTheme)
+  window.addEventListener('neo:cycle-theme', cycleTheme)
+  window.addEventListener('neo:display-controls', toggleControls)
+  document.documentElement.dataset.controlsLeft = String(controls.sessions)
+  window.addEventListener('neo:menu-navigate', onMenuNavigate)
   window.addEventListener('neo:open-settings', openDesktopSettings)
   document.documentElement.dataset.neoThemeReady = ''
   void appearance.load()
@@ -836,7 +853,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('neo:toggle-theme', toggleTheme)
+  window.removeEventListener('neo:cycle-theme', cycleTheme)
+  window.removeEventListener('neo:display-controls', toggleControls)
+  delete document.documentElement.dataset.controlsLeft
+  delete document.documentElement.dataset.controlsOpen
+  window.removeEventListener('neo:menu-navigate', onMenuNavigate)
   window.removeEventListener('neo:open-settings', openDesktopSettings)
   delete document.documentElement.dataset.neoThemeReady
   delete document.documentElement.dataset.neoPanel
@@ -1767,24 +1788,6 @@ async function submit() {
   if (adminViewing.value) return
   const text = input.value
   if (!text.trim() && state.attachments.length === 0) return
-  if (!state.demoMode && text.trim() === '/sessions') {
-    input.value = ''
-    resetComposerHeight()
-    await openSessions()
-    return
-  }
-  if (!state.demoMode && text.trim() === '/login') {
-    input.value = ''
-    resetComposerHeight()
-    await openLogin(undefined, false, 'model')
-    return
-  }
-  if (!state.demoMode && text.trim() === '/new') {
-    input.value = ''
-    resetComposerHeight()
-    await newSession()
-    return
-  }
   const attachments = [...state.attachments]
   const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
@@ -2607,7 +2610,7 @@ function lineText(line) {
 
 function localizeSystemText(text) {
   return String(text || '')
-    .replace(/^Interactive web UI enabled\.\s*Type \/help for commands\.\s*/i, '工作台已连接。输入 `/help` 可查看命令说明。')
+    .replace(/^Interactive web UI enabled\.\s*Type \/help for commands\.\s*/i, '工作台已连接。')
     .replace(/\bSession:\s*/gi, '会话：')
     .replace(/\bTip:\s*/gi, '提示：')
     .replace(/Start fresh/gi, '重新开始')
@@ -2616,7 +2619,7 @@ function localizeSystemText(text) {
     .replace(/^deleted session\s+/i, '已删除会话：')
     .replace(/^resumed session\s+(.+?):\s+(\d+)\s+messages?\s+from\s+(.+)$/i, '已恢复会话：$1，共载入 $2 条消息，来源：$3')
     .replace(/\((\d+)\s+resumed messages\)/gi, '（已恢复 $1 条消息）')
-    .replace(/\bType \/help for commands\./gi, '输入 `/help` 可查看命令说明。')
+    .replace(/\bType \/help for commands\./gi, '')
 }
 
 function lineTitle(line) {
@@ -2691,10 +2694,14 @@ function isToolGroup(line) {
   return line?.kind === 'tool-group' && Array.isArray(line.lines)
 }
 
+function isSystemNotice(line) {
+  return !!line && !isCompactionLine(line) && !line.toolName && !line.image && ['system', 'error', 'meta'].includes(line.kind) && !isPromptUsageLine(line)
+}
+
 function isPrimaryPresentationLine(line) {
   if (!line) return true
   if (line.presentationLevel === 'primary' || isPromptUsageLine(line) || isCompactionLine(line)) return true
-  if (line.kind === 'user' || line.kind === 'assistant') return true
+  if (line.kind === 'user' || line.kind === 'assistant' || isSystemNotice(line)) return true
   return isImageCreateLine(line)
 }
 
@@ -4140,7 +4147,7 @@ function applyTheme(value) {
   }
 }
 
-function toggleTheme() {
+function cycleTheme() {
   void appearance.quickToggle()
 }
 
@@ -4708,6 +4715,7 @@ function estimateVirtualMessageSize(index) {
       ? Math.min(1200, 72 + line.lines.reduce((height, item) => height + estimateLineTextHeight(item), 0))
       : Math.max(72, 52 + toolGroupPurposes(line).length * 28)
   }
+  if (isSystemNotice(line)) return Math.min(340, estimateLineTextHeight(line))
   if (isCompactionLine(line)) return 74
   if (shouldCollapseToolLine(line)) return 88
   const embeds = embeddedLineResources(line)
@@ -4843,6 +4851,9 @@ function handleMobileMenuOutsidePointer(event) {
   if (menu?.open && !event.composedPath().includes(menu)) closeMobileMenu()
 }
 
+function onMenuNavigate(event) {
+  if (['chat', 'sessions', 'settings'].includes(event.detail?.panel)) void openMobilePanel(event.detail.panel)
+}
 async function openMobilePanel(panel) {
   if (!await leaveAppearance()) return
   mobileCard.value = ''
@@ -4862,8 +4873,8 @@ function createMobileSession() {
 </script>
 
 <template>
-  <div class="shell">
-    <aside class="sidebar">
+  <div class="shell" :class="{ 'controls-no-left': !controls.sessions, 'controls-no-right': !rightPanelCards.length, 'controls-no-composer': !controls.composer }">
+    <aside v-show="controls.sessions" class="sidebar">
       <nav v-if="adminViewing" class="sidebar-top" aria-label="全局导航">
         <button v-if="adminViewing" type="button" class="sidebar-top-action" :class="{ active: state.activePanel === 'users' }" aria-label="用户管理" data-tooltip="用户管理" @click="openUserManagement">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3"/><path d="M2.5 16c.5-3 2-4.5 4.5-4.5s4 1.5 4.5 4.5M13 7h4M15 5v4"/></svg>
@@ -4879,7 +4890,7 @@ function createMobileSession() {
         </div>
 
         <div class="prompt-list">
-          <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
+          <div v-if="state.promptLibraryLoading" class="prompt-list-empty" role="status" aria-label="正在加载"><LoadingRing /></div>
           <div v-else-if="!state.promptLibrary.length" class="prompt-list-empty">暂无提示词</div>
           <article
             v-else
@@ -4904,7 +4915,7 @@ function createMobileSession() {
       -->
 
       <div class="sidebar-footer">
-        <SidebarActions :theme-label="themeToggleLabel" :dark="isDarkTheme" @theme="toggleTheme" @settings="openLogin()" />
+        <SidebarActions :mode="appearance.state.config.mode" :can-create="!adminViewing" @theme="cycleTheme" @settings="openLogin()" @navigate="openMobilePanel" @create="createMobileSession" @controls="toggleControls" />
         <button
           v-if="authState.isolation"
           class="logout-icon-button"
@@ -4921,6 +4932,10 @@ function createMobileSession() {
       </div>
     </aside>
 
+    <div v-if="!controls.sessions && !isDesktop()" class="controls-recovery">
+      <SidebarActions :mode="appearance.state.config.mode" :can-create="!adminViewing" @theme="cycleTheme" @settings="openLogin()" @navigate="openMobilePanel" @create="createMobileSession" @controls="toggleControls" />
+    </div>
+    <ControlVisibility v-if="controlsOpen" :controls="controls" @change="changeControl" @reset="resetControls" @close="controlsOpen = false" />
     <main class="workspace">
       <header class="topbar">
         <div class="top-actions">
@@ -4931,13 +4946,15 @@ function createMobileSession() {
               </svg>
             </summary>
             <nav>
-              <button type="button" :class="{ active: state.activePanel === 'chat' }" @click="openMobilePanel('chat')">对话</button>
+              <button type="button" :class="{ active: state.activePanel === 'chat' }" @click="openMobilePanel('chat')">回到对话</button>
               <button v-if="!adminViewing" type="button" @click="createMobileSession">新建会话</button>
-              <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话</button>
+              <button type="button" :class="{ active: state.activePanel === 'sessions' }" @click="openMobilePanel('sessions')">会话管理</button>
               <button v-if="adminViewing" type="button" :class="{ active: state.activePanel === 'users' }" @click="openMobilePanel('users')">用户</button>
-              <button v-if="!authState.isolation" type="button" :class="{ active: state.activePanel === 'prompts' }" @click="openMobilePanel('prompts')">提示词</button>
+              <hr class="app-menu-divider" />
               <button type="button" :class="{ active: state.activePanel === 'settings' }" @click="openMobilePanel('settings')">全局配置</button>
-              <button type="button" @click="toggleTheme(); closeMobileMenu()">{{ themeToggleLabel }}</button>
+              <button type="button" @click="toggleControls">显示控件</button>
+              <button type="button" data-theme-cycle @click="cycleTheme">{{ themeModeLabel }}</button>
+              <hr v-if="rightPanelCards.length" class="app-menu-divider" />
               <button v-for="card in rightPanelCards" :key="card.id" type="button" @click="openMobileCard(card.id)">{{ card.title }}</button>
               <div v-if="state.coreVersion" :class="['core-version', 'mobile-core-version', { celebrating: state.coreEasterEgg }]" role="button" tabindex="0" @click="triggerCoreEasterEgg" @keydown.enter.prevent="triggerCoreEasterEgg" @keydown.space.prevent="triggerCoreEasterEgg">
                 <span class="core-version-spark spark-a" aria-hidden="true"></span>
@@ -4949,7 +4966,7 @@ function createMobileSession() {
           </details>
           <strong v-if="realSessionTitle" class="mobile-session-title" :data-tooltip="realSessionTitle">{{ realSessionTitle }}</strong>
           <button v-if="canConfigureModel" class="ghost desktop-config-button" @click="openLogin(undefined, false, 'model')">配置模型</button>
-          <button class="primary new-session-button" @click="createMobileSession">+ 新建</button>
+          <button v-if="!adminViewing" type="button" class="new-session-button" aria-label="新建会话" data-tooltip="新建会话" @click="createMobileSession"><svg class="ui-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg></button>
         </div>
       </header>
 
@@ -4966,7 +4983,7 @@ function createMobileSession() {
                 <button type="button" :data-tooltip="'插件 ' + effectiveSessionPluginCount" :aria-label="'插件 ' + effectiveSessionPluginCount" @click="openRuntimeContextModal('plugins')"><ChromeIcon name="plugins" /><strong>{{ effectiveSessionPluginCount }}</strong></button>
               </div>
               <button v-else-if="state.runtimeContextError" type="button" class="runtime-context-retry" data-tooltip="重新加载上下文" aria-label="重新加载上下文" @click="fetchRuntimeContext"><ChromeIcon name="refresh" /></button>
-              <span v-else class="runtime-context-syncing" role="status" aria-label="同步运行上下文" data-tooltip="同步运行上下文"><ChromeIcon name="refresh" /></span>
+              <span v-else class="runtime-context-syncing" role="status" aria-label="同步运行上下文" data-tooltip="同步运行上下文"><LoadingRing /></span>
             </section>
             <section v-if="runtimeProjectDocuments.length" class="runtime-context-bar project-context-bar">
               <div class="runtime-context-bar-title"><ChromeIcon name="document" /><strong>项目上下文</strong></div>
@@ -4987,7 +5004,8 @@ function createMobileSession() {
               >
               <template v-for="line in [visibleLines[virtualRow.index]]" :key="line.id">
 
-              <div v-if="historyView==='rows' && isActivityLine(line)" class="tool-history-entry" :class="{'is-tool-group-start':!isActivityLine(visibleLines[virtualRow.index-1]) && visibleLines[virtualRow.index-1]?.kind!=='thinking'}">
+              <SystemNotice v-if="isSystemNotice(line)" :text="lineText(line)" />
+              <div v-else-if="historyView==='rows' && isActivityLine(line)" class="tool-history-entry" :class="{'is-tool-group-start':!isActivityLine(visibleLines[virtualRow.index-1]) && visibleLines[virtualRow.index-1]?.kind!=='thinking'}">
                 <ToolActivityRow :line="line" :entering="activityEntranceIds.has(line.id)" @entered="activityEntranceIds.delete(line.id)" :terminal-task="activityTerminalTask(line)" :pinned="activityPinned===line.id" :paused="activityPaused" :images="lineImagePreviews(line)" :download-name="imageDownloadName" :resource-url="pluginResourceUrl" :resource-height="pluginResourceHeight" @observe="toggleActivityObservation" @details="openToolDetail" />
                 <div v-if="line.id===activityPinned" :ref="setActivityPinnedAnchor" class="tool-pinned-observation-anchor"></div>
                 <div v-if="line.id===activityLastId" :ref="setActivityAnchor" class="tool-observation-anchor"></div>
@@ -5275,6 +5293,7 @@ function createMobileSession() {
 
           <form
             ref="composerForm"
+            v-show="controls.composer"
             v-if="!adminViewing"
             :class="['composer', { 'drop-active': state.composerDropActive }]"
             @submit.prevent="submit"
@@ -5327,7 +5346,7 @@ function createMobileSession() {
                   <ChromeIcon name="fast" />
                 </button>
                 <span class="compress-wrap">
-                  <button type="button" class="compact-button" :class="{ 'is-compacting': state.status?.phase === 'compacting' || (state.compactSaving && !state.busy), 'is-pending': state.pendingSessionSettings.compact || (state.compactSaving && state.busy) }" :data-tooltip="compactButtonLabel" :aria-label="compactButtonLabel" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession"><ChromeIcon :name="state.pendingSessionSettings.compact || (state.compactSaving && state.busy) ? 'clock' : 'compact'" /></button>
+                  <button type="button" class="compact-button" :class="{ 'is-compacting': state.status?.phase === 'compacting' || (state.compactSaving && !state.busy), 'is-pending': state.pendingSessionSettings.compact || (state.compactSaving && state.busy) }" :data-tooltip="compactButtonLabel" :aria-label="compactButtonLabel" :disabled="state.compactSaving || state.pendingSessionSettings.compact === true || state.status?.phase === 'compacting'" @click="compressSession"><LoadingRing v-if="state.pendingSessionSettings.compact || state.compactSaving" /><ChromeIcon v-else name="compact" /></button>
                 </span>
 
                 <button
@@ -5369,12 +5388,13 @@ function createMobileSession() {
         </div>
 
         <aside class="right-panel" :class="{ 'mobile-card-open': mobileCard }" :data-mobile-card="mobileCard" @keydown.esc.stop="closeMobileCard">
-          <button v-if="mobileCard" type="button" class="mobile-card-close" aria-label="关闭卡片" @click="closeMobileCard">×</button>
-          <section class="background-task-section" data-card="tasks">
+          <button v-if="mobileCard" type="button" class="mobile-card-close" aria-label="关闭卡片" data-tooltip="关闭" @click="closeMobileCard"><ChromeIcon name="close" /></button>
+          <section v-if="controls.tasks" class="background-task-section" data-card="tasks">
             <div class="background-task-head">
               <div class="panel-title chrome-label"><ChromeIcon name="tasks" />{{ rightPanelTitle('tasks') }}</div>
               <strong v-if="backgroundTaskCount" class="background-task-count">{{ backgroundTaskCount }}</strong>
             </div>
+            <p v-if="mobileCard === 'tasks' && !primaryBackgroundTask && !backgroundTaskHistory.length" class="mobile-card-empty">暂无后台任务</p>
             <button
               v-if="primaryBackgroundTask"
               type="button"
@@ -5405,7 +5425,7 @@ function createMobileSession() {
               </div>
             </details>
           </section>
-          <section v-if="currentCpaQuota" class="quota-card" data-card="quota">
+          <section v-if="controls.quota && currentCpaQuota" class="quota-card" data-card="quota">
             <div class="quota-card-head">
               <div>
                 <span class="chrome-label" :data-tooltip="`周额度：${quotaAccountLabel(currentCpaQuota.account)}
@@ -5422,7 +5442,7 @@ function createMobileSession() {
               <span class="quota-progress-fill" :style="{ width: `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
             </div>
           </section>
-          <section class="quota-card memory-card" data-card="memory">
+          <section v-if="controls.memory" class="quota-card memory-card" data-card="memory">
             <div class="memory-card-head">
               <div>
                 <span class="chrome-label" :data-tooltip="rightPanelTitle('memory')"><ChromeIcon name="memory" />内存</span>
@@ -5520,7 +5540,7 @@ function createMobileSession() {
             <button class="primary page-icon-button" data-tooltip="创建普通用户" aria-label="创建普通用户" :disabled="state.adminUserBusy"><ChromeIcon name="plus" /></button>
           </form>
           <p v-if="state.adminUserError" class="admin-user-error" role="alert">{{ state.adminUserError }}</p>
-          <div v-if="state.adminUsersLoading" class="empty-state">正在加载用户…</div>
+          <div v-if="state.adminUsersLoading" class="empty-state" role="status" aria-label="正在加载用户"><LoadingRing /></div>
           <div v-else class="session-list admin-user-list">
             <article v-for="user in state.adminUsers" :key="user.username" class="session-card">
               <div class="session-card-main">
@@ -5547,7 +5567,7 @@ function createMobileSession() {
                 <strong>{{ state.promptLibrary.length }} 个提示词</strong>
               </div>
               <div class="prompt-library-list">
-                <div v-if="state.promptLibraryLoading" class="prompt-list-empty">正在加载…</div>
+                <div v-if="state.promptLibraryLoading" class="prompt-list-empty" role="status" aria-label="正在加载"><LoadingRing /></div>
                 <div v-else-if="!state.promptLibrary.length" class="prompt-list-empty">暂无提示词</div>
                 <button
                   v-else
@@ -5632,7 +5652,7 @@ function createMobileSession() {
                 <h2 tabindex="-1">{{ settingsTitles[state.settingsPage] }}</h2>
               </div>
             </div>
-            <div v-if="state.settingsPage === 'model' && !state.login" class="empty-state">正在加载配置…</div>
+            <div v-if="state.settingsPage === 'model' && !state.login" class="empty-state" role="status" aria-label="正在加载配置"><LoadingRing /></div>
             <div class="settings-form">
             <form v-if="state.settingsPage === 'model' && state.login" class="settings-card settings-model-card" aria-label="模型配置" @submit.prevent="saveLogin">
               <header class="settings-card-head"><strong>模型</strong><SettingsSaveButton label="保存模型配置" :busy="state.loginSaving" :disabled="state.loginLoading" /></header>
@@ -5890,7 +5910,7 @@ function createMobileSession() {
           <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>
           <div class="context-window-actions">
             <button type="button" class="ghost" data-tooltip="取消" aria-label="取消" @click="closeModelModal"><ChromeIcon name="close" /></button>
-            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft" :aria-busy="state.modelSaving" :aria-label="state.modelSaving ? '保存中' : '确认'" :data-tooltip="state.modelSaving ? '保存中' : '确认'"><ChromeIcon :name="state.modelSaving ? 'clock' : 'check'" /></button>
+            <button type="submit" class="primary" :disabled="state.modelSaving || !state.modelDraft" :aria-busy="state.modelSaving" :aria-label="state.modelSaving ? '保存中' : '确认'" :data-tooltip="state.modelSaving ? '保存中' : '确认'"><LoadingRing v-if="state.modelSaving" /><ChromeIcon v-else name="check" /></button>
           </div>
         </form>
       </section>
@@ -5918,7 +5938,7 @@ function createMobileSession() {
           <p v-if="state.contextWindowError" class="context-window-error" role="alert">{{ state.contextWindowError }}</p>
           <div class="context-window-actions">
             <button type="button" class="ghost" data-tooltip="取消" aria-label="取消" @click="closeContextWindowModal"><ChromeIcon name="close" /></button>
-            <button type="submit" class="primary" :disabled="state.contextWindowSaving" :aria-busy="state.contextWindowSaving" :aria-label="state.contextWindowSaving ? '保存中' : '确认'" :data-tooltip="state.contextWindowSaving ? '保存中' : '确认'"><ChromeIcon :name="state.contextWindowSaving ? 'clock' : 'check'" /></button>
+            <button type="submit" class="primary" :disabled="state.contextWindowSaving" :aria-busy="state.contextWindowSaving" :aria-label="state.contextWindowSaving ? '保存中' : '确认'" :data-tooltip="state.contextWindowSaving ? '保存中' : '确认'"><LoadingRing v-if="state.contextWindowSaving" /><ChromeIcon v-else name="check" /></button>
           </div>
         </form>
       </section>
@@ -6123,6 +6143,7 @@ function createMobileSession() {
       </section>
     </div>
   </Teleport>
+  <TextContextMenu @notify="notify" />
   <SessionContextMenu v-if="sessionContextTarget" :target="sessionContextTarget" :disabled-reason="sessionContextReason" @close="sessionContextTarget = null" @delete="deleteSession" />
 </template>
 

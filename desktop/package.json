@@ -1,6 +1,6 @@
 {
   "name": "neoctl-desktop",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "private": true,
   "description": "Independent Tauri 2 Windows shell for neoctl-web.",
   "scripts": {
@@ -12,7 +12,7 @@
     "dev": "npm run updater && tauri dev",
     "dev:local": "npm run updater && node scripts/dev-local.mjs",
     "build": "npm run bundle:prepare && npm run updater && tauri build",
-    "test": "node --test tests/ui/entry-flow.test.cjs tests/ui/app.test.cjs tests/ui/window-chrome.test.cjs tests/ui/navigation-locks.test.cjs tests/scripts/runtime-source.test.cjs tests/scripts/check-updates.test.cjs tests/scripts/package-download.test.cjs",
+    "test": "node --test tests/ui/entry-flow.test.cjs tests/ui/app.test.cjs tests/ui/window-chrome.test.cjs tests/ui/window-material.test.cjs tests/ui/navigation-locks.test.cjs tests/scripts/runtime-source.test.cjs tests/scripts/check-updates.test.cjs tests/scripts/package-download.test.cjs",
     "test:browser": "node tests/ui/browser.test.cjs && node tests/ui/window-chrome-browser.test.cjs && node tests/scripts/backend-ui.test.cjs && node tests/ui/spotlight-browser.test.cjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --bins --locked",
     "updater": "node scripts/prepare-updater.mjs",

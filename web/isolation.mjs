@@ -8,7 +8,6 @@ import { createIsolationAuth, createIsolationAccounts, publicUser, loadIsolation
 const SESSION_ID = /^(?!\.{1,2}$)[a-zA-Z0-9_.-]{1,220}$/;
 const GET_ROUTES = new Set(['/api/client-info', '/api/state', '/api/runtime-context', '/api/sessions', '/api/sessions/running', '/api/cwd', '/api/cwd/scope', '/api/tools', '/api/session-tools', '/api/session-plugins', '/api/tool-call-detail', '/api/terminal-output', '/api/agent-content', '/events']);
 const POST_ROUTES = new Set(['/api/submit', '/api/submit-now', '/api/interrupt', '/api/run/pause', '/api/run/continue', '/api/queue/cancel', '/api/queue/send-now', '/api/sessions/resume', '/api/sessions/new', '/api/sessions/delete', '/api/cwd/change', '/api/cwd/add', '/api/cwd/remove', '/api/cwd/create', '/api/cwd/delete', '/api/session-model', '/api/session-tools', '/api/session-plugins', '/api/compact', '/api/fast-mode', '/api/context-window']);
-const SAFE_COMMANDS = new Set(['/help', '/cost', '/compact', '/pure', '/new', '/sessions', '/state', '/reset']);
 const inside = (root, target) => { const relative = path.relative(root, target); return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)); };
 
 export async function assertOwnedSession(root, sessionId) {
@@ -28,7 +27,7 @@ export async function assertOwnedSession(root, sessionId) {
 export function sanitizeIsolatedSnapshot(value) {
   const result = { ...value };
   if (result.interactive) result.interactive = { sessions: true };
-  if (result.catalog) result.catalog = { ...result.catalog, envPath: undefined, commands: result.catalog.commands?.filter(x => SAFE_COMMANDS.has(x.name)) };
+  if (result.catalog) result.catalog = { ...result.catalog, envPath: undefined, commands: [] };
   result.appPrompt = undefined;
   return result;
 }
@@ -371,8 +370,6 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
           if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, '请求无效');
           if (['/api/sessions/resume', '/api/sessions/delete'].includes(url.pathname)) await assertOwnedSession(user.sessionsRoot, body.sessionId);
           if (url.pathname === '/api/submit' || url.pathname === '/api/submit-now') {
-            const text = String(body.text || '').trim();
-            if (text.startsWith('/') && !SAFE_COMMANDS.has(text.split(/\s/)[0].toLowerCase())) throw httpError(403, '隔离模式不支持此命令');
             for (const attachment of body.attachments || []) if (attachment?.kind === 'file') {
               const filename = path.resolve(String(attachment.absolutePath || ''));
               if (inside(user.uploadsRoot, filename)) {

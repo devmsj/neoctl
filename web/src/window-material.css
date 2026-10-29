@@ -1,0 +1,88 @@
+/* Native glass: one master value, semantic elevations. Never fade foregrounds.
+   Floors preserve readable controls/popovers at 100%; the canvas itself reaches 0.
+   Seeds stay opaque: deriving a layer from another translucent layer compounds alpha. */
+:root[data-desktop='true'][data-window-material='on'] {
+  --glass-bg-seed: var(--appearance-bg, #ffffff);
+  --glass-panel-seed: var(--appearance-panel, #ffffff);
+  --glass-surface-seed: var(--appearance-surface, #ffffff);
+  --glass-hover-seed: var(--appearance-accent-hover, #f5f3f6);
+  --glass-accent-seed: var(--appearance-accent-soft, #f7e9f1);
+  --glass-user-seed: var(--appearance-user-bg, #f8f5f8);
+  --glass-code-seed: var(--appearance-code-bg, #f6f7fa);
+  --glass-table-seed: var(--appearance-table-head-bg, #f6f7fa);
+  --glass-master: clamp(0, var(--appearance-window-transparency, 0), 100);
+  --glass-canvas-alpha: calc(100% - var(--glass-master) * 1%);
+  --glass-panel-alpha: calc(100% - var(--glass-master) * .88%);
+  --glass-content-alpha: calc(100% - var(--glass-master) * .72%);
+  --glass-control-alpha: calc(100% - var(--glass-master) * .62%);
+  --glass-popup-alpha: calc(100% - var(--glass-master) * .10%);
+  --glass-panel: color-mix(in srgb, var(--glass-panel-seed) var(--glass-panel-alpha), transparent);
+  --glass-content: color-mix(in srgb, var(--glass-surface-seed) var(--glass-content-alpha), transparent);
+  --glass-control: color-mix(in srgb, var(--glass-surface-seed) var(--glass-control-alpha), transparent);
+  --glass-popup: color-mix(in srgb, var(--glass-surface-seed) var(--glass-popup-alpha), transparent);
+  --glass-user: color-mix(in srgb, var(--glass-user-seed) var(--glass-content-alpha), transparent);
+  --glass-code: color-mix(in srgb, var(--glass-code-seed) var(--glass-control-alpha), transparent);
+  --chrome-panel: var(--glass-panel);
+  --chrome-surface: var(--glass-control);
+  --chrome-raised: var(--glass-popup);
+  --chrome-hover: color-mix(in srgb, var(--glass-hover-seed) var(--glass-content-alpha), transparent);
+  --chrome-accent-soft: color-mix(in srgb, var(--glass-accent-seed) var(--glass-control-alpha), transparent);
+  --rich-code-bg: var(--glass-code);
+  --rich-inline-bg: var(--chrome-accent-soft);
+  --appearance-transcript-bg: transparent;
+  --neo-menu-background: var(--glass-popup);
+  background: transparent !important;
+}
+:root[data-theme='dark'][data-desktop='true'][data-window-material='on'] {
+  --glass-bg-seed: var(--appearance-bg, #111418);
+  --glass-panel-seed: var(--appearance-panel, #15191f);
+  --glass-surface-seed: var(--appearance-surface, #191e25);
+  --glass-hover-seed: var(--appearance-accent-hover, #232a34);
+  --glass-accent-seed: var(--appearance-accent-soft, #302630);
+  --glass-user-seed: var(--appearance-user-bg, #191e25);
+  --glass-code-seed: var(--appearance-code-bg, #1c222b);
+  --glass-table-seed: var(--appearance-table-head-bg, #1c222b);
+}
+:root[data-desktop='true'][data-window-material='on'] :is(body, #app, .workspace, .panel-page) { background: transparent !important; }
+:root[data-desktop='true'][data-window-material='on'] .shell {
+  background: color-mix(in srgb, var(--glass-bg-seed) var(--glass-canvas-alpha), transparent) !important;
+}
+/* Override legacy aliases which bypassed chrome tokens via opaque appearance seeds. */
+:root[data-desktop='true'][data-window-material='on'] :is(.sidebar, .composer, .right-panel, .panel-page, .topbar, [role='dialog'], [role='alertdialog'], .toast) {
+  --panel: var(--glass-panel); --surface: var(--glass-control);
+  --surface-raised: var(--glass-popup); --surface-glass: var(--glass-content);
+  --panel-soft: var(--chrome-hover); --purple-soft: var(--chrome-accent-soft);
+}
+:root[data-desktop='true'][data-window-material='on'] :is(.composer, .right-panel .background-task-section, .right-panel .quota-card, .right-panel .status-card, .appearance-preview) {
+  background: var(--glass-content) !important;
+}
+:root[data-desktop='true'][data-window-material='on'] :is(.transcript.rows-transcript, .rows-history) {
+  --history-user-background: var(--glass-user); --history-code-background: var(--glass-code);
+}
+:root[data-desktop='true'][data-window-material='on'] .appearance-preview-user { background: var(--glass-user); }
+:root[data-desktop='true'][data-window-material='on'] .appearance-preview-input { background: var(--glass-control); }
+:root[data-desktop='true'][data-window-material='on'] .appearance-background-picker span { background: var(--glass-control); }
+:root[data-desktop='true'][data-window-material='on'] :is(.message-text, .markdown) th {
+  background: color-mix(in srgb, var(--glass-table-seed) var(--glass-control-alpha), transparent) !important;
+}
+/* Popovers/dialogs get one stronger backing; do not stack multiple opaque gradients. */
+:root[data-desktop='true'][data-window-material='on'] :is([role='dialog'], [role='alertdialog'], .neo-select-menu, .appearance-preset-save, .sidebar-actions-menu, .session-context-menu, .composer-popover, .topbar .mobile-nav-menu nav, .right-panel.mobile-card-open, .toast) {
+  background: var(--glass-popup) !important;
+}
+:root[data-desktop='true'][data-window-material='on'] .terminal-text { --terminal-background: var(--glass-code); }
+:root[data-desktop='true'][data-window-material='on'] .appearance-editor .appearance-preview-input button { background: var(--chrome-accent-soft) !important; }
+/* Browser-native range tracks otherwise remain solid white even on glass. */
+:root[data-desktop='true'][data-window-material='on'] .appearance-editor input[type='range'] {
+  appearance: none; -webkit-appearance: none; height: 20px;
+  /* The generic form rule is !important: only the track, not the input box, paints. */
+  background: transparent !important; border: 0 !important; padding: 0 !important; box-shadow: none !important;
+}
+:root[data-desktop='true'][data-window-material='on'] .appearance-editor input[type='range']:focus-visible {
+  outline: 1px solid var(--chrome-accent) !important; outline-offset: 3px;
+}
+:root[data-desktop='true'][data-window-material='on'] .appearance-editor input[type='range']::-webkit-slider-runnable-track {
+  height: 5px; border-radius: 3px; background: var(--glass-control); border: 1px solid color-mix(in srgb, var(--chrome-accent) 30%, transparent);
+}
+:root[data-desktop='true'][data-window-material='on'] .appearance-editor input[type='range']::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none; width: 13px; height: 13px; margin-top: -5px; border: 0; border-radius: 50%; background: var(--chrome-accent);
+}

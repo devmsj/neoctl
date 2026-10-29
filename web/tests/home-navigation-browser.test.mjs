@@ -15,6 +15,7 @@ test('settings and session manager entries return home without reopening or repl
   await chrome.getByRole('button',{name:'全局配置',exact:true}).click()
   await chrome.getByRole('button',{name:'返回对话',exact:true}).waitFor()
   await p.getByRole('button',{name:'外观',exact:true}).click()
+  await p.getByRole('button',{name:'设计外观',exact:true}).click()
   await p.getByRole('button',{name:'颜色',exact:true}).click()
   await p.locator('#appearance-accent').fill('#287b82')
   await chrome.getByRole('button',{name:'返回对话',exact:true}).click()

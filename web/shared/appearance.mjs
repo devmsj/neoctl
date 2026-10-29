@@ -1,12 +1,14 @@
 // Browser/server contract. Appearance never enters a model request or transcript.
 export const APPEARANCE_VERSION = 1
 export const PALETTE_VERSION = 2
+export const BUILTIN_PRESET_NAMES = Object.freeze({ default: '烟粉', ink: '墨青', sand: '暖砂', slate: '远山', rose: '灰玫瑰', graphite: '石墨', glass: '雾玻璃', 'amber-glass': '琥珀雾' })
 export const ASSET_ID = /^[a-f0-9]{64}\.(png|jpg|webp|gif|woff2?|ttf|otf)$/
 export const COLOR_KEYS = ['accent', 'background', 'text', 'muted', 'border', 'userBackground', 'userText', 'codeBackground']
 export const NUMBERS = {
   uiSize: [11, 20], textSize: [12, 28], codeSize: [10, 24], textWeight: [300, 700], lineHeight: [1.3, 2.4], letterSpacing: [-.5, 2],
   paragraphSpacing: [0, 24], radius: [0, 20], borderWidth: [0, 2], messageGap: [0, 32],
   contentWidth: [380, 1600], sidebarWidth: [168, 360], informationWidth: [176, 380],
+  windowTransparency: [0, 100], windowFrost: [0, 2],
   backgroundOpacity: [0, 100],
   backgroundBlur: [0, 24], backgroundBrightness: [20, 160], backgroundSaturation: [0, 160], backgroundX: [0, 100], backgroundY: [0, 100],
 }
@@ -23,7 +25,12 @@ export function normalizeScheme(value) {
   const result = {}
   for (const [key, v] of Object.entries(value)) {
     // Retired v1 overrides remain readable/importable, but can no longer affect surfaces.
-    if (key === 'panel' || key === 'surface') {
+    if (key === 'windowBlur') {
+      // Import drafts from the short-lived CSS implementation; explicit native choice wins.
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 40) fail('磨砂数值无效')
+      if (value.windowFrost === undefined) result.windowFrost = v === 0 ? 0 : 2
+      continue
+    } else if (key === 'panel' || key === 'surface') {
       if (typeof v !== 'string' || !/^#[\da-f]{6}$/i.test(v)) fail('颜色格式无效')
       continue
     } else if (key === 'panelOpacity' || key === 'surfaceOpacity') {
@@ -35,7 +42,8 @@ export function normalizeScheme(value) {
     } else if (NUMBERS[key]) {
       const [min, max] = NUMBERS[key]
       if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) fail('外观数值超出范围：' + key)
-      result[key] = Math.round(v * 100) / 100
+      if (key === 'windowFrost' && !Number.isInteger(v)) fail('磨砂档位无效')
+      result[key] = key === 'windowFrost' && v > 0 ? 2 : Math.round(v * 100) / 100
     } else if (FONTS.includes(key)) {
       if (typeof v !== 'string' || v.length > 160 || /[\x00-\x1f;{}<>\\]/.test(v)) fail('字体名称无效')
       result[key] = v.trim()
@@ -63,11 +71,15 @@ export function normalizeAppearance(value) {
   if (Object.keys(value).some(k => !['version', 'mode', 'light', 'dark', 'presets'].includes(k))) fail('未知外观配置字段')
   if (!['system', 'light', 'dark'].includes(value.mode)) fail('主题模式无效')
   if (!Array.isArray(value.presets) || value.presets.length > 100) fail('主题方案列表无效')
-  const names = new Set()
+  const names = new Set(), builtins = new Set()
   const presets = value.presets.map(p => {
-    if (!plain(p) || Object.keys(p).some(k => !['name', 'light', 'dark'].includes(k)) || typeof p.name !== 'string' || !p.name.trim() || p.name.length > 60 || names.has(p.name.trim())) fail('主题方案名称无效或重复')
+    if (!plain(p) || Object.keys(p).some(k => !['name', 'light', 'dark', 'builtin'].includes(k)) || typeof p.name !== 'string' || !p.name.trim() || p.name.length > 60 || names.has(p.name.trim())) fail('主题方案名称无效或重复')
+    if (p.builtin !== undefined) {
+      if (typeof p.builtin !== 'string' || !Object.hasOwn(BUILTIN_PRESET_NAMES, p.builtin) || builtins.has(p.builtin) || p.name !== BUILTIN_PRESET_NAMES[p.builtin]) fail('系统外观不可改名或重复')
+      builtins.add(p.builtin)
+    }
     names.add(p.name.trim())
-    return { name: p.name.trim(), light: normalizeScheme(p.light), dark: normalizeScheme(p.dark) }
+    return { name: p.name.trim(), light: normalizeScheme(p.light), dark: normalizeScheme(p.dark), ...(p.builtin ? { builtin: p.builtin } : {}) }
   })
   return { version: APPEARANCE_VERSION, mode: value.mode, light: normalizeScheme(value.light), dark: normalizeScheme(value.dark), presets }
 }

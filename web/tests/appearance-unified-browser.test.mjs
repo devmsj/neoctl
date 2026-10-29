@@ -14,6 +14,7 @@ test('appearance uses workspace surfaces, editable unified font dropdowns and di
   const editor=p.locator('.appearance-editor');await editor.waitFor()
   assert.equal(await editor.getByRole('heading',{name:'外观',exact:true}).count(),1)
   assert.equal(await editor.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)')
+  await p.getByRole('button',{name:'设计外观',exact:true}).click()
   const inherited=await editor.evaluate(el=>({editor:getComputedStyle(el).getPropertyValue('--chrome-surface').trim(),root:getComputedStyle(document.documentElement).getPropertyValue('--chrome-surface').trim()}));assert.equal(inherited.editor,inherited.root)
   for (const theme of ['light', 'dark']) {
    await p.evaluate(theme => document.documentElement.dataset.theme = theme, theme)

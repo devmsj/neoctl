@@ -5,5 +5,5 @@
   "windows": ["main"],
   "local": true,
   "remote": { "urls": ["http://127.0.0.1:*"] },
-  "permissions": ["desktop-chrome:allow-window-action", "desktop-chrome:allow-application-action", "desktop-chrome:allow-sync-surface"]
+  "permissions": ["desktop-chrome:allow-window-action", "desktop-chrome:allow-application-action", "desktop-chrome:allow-sync-surface", "desktop-chrome:allow-system-theme"]
 }

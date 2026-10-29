@@ -134,6 +134,22 @@ test('demo submission does not materialize a workspace or replace the active eng
   await new Promise(resolve => setImmediate(resolve));
 });
 
+test('workspace slash input is literal for idle, queued, immediate and continuation paths', async t => {
+ const root=await mkdtemp(path.join(os.tmpdir(),'neo-web-literal-'));t.after(()=>rm(root,{recursive:true,force:true}))
+ const tools=new ToolRegistry(),taskStore=new TaskStore(),engine=new QueryEngine({modelGateway:{async *stream(){throw Error('must not call model')}},tools,cwd:root,session:{rootDir:path.join(root,'sessions'),resume:false}})
+ await engine.initialize();taskStore.bindSession(engine.snapshot().session.sessionDir)
+ const runtime={engine,tools,taskStore,execProcessManager:new ExecProcessManager(),usage:new SessionUsageTracker(),initialMetrics:await engine.contextMetrics(),envPath:path.join(root,'.env')}
+ const manager=createWorkspaceRuntimeManager({projectRoot:root,registryFile:path.join(root,'registry.json')})
+ const repl=manager.createRepl(runtime);assert.equal(repl.replCommandsEnabled,false)
+ assert.deepEqual(repl.snapshot(true).catalog.commands,[])
+ const sent=[];engine.sendUserText=async function*(text){sent.push(text)}
+ for(const text of ['/new','/reset','/login','/help','/unknown']){await repl.handleCommandOrPrompt(text);assert.equal(sent.at(-1),text)}
+ const initial=engine.snapshot().session.sessionId;assert.equal(repl.snapshot().lines.filter(l=>l.kind==='user').length,5);assert.equal(engine.snapshot().session.sessionId,initial)
+ repl.busy=true;repl.runControl=()=>({canResume:false});await repl.submit('/new');assert.equal(repl.queuedInput,'/new');assert.equal(engine.snapshot().session.sessionId,initial)
+ repl.busy=false;const started=[];repl.startRun=(text)=>started.push(text);await repl.submitImmediately('/reset');assert.deepEqual(started,['/reset'])
+ repl.runControl=()=>({canResume:true});let continuation;repl.continueRun=(text)=>{continuation=text;return{ok:true}};await repl.submit('/help');assert.equal(continuation,'/help')
+})
+
 test('workspace locations expose human-friendly roots', async () => {
   const locations = await discoverWorkspaceLocations();
 

@@ -85,15 +85,105 @@ async fn window_action(window: WebviewWindow, action: WindowAction) -> Result<bo
     window.is_maximized().map_err(|error| error.to_string())
 }
 
+// Read Windows app preference independently of the WebView profile's forced theme.
+#[tauri::command]
+async fn system_theme(window: WebviewWindow) -> Result<bool, String> {
+    authorize(&window)?;
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+        let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0".encode_utf16().collect();
+        let name: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+        let mut light: u32 = 1;
+        let mut size: u32 = 4;
+        let status = RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut light as *mut _ as _, &mut size);
+        if status == 0 { return Ok(light == 0); }
+        if status == 2 { return Ok(false); }
+        return Err(format!("Windows theme read failed: {status}"));
+    }
+    #[cfg(not(windows))]
+    Ok(matches!(window.theme(), Ok(tauri::Theme::Dark)))
+}
+
 // Match both erase-background and WebView2's unpainted surface to the page.
 // Run off the WebView message loop, just like the window controls above.
 #[tauri::command]
-async fn sync_surface(window: WebviewWindow, dark: bool, color: [u8; 3]) -> Result<(), String> {
+async fn sync_surface(window: WebviewWindow, dark: bool, color: [u8; 3], transparency: Option<u8>, frost: Option<u8>, theme_mode: Option<String>) -> Result<bool, String> {
     authorize(&window)?;
-    window.set_theme(Some(if dark { tauri::Theme::Dark } else { tauri::Theme::Light }))
+    // A fixed WebView2 color scheme also overrides prefers-color-scheme.
+    // Clear that override in system mode so the page observes Windows again.
+    let theme = match theme_mode.as_deref() {
+        Some("system") => None,
+        _ => Some(if dark { tauri::Theme::Dark } else { tauri::Theme::Light }),
+    };
+    window.set_theme(theme)
         .map_err(|error| error.to_string())?;
-    window.set_background_color(Some(tauri::window::Color(color[0], color[1], color[2], 255)))
-        .map_err(|error| error.to_string())
+    let transparency = transparency.unwrap_or(0);
+    let frost = frost.unwrap_or(0);
+    if transparency > 100 || frost > 2 { return Err("窗口材质参数无效".into()); }
+    let transparent = transparency > 0 && cfg!(windows);
+    #[cfg(windows)]
+    if let Err(error) = material::apply(&window, transparent, frost, color) {
+        let _ = window.set_background_color(Some(tauri::window::Color(color[0], color[1], color[2], 255)));
+        return Err(error);
+    }
+    // WebView2 only accepts alpha 0 or 255. Tint strength belongs to the page's
+    // single canvas, never to the whole native window (text must stay opaque).
+    let webview: &tauri::Webview = window.as_ref();
+    // DWM consumes premultiplied pixels. Removing the erase brush leaves stale
+    // RGB (the initial #111418) with zero alpha: it ADDS that color to everything
+    // behind the window. Clear native RGB to black and WebView RGBA to zero.
+    let surface = if transparent { tauri::window::Color(0, 0, 0, 0) }
+        else { tauri::window::Color(color[0], color[1], color[2], 255) };
+    webview.window().set_background_color(Some(surface))
+        .map_err(|error| error.to_string())?;
+    webview.set_background_color(Some(surface))
+        .map_err(|error| error.to_string())?;
+    Ok(transparent)
+}
+
+#[cfg(windows)]
+mod material {
+    use std::{ffi::c_void, mem::size_of};
+    use tauri::WebviewWindow;
+    use windows_sys::{core::BOOL, Win32::{Foundation::HWND, Graphics::Dwm::DwmSetWindowAttribute, System::LibraryLoader::{GetModuleHandleA, GetProcAddress}}};
+    #[repr(C)]
+    struct Accent { state: u32, flags: u32, color: u32, animation: u32 }
+    #[repr(C)]
+    struct Attribute { kind: u32, data: *mut c_void, size: usize }
+    // Accent Acrylic stays translucent when inactive. DWMSBT_TRANSIENTWINDOW
+    // intentionally falls back to a solid brush on deactivation. Never use
+    // legacy BLURBEHIND or fake activation/focus to keep the material alive.
+    pub fn apply(window: &WebviewWindow, enabled: bool, frost: u8, color: [u8; 3]) -> Result<(), String> {
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as HWND;
+        unsafe {
+            let module = GetModuleHandleA(b"user32.dll\0".as_ptr());
+            let Some(address) = GetProcAddress(module, b"SetWindowCompositionAttribute\0".as_ptr()) else {
+                return if enabled { Err("系统不支持窗口透明".into()) } else { Ok(()) };
+            };
+            let apply: unsafe extern "system" fn(HWND, *mut Attribute) -> BOOL = std::mem::transmute(address);
+            let mut accent = Accent {
+                // ACCENT_DISABLED removes the transparent composition surface and
+                // exposes an opaque/black backing. Clear glass requires
+                // ACCENT_ENABLE_TRANSPARENTGRADIENT (2), not disabled (0).
+                state: if !enabled { 0 } else if frost > 0 { 4 } else { 2 },
+                flags: 2,
+                // Acrylic requires nonzero alpha; CSS owns the visible theme tint.
+                color: if enabled && frost > 0 {
+                    (1 << 24) | ((color[2] as u32) << 16) | ((color[1] as u32) << 8) | color[0] as u32
+                } else { 0 },
+                animation: 0,
+            };
+            let mut data = Attribute { kind: 19, data: &mut accent as *mut _ as *mut c_void, size: size_of::<Accent>() };
+            // Always remove any old activation-sensitive DWM backdrop first.
+            // Unsupported DWM attributes are harmless on older Windows builds.
+            let none: u32 = 1;
+            let _ = DwmSetWindowAttribute(hwnd, 38, &none as *const _ as _, 4);
+            if apply(hwnd, &mut data) == 0 { return Err("无法应用窗口材质，已恢复实色背景".into()); }
+
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -121,12 +211,17 @@ async fn application_action(
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("desktop-chrome")
         .js_init_script(format!("{}\n{}", include_str!("../../../web/shared/theme-tooltip.js"), include_str!("../../ui/window-chrome.js")))
-        .invoke_handler(tauri::generate_handler![window_action, application_action, sync_surface])
+        .invoke_handler(tauri::generate_handler![window_action, application_action, sync_surface, system_theme])
         .on_event(|app, event| {
             // Wry handles WM_MOVE. Refresh after DPI transitions and refocus too,
             // without changing focus or resetting an active IME composition.
             #[cfg(windows)]
             if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
+                if label == "main" && matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
+                    if let Some(window) = app.get_webview_window(label) {
+                        let _ = window.eval("window.dispatchEvent(new Event('neo:system-theme-changed'))");
+                    }
+                }
                 if label == "main" && matches!(event,
                     tauri::WindowEvent::ScaleFactorChanged { .. } | tauri::WindowEvent::Focused(true)) {
                     if let Some(window) = app.get_webview_window(label) {

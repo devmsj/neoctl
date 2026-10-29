@@ -3,7 +3,16 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const files = [
+  'control-visibility-browser.test.mjs',
+  'icon-tooltip-browser.test.mjs',
+  'text-context-menu-browser.test.mjs',
+  'system-notice-browser.test.mjs',
+  'loading-ring-browser.test.mjs',
   'appearance-browser.test.mjs',
+  'appearance-gallery-browser.test.mjs',
+  'appearance-leave-browser.test.mjs',
+  'window-material-browser.test.mjs',
+  'window-material-layers-browser.test.mjs',
   'appearance-unified-browser.test.mjs',
   'appearance-surfaces-browser.test.mjs',
   'appearance-resources-browser.test.mjs',

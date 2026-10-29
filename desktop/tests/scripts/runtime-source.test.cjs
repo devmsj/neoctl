@@ -30,7 +30,7 @@ test('local resource adapter has no dependency on web plugins, routes or mapping
   assert.match(adapter, /SHOpenFolderAndSelectItems/);
   assert.doesNotMatch(adapter, /Command::new|cmd\.exe|powershell/);
   const capability = JSON.parse(read('src-tauri/capabilities/local-resources.json'));
-  assert.deepEqual(capability.permissions, ['local-resources:allow-reveal-file', 'local-resources:allow-watch-file-drops', 'local-resources:allow-unwatch-file-drops', 'local-resources:allow-take-file-drop', 'local-resources:allow-open-external']);
+  assert.deepEqual(capability.permissions, ['local-resources:allow-clipboard-read', 'local-resources:allow-clipboard-write', 'local-resources:allow-reveal-file', 'local-resources:allow-watch-file-drops', 'local-resources:allow-unwatch-file-drops', 'local-resources:allow-take-file-drop', 'local-resources:allow-open-external']);
   assert.equal(capability.local, false);
   assert.deepEqual(capability.remote.urls, ['http://127.0.0.1:*']);
   assert.match(adapter, /trusted_runtime_origin\(&current, &url\)/);
@@ -43,7 +43,7 @@ test('desktop build no longer reads or emits an embedded remote-control configur
   assert.equal(existsSync(path.join(root, 'src-tauri/src/control_config.rs')), false);
   const build = read('src-tauri/build.rs');
   assert.match(build, /tauri_build::try_build/);
-  assert.match(build, /InlinedPlugin::new\(\)\.commands\(&\[\s*"reveal_file",\s*"open_external",\s*"watch_file_drops",\s*"unwatch_file_drops",\s*"take_file_drop",?\s*\]\)/);
+  assert.match(build, /InlinedPlugin::new\(\)\.commands\(&\[\s*"clipboard_read",\s*"clipboard_write",\s*"reveal_file",\s*"open_external",\s*"watch_file_drops",\s*"unwatch_file_drops",\s*"take_file_drop",?\s*\]\)/);
   assert.doesNotMatch(build, /std::(?:env|fs)|serde_json|control_config/);
   const manifest = read('src-tauri/Cargo.toml');
   const buildDependencies = manifest.split('[build-dependencies]')[1].split('[dependencies]')[0];

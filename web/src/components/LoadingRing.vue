@@ -5,5 +5,5 @@
   </svg>
 </template>
 <style scoped>
-.loading-ring { display: block; width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: var(--pink); stroke-width: 1.6; stroke-linecap: round; }
+.loading-ring { display: block; width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: var(--appearance-accent, var(--chrome-accent, var(--pink))); stroke-width: 1.6; stroke-linecap: round; }
 </style>

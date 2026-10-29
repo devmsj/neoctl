@@ -8,8 +8,8 @@ import { createAppearanceStore, createAppearanceRoute } from '../appearance-stor
 import { validateImageBytes } from '../../engine/dist/core/image-input.js'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
 
-// Real HTTP storage, decoding and portable resources, not mocked success responses.
-test('background persists through service recreation; portable bundle restores assets; malformed input stays recoverable', async t => {
+// Real HTTP storage, decoding and persistent resources, not mocked success responses.
+test('background and fonts persist through service recreation; malformed input stays recoverable', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-appearance-ui-'))
   t.after(() => fs.rm(dir, { recursive: true, force: true }))
   const makeRoute = () => createAppearanceRoute(createAppearanceStore(dir, { validateImage: validateImageBytes }))
@@ -24,9 +24,17 @@ test('background persists through service recreation; portable bundle restores a
   const p = ui.page
   const open = async () => {
     await openGlobalSettings(p)
-    await p.locator('[data-settings-page="appearance"]').click()
+    await p.locator('[data-settings-page="appearance"]').click();if(await p.getByRole('button',{name:'编辑Resources',exact:true}).count())await p.getByRole('button',{name:'编辑Resources',exact:true}).click();else await p.getByRole('button',{name:'设计外观',exact:true}).click()
   }
   await open()
+  const finishApply = async () => {
+    await p.getByLabel('外观名称',{exact:true}).fill('Resources')
+    await p.getByRole('button',{name:'完成设计',exact:true}).click()
+    await p.locator('.appearance-preset-grid').waitFor()
+    await p.getByRole('button',{name:'应用Resources',exact:true}).click()
+    await p.waitForFunction(()=>document.querySelector('[aria-label="应用Resources"]').getAttribute('aria-pressed')==='true')
+    await p.getByRole('button',{name:'编辑Resources',exact:true}).click()
+  }
   const editor = p.locator('.appearance-editor')
   const png = Buffer.from(await p.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 32; const ctx = c.getContext('2d'); ctx.fillStyle = '#906f88'; ctx.fillRect(0, 0, 32, 32); return c.toDataURL().split(',')[1] }), 'base64')
   await editor.getByLabel('上传背景文件').setInputFiles({ name: 'misnamed.jpg', mimeType: 'image/jpeg', buffer: png })
@@ -36,7 +44,7 @@ test('background persists through service recreation; portable bundle restores a
   await editor.getByRole('button', { name: '字体', exact: true }).click()
   await editor.locator('#appearance-font-text').fill('Bad;Font')
   await editor.getByRole('alert').waitFor()
-  assert.equal(await editor.getByRole('button', { name: '应用', exact: true }).isEnabled(), false)
+  assert.equal(await editor.getByRole('button', { name: '完成设计', exact: true }).isEnabled(), false)
   await editor.locator('#appearance-font-text').fill('Georgia')
   await editor.locator('#appearance-textSize').fill('21')
   await editor.locator('#appearance-codeSize').fill('17')
@@ -45,19 +53,12 @@ test('background persists through service recreation; portable bundle restores a
   await editor.getByRole('button', { name: '布局', exact: true }).click()
   await editor.locator('#appearance-radius').fill('12')
   await editor.locator('#appearance-contentWidth').fill('420')
-  await editor.getByRole('button', { name: '应用', exact: true }).click()
-  await editor.locator('.appearance-status').waitFor()
+  await finishApply()
+
   const saved = await createAppearanceStore(dir).read(), mode = await p.evaluate(() => document.documentElement.dataset.theme)
   assert.equal(saved.config[mode].textSize, 21)
   assert.ok(saved.config[mode].backgroundAsset.endsWith('.png'))
-  const downloadEvent = p.waitForEvent('download')
-  await editor.getByRole('button', { name: '导出', exact: true }).click()
-  const download = await downloadEvent, exported = path.join(dir, 'export.json')
-  await download.saveAs(exported)
-  const bundle = JSON.parse(await fs.readFile(exported, 'utf8'))
-  assert.equal(bundle.assets.length, 1)
-  assert.equal(bundle.assets[0].id, saved.config[mode].backgroundAsset)
-  await editor.getByRole('button', { name: '返回全局配置', exact: true }).click()
+  await editor.getByRole('button',{name:'返回外观',exact:true}).click();await editor.getByRole('button', { name: '返回全局配置', exact: true }).click()
   await p.getByRole('button', { name: '新建会话', exact: true }).first().click()
   // Fixture retains its sample transcript after a reload; no model calls needed.
   route = makeRoute()
@@ -77,16 +78,9 @@ test('background persists through service recreation; portable bundle restores a
   assert.equal(layout.width, 420); assert.ok(layout.centered < 2); assert.equal(layout.weight, '500'); assert.equal(layout.radius, '12px'); assert.equal(layout.canvas, 'rgba(0, 0, 0, 0)')
   await open()
   await editor.getByRole('button', { name: '恢复' + (mode === 'dark' ? '夜间' : '日间') + '默认', exact: true }).click()
-  await editor.getByRole('button', { name: '应用', exact: true }).click()
-  await editor.locator('.appearance-status').waitFor()
-  // Remove storage only after resetting references, then import the portable bundle.
+  await finishApply()
+
   const store = createAppearanceStore(dir)
-  await store.remove(saved.config[mode].backgroundAsset)
-  await editor.getByLabel('导入主题文件').setInputFiles(exported)
-  await editor.locator('.appearance-background-picker img').waitFor()
-  await editor.getByRole('button', { name: '应用', exact: true }).click()
-  await editor.locator('.appearance-status').waitFor()
-  assert.deepEqual((await store.read()).config, saved.config)
   await editor.getByLabel('上传背景文件').setInputFiles({ name: 'bad.png', mimeType: 'image/png', buffer: Buffer.from('<html>not an image</html>') })
   await editor.getByRole('alert').waitFor()
   assert.match(await editor.getByRole('alert').innerText(), /解码/)
@@ -97,8 +91,8 @@ test('background persists through service recreation; portable bundle restores a
   await editor.locator('[data-tooltip="导入正文字体"]').click()
   await editor.getByLabel('上传字体文件').setInputFiles({ name: 'custom.woff2', mimeType: 'font/woff2', buffer: await fs.readFile(new URL(font, assetDir)) })
   await p.waitForFunction(() => [...document.fonts].some(face => face.family.startsWith('neo-') && face.status === 'loaded'))
-  await editor.getByRole('button', { name: '应用', exact: true }).click()
-  await editor.locator('.appearance-status').waitFor()
+  await finishApply()
+
   const fontId = (await store.read()).config[mode].textFontAsset
   assert.ok(fontId.endsWith('.woff2'))
   await p.reload()

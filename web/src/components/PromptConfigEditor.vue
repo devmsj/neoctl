@@ -1,4 +1,5 @@
 <script setup>
+import LoadingRing from './LoadingRing.vue'
 import ChromeIcon from './ChromeIcon.vue'
 import SettingsSaveButton from './SettingsSaveButton.vue'
 import { appFetch } from '../app-url.mjs'
@@ -129,12 +130,12 @@ onBeforeUnmount(() => { generation += 1; controller?.abort() })
         <label class="prompt-config-scope" :for="editorId"><ChromeIcon name="edit" /><strong>{{ session ? (legacy ? '历史会话指令' : '会话指令') : '系统提示词' }}</strong></label>
         <div class="prompt-config-actions">
           <span v-if="dirty" class="prompt-draft-mark" role="status" data-tooltip="未保存" aria-label="未保存"></span>
-          <button type="button" class="mini-button" data-tooltip="重新加载" aria-label="重新加载" :disabled="loading || saving" @click="load"><ChromeIcon name="refresh" /></button>
+          <button type="button" class="mini-button" data-tooltip="重新加载" aria-label="重新加载" :disabled="loading || saving" @click="load"><LoadingRing v-if="loading" /><ChromeIcon v-else name="refresh" /></button>
           <button v-if="session" type="button" class="mini-button" data-tooltip="恢复默认" aria-label="恢复默认" :disabled="!loaded || !overridden || loading || saving" @click="save(true)"><ChromeIcon name="undo" /></button>
           <SettingsSaveButton :busy="saving" :disabled="!canSave" />
         </div>
       </div>
-      <div v-if="loading && !loaded" class="runtime-context-empty" role="status">加载中</div>
+      <div v-if="loading && !loaded" class="runtime-context-empty" role="status" aria-label="正在加载"><LoadingRing /></div>
       <textarea v-else :id="editorId" v-model="content" class="prompt-config-textarea"
         :aria-label="session ? '会话指令' : '系统提示词'" :disabled="!loaded || loading || saving"
         spellcheck="false" autocomplete="off" rows="10"
@@ -142,7 +143,7 @@ onBeforeUnmount(() => { generation += 1; controller?.abort() })
     </section>
     <section v-if="session && loaded" class="prompt-readonly-region" aria-label="只读的生效上下文">
       <details class="prompt-config-preview" open>
-        <summary class="prompt-readonly-heading"><ChromeIcon name="chevron" /><strong>生效上下文</strong><span class="prompt-access-label">只读</span><span v-if="pending" class="prompt-pending" role="status" data-tooltip="修改将在下一轮生效" aria-label="修改将在下一轮生效"><ChromeIcon name="clock" /></span></summary>
+        <summary class="prompt-readonly-heading"><ChromeIcon name="chevron" /><strong>生效上下文</strong><span class="prompt-access-label">只读</span><span v-if="pending" class="prompt-pending" role="status" data-tooltip="修改将在下一轮生效" aria-label="修改将在下一轮生效"><LoadingRing /></span></summary>
         <pre tabindex="0" aria-label="生效上下文，只读">{{ activePreview || '—' }}</pre>
       </details>
       <details v-if="pending" class="prompt-config-preview">

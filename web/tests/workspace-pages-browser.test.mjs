@@ -33,21 +33,20 @@ test('scope manager keeps absolute paths, icon actions and minimal session/promp
    await modal.screenshot({path:join(tmpdir(),`neo-workspace-scope-${theme}-${width}.png`)});
    await modal.getByRole('button',{name:'添加路径',exact:true}).click();const picker=page.getByRole('dialog',{name:'选择工作目录',exact:true});await picker.locator('.cwd-tree-row').first().waitFor();await page.keyboard.press('Escape');await modal.waitFor();await page.keyboard.press('Escape');
    assert.equal(await page.locator('body').evaluate(el=>el.classList.contains('cwd-picker-lock')),false);
-   if(width<=760){await page.locator('.mobile-nav-menu > summary').click();await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'会话',exact:true}).click()}
+   if(width<=760){await page.locator('.mobile-nav-menu > summary').click();await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'会话管理',exact:true}).click()}
    else await page.locator('.sidebar').getByRole('button',{name:'会话管理',exact:true}).click();
    await page.locator('.session-card').first().waitFor();assert.ok((await page.locator('.session-actions button').allTextContents()).every(v=>!v.trim()));
    assert.equal(await page.locator('.sessions-page-head p').count(),0);
    assert.ok(await page.locator('.sessions-page').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
    await page.screenshot({path:join(tmpdir(),`neo-sessions-minimal-${theme}-${width}.png`)});
-   if(width<=760){await page.locator('.mobile-nav-menu > summary').click();await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'提示词',exact:true}).click()}
-   else {
+   if(width<=760){
+    await page.locator('.mobile-nav-menu > summary').click();
+    assert.equal(await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'提示词',exact:true}).count(),0);
+    await page.locator('.mobile-nav-menu nav').getByRole('button',{name:'回到对话',exact:true}).click();
+   } else {
     assert.equal(await page.locator('.prompt-stack').count(),0);
     await page.locator('.quick-session[aria-current="true"]').click();
-    continue;
    }
-   await page.locator('.prompt-editor-panel').waitFor();assert.ok((await page.locator('.prompt-editor-toolbar-actions button').allTextContents()).every(v=>!v.trim()));
-   await page.screenshot({path:join(tmpdir(),`neo-prompts-minimal-${theme}-${width}.png`)});
-   await page.getByRole('button',{name:'回到对话',exact:true}).click();
   }
   await page.getByRole('button',{name:'工作区范围',exact:true}).click();let modal=page.getByRole('dialog',{name:'工作区范围',exact:true});await modal.locator('.workspace-scope-path').first().waitFor();
   await modal.getByRole('button',{name:'移除 '+cwd,exact:true}).click();await page.waitForTimeout(100);assert.deepEqual(await modal.locator('.workspace-scope-path > span').allTextContents(),['D:\\projects\\neoctl']);
