@@ -12,8 +12,8 @@ const os = require('node:os');
       page.on('pageerror',error=>errors.push(error.message));
       await page.addInitScript(installed=>{
         window.calls=[];window.testEvents={};window.running=false;
-        window.__TAURI__={core:{invoke:async(name)=>{
-          window.calls.push(name);
+        window.__TAURI__={core:{invoke:async(name,args)=>{
+          window.calls.push(name);window.lastArgs=args;
           if(name==='bootstrap_state')return {installed,auto_launch:false,install_dir:installed?'D:\\Runtime':null,default_install_dir:'D:\\Runtime',web_version:'0.1.23',core_version:'0.2.47'};
           if(name==='runtime_status')return window.running;
           if(name==='start_backend')window.running=true;
@@ -70,7 +70,21 @@ const os = require('node:os');
       assert.equal(await page.locator('#logDetails').evaluate(e=>e.open),false);
       await page.keyboard.press('Space');
       assert.equal(await page.locator('#logDetails').evaluate(e=>e.open),true);
-      await page.locator('#retryButton').click();await page.waitForFunction(()=>document.body.dataset.state==='ready');
+      await page.locator('#sourceButton').click();
+      assert.equal(await page.locator('#sourceMenu').isVisible(),true);
+      assert.equal(await page.locator('#sourceMenu button').count(),3);
+      assert.doesNotMatch(await page.locator('#sourceMenu').innerText(),/淘宝/);
+      await page.locator('#sourceTaobao').click();
+      assert.equal(await page.locator('#sourceMenu').isVisible(),false);
+      assert.match(await page.locator('#sourceLabel').innerText(),/镜像源/);
+      await page.locator('#retryButton').click();
+      await page.waitForFunction(()=>['installing','updating'].includes(document.body.dataset.state));
+      assert.equal(await page.evaluate(()=>lastArgs.registryMode),'taobao');
+      assert.equal(await page.evaluate(()=>lastArgs.retry),true);
+      assert.equal(await page.locator('#sourceControls').isVisible(),false);
+      await page.evaluate(()=>finishOperation.reject('still offline'));
+      await page.waitForFunction(()=>document.body.dataset.state==='error');
+      await page.locator('#backButton').click();await page.waitForFunction(()=>document.body.dataset.state==='ready');
       assert.deepEqual(errors,[]);await page.close();
     }
     console.log('PASS spotlight launcher, 5 sizes, state transitions, safe logs, keyboard and reduced motion');

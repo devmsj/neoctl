@@ -78,6 +78,7 @@ export type SessionDisplayEntry =
   | { type: "compact"; createdAt: string; reason?: CompactionReason; report?: CompactionReport };
 
 export interface SessionStoreSnapshot {
+  updatedAt?: string;
   sessionId: string;
   sessionDir: string;
   transcriptPath: string;
@@ -111,6 +112,7 @@ export class SessionStore {
   readonly transcriptPath: string;
   readonly toolResultMemory: ToolResultMemory;
   private writeFailed = false;
+  private updatedAt?: string;
   private execution?: ExecutionState;
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
@@ -178,7 +180,10 @@ export class SessionStore {
       : createEmptyLoadedTranscript();
     await fsp.mkdir(sessionDir, { recursive: true });
     checkSessionPaths(sessionDir);
-    return new SessionStore(options, sessionId, loaded);
+    const store = new SessionStore(options, sessionId, loaded);
+    // Read once on open, never stat the transcript on streaming snapshots.
+    store.updatedAt = (await fsp.stat(transcriptPath).catch(() => undefined))?.mtime.toISOString();
+    return store;
   }
 
   static async list(options: SessionListOptions = {}): Promise<SessionSummary[]> {
@@ -439,6 +444,7 @@ export class SessionStore {
 
   snapshot(): SessionStoreSnapshot {
     return {
+      updatedAt: this.updatedAt,
       sessionId: this.sessionId,
       sessionDir: this.sessionDir,
       transcriptPath: this.transcriptPath,
@@ -473,6 +479,7 @@ export class SessionStore {
       if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session transcript");
       fs.writeFileSync(descriptor, text, "utf8");
       fs.fsyncSync(descriptor);
+      this.updatedAt = new Date().toISOString();
     } catch (error) {
       // Reopen to repair a partial tail; never turn it into a corrupt complete line.
       this.writeFailed = true;

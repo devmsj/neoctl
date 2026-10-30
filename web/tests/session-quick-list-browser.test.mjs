@@ -124,3 +124,44 @@ test('sidebar paginates independently, preserves manager navigation and switches
     assert.deepEqual(f.errors,errors)
   } finally {release();await f.close()}
 })
+
+test('live activity moves yesterday conversation to today without list reload or visual changes', async () => {
+  const yesterday = new Date(Date.now() - 86400000).toISOString()
+  const now = new Date().toISOString()
+  let listRequests = 0
+  const snapshot = observabilitySnapshot({ session: { sessionId: 'old', title: 'Continued conversation', updatedAt: yesterday } })
+  const f = await createObservabilityBrowser(snapshot, async route => {
+    if (new URL(route.request().url()).pathname !== '/api/sessions') return false
+    listRequests++
+    await route.fulfill({ json: { sessions: [
+      { sessionId: 'newer', title: 'Already today', updatedAt: new Date(Date.now() - 10000).toISOString() },
+      { sessionId: 'old', title: 'Continued conversation', updatedAt: yesterday },
+    ], page: 1, totalPages: 1, total: 2 } })
+    return true
+  }, { viewport: { width: 1180, height: 760 } })
+  try {
+    const { page } = f
+    const row = page.locator('.quick-session').filter({ hasText: 'Continued conversation' })
+    await row.waitFor()
+    const before = await row.evaluate(el => ({ height: el.getBoundingClientRect().height, padding: getComputedStyle(el).padding, radius: getComputedStyle(el).borderRadius }))
+    assert.equal(await row.evaluate(el => el.previousElementSibling.textContent), '昨天')
+    await page.addInitScript(() => {
+      window.EventSource = class {
+        constructor() { this.listeners = {}; window.recencyStream = this }
+        addEventListener(name, listener) { this.listeners[name] = listener }
+        close() {}
+      }
+    })
+    await page.reload()
+    await row.waitFor()
+    const requests = listRequests
+    await page.evaluate(payload => window.recencyStream.listeners.sync({ data: JSON.stringify(payload) }), { ...snapshot, session: { ...snapshot.session, updatedAt: now }, busy: true, runningSessionIds: ['old'] })
+    await page.waitForFunction(() => document.querySelector('.quick-session')?.textContent.includes('Continued conversation'))
+    assert.equal(await row.evaluate(el => el.previousElementSibling.textContent), '今天')
+    assert.equal(listRequests, requests, 'activity patches the local row; no extra page fetch')
+    assert.equal(await page.locator('.quick-session').count(), 2)
+    const after = await row.evaluate(el => ({ height: el.getBoundingClientRect().height, padding: getComputedStyle(el).padding, radius: getComputedStyle(el).borderRadius }))
+    assert.deepEqual(after, before)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})

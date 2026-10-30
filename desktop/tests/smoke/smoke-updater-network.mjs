@@ -92,11 +92,11 @@ async function update(source) {
 try {
   await mkdir(path.join(root, 'data/workspaces'), { recursive: true });
   await writeFile(path.join(root, 'data/session-fixture.txt'), 'preserve');
-  const first = await update('bundled');
+  const first = await update(process.env.NEO_TEST_LATEST_ONLY ? 'latest' : 'bundled');
   const second = await update('latest');
   assert.notEqual(first, second);
   assert.equal(await readFile(path.join(root, 'data/session-fixture.txt'), 'utf8'), 'preserve');
-  console.log('PASS real updater bundled install + registry update + Core HTTP health + old-version deletion + data preservation');
+  console.log(`PASS real updater ${process.env.NEO_TEST_LATEST_ONLY ? 'registry install' : 'bundled install'} + registry update + Core HTTP health + old-version deletion + data preservation`);
 } finally {
   for (const child of children) await stop(child);
   await rm(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 500 });

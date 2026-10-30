@@ -17,7 +17,7 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
-// Use npm's canonical registry; do not disable TLS verification for mirror failures.
+// Canonical cache registry; the embedded helper selects and verifies download sources.
 const REGISTRY: &str = "https://registry.npmjs.org";
 fn send(v: serde_json::Value) {
     let mut out = io::stdout().lock();
@@ -46,11 +46,13 @@ fn copy(source: &Path, target: &Path) -> Result<(), String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 5 {
+    if !(5..=7).contains(&args.len()) {
         return Err(
-            "usage: neoctl-updater <prepare|cleanup> <root> <resources> <latest|bundled>".into(),
+            "usage: neoctl-updater <prepare|cleanup> <root> <resources> <latest|bundled> [auto|official|taobao] [retry]".into(),
         );
     }
+    let registry_mode = args.get(5).and_then(|v| v.to_str()).unwrap_or("auto");
+    if !["auto", "official", "taobao"].contains(&registry_mode) { return Err("无效的软件源".into()); }
     let root = PathBuf::from(&args[2]);
     let resources = PathBuf::from(&args[3]);
     install_path::validate_install_dir(&root)?;
@@ -97,9 +99,17 @@ fn run() -> Result<(), String> {
         &candidate,
         node_isolation::Phase::Install,
     )?;
-    cmd.args(["-e", include_str!("../package-download.cjs")])
+    if let Ok(bytes) = fs::read(resources.join("payload/payload-manifest.json")) {
+        if let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(version) = manifest["version"].as_str() { cmd.env("NEO_MINIMUM_WEB_VERSION", version); }
+            if let Some(version) = manifest["core"].as_str() { cmd.env("NEO_MINIMUM_CORE_VERSION", version); }
+        }
+    }
+    cmd.args(["-e", concat!(include_str!("../registry-sources.cjs"), "\n", include_str!("../package-download.cjs"))])
         .arg(npm)
         .arg(&candidate)
+        .arg(registry_mode)
+        .arg(args.get(6).and_then(|v| v.to_str()).unwrap_or(""))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = managed_process::ManagedChild::spawn(&mut cmd).map_err(|e| e.to_string())?;
@@ -158,7 +168,10 @@ fn run() -> Result<(), String> {
         .ok_or("missing versions")?
         .map_err(|e| e.to_string())?;
     let versions: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-    let receipt = serde_json::json!({"schema":1,"web_package":format!("neoctl-web@{}",versions["web_version"].as_str().unwrap_or("")),"installed_at":tx.candidate,"registry":REGISTRY,"web_version":versions["web_version"],"core_version":versions["core_version"],"core_requirement":versions["core_requirement"],"source":if bundled{"bundled"}else{"registry-latest"}});
+    let selection: serde_json::Value = fs::read(candidate.join("neo-registry-selection.json"))
+        .ok().and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default();
+    let registry = selection["registry"].as_str().filter(|v| [REGISTRY, "https://registry.npmmirror.com"].contains(v)).unwrap_or(REGISTRY);
+    let receipt = serde_json::json!({"schema":1,"web_package":format!("neoctl-web@{}",versions["web_version"].as_str().unwrap_or("")),"installed_at":tx.candidate,"registry":registry,"registry_mode":registry_mode,"web_version":versions["web_version"],"core_version":versions["core_version"],"core_requirement":versions["core_requirement"],"source":if bundled{"bundled"}else{"registry-latest"}});
     runtime_store::atomic_json(&candidate.join("neo-desktop-runtime.json"), &receipt)?;
     progress(86, "候选版本已准备", "等待后台健康检查。");
     send(serde_json::json!({"event":"ready","candidate":tx.candidate,"versions":versions}));

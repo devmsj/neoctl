@@ -45,6 +45,7 @@ struct DesktopState {
     runtime_url: Mutex<Option<(PathBuf, String)>>,
     manual_start: std::sync::atomic::AtomicBool,
     operation: Mutex<()>,
+    retry_install: Mutex<Option<PathBuf>>,
     owner: Mutex<Option<(PathBuf, fs::File)>>,
 }
 
@@ -236,12 +237,14 @@ async fn clear_install_directory(app: AppHandle, install_dir: String) -> Result<
 }
 
 #[tauri::command]
-async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), String> {
+async fn install_runtime(app: AppHandle, install_dir: String, registry_mode: Option<String>, retry: Option<bool>) -> Result<(), String> {
+    let registry_mode = validate_registry_mode(registry_mode)?;
     tauri::async_runtime::spawn_blocking(move || {
         install_runtime_blocking(
             &app,
             PathBuf::from(install_dir),
             RuntimeSource::RegistryLatestInstall,
+            registry_mode, retry.unwrap_or(false),
         )
         .map(|_| ())
     })
@@ -249,8 +252,15 @@ async fn install_runtime(app: AppHandle, install_dir: String) -> Result<(), Stri
     .map_err(|error| format!("安装任务异常结束：{error}"))?
 }
 
+fn validate_registry_mode(value: Option<String>) -> Result<String, String> {
+    let mode = value.unwrap_or_else(|| "auto".into());
+    if !["auto", "official", "taobao"].contains(&mode.as_str()) { return Err("无效的软件源".into()); }
+    Ok(mode)
+}
+
 #[tauri::command]
-async fn update_runtime(app: AppHandle) -> Result<RuntimeVersions, String> {
+async fn update_runtime(app: AppHandle, registry_mode: Option<String>, retry: Option<bool>) -> Result<RuntimeVersions, String> {
+    let registry_mode = validate_registry_mode(registry_mode)?;
     if runtime_control::attached_target(&app).is_some() { return Err("开发服务不能从调试壳更新".into()); }
     if runtime_control::runtime_status(app.clone()).await
         && rfd::AsyncMessageDialog::new()
@@ -271,6 +281,7 @@ async fn update_runtime(app: AppHandle) -> Result<RuntimeVersions, String> {
             &app,
             PathBuf::from(config.install_dir),
             RuntimeSource::RegistryLatest,
+            registry_mode, retry.unwrap_or(false),
         )
     })
     .await
@@ -303,6 +314,8 @@ fn install_runtime_blocking(
     app: &AppHandle,
     install_dir: PathBuf,
     source: RuntimeSource,
+    registry_mode: String,
+    retry: bool,
 ) -> Result<RuntimeVersions, String> {
     let state = app.state::<DesktopState>();
     let _operation = state.operation.lock().map_err(|_| "操作锁错误")?;
@@ -315,6 +328,8 @@ fn install_runtime_blocking(
     }
     if !source.is_update()
         && read_optional_desktop_config(app)?.is_none()
+        && !state.retry_install.lock().map_err(|_| "重试状态锁错误")?.as_ref()
+            .is_some_and(|p| install_storage::same_path(p, &install_dir))
         && install_preflight::inspect(&install_dir)?.nonempty
     {
         return Err("所选目录已有内容，请先确认清理或更换目录；未开始安装".into());
@@ -377,7 +392,7 @@ fn install_runtime_blocking(
         fs::create_dir_all(install_dir.join("data/workspaces"))
             .map_err(display_io("无法创建数据目录"))?;
         write_desktop_config(app, &install_dir)?;
-        run_independent_update(app, &install_dir, source)
+        run_independent_update(app, &install_dir, source, registry_mode, retry)
     })();
     // A failed first install must remain eligible for explicit clear/retry.
     // Keep the durable config when commit already happened, even if reporting failed.
@@ -388,6 +403,11 @@ fn install_runtime_blocking(
             fs::remove_file(config_path).map_err(display_io("无法重置首次安装配置"))?;
         }
         *state.owner.lock().map_err(|_| "目录所有者状态锁错误")? = None;
+    }
+    if result.is_err() && configured.is_none() {
+        *state.retry_install.lock().map_err(|_| "重试状态锁错误")? = Some(install_dir.clone());
+    } else if result.is_ok() {
+        *state.retry_install.lock().map_err(|_| "重试状态锁错误")? = None;
     }
     result
 }
@@ -411,6 +431,8 @@ fn run_independent_update(
     app: &AppHandle,
     root: &Path,
     source: RuntimeSource,
+    registry_mode: String,
+    retry: bool,
 ) -> Result<RuntimeVersions, String> {
     let resource = app.path().resource_dir().map_err(|e| e.to_string())?;
     let mut command = Command::new(updater_path(app)?);
@@ -423,6 +445,8 @@ fn run_independent_update(
         } else {
             "latest"
         })
+        .arg(&registry_mode)
+        .arg(if retry { "retry" } else { "" })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1027,7 +1051,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod runtime_source_tests {
-    use super::RuntimeSource;
+    use super::{RuntimeSource, validate_registry_mode};
+
+    #[test]
+    fn registry_selection_is_a_closed_allowlist() {
+        assert_eq!(validate_registry_mode(None).unwrap(), "auto");
+        for mode in ["auto", "official", "taobao"] {
+            assert_eq!(validate_registry_mode(Some(mode.into())).unwrap(), mode);
+        }
+        for mode in ["", "https://example.test", "cnpm"] {
+            assert!(validate_registry_mode(Some(mode.into())).is_err());
+        }
+    }
 
     #[test]
     fn first_install_uses_registry_latest_without_update_semantics() {

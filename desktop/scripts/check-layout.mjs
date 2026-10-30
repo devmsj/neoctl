@@ -15,6 +15,7 @@ const required = [
   'tests/scripts/runtime-source.test.cjs', 'tests/ui/app.test.cjs', 'tests/ui/browser.test.cjs',
   'tests/smoke/smoke-runtime-install.mjs', 'tests/smoke/smoke-runtime-launch.mjs',
   'tests/rust/node_isolation_tests.rs',
+  'src-tauri/src/registry-sources.cjs', 'tests/scripts/registry-sources.test.cjs',
   'src-tauri/src/bin/neoctl-updater.rs', 'src-tauri/src/runtime_store.rs',
   'src-tauri/src/directory_gate.rs', 'src-tauri/src/health_check.rs',
   'resources/updater/neoctl-updater.exe', 'tests/smoke/smoke-versioned-updater.mjs',

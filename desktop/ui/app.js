@@ -21,6 +21,10 @@ let backendRunning = false;
 let runtimeComplete = false;
 let externalRuntime = false;
 let retryAction = 'initialize';
+let retryInstallDir = '';
+let registryMode = 'auto';
+try { const saved = window.localStorage?.getItem('neo.registryMode'); if (['auto', 'taobao', 'official'].includes(saved)) registryMode = saved; } catch {}
+const registryLabels = { auto: '自动', taobao: '镜像源', official: '官方源' };
 let phase = 'booting';
 let cleanupPending = false;
 let directoryNeedsCleanup = false;
@@ -37,6 +41,8 @@ function on(target, event, handler) {
 function showView(id, state, focus = true) {
   if (disposed) return;
   phase = state;
+  $('#sourceControls').hidden = !['ready', 'error'].includes(state) || (state === 'ready' && !$('#logDetails').open);
+  closeSourceMenu();
   document.body.dataset.state = state;
   document.body.dataset.light = state === 'ready' ? (installedDir ? 'ready' : 'welcome') : state === 'error' ? 'error' : 'busy';
   views.forEach((view) => { view.hidden = view.id !== id; });
@@ -45,6 +51,8 @@ function showView(id, state, focus = true) {
 
 function setBusy(value) {
   busy = value;
+  $('#sourceButton').disabled = value;
+  if (value) closeSourceMenu();
   installButton.disabled = value || !initialized || backendRunning || directoryNeedsCleanup;
   $('#clearInstallDirectory').disabled = value || Boolean(installedDir);
   browseButton.disabled = value || !initialized || Boolean(installedDir);
@@ -58,6 +66,43 @@ function setBusy(value) {
   enterButton.setAttribute('aria-busy', String(value));
 }
 
+function closeSourceMenu() {
+  $('#sourceMenu').hidden = true;
+  $('#sourceButton').setAttribute('aria-expanded', 'false');
+}
+function renderSourceSelection() {
+  $('#sourceLabel').textContent = `下载源 · ${registryLabels[registryMode]}`;
+  for (const [id, mode] of [['sourceAuto','auto'], ['sourceTaobao','taobao'], ['sourceOfficial','official']]) {
+    $(`#${id}`).setAttribute('aria-checked', String(registryMode === mode));
+  }
+}
+on($('#logDetails'), 'toggle', () => {
+  $('#sourceControls').hidden = !['ready', 'error'].includes(phase) || (phase === 'ready' && !$('#logDetails').open);
+  closeSourceMenu();
+});
+on($('#sourceButton'), 'click', () => {
+  if (busy || disposed) return;
+  const open = $('#sourceMenu').hidden;
+  $('#sourceMenu').hidden = !open;
+  $('#sourceButton').setAttribute('aria-expanded', String(open));
+  if (open) $('#sourceAuto').focus();
+});
+for (const [id, mode] of [['sourceAuto','auto'], ['sourceTaobao','taobao'], ['sourceOfficial','official']]) {
+  on($(`#${id}`), 'click', () => {
+    if (busy || disposed) return;
+    registryMode = mode;
+    try { window.localStorage?.setItem('neo.registryMode', mode); } catch {}
+    renderSourceSelection(); closeSourceMenu(); $('#sourceButton').focus();
+  });
+}
+on(document, 'pointerdown', event => { if (!$('#sourceControls').contains?.(event.target)) closeSourceMenu(); });
+on(document, 'keydown', event => { if (event.key === 'Escape' && !$('#sourceMenu').hidden) { closeSourceMenu(); $('#sourceButton').focus(); } });
+on($('#backButton'), 'click', () => {
+  if (busy || disposed) return;
+  showView('readyView', 'ready');
+  if (retryAction === 'install') { $('#pathOptions').open = true; pathInput.focus(); }
+});
+
 function appendLog(line) {
   if (disposed || !String(line ?? '').trim()) return;
   $('#logDetails').hidden = false;
@@ -69,6 +114,7 @@ function appendLog(line) {
 
 function applyProgress(payload = {}) {
   if (disposed || !['installing', 'updating'].includes(phase)) return;
+  if (payload.install_dir) { pathInput.value = payload.install_dir; retryInstallDir = payload.install_dir; updatePathDisplay(); }
   const value = Number(payload.percent);
   if (Number.isFinite(value)) estimate = Math.max(estimate, Math.max(0, Math.min(100, value)));
   $('#progressTitle').textContent = phase === 'updating' ? '正在更新运行环境' : '正在安装工作台';
@@ -94,10 +140,10 @@ function fail(error, action) {
   $('#progressTrack').setAttribute('aria-valuetext', `操作失败，${Math.round(estimate)}%`);
   appendLog(error);
   $('#logDetails').open = true;
-  const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '返回启动页' : action === 'install' ? '返回并重试' : '重新连接';
+  const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '重试更新' : action === 'install' ? '重试安装' : '重新连接';
   $('#retryLabel').textContent = retryLabel;
   retryButton.setAttribute('aria-label', retryLabel);
-  retryButton.setAttribute('data-tooltip', retryLabel);
+  $('#backButton').hidden = !['install', 'update'].includes(action);
   retryButton.hidden = false;
   showView('progressView', 'error');
   // Reveal the actual failure even when the log panel just became visible.
@@ -227,8 +273,7 @@ async function launch(installDir) {
   }
 }
 
-on($('#installForm'), 'submit', async (event) => {
-  event.preventDefault();
+async function install(retry = false) {
   if (busy || !initialized || disposed || installedDir) return;
   const installDir = pathInput.value.trim() || defaultDir;
   if (!installDir) {
@@ -247,10 +292,13 @@ on($('#installForm'), 'submit', async (event) => {
   applyProgress({ percent: 0, title: '准备运行环境', stage: '准备中', message: '正在准备安装…', log: '正在准备内置 Node.js，将联网获取最新 Web 与其兼容的 Core…' });
   let completed = false;
   try {
-    const inspection = await api.core.invoke('inspect_install_directory', { installDir });
-    if (disposed) return;
-    if (inspection?.nonempty) { showDirectoryContents(inspection); showView('readyView', 'ready'); return; }
-    await api.core.invoke('install_runtime', { installDir });
+    if (!retry || installDir !== retryInstallDir) {
+      const inspection = await api.core.invoke('inspect_install_directory', { installDir });
+      if (disposed) return;
+      if (inspection?.nonempty) { showDirectoryContents(inspection); showView('readyView', 'ready'); return; }
+    }
+    retryInstallDir = installDir;
+    await api.core.invoke('install_runtime', { installDir, registryMode, retry });
     if (disposed) return;
     completed = true;
   } catch (error) {
@@ -259,9 +307,10 @@ on($('#installForm'), 'submit', async (event) => {
     if (!disposed) setBusy(false);
   }
   if (completed && !disposed) await finishInstall();
-});
+}
+on($('#installForm'), 'submit', event => { event.preventDefault(); return install(); });
 
-on(updateButton, 'click', async () => {
+async function update(retry = false) {
   if (busy || disposed || !installedDir || externalRuntime) return;
   setBusy(true);
   installLog.textContent = '';
@@ -272,7 +321,7 @@ on(updateButton, 'click', async () => {
   showView('progressView', 'updating');
   applyProgress({ percent: 0, title: '准备更新 Web 和 Core', stage: '准备中', message: '正在连接软件源…' });
   try {
-    const versions = await api.core.invoke('update_runtime');
+    const versions = await api.core.invoke('update_runtime', { registryMode, retry });
     if (disposed) return;
     runtimeComplete = true;
     $('#readyTitle').textContent = 'Neo Desktop';
@@ -289,7 +338,8 @@ on(updateButton, 'click', async () => {
   } finally {
     if (!disposed) setBusy(false);
   }
-});
+}
+on(updateButton, 'click', () => update());
 
 on(browseButton, 'click', async () => {
   if (busy || !initialized || disposed || installedDir) return;
@@ -331,12 +381,9 @@ on(retryButton, 'click', () => {
   if (retryAction === 'refresh-install') return finishInstall();
   if (retryAction === 'initialize') return initialize();
   if (retryAction === 'launch') return launch(installedDir);
-  $('#readyMessage').textContent = $('#progressMessage').textContent;
-  showView('readyView', 'ready');
-  if (retryAction === 'install') {
-    $('#pathOptions').open = true;
-    pathInput.focus();
-  } else updateButton.focus();
+  if (retryAction === 'install') return install(true);
+  if (retryAction === 'update') return update(true);
+  return initialize();
 });
 
 on(document, 'visibilitychange', () => {
@@ -353,6 +400,7 @@ function dispose() {
 }
 on(window, 'pagehide', dispose);
 on(window, 'beforeunload', dispose);
+renderSourceSelection();
 initialize();
 
 async function refreshBackend() {

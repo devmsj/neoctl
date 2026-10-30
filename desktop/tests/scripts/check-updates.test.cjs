@@ -4,6 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../src-tauri/src/check-updates.cjs'), 'utf8');
+const registry = require('../../src-tauri/src/registry-sources.cjs');
 const semver = require('../../resources/node/node_modules/npm/node_modules/semver');
 async function run({ webLatest = '1.0.0', requirement = '^2.0.0', coreVersions = ['2.0.0'], currentWeb = '0.9.0', currentCore = '1.9.0' } = {}) {
   let text = '';
@@ -12,11 +13,15 @@ async function run({ webLatest = '1.0.0', requirement = '^2.0.0', coreVersions =
     require(name) {
       if (name === 'node:fs') return { readFileSync(file) { if (String(file).endsWith('current.json')) throw Error('no version pointer'); if (!currentWeb) throw Error('missing'); reads += 1; return JSON.stringify({ version: reads === 1 ? currentWeb : currentCore }); } };
       if (name === 'node:path') return path;
+      if (name === './registry-sources.cjs') return { ...registry, transport: () => context.fetch };
       return semver;
     },
     process: { execPath: 'C:/private/node.exe', argv: ['node', 'C:/private'], exitCode: 0 },
     AbortSignal,
-    fetch: async (url) => ({ ok: true, json: async () => url.endsWith('/latest') ? { version: webLatest, dependencies: { neoctl: requirement } } : { versions: Object.fromEntries(coreVersions.map(version => [version, {}])) } }),
+    fetch: async (url) => ({ ok: true, json: async () => {
+      const pkg = (name, version) => ({ name, version, dist: { integrity: 'sha512-test', tarball: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` } });
+      return url.endsWith('/latest') ? { ...pkg('neoctl-web', webLatest), dependencies: { neoctl: requirement } } : /^.*\/neoctl\/[^/]+$/.test(url) ? pkg('neoctl', requirement) : { versions: Object.fromEntries(coreVersions.map(version => [version, pkg('neoctl', version)])) };
+    } }),
     console: { log: value => { text = value; }, error: value => { text = value; } },
   };
   vm.runInNewContext(source, context);

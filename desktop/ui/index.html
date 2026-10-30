@@ -87,7 +87,7 @@
         <p id="progressMessage" class="status-message" role="status" aria-live="polite">正在准备安装…</p>
         <div class="progress-copy"><span id="progressStage">准备中</span><strong id="progressPercent" data-tooltip="按实际执行阶段计算，不代表下载字节比例">0%</strong></div>
         <div id="progressTrack" class="progress-track" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressBar"></div></div>
-        <div class="progress-meta"><button id="retryButton" class="primary-action" type="button" data-tooltip="返回并重试" aria-label="返回并重试" hidden><span id="retryLabel">重新尝试</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button></div>
+        <div class="progress-meta"><button id="retryButton" class="primary-action" type="button" data-tooltip="返回并重试" aria-label="返回并重试" hidden><span id="retryLabel">重新尝试</span><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></button><button id="backButton" class="text-button" type="button" hidden>返回</button></div>
       </section>
       <section id="launchView" class="view" aria-labelledby="launchTitle" hidden>
         <div class="phase-heading"><h2 id="launchTitle" tabindex="-1">正在开启工作台</h2></div>
@@ -98,6 +98,14 @@
       <summary data-tooltip="展开或收起运行日志">运行记录<svg class="icon disclosure" aria-hidden="true"><use href="#i-chevron" /></svg></summary>
       <div class="log-surface"><pre id="installLog" tabindex="0" aria-label="运行日志"></pre></div>
     </details>
+    <div id="sourceControls" class="source-controls" hidden>
+      <button id="sourceButton" class="text-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="sourceMenu"><svg class="icon" aria-hidden="true"><use href="#i-update"/></svg><span id="sourceLabel">下载源 · 自动</span></button>
+      <div id="sourceMenu" class="source-menu" role="menu" aria-label="下载源" hidden>
+        <button id="sourceAuto" role="menuitemradio" aria-checked="true" type="button">自动<span class="source-check" aria-hidden="true">✓</span></button>
+        <button id="sourceTaobao" role="menuitemradio" aria-checked="false" type="button">镜像源<span class="source-check" aria-hidden="true">✓</span></button>
+        <button id="sourceOfficial" role="menuitemradio" aria-checked="false" type="button">官方源<span class="source-check" aria-hidden="true">✓</span></button>
+      </div>
+    </div>
   </main>
 </body>
 </html>

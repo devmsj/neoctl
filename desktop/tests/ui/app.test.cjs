@@ -73,11 +73,16 @@ test('install event estimate, bounded values, collapsed logs, failure and retry'
   const before = h.element('progressMessage').textContent;
   h.events.get('install-progress')({ payload: { percent: 10, message: 'late' } });
   assert.equal(h.element('progressMessage').textContent, before);
-  h.element('retryButton').emit('click');
+  await h.element('sourceTaobao').emit('click');
+  await h.element('retryButton').emit('click');
+  assert.equal(h.document.body.dataset.state, 'error');
+  assert.equal(h.calls.filter(c => c.name === 'install_runtime').length, 2);
+  assert.equal(h.calls.findLast(c => c.name === 'install_runtime').args.registryMode, 'taobao');
+  assert.equal(h.calls.findLast(c => c.name === 'install_runtime').args.retry, true);
+  assert.equal(h.calls.filter(c => c.name === 'inspect_install_directory').length, 2, 'retry skips only frontend preflight; native verifies managed root');
+  await h.element('backButton').emit('click');
   assert.equal(h.document.body.dataset.state, 'ready');
   assert.equal(h.document.activeElement.id, 'installPath');
-  assert.equal(h.element('pathOptions').open, true);
-  assert.match(h.element('readyMessage').textContent, /重试.*更改目录/);
   assert.match(h.element('installLog').textContent, /network failure/);
 });
 test('successful install refreshes final path before launch, blocks duplicate submit', async () => {
@@ -224,8 +229,11 @@ test('failed startup-page update returns to installed controls without reinstall
   assert.match(h.element('versionStatus').textContent, /Web .*Core/);
   await h.element('updateRuntime').emit('click');
   assert.equal(h.element('progressTitle').textContent, '更新未完成');
-  assert.equal(h.element('retryButton').attributes['aria-label'], '返回启动页');
+  assert.equal(h.element('retryButton').attributes['aria-label'], '重试更新');
   await h.element('retryButton').emit('click');
+  assert.equal(h.calls.filter(c => c.name === 'update_runtime').length, 2);
+  assert.equal(h.calls.findLast(c => c.name === 'update_runtime').args.retry, true);
+  await h.element('backButton').emit('click');
   assert.equal(h.document.body.dataset.state, 'ready');
   assert.equal(h.element('updateRuntime').disabled, false);
   assert.equal(h.element('installButton').hidden, true);

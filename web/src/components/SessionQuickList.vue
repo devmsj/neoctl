@@ -1,25 +1,28 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import LoadingRing from './LoadingRing.vue'
+import { sessionKey as key, sessionDateGroup, mergeSessionActivity } from '../session-recency.mjs'
 const props = defineProps({ loadPage: Function, current: Object, runningIds: { type: Array, default: () => [] }, pendingKey: String, revision: Number, admin: Boolean, managing: Boolean })
 const emit = defineEmits(['open', 'context', 'new', 'manage'])
 const rows = ref([]), query = ref(''), searchOpen = ref(false), searchInput = ref(null), searchArea = ref(null), searchToggle = ref(null)
 const viewport = ref(null), sentinel = ref(null), loading = ref(false), error = ref(''), finished = ref(false)
 let page = 0, version = 0, controller, observer, resizeObserver, debounce, disposed = false
-const key = item => `${item?.ownerUsername || ''}:${item?.sessionId || ''}`
+const calendarDay = ref(new Date().toDateString())
+let calendarTimer
+// Persist the active row's activity locally when changing sessions, without refetching pages.
+watch(() => [key(props.current), props.current?.updatedAt, props.current?.title], () => {
+  rows.value = mergeSessionActivity(rows.value, props.current)
+}, { immediate: true })
 const currentKey = computed(() => key(props.current))
 const visibleRows = computed(() => {
-  const items = rows.value.map(item => key(item) === currentKey.value ? { ...item, title: props.current.title || item.title } : item)
+  const items = [...mergeSessionActivity(rows.value, props.current)]
   // Empty/new sessions are not yet in the persisted list. Keep the active one reachable.
   if (props.current?.sessionId && !query.value.trim() && !items.some(item => key(item) === currentKey.value)) items.unshift(props.current)
   return items
 })
 function group(item) {
-  const value = Date.parse(item.updatedAt || item.createdAt || '')
-  if (!Number.isFinite(value)) return key(item) === currentKey.value ? '今天' : '更早'
-  const today = new Date(); today.setHours(0, 0, 0, 0)
-  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
-  return value >= +today ? '今天' : value >= +yesterday ? '昨天' : '更早'
+  calendarDay.value // Midnight invalidates grouping even without incoming activity.
+  return sessionDateGroup(item)
 }
 function nearEnd() {
   const el = viewport.value
@@ -36,7 +39,7 @@ async function more() {
     if (disposed || request !== version) return
     const batch = Array.isArray(result.sessions) ? result.sessions : []
     const known = new Set(rows.value.map(key))
-    rows.value.push(...batch.filter(item => { const id = key(item); if (known.has(id)) return false; known.add(id); return true }))
+    rows.value = mergeSessionActivity([...rows.value, ...batch.filter(item => { const id = key(item); if (known.has(id)) return false; known.add(id); return true })], props.current)
     page = nextPage
     finished.value = batch.length === 0 || (Number.isFinite(result.totalPages) ? nextPage >= result.totalPages : nextPage * 10 >= (result.total ?? batch.length)) || (result.page && result.page < nextPage)
   } catch (cause) {
@@ -68,13 +71,14 @@ function closeSearch(event) {
 }
 function clearSearch() { if (!searchOpen.value && query.value) query.value = '' }
 onMounted(() => {
+  calendarTimer = setInterval(() => { calendarDay.value = new Date().toDateString() }, 30000)
   document.addEventListener('click', closeSearch)
   observer = new IntersectionObserver(checkEnd, { root: viewport.value, rootMargin: '0px 0px 36px 0px' })
   observer.observe(sentinel.value)
   resizeObserver = new ResizeObserver(checkEnd); resizeObserver.observe(viewport.value)
   void more()
 })
-onBeforeUnmount(() => { document.removeEventListener('click', closeSearch); disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
+onBeforeUnmount(() => { clearInterval(calendarTimer); document.removeEventListener('click', closeSearch); disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
 </script>
 
 <template>

@@ -30,7 +30,7 @@ fn check(app: &AppHandle) -> Result<String, String> {
         }
     }
     command
-        .args(["-e", include_str!("check-updates.cjs"), &root])
+        .args(["-e", concat!(include_str!("registry-sources.cjs"), "\n", include_str!("check-updates.cjs")), &root])
         .current_dir(resource)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

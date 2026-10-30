@@ -93,3 +93,19 @@ test("cache hits still reject unsafe transcript hardlinks", async () => temporar
   fs.linkSync(file, path.join(rootDir, "hardlink"));
   await assert.rejects(SessionStore.list({ rootDir }), /Unsafe session transcript/);
 }));
+
+test("snapshots expose last durable activity without treating resume as new activity", async t => temporary(async rootDir => {
+  const file = write(rootDir, [entry("message", { message: createTextMessage("user", "yesterday") })]);
+  const yesterday = new Date(Date.now() - 86400000);
+  fs.utimesSync(file, yesterday, yesterday);
+  const store = await SessionStore.open({ rootDir, sessionId: "one", agentId: "main", resume: true });
+  assert.ok(Math.abs(Date.parse(store.snapshot().updatedAt!) - +yesterday) < 5);
+  assert.equal(store.snapshot().updatedAt, store.snapshot().updatedAt);
+  const stat = t.mock.method(fs, "statSync", () => { throw Error("snapshot must not stat"); });
+  store.snapshot(); store.snapshot(); stat.mock.restore();
+  store.recordMessage(createTextMessage("user", "today"));
+  const updated = store.snapshot().updatedAt!;
+  assert.ok(Date.parse(updated) > +yesterday);
+  const reopened = await SessionStore.open({ rootDir, sessionId: "one", agentId: "main", resume: true });
+  assert.ok(Math.abs(Date.parse(reopened.snapshot().updatedAt!) - Date.parse(updated)) < 100);
+}));
