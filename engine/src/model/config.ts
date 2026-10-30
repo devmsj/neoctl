@@ -1,6 +1,6 @@
 import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
 
-export type ModelProviderName = "openai";
+export type ModelProviderName = "openai" | "anthropic";
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
 
 export interface BaseModelProviderConfig {
@@ -24,14 +24,18 @@ export interface OpenAIProviderConfig extends BaseModelProviderConfig {
   };
 }
 
-export type ModelProviderConfig = OpenAIProviderConfig;
+export interface AnthropicProviderConfig extends BaseModelProviderConfig {
+  provider: "anthropic";
+  anthropic?: { apiVersion?: string; thinkingBudgetTokens?: number };
+}
+export type ModelProviderConfig = OpenAIProviderConfig | AnthropicProviderConfig;
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.6";
 
 export function readModelProviderConfig(env: NodeJS.ProcessEnv = process.env): ModelProviderConfig | undefined {
   const provider = parseProvider(env.MODEL_PROVIDER ?? "openai");
 
-  return readOpenAIProviderConfig(env);
+  return provider === "anthropic" ? readAnthropicProviderConfig(env) : readOpenAIProviderConfig(env);
 }
 
 export function parseReasoning(
@@ -52,7 +56,7 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
   const apiKey = firstNonEmpty(env.OPENAI_API_KEY);
   if (!apiKey) return undefined;
 
-  const endpoint = parseOpenAIEndpoint(firstNonEmpty(env.OPENAI_ENDPOINT));
+  // The application uses Responses only; ignore legacy OPENAI_ENDPOINT values.
 
   return {
     provider: "openai",
@@ -67,7 +71,27 @@ function readOpenAIProviderConfig(env: NodeJS.ProcessEnv): OpenAIProviderConfig 
       firstNonEmpty(env.MODEL_REASONING_EFFORT),
       firstNonEmpty(env.MODEL_REASONING_SUMMARY),
     ),
-    openai: endpoint ? { endpoint } : undefined,
+    openai: { endpoint: "responses" },
+  };
+}
+
+function readAnthropicProviderConfig(env: NodeJS.ProcessEnv): AnthropicProviderConfig | undefined {
+  const apiKey = firstNonEmpty(env.ANTHROPIC_API_KEY);
+  if (!apiKey) return undefined;
+  return {
+    provider: "anthropic", apiKey,
+    baseUrl: firstNonEmpty(env.ANTHROPIC_BASE_URL),
+    model: firstNonEmpty(env.ANTHROPIC_MODEL) ?? "claude-sonnet-4-6",
+    timeoutMs: parseNumber(firstNonEmpty(env.MODEL_TIMEOUT_MS)),
+    streamIdleTimeoutMs: parseNumber(firstNonEmpty(env.MODEL_STREAM_IDLE_TIMEOUT_MS)),
+    maxRetries: parseNumber(firstNonEmpty(env.MODEL_MAX_RETRIES)),
+    defaultMaxOutputTokens: parseNumber(firstNonEmpty(env.MODEL_MAX_OUTPUT_TOKENS)),
+    // OpenAI summary settings can remain configured when switching providers.
+    defaultReasoning: parseReasoning(firstNonEmpty(env.MODEL_REASONING_EFFORT)),
+    anthropic: {
+      apiVersion: firstNonEmpty(env.ANTHROPIC_API_VERSION),
+      thinkingBudgetTokens: parseNumber(firstNonEmpty(env.ANTHROPIC_THINKING_BUDGET_TOKENS)),
+    },
   };
 }
 
@@ -82,13 +106,8 @@ function parseReasoningSummary(value: string | undefined): ReasoningSummary | un
 }
 
 function parseProvider(value: string): ModelProviderName {
-  if (value === "openai") return value;
+  if (value === "openai" || value === "anthropic") return value;
   throw new Error(`Unsupported MODEL_PROVIDER: ${value}`);
-}
-
-function parseOpenAIEndpoint(value: string | undefined): OpenAIEndpointPreference | undefined {
-  if (value === "responses" || value === "chat" || value === "auto") return value;
-  return undefined;
 }
 
 function parseNumber(value: string | undefined): number | undefined {

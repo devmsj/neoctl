@@ -1,5 +1,6 @@
 import type { ModelGateway } from "./model-gateway.js";
 import { NotConfiguredModelGateway } from "./model-gateway.js";
+import { AnthropicAdapter } from "./anthropic-adapter.js";
 import { OpenAIAdapter } from "./openai-adapter.js";
 import type { ModelProviderConfig, OpenAIProviderConfig } from "./config.js";
 import { readModelProviderConfig } from "./config.js";
@@ -7,6 +8,10 @@ import { readModelProviderConfig } from "./config.js";
 export function createModelGatewayFromConfig(config: ModelProviderConfig | undefined): ModelGateway {
   if (!config) return new NotConfiguredModelGateway();
 
+  if (config.provider === "anthropic") return new AnthropicAdapter({
+    ...config, apiVersion: config.anthropic?.apiVersion,
+    thinkingBudgetTokens: config.anthropic?.thinkingBudgetTokens,
+  });
   return createOpenAIGateway(config);
 }
 
@@ -19,7 +24,7 @@ function createOpenAIGateway(config: OpenAIProviderConfig): ModelGateway {
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     model: config.model,
-    endpoint: config.openai?.endpoint,
+    endpoint: "responses",
     timeoutMs: config.timeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
     maxRetries: config.maxRetries,

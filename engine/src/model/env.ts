@@ -23,7 +23,6 @@ MODEL_PROVIDER=openai
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_BASE_URL=https://api.openai.com
 # OPENAI_MODEL=gpt-5.6
-# OPENAI_ENDPOINT=auto
 
 # Shared model runtime settings
 # MODEL_REASONING_EFFORT=high

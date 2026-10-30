@@ -29,6 +29,8 @@ export * from "./model/communication-logger.js";
 export * from "./model/context-window.js";
 export * from "./model/provider-factory.js";
 export * from "./model/openai-adapter.js";
+export * from "./model/anthropic-adapter.js";
+export * from "./model/anthropic-mapper.js";
 export * from "./model/openai-responses-adapter.js";
 export * from "./model/provider-adapter.js";
 export * from "./model/credentials.js";

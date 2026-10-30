@@ -32,7 +32,6 @@ MODEL_PROVIDER=openai
 OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://api.openai.com
 OPENAI_MODEL=your-model-name
-OPENAI_ENDPOINT=auto
 ```
 
 将密钥和模型名替换为实际值。`NEO_ENV_FILE` 可指定其他配置文件。

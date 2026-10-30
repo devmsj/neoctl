@@ -48,7 +48,8 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     this.credentialProvider =
       options.credentialProvider ??
       (options.apiKey ? new StaticCredentialProvider(options.apiKey) : new EnvCredentialProvider(options.apiKeyEnvName ?? "OPENAI_API_KEY"));
-    this.baseUrl = stripTrailingSlash(options.baseUrl ?? "https://api.openai.com");
+    // Accept an origin or one trailing /v1; do not repair repeated /v1 segments.
+    this.baseUrl = stripTrailingSlash(options.baseUrl ?? "https://api.openai.com").replace(/\/v1$/, "");
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {

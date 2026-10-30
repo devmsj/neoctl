@@ -3060,11 +3060,11 @@ async function persistModelCommandSettings(
 }
 
 function currentModelProvider(): LoginProviderName {
-  return "openai";
+  return parseLoginProvider(process.env.MODEL_PROVIDER) ?? "openai";
 }
 
-function modelEnvKeyForProvider(_provider: LoginProviderName): "OPENAI_MODEL" {
-  return "OPENAI_MODEL";
+function modelEnvKeyForProvider(provider: LoginProviderName): "OPENAI_MODEL" | "ANTHROPIC_MODEL" {
+  return provider === "anthropic" ? "ANTHROPIC_MODEL" : "OPENAI_MODEL";
 }
 
 function envValueForReasoning(reasoning: ReasoningConfig | null | undefined): string | undefined {
@@ -3436,23 +3436,27 @@ function restoredHistoryLines(runtime: ReplRuntime): Omit<UiLine, "id">[] {
   return lines;
 }
 
-const LOGIN_PROVIDERS: LoginProviderName[] = ["openai"];
+const LOGIN_PROVIDERS: LoginProviderName[] = ["openai", "anthropic"];
 
 const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "reasoningEffort", label: "Reasoning effort", envKey: "MODEL_REASONING_EFFORT", scope: "shared", options: ["", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] },
-  { key: "reasoningSummary", label: "Reasoning summary", envKey: "MODEL_REASONING_SUMMARY", scope: "shared", options: ["", "auto", "concise", "detailed"] },
-  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared" },
+  { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "Leave empty for server default" },
   { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
 ];
 
 const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]> = {
+  anthropic: [
+    { key: "apiKey", label: "API / CPA key", envKey: "ANTHROPIC_API_KEY", scope: "provider", required: true, secret: true },
+    { key: "baseUrl", label: "Base URL", envKey: "ANTHROPIC_BASE_URL", scope: "provider", placeholder: "https://api.anthropic.com" },
+    { key: "model", label: "Model", envKey: "ANTHROPIC_MODEL", scope: "provider", required: true, placeholder: "claude-sonnet-4-6" },
+    ...SHARED_LOGIN_FIELDS.map(field => field.key === "reasoningEffort" ? { ...field, options: ["", "off", "none", "low", "medium", "high", "xhigh", "max"] } : field.key === "maxOutputTokens" ? { ...field, placeholder: "8192" } : field),
+  ],
   openai: [
     { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
     { key: "baseUrl", label: "Base URL", envKey: "OPENAI_BASE_URL", scope: "provider", placeholder: "https://api.openai.com" },
     { key: "model", label: "Model", envKey: "OPENAI_MODEL", scope: "provider", required: true, placeholder: "gpt-5.6" },
-    { key: "endpoint", label: "Endpoint", envKey: "OPENAI_ENDPOINT", scope: "provider", placeholder: "auto", options: ["auto", "responses", "chat"] },
     ...SHARED_LOGIN_FIELDS,
   ],
 };
@@ -3798,9 +3802,6 @@ function validateLoginForm(state: LoginFormState): string | undefined {
     const value = state.values[fieldKey]?.trim();
     if (value && !Number.isFinite(Number(value))) return `${fieldKey} must be a number.`;
   }
-  if (state.provider === "openai" && state.values.endpoint === "chat" && state.values.reasoningSummary?.trim()) {
-    return "Reasoning summary requires the Responses API endpoint.";
-  }
   return undefined;
 }
 
@@ -3831,25 +3832,24 @@ function loginValuesForProvider(provider: LoginProviderName, env: Record<string,
   }
   if (!values.baseUrl) values.baseUrl = defaultBaseUrlForLoginProvider(provider);
   if (!values.model) values.model = defaultModelForLoginProvider(provider);
-  if (provider === "openai" && !values.endpoint) values.endpoint = "auto";
   return values;
 }
 
 function parseLoginProvider(value: string | undefined): LoginProviderName | undefined {
-  if (value === "openai") return value;
+  if (value === "openai" || value === "anthropic") return value;
   return undefined;
 }
 
-function guessLoginProvider(_env: Record<string, string>): LoginProviderName {
-  return "openai";
+function guessLoginProvider(env: Record<string, string>): LoginProviderName {
+  return env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY ? "anthropic" : currentModelProvider();
 }
 
-function defaultBaseUrlForLoginProvider(_provider: LoginProviderName): string {
-  return "https://api.openai.com";
+function defaultBaseUrlForLoginProvider(provider: LoginProviderName): string {
+  return provider === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com";
 }
 
-function defaultModelForLoginProvider(_provider: LoginProviderName): string {
-  return "gpt-5.6";
+function defaultModelForLoginProvider(provider: LoginProviderName): string {
+  return provider === "anthropic" ? "claude-sonnet-4-6" : "gpt-5.6";
 }
 
 function loginFormViewHeight(state: LoginFormState): number {
@@ -3948,15 +3948,17 @@ function updateEnvContent(content: string, updates: Record<string, string | unde
     const grouped = groupLoginEnvEntries(missing);
     appendEnvGroup(updatedLines, "# Neo active provider", grouped.active);
     appendEnvGroup(updatedLines, "# OpenAI provider settings", grouped.openai);
+    appendEnvGroup(updatedLines, "# Anthropic provider settings", grouped.anthropic);
     appendEnvGroup(updatedLines, "# Shared model runtime settings", grouped.shared);
   }
   return `${updatedLines.join("\n").replace(/\n*$/u, "")}\n`;
 }
 
-function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "shared", Array<[string, string]>> {
+function groupLoginEnvEntries(entries: Array<[string, string]>): Record<"active" | "openai" | "anthropic" | "shared", Array<[string, string]>> {
   return {
     active: entries.filter(([key]) => key === "MODEL_PROVIDER"),
     openai: entries.filter(([key]) => key.startsWith("OPENAI_")),
+    anthropic: entries.filter(([key]) => key.startsWith("ANTHROPIC_")),
     shared: entries.filter(([key]) => key.startsWith("MODEL_") && key !== "MODEL_PROVIDER"),
   };
 }
