@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+import { trackSettingsGateway } from "../model/settings-sync.js";
+import { observeModelSettings } from "../model/settings-sync.js";
+import { modelProtocols } from "../model/context-window.js";
+import { isReasoningEffort } from "../model/model-gateway.js";
+import { ModelSettingsStore, compositionModelConfig } from "../model/settings-store.js";
+import { registerCompositionTools } from "../model/composition-runtime.js";
+import { handleModelSettingsRequest } from "./model-settings-api.js";
 import { paginateSessions, sessionPageOptions, type SessionPageOptions } from "../session/session-pagination.js";
 import {applyToolInputChanges, type ToolInputChange} from "../model/tool-input-stream.js";
 import { toolActivity, type ToolActivity } from "./tool-activity.js";
@@ -526,9 +533,13 @@ function parseWebArgs(argv: string[]): WebServerOptions {
 
 export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): Promise<WebRuntime> {
   const envLoad = loadDefaultDotEnvFiles({ override: true });
-  const modelConfig = readModelProviderConfig(process.env);
+  loadModelCatalog();
+  const settingsStore = new ModelSettingsStore();
+  const appliedSettings = settingsStore.read()?.applied;
+  const settingsRevisions = new WeakMap<QueryEngine, string>();
+  const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision);
   const taskStore = new TaskStore();
   const pluginCatalog = normalizeWebRuntimePlugins(options.externalPlugins);
   const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
@@ -556,6 +567,8 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   registerTool(searchTool, { source: "builtin" });
   registerTool(createLoadImageTool(), { source: "builtin" });
   if (modelConfig?.provider === "openai") registerTool(createOpenAIImageGenerationTool(), { source: "builtin" });
+  if (appliedSettings) registerCompositionTools(tools, appliedSettings.composition, appliedSettings.connections);
+  for (const name of ["web_search", "image_create"]) { const tool = tools.get(name); if (tool) catalogTool(tool, { source: "builtin" }); }
   registerTool(planTool, { source: "builtin" });
   const frameworkFeedback = new FrameworkFeedbackStore(options.frameworkFeedbackDir);
   registerTool(createFrameworkFeedbackTool(frameworkFeedback), { source: "builtin" });
@@ -594,6 +607,28 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     tools,
     contextManagerFactory: (cwd) => new DefaultContextManager({ cwd }),
     acquireTurnResources: (engine) => acquireWebPluginTurn(runtime, true, engine),
+    beforeQuery: (engine) => {
+      const applied = settingsStore.read()?.applied;
+      const captureTools = () => {
+        const snapshot = tools.clone();
+        compositionToolSnapshots.set(engine, snapshot);
+        const session = engine.snapshot().session?.sessionId;
+        if (session) sessionCompositionSnapshots.set(session, new WeakRef(engine));
+      };
+      if (!applied) { if (!compositionToolSnapshots.has(engine)) captureTools(); return; }
+      const revision = applied.revision;
+      if (settingsRevisions.get(engine) === revision) return;
+      const config = compositionModelConfig(applied.composition, applied.connections);
+      if (!config) return;
+      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision);
+      engine.setModelProvider({ modelGateway: gateway, model: config.model, reasoning: config.defaultReasoning });
+      effectiveModelProviders.set(engine, config.provider);
+      registerCompositionTools(tools, applied.composition, applied.connections);
+      for (const name of ["web_search", "image_create"]) { const tool = tools.get(name); if (tool) catalogTool(tool, { source: "builtin" }); }
+      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config.defaultReasoning;
+      settingsRevisions.set(engine, revision);
+      captureTools();
+    },
     refreshTools: (engine) => {
       if (runtime) refreshRuntimePlugins(runtime, engine);
       if (!options.resolveGlobalToolOverrides) return;
@@ -715,6 +750,9 @@ function resolveRuntimePluginOverrides(runtime: WebRuntime, engine: QueryEngine,
 }
 
 /** Children acquire independent tools/prompts; they never refresh the parent's in-flight context. */
+const compositionToolSnapshots = new WeakMap<QueryEngine, ToolRegistry>();
+const sessionCompositionSnapshots = new Map<string, WeakRef<QueryEngine>>();
+
 function acquireWebPluginTurn(runtime: WebRuntime, main: boolean, engine = runtime.engine, sessionId?: string): import("../core/query.js").TurnResources {
   if (main) { refreshRuntimePlugins(runtime, engine); refreshGlobalToolOverrides(runtime); }
   const support = runtime.pluginSupport;
@@ -723,6 +761,16 @@ function acquireWebPluginTurn(runtime: WebRuntime, main: boolean, engine = runti
   try {
     const catalog = normalizeWebRuntimePlugins(snapshot?.plugins ?? support?.resolveCatalog?.() ?? support?.catalog);
     const tools = buildPluginRegistry(runtime, catalog, overrides);
+    const owner = sessionId ? sessionCompositionSnapshots.get(sessionId)?.deref() : engine;
+    const frozen = owner ? compositionToolSnapshots.get(owner)?.clone() : undefined;
+    if (sessionId && !owner) sessionCompositionSnapshots.delete(sessionId);
+    if (frozen) for (const name of ["web_search", "image_create"]) {
+      const enabled = tools.isEnabled(name) ?? frozen.isEnabled(name);
+      frozen.setEnabled(name, true);
+      const tool = frozen.get(name);
+      tools.unregister(name);
+      if (tool) { tools.register(tool); if (enabled === false) tools.setEnabled(name, false); }
+    }
     return { tools, release: snapshot?.release ?? (() => {}),
       ...(!main ? { promptSections: [...(support?.basePromptSections ?? []), ...activeWebRuntimePlugins(catalog, overrides).flatMap(plugin => plugin.promptSections ?? [])] } : {}) };
   } catch (error) { snapshot?.release(); throw error; }
@@ -1109,7 +1157,13 @@ export class WebRepl {
     finally { if (this.demoMessageQueues.get(engine) === pending) this.demoMessageQueues.delete(engine); }
   }
 
+  private readonly settingsListener = () => {
+    if (this.deletingSession) return;
+    this.runtime.engine.refreshModelConfigurationIfIdle();
+    for (const subscriber of this.subscribers) this.send(subscriber, "sync", this.snapshot());
+  };
   constructor(private runtime: WebRuntime, private readonly demoOptions: { wait?: DemoWait } = {}) {
+    observeModelSettings(this.settingsListener);
     const lineId = { current: 0 };
     this.lines = initialLines(runtime, lineId);
     this.lineId = lineId.current;
@@ -1192,6 +1246,7 @@ export class WebRepl {
 
   snapshot(includeCatalog = false) {
     const backgroundTasks = this.backgroundTasks();
+    this.runtime.engine.refreshModelConfigurationIfIdle?.();
     const engineSnapshot = this.runtime.engine.snapshot();
     const pendingSessionSettings = this.runtime.engine.getPendingSessionSettings?.() ?? {};
     // Include retained reasoning alongside a queued model. Explicit undefined is
@@ -1217,11 +1272,11 @@ export class WebRepl {
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
       runningSessionIds: this.runningSessionIds(),
       session: engineSnapshot.session,
-      modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning },
+      modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning, imageInput: findModelMetadata(engineSnapshot.model || "")?.imageInput },
       pendingSessionSettings,
       fastMode: this.runtime.engine.isFastMode(),
       appPrompt: this.runtime.engine.getAppPrompt(),
-      catalog: includeCatalog ? webCatalog(this.runtime) : undefined,
+      catalog: webCatalog(this.runtime),
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
     };
   }
@@ -1738,11 +1793,14 @@ export class WebRepl {
     if (typeof model !== "string" || !model.trim() || model.length > 256 || /[\s\x00-\x1f]/u.test(model.trim())) {
       return actionFailure("MODEL_INVALID", "invalid model");
     }
-    if (reasoning !== undefined && (typeof reasoning !== "string" || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"].includes(reasoning))) {
+    if (reasoning !== undefined && (typeof reasoning !== "string" || !(reasoning === "default" || reasoning === "off" || isReasoningEffort(reasoning)))) {
       return actionFailure("MODEL_INVALID", "invalid reasoning effort");
     }
     const engine = this.runtime.engine;
     const nextModel = model.trim();
+    const provider = effectiveModelProviders.get(engine) ?? readModelProviderConfig()?.provider;
+    const metadata = (engine.getActiveModelCatalog?.() ?? loadModelCatalog()).models.find(m => m.modelIds.includes(nextModel));
+    if (metadata && provider && !modelProtocols(metadata).includes(provider)) return actionFailure("MODEL_INVALID", "模型不支持当前主连接接口");
     const current = { ...engine.getModelSettings(), ...engine.getPendingSessionSettings() };
     const argument = reasoning as ModelReasoningArgument | undefined;
     const validationError = validateModelReasoningArgument(nextModel, argument);
@@ -3118,6 +3176,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       return sendJson(res, await repl.resumeSession(String(body.sessionId ?? "")));
     }
     if (req.method === "POST" && url.pathname === "/api/sessions/new") return sendJson(res, await repl.newSession());
+    if (await handleModelSettingsRequest(req, res, url)) return;
     if (req.method === "GET" && url.pathname === "/api/login") return sendJson(res, repl.loginForm(url.searchParams.get("provider") ?? undefined));
     if (req.method === "POST" && url.pathname === "/api/login") {
       const body = await readJsonBody<{ provider?: string; values?: Record<string, string> }>(req);
@@ -3224,12 +3283,18 @@ function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
   });
 }
 
+const effectiveModelProviders = new WeakMap<QueryEngine, "openai" | "anthropic">();
 function webCatalog(runtime: WebRuntime) {
-  const modelIds = [...new Set(loadModelCatalog().models.flatMap((model) => model.modelIds.length ? model.modelIds : [model.id]))].sort((left, right) => left.localeCompare(right));
+  const catalog = runtime.engine.getActiveModelCatalog?.() ?? loadModelCatalog();
+  const provider = effectiveModelProviders.get(runtime.engine) ?? readModelProviderConfig()?.provider;
+  const models = catalog.models.filter(model => !provider || modelProtocols(model).includes(provider as "openai" | "anthropic"));
+  const modelIds = [...new Set(models.flatMap(model => model.modelIds.length ? model.modelIds : [model.id]))].sort((left, right) => left.localeCompare(right, "en", { numeric: true }));
   return {
     commands: replCommandDefinitions,
     modelIds,
-    modelReasoning: Object.fromEntries(modelIds.map(model => [model, reasoningEffortsForModel(model) ?? []])),
+    modelProtocol: provider,
+    modelReasoning: Object.fromEntries(modelIds.map(model => [model, reasoningEffortsForModel(model, catalog) ?? []])),
+    modelReasoningEnabled: Object.fromEntries(models.flatMap(m => m.modelIds.map(id => [id, m.reasoning !== false]))),
     reasoning: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"],
     envPath: runtime.envPath,
   };

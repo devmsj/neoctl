@@ -17,7 +17,7 @@ const menu = ref(null)
 const open = ref(false)
 const menuStyle = ref({})
 function positionMenu(event) {
-  if (!open.value || (event && menu.value?.contains(event.target))) return
+  if (!open.value || (event?.target instanceof Node && menu.value?.contains(event.target))) return
   const rect = root.value?.getBoundingClientRect()
   if (!rect) return
   const margin = 8, gap = 6

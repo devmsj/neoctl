@@ -132,13 +132,13 @@ function configureThinking(body: Block, request: ModelRequest, options: Anthropi
     if (alwaysOn) anthropicInvalid(`Thinking cannot be disabled on ${model}`);
     body.thinking = { type: "disabled" };
   } else if (effort) {
-    if (effort === "minimal") anthropicInvalid("Claude has no 'minimal' effort; select low, medium, or high");
+    if (effort === "minimal" && !metadata?.reasoningEfforts?.includes(effort)) anthropicInvalid("Claude has no 'minimal' effort; select low, medium, or high");
     if (adaptive) {
       body.thinking = { type: "adaptive" };
       body.output_config = { effort };
     } else {
-      if (effort === "xhigh" || effort === "max") anthropicInvalid("Legacy Claude thinking supports low/medium/high budget mapping only");
-      const budget = options.thinkingBudgetTokens ?? Math.min(({ low: 1024, medium: 2048, high: 4096 }[effort]), maxTokens - 1);
+      if (!["low", "medium", "high"].includes(effort)) anthropicInvalid("Legacy Claude thinking supports low/medium/high budget mapping only");
+      const budget = options.thinkingBudgetTokens ?? Math.min(({ low: 1024, medium: 2048, high: 4096 }[effort as "low" | "medium" | "high"]), maxTokens - 1);
       if (!Number.isSafeInteger(budget) || budget! < 1024 || budget! >= maxTokens) anthropicInvalid("Claude thinking budget must be >=1024 and less than max_tokens; raise MODEL_MAX_OUTPUT_TOKENS or set ANTHROPIC_THINKING_BUDGET_TOKENS");
       body.thinking = { type: "enabled", budget_tokens: budget };
     }

@@ -16,6 +16,8 @@ export interface WebSearchToolOutput {
 
 export interface CreateSearchToolOptions {
   provider?: SearchProvider;
+  resolveProvider?: (name?: string) => SearchProvider;
+  description?: string;
 }
 
 const DEFAULT_NUM_RESULTS = 5;
@@ -27,7 +29,7 @@ const MAX_TEXT_CHARS = 1600;
 export function createSearchTool(options: CreateSearchToolOptions = {}): Tool<WebSearchToolInput> {
   return {
     name: "web_search",
-    description: "Search the web for current information. OpenAI Responses web search is the default provider and inherits the configured OpenAI URL and API key. Use Exa's official MCP service only when OpenAI search is unavailable or only partially available for the requested queries. Use file_search for local workspace text lookup. Do not explicitly select Exa unless the user requests it or OpenAI has failed or returned incomplete availability.",
+    description: options.description ?? "Search the web for current information. OpenAI Responses web search is the default provider and inherits the configured OpenAI URL and API key. Use Exa's official MCP service only when OpenAI search is unavailable or only partially available for the requested queries. Use file_search for local workspace text lookup. Do not explicitly select Exa unless the user requests it or OpenAI has failed or returned incomplete availability.",
     inputSchema: {
       type: "object",
       properties: {
@@ -87,7 +89,7 @@ export function createSearchTool(options: CreateSearchToolOptions = {}): Tool<We
     async call(input, context, callOptions): Promise<ToolResult> {
       let provider: SearchProvider;
       try {
-        provider = options.provider ?? createSearchProvider({ provider: input.provider }, process.env);
+        provider = options.resolveProvider ? options.resolveProvider(input.provider) : options.provider ?? createSearchProvider({ provider: input.provider }, process.env);
       } catch (error) {
         return {
           ok: false,

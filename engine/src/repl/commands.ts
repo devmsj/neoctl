@@ -1,4 +1,5 @@
-export type ModelReasoningArgument = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | "off";
+import { isReasoningEffort } from "../model/model-gateway.js";
+export type ModelReasoningArgument = string;
 
 export type ReplCommand =
   | { type: "help" }
@@ -81,7 +82,7 @@ export function isValidReplCommandLine(line: string): boolean {
 }
 
 export function isModelReasoningArgument(value: string): value is ModelReasoningArgument {
-  return value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "default" || value === "off";
+  return value === "default" || value === "off" || isReasoningEffort(value);
 }
 
 function parseSecretCommand(argument: string): Extract<ReplCommand, { type: "secret" }> {
@@ -132,7 +133,7 @@ function parseModelCommand(argument: string): Extract<ReplCommand, { type: "mode
 
   if (tokens.length === 1) {
     const [single] = tokens;
-    return isModelReasoningArgument(single)
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default", "off"].includes(single)
       ? { type: "model", reasoning: single }
       : { type: "model", model: single };
   }

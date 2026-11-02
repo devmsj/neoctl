@@ -41,6 +41,7 @@ import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
 import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
 import NeoSelect from './components/NeoSelect.vue'
+import ModelSettings from './components/ModelSettings.vue'
 import FrameworkFeedbackList from './components/FrameworkFeedbackList.vue'
 import PromptConfigEditor from './components/PromptConfigEditor.vue'
 import StreamingMarkdown from './components/StreamingMarkdown.vue'
@@ -260,7 +261,7 @@ const state = reactive({
   compactSaving: false,
   modelModalOpen: false,
   modelDraft: '',
-  reasoningDraft: 'default',
+  reasoningDraft: 'high',
   modelSearch: '',
   modelError: '',
   modelSaving: false,
@@ -528,16 +529,16 @@ const selectedModelSettings = computed(() => {
 const modelName = computed(() => formatModelDisplay(selectedModelSettings.value.model))
 const selectedFastMode = computed(() => state.fastModeMutating ? state.fastModeDraft : (state.pendingSessionSettings.fastMode ?? state.fastMode))
 const modelOptions = computed(() => [...new Set([
-  selectedModelSettings.value.model, state.modelSettings?.model, ...(state.catalog.modelIds || []),
+  ...(state.catalog.modelIds || []),
 ].filter(Boolean))])
 const filteredModelOptions = computed(() => modelOptions.value.filter(model => model.toLowerCase().includes(state.modelSearch.trim().toLowerCase())))
 const modelReasoningOptions = computed(() => {
   const supported = state.catalog.modelReasoning?.[state.modelDraft] || []
-  const available = state.catalog.reasoning || []
-  return ['default', 'off', ...supported.filter(effort => available.includes(effort) && effort !== 'default' && effort !== 'off')]
+  return supported.filter(effort => effort !== 'default' && effort !== 'off')
 })
 watch(() => state.modelDraft, () => {
-  if (!modelReasoningOptions.value.includes(state.reasoningDraft)) state.reasoningDraft = 'default'
+  if (modelReasoningOptions.value.length && !modelReasoningOptions.value.includes(state.reasoningDraft)) state.modelError = '请选择此模型支持的推理强度'
+  else state.modelError = ''
 })
 const contextPercent = computed(() => {
   const ratio = state.status?.metrics?.contextUsageRatio
@@ -1976,8 +1977,7 @@ async function compressSession() {
 function openModelModal() {
   state.modelDraft = selectedModelSettings.value.model || modelOptions.value[0] || ''
   const reasoning = selectedModelSettings.value.reasoning
-  state.reasoningDraft = reasoning === null ? 'off' : (reasoning?.effort || 'default')
-  if (!modelReasoningOptions.value.includes(state.reasoningDraft)) state.reasoningDraft = 'default'
+  state.reasoningDraft = reasoning?.effort || 'high'
   state.modelSearch = ''
   state.modelError = ''
   state.modelModalOpen = true
@@ -1994,7 +1994,10 @@ async function saveSessionModel() {
   if (state.modelSaving || !state.modelDraft) return
   const request = captureSessionSetting('/api/session-model')
   const model = state.modelDraft
-  const reasoning = modelReasoningOptions.value.includes(state.reasoningDraft) ? state.reasoningDraft : 'default'
+  if (!modelOptions.value.includes(model)) { state.modelError = '当前模型不支持此接口，请重新选择'; return }
+  if (!modelReasoningOptions.value.length && state.catalog.modelReasoningEnabled?.[model] !== false) { state.modelError = '请先在模型库配置可用推理档位'; return }
+  if (modelReasoningOptions.value.length && !modelReasoningOptions.value.includes(state.reasoningDraft)) { state.modelError = '请选择此模型支持的推理强度'; return }
+  const reasoning = modelReasoningOptions.value.length ? state.reasoningDraft : 'off'
   state.modelSaving = true
   state.modelError = ''
   try {
@@ -2427,28 +2430,9 @@ function toggleSessionManager() {
 
 async function openLogin(provider, providerOnly = false, page = '') {
   if (!await leaveAppearance()) return
-  if (!canConfigureModel.value) { state.activePanel = 'settings'; state.settingsPage = ''; return }
   state.activePanel = 'settings'
-  if (state.loginSaving || state.loginLoading) return
-  state.loginLoading = true
-  state.settingsPage = providerOnly ? 'model' : page
-  const previousProvider = state.login?.provider
-  const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
-  try {
-    const res = await appFetch(runtimeUrl(`/api/login${query}`))
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok || body?.error || body?.ok === false) throw requestError(body, res.status)
-    state.login = body
-    loginProvider.value = body.provider
-    Object.keys(loginValues).forEach((key) => delete loginValues[key])
-    Object.assign(loginValues, body.values || {})
-    if (!providerOnly) await Promise.all([fetchCpaState(), fetchGlobalPlugins(), fetchGlobalTools()])
-  } catch (error) {
-    if (previousProvider) loginProvider.value = previousProvider
-    notifyActionError(error, '加载模型配置失败')
-  } finally {
-    state.loginLoading = false
-  }
+  state.settingsPage = canConfigureModel.value ? (providerOnly ? 'model' : page) : ''
+  if (!providerOnly) await Promise.all([fetchCpaState(), fetchGlobalPlugins(), fetchGlobalTools()])
 }
 
 async function onPromptConfigSaved(result) {
@@ -4193,6 +4177,7 @@ async function uploadFiles(files) {
     for (const [index, file] of files.entries()) {
       const actualImageType = await imageFileType(file)
       if (actualImageType) {
+        if (state.modelSettings?.imageInput === false) throw new Error("当前主模型未启用图片输入，请先在模型库确认能力或切换模型。");
         const payload = await fileToDataUrlPayload(new File([file], file.name, { type: actualImageType }), (fraction) => progress.update(index, fraction * 0.9))
         const label = `[img#${++state.attachmentCounter}]`
         if (payload.compressionRate > 0) compressionRates.push(payload.compressionRate)
@@ -5652,34 +5637,9 @@ function createMobileSession() {
                 <h2 tabindex="-1">{{ settingsTitles[state.settingsPage] }}</h2>
               </div>
             </div>
-            <div v-if="state.settingsPage === 'model' && !state.login" class="empty-state" role="status" aria-label="正在加载配置"><LoadingRing /></div>
+
             <div class="settings-form">
-            <form v-if="state.settingsPage === 'model' && state.login" class="settings-card settings-model-card" aria-label="模型配置" @submit.prevent="saveLogin">
-              <header class="settings-card-head"><strong>模型</strong><SettingsSaveButton label="保存模型配置" :busy="state.loginSaving" :disabled="state.loginLoading" /></header>
-              <div class="settings-field-grid">
-                <label class="settings-field">
-                  <span>供应商</span>
-                  <NeoSelect v-model="loginProvider" :options="loginProviderOptions(state.login.providers)" :disabled="state.loginLoading || state.loginSaving" aria-label="供应商" @change="switchLoginProvider" />
-                </label>
-                <label v-for="field in state.login.fields" :key="field.key" class="settings-field">
-                  <span>{{ loginFieldLabel(field.label) }}<i v-if="field.required" class="settings-required" aria-label="必填"></i></span>
-                  <NeoSelect
-                    v-if="field.options"
-                    v-model="loginValues[field.key]"
-                    :options="loginFieldOptions(field)"
-                    :aria-label="loginFieldLabel(field.label)"
-                    :disabled="state.loginLoading || state.loginSaving"
-                  />
-                  <input
-                    v-else
-                    v-model="loginValues[field.key]"
-                    :type="field.secret ? 'password' : 'text'"
-                    :disabled="state.loginLoading || state.loginSaving"
-                    :placeholder="field.placeholder || `请输入${loginFieldLabel(field.label)}`"
-                  />
-                </label>
-              </div>
-            </form>
+            <ModelSettings v-if="state.settingsPage === 'model'" :endpoint="runtimeUrl('/api/model-settings')" @applied="fetchState()" @metadata-saved="fetchState()" />
 
             <form v-if="state.settingsPage === 'cpa'" class="settings-card settings-cpa-card" aria-label="CPA 配置" @submit.prevent="saveCpaConfig">
               <header class="settings-card-head"><strong>CPA</strong><SettingsSaveButton label="保存 CPA 配置" :busy="state.cpaSaving" :disabled="!state.cpaConfig.loaded" /></header>
@@ -5904,7 +5864,7 @@ function createMobileSession() {
             <legend>推理强度</legend>
             <label v-for="effort in modelReasoningOptions" :key="effort" :class="{ selected: state.reasoningDraft === effort }">
               <input v-model="state.reasoningDraft" type="radio" name="session-reasoning" :value="effort" />
-              <span>{{ effort === 'default' ? '默认' : effort === 'off' ? '关闭' : effort }}</span>
+              <span>{{ effort }}</span>
             </label>
           </fieldset>
           <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>

@@ -25,7 +25,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "postinstall": "node scripts/verify-ripgrep.cjs --skip-git",
+    "postinstall": "node scripts/verify-ripgrep.cjs --skip-git && node scripts/initialize-model-metadata.mjs",
     "vendor:rg": "node scripts/install-ripgrep.cjs",
     "vendor:rg:all": "node scripts/install-ripgrep.cjs --all",
     "verify:rg": "node scripts/verify-ripgrep.cjs",

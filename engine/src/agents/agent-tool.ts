@@ -205,7 +205,7 @@ async function runSyncAgent(input: {
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
-      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId),
+      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId, input.context.options?.modelGateway),
       ...task.executionOptions,
       runGeneration,
       onInitialMessages: (messages) => {
@@ -442,7 +442,7 @@ async function runAsyncAgentLifecycle(input: {
       prompt: input.input.prompt,
       parentContext: input.context,
       parentMessages: input.fork ? input.context.messages : undefined,
-      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId),
+      dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId, input.context.options?.modelGateway),
       ...(task?.executionOptions ?? effectiveExecutionOptions(input.input, input.agent, input.context)),
       runGeneration,
       abortSignal: wall?.signal ?? input.abortController.signal,
@@ -605,9 +605,9 @@ function effectiveExecutionOptions(input: AgentToolInput, agent: AgentDefinition
   };
 }
 
-function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string): RunAgentDependencies {
+function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string, gateway?: ModelGateway): RunAgentDependencies {
   return {
-    modelGateway: runtime.modelGateway,
+    modelGateway: gateway ?? runtime.modelGateway,
     tools: runtime.tools,
     acquireTurnResources: runtime.acquireTurnResources ? () => runtime.acquireTurnResources!(sessionId) : undefined,
     contextManager: runtime.contextManager,

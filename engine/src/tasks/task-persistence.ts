@@ -1,3 +1,4 @@
+import { isReasoningEffort } from "../model/model-gateway.js";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -90,7 +91,7 @@ function execution(value: any): LocalAgentTask["executionOptions"] {
   if (!object(value)) return undefined;
   const numeric = (v: any) => Object.fromEntries(["maxTurns", "maxTokens", "temperature"].filter((k) => typeof v[k] === "number" && Number.isFinite(v[k])).map((k) => [k, v[k]]));
   const reasoning = value.reasoning === null ? null : object(value.reasoning) ? {
-    effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value.reasoning.effort) ? value.reasoning.effort : undefined,
+    effort: isReasoningEffort(value.reasoning.effort) ? value.reasoning.effort : undefined,
     summary: ["auto", "concise", "detailed"].includes(value.reasoning.summary) ? value.reasoning.summary : undefined,
   } : undefined;
   return { cwd: typeof value.cwd === "string" ? value.cwd : undefined, model: typeof value.model === "string" ? value.model : undefined,

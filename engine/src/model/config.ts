@@ -1,4 +1,4 @@
-import type { ReasoningConfig, ReasoningEffort } from "./model-gateway.js";
+import { isReasoningEffort, type ReasoningConfig, type ReasoningEffort } from "./model-gateway.js";
 
 export type ModelProviderName = "openai" | "anthropic";
 export type ReasoningSummary = NonNullable<ReasoningConfig["summary"]>;
@@ -96,7 +96,7 @@ function readAnthropicProviderConfig(env: NodeJS.ProcessEnv): AnthropicProviderC
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
-  if (value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") return value;
+  if (isReasoningEffort(value)) return value;
   return undefined;
 }
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { trackSettingsGateway } from "../model/settings-sync.js";
+import { ModelSettingsStore, compositionModelConfig } from "../model/settings-store.js";
+import { registerCompositionTools } from "../model/composition-runtime.js";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -366,9 +369,13 @@ async function buildSkillCatalogPromptSection(catalog: SkillCatalog): Promise<{ 
 
 async function createRuntime(options: { queryOrigin?: string } = {}): Promise<ReplRuntime> {
   const envLoad = loadDefaultDotEnvFiles({ override: true });
-  const modelConfig = readModelProviderConfig(process.env);
+  loadModelCatalog();
+  const settingsStore = new ModelSettingsStore();
+  const appliedSettings = settingsStore.read()?.applied;
+  const settingsRevisions = new WeakMap<QueryEngine, string>();
+  const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = new LoggingModelGateway(createModelGatewayFromProcessEnv(process.env), communicationLogger);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision);
   const taskStore = new TaskStore();
   const agentActivityStore = new AgentActivityStore();
   const secretStore = await SecretStore.open();
@@ -393,6 +400,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   tools.register(searchTool);
   tools.register(createLoadImageTool());
   if (modelConfig?.provider === "openai") tools.register(createOpenAIImageGenerationTool());
+  if (appliedSettings) registerCompositionTools(tools, appliedSettings.composition, appliedSettings.connections);
   tools.register(planTool);
   tools.register(createFrameworkFeedbackTool());
   for (const tool of createSecretTools()) tools.register(tool);
@@ -423,6 +431,19 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
     reasoning: modelConfig?.defaultReasoning,
     modelGateway,
     tools,
+    beforeQuery: (engine) => {
+      const applied = settingsStore.read()?.applied;
+      if (!applied) return;
+      const revision = applied.revision;
+      if (settingsRevisions.get(engine) === revision) return;
+      const config = compositionModelConfig(applied.composition, applied.connections);
+      if (!config) return;
+      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision);
+      engine.setModelProvider({ modelGateway: gateway, model: config.model, reasoning: config.defaultReasoning });
+      registerCompositionTools(tools, applied.composition, applied.connections);
+      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config.defaultReasoning;
+      settingsRevisions.set(engine, revision);
+    },
     contextManager: new SkillCatalogContextManager(skills),
     canUseTool: createSkillAwareCanUseTool(skills),
     secrets: secretStore,

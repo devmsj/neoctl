@@ -1,3 +1,4 @@
+import { agentSettingsBoundary } from "../model/agent-settings-boundary.js";
 import path from "node:path";
 import type { TimingRecord, TimingClock } from "./query-timing.js";
 import { DefaultContextManager, type ContextManager } from "../context/context-manager.js";
@@ -96,12 +97,13 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   let lastUsage: ModelUsage | undefined;
   let totalToolUseCount = 0;
 
+  const settingsBoundary = agentSettingsBoundary(options.dependencies.modelGateway);
   const dependencies = {
-    acquireTurnResources: options.dependencies.acquireTurnResources ? () => {
-      const resources = options.dependencies.acquireTurnResources!();
-      try { return { ...resources, tools: resolveAgentTools(resources.tools, options.agent) }; }
+    acquireTurnResources: () => {
+      const resources = options.dependencies.acquireTurnResources?.() ?? { tools: options.dependencies.tools, release() {} };
+      try { return { ...resources, tools: resolveAgentTools(settingsBoundary.tools(resources.tools), options.agent) }; }
       catch (error) { resources.release(); throw error; }
-    } : undefined,
+    },
     timingClock: options.dependencies.timingClock,
     onTiming: (record: TimingRecord) => childSession?.recordTiming(record, options.runGeneration),
     modelGateway: options.dependencies.modelGateway,
@@ -131,7 +133,9 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
     maxTurns?: number,
     toolChoice?: { type: "function"; name: string },
   ): AsyncGenerator<AgentEvent, void, void> {
-    for await (const event of query(messages, dependencies, {
+    settingsBoundary.start();
+    try { for await (const event of query(messages, dependencies, {
+      beforeTurn: () => settingsBoundary.beforeTurn(),
       agentId: options.agentId,
       model: resolveAgentModel(options.agent, options.model),
       reasoning: options.reasoning,
@@ -160,7 +164,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       if (event.type === "usage") lastUsage = event.usage;
       if (event.type === "terminal") terminalReason = event.reason;
       yield event;
-    }
+    } } finally { settingsBoundary.stop(); }
   };
 
   yield* runQuery(initialMessages, resolveSubagentMaxTurns(options));

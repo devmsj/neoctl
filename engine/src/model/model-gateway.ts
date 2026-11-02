@@ -11,7 +11,11 @@ export interface ModelUsage {
   raw?: unknown;
 }
 
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ReasoningEffort = string;
+/** API enum values, not display labels or control commands. */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value) && !["default", "off"].includes(value);
+}
 
 export interface ReasoningConfig {
   effort?: ReasoningEffort;

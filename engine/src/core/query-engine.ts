@@ -1,3 +1,5 @@
+import { registerSettingsConsumer } from "../model/settings-sync.js";
+import { loadModelCatalog, type ModelCatalog } from "../model/context-window.js";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -54,6 +56,7 @@ export interface QueryEngineOptions {
   contextManagerFactory?: (cwd?: string) => ContextManager;
   additionalPromptSections?: readonly PromptSection[];
   /** Synchronous refresh at a safe model-turn boundary or idle preview. */
+  beforeQuery?: (engine: QueryEngine) => void;
   refreshTools?: (engine: QueryEngine) => void;
   acquireTurnResources?: (engine: QueryEngine) => import("./query.js").TurnResources;
   compactor?: Compactor;
@@ -165,7 +168,9 @@ export class QueryEngine {
   private pendingRequestContext?: Record<string, unknown>;
   private pendingRequestContextConsumed?: () => void;
 
+  private activeModelCatalog?: ModelCatalog;
   constructor(private readonly options: QueryEngineOptions) {
+    if (options.beforeQuery) registerSettingsConsumer(this);
     this.agentId = options.agentId ?? "main";
     this.currentModel = options.model;
     this.currentReasoning = cloneReasoningConfig(options.reasoning);
@@ -336,6 +341,7 @@ export class QueryEngine {
     try {
       await this.settingsMutation;
       await this.initialize();
+      if (!this.simulation) { this.options.beforeQuery?.(this); this.activeModelCatalog = loadModelCatalog(); }
       const recovery = isResumableExecution(this.executionState) ? this.executionState : undefined;
       if (text === undefined && !recovery) throw new Error("No interrupted execution to continue");
       queryAccepted = true;
@@ -413,9 +419,17 @@ export class QueryEngine {
         } : undefined,
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
-        beforeTurn: (messages, started, delta) => {
-          if (!this.simulation) this.options.refreshTools?.(this);
-          return this.consumeSessionSettings(messages, started, compactor, delta);
+        beforeTurn: async (messages, started, delta) => {
+          const gateway = this.currentModelGateway;
+          if (!this.simulation) {
+            this.options.beforeQuery?.(this);
+            this.activeModelCatalog = loadModelCatalog();
+            this.options.refreshTools?.(this);
+          }
+          const update = await this.consumeSessionSettings(messages, started, compactor, delta);
+          return gateway !== this.currentModelGateway
+            ? { ...update, modelGateway: this.currentModelGateway, settings: { ...update?.settings, model: this.currentModel, reasoning: cloneReasoningConfig(this.currentReasoning) } }
+            : update;
         },
       };
 
@@ -623,6 +637,15 @@ export class QueryEngine {
     this.currentReasoning = settings.reasoning === null ? null : cloneReasoningConfig(settings.reasoning);
   }
 
+  isModelConfigurationBusy(): boolean { return this.running; }
+  getActiveModelCatalog(): ModelCatalog { return this.activeModelCatalog ?? loadModelCatalog(); }
+  refreshModelConfigurationIfIdle(): void {
+    if (!this.running && !this.simulation) {
+      this.options.beforeQuery?.(this);
+      this.activeModelCatalog = loadModelCatalog();
+    }
+  }
+
   getModelSettings(): { model?: string; reasoning?: ReasoningConfig | null } {
     return {
       model: this.currentModel,
@@ -759,7 +782,7 @@ export class QueryEngine {
 
   /** Keep the durable history untouched until the entire result can be committed. */
   private cancellableCompactor(signal?: AbortSignal): Compactor {
-    const source = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+    const source = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor({ stream: request => this.currentModelGateway.stream(request) });
     const run = (messages: readonly Message[], budget: ContextBudgetOptions = {}, kind: "compact" | "manualCompact" | "reactiveCompact" = "compact", error?: Error) => {
       const started: CompactionStarted = reason => {
         signal?.throwIfAborted();

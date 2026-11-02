@@ -47,6 +47,7 @@ export interface SessionSettingsPatch {
 }
 
 export interface BeforeTurnUpdate {
+  modelGateway?: ModelGateway;
   /** Only changed fields; never a full settings snapshot. */
   settings?: SessionSettingsPatch;
   compaction?: CompactionResult;
@@ -221,6 +222,11 @@ async function* queryLoop(
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
     const update = yield* withCompactionProgress((started, delta) => options.beforeTurn?.(state.messages, started, delta), options.abortSignal);
+    if (update?.modelGateway && update.modelGateway !== dependencies.modelGateway) {
+      dependencies.modelGateway = update.modelGateway;
+      state.previousResponseId = undefined;
+      state.modelInputMessages = undefined;
+    }
     const settings = update?.settings;
     if (settings) {
       if (Object.hasOwn(settings, "model")) {

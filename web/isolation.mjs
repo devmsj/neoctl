@@ -297,6 +297,15 @@ export async function createIsolationMode({ dataRoot, workspaceRoot, pluginDir, 
           });
           jsonReply(res, result); return true;
         }
+        if (url.pathname === '/api/model-settings' || url.pathname.startsWith('/api/model-settings/')) {
+          if (!isAdmin) throw httpError(403, '仅超管可配置模型');
+          const admin = await userContext(session.user);
+          const previousUrl = req.url;
+          req.url = url.pathname + '?tabId=global-model-config';
+          try { await core.handleWebRequest(req, res, admin.router); }
+          finally { req.url = previousUrl; }
+          return true;
+        }
         if (url.pathname === '/api/login') {
           if (!isAdmin) throw httpError(403, '仅超管可配置模型');
           if (!['GET', 'POST'].includes(req.method)) throw httpError(405, '请求方法无效');

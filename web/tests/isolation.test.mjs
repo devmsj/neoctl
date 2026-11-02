@@ -314,7 +314,15 @@ test('memory is authenticated and admin model settings reach existing, new and r
   process.env.NEO_ENV_FILE = path.join(f.root, 'model.env');
   await fs.writeFile(process.env.NEO_ENV_FILE, 'MODEL_PROVIDER=openai\nOPENAI_API_KEY=test-key-only\nOPENAI_MODEL=model-before\n');
   const admin = await f.login('Admin'), alice = await f.login('Alice'), bob = await f.login('Bob');
-  for (const route of ['/api/memory', '/api/login']) assert.equal((await f.request(route)).status, 401);
+  for (const route of ['/api/memory', '/api/login', '/api/model-settings']) assert.equal((await f.request(route)).status, 401);
+  assert.equal((await f.request('/api/model-settings', alice)).status, 403);
+  assert.equal((await f.request('/api/model-settings/apply', alice, {})).status, 403);
+  for (const route of ['/api/model-settings/metadata', '/api/model-settings/connection', '/api/model-settings/test']) assert.equal((await f.request(route, alice, {})).status, 403);
+  const modelSettings = await f.request('/api/model-settings', admin);
+  assert.equal(modelSettings.status, 200);
+  const archived = await modelSettings.json();
+  assert.ok(Array.isArray(archived.connections));
+  assert.ok(archived.connections.every(connection => !Object.hasOwn(connection, 'key')));
   for (const cookie of [alice, admin]) assert.equal((await (await f.request('/api/memory', cookie)).json()).current.rss, 123456);
   assert.equal((await f.request('/api/login', alice)).status, 403);
   assert.equal((await f.request('/api/login', alice, { provider: 'openai', values: {} })).status, 403);

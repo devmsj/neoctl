@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ReasoningEffort } from "./model-gateway.js";
+import { isReasoningEffort, type ReasoningEffort } from "./model-gateway.js";
+import { modelSettingsHome, atomicJson, locked } from "./settings-files.js";
 
 export interface ModelMetadata {
   id: string;
   provider: string;
+  protocols?: Array<"openai" | "anthropic">;
   modelIds: string[];
   contextWindowTokens?: number;
   maxOutputTokens?: number;
@@ -56,6 +58,11 @@ export function findModelMetadata(model: string, catalog: ModelCatalog = loadMod
   return catalog.models.find((entry) => entry.modelIds.some((modelId) => normalizeModelId(modelId) === requestedModel));
 }
 
+export function modelProtocols(model: ModelMetadata): Array<"openai" | "anthropic"> {
+  // Migration only: preserve legacy provider classification until explicitly edited.
+  return model.protocols ?? [model.provider === "anthropic" ? "anthropic" : "openai"];
+}
+
 export function supportsImageInput(model: string | undefined, catalog: ModelCatalog = loadModelCatalog()): boolean | undefined {
   if (!model) return undefined;
   return findModelMetadata(model, catalog)?.imageInput;
@@ -75,11 +82,60 @@ export function supportsReasoningEffort(model: string | undefined, effort: Reaso
 }
 
 export function loadModelCatalog(): ModelCatalog {
-  if (cachedCatalog) return cachedCatalog;
-  const file = findModelCatalogFile();
+  const file = path.join(modelSettingsHome(), "model-metadata.json");
+  if (!initializedFiles.has(file)) {
+    const bundled = JSON.parse(readFileSync(findModelCatalogFile(), "utf8")) as ModelCatalog;
+    locked(file, () => {
+      const catalog = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as ModelCatalog : structuredClone(bundled);
+      validateModelCatalog(catalog);
+      const before = JSON.stringify(catalog);
+      let changed = !existsSync(file);
+      for (const entry of bundled.models) if (!catalog.models.some(m => m.id.toLowerCase() === entry.id.toLowerCase())) {
+        // Preserve user-owned aliases when a later bundled entry is introduced.
+        const aliases = new Set(catalog.models.flatMap(m => m.modelIds.map(id => id.toLowerCase())));
+        const modelIds = entry.modelIds.filter(id => !aliases.has(id.toLowerCase()));
+        if (modelIds.length) catalog.models.push({ ...entry, modelIds });
+        changed = true;
+      }
+      catalog.models.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
+      validateModelCatalog(catalog);
+      if (changed || JSON.stringify(catalog) !== before) atomicJson(file, catalog);
+    });
+    initializedFiles.add(file);
+  }
+  // Read the small file on access: other CLI/Web processes observe saves immediately.
   const raw = readFileSync(file, "utf8");
-  cachedCatalog = JSON.parse(raw) as ModelCatalog;
-  return cachedCatalog;
+  if (cachedSource !== file + raw) { const parsed = JSON.parse(raw) as ModelCatalog; validateModelCatalog(parsed); cachedCatalog = parsed; cachedSource = file + raw; }
+  return cachedCatalog!;
+}
+const initializedFiles = new Set<string>();
+let cachedSource = "";
+export function validateModelCatalog(catalog: ModelCatalog): void {
+  if (!catalog || !Array.isArray(catalog.models)) throw new Error("模型元数据格式无效。");
+  const ids = new Set<string>(), aliases = new Set<string>();
+  for (const m of catalog.models) {
+    if (!m || typeof m.id !== "string" || !m.id.trim() || ids.has(m.id.toLowerCase())) throw new Error("模型 ID 为空或重复。");
+    ids.add(m.id.toLowerCase());
+    if (m.protocols !== undefined && (!Array.isArray(m.protocols) || !m.protocols.length || m.protocols.some(p => !["openai", "anthropic"].includes(p)) || new Set(m.protocols).size !== m.protocols.length)) throw new Error("模型兼容接口无效。");
+    if (typeof m.provider !== "string" || !Array.isArray(m.modelIds) || !m.modelIds.length) throw new Error("模型缺少供应商或别名。");
+    for (const alias of m.modelIds) { if (typeof alias !== "string" || !alias.trim() || aliases.has(alias.trim().toLowerCase())) throw new Error("模型别名为空或重复。"); aliases.add(alias.trim().toLowerCase()); }
+    for (const key of ["contextWindowTokens", "maxOutputTokens"] as const) if (m[key] !== undefined && (!Number.isSafeInteger(m[key]) || m[key]! <= 0)) throw new Error("模型 Token 限制须为正整数。");
+    for (const key of ["reasoning", "imageInput"] as const) if (m[key] !== undefined && typeof m[key] !== "boolean") throw new Error("模型能力须为布尔值。");
+    if (m.reasoningEfforts !== undefined && (!Array.isArray(m.reasoningEfforts) || m.reasoningEfforts.some(v => !isReasoningEffort(v)) || new Set(m.reasoningEfforts).size !== m.reasoningEfforts.length)) throw new Error("推理档位无效。");
+  }
+}
+export function saveModelMetadata(entry: ModelMetadata, original?: ModelMetadata): ModelCatalog {
+  loadModelCatalog();
+  const file = path.join(modelSettingsHome(), "model-metadata.json");
+  return locked(file, () => {
+    const catalog = JSON.parse(readFileSync(file, "utf8")) as ModelCatalog;
+    const index = catalog.models.findIndex(m => m.id === entry.id);
+    if (index >= 0 && (!original || JSON.stringify(catalog.models[index]) !== JSON.stringify(original))) throw new Error("模型条目已更新，请重新加载后保存。");
+    if (index < 0 && original) throw new Error("模型条目已不存在。");
+    if (index >= 0) catalog.models[index] = entry; else catalog.models.push(entry);
+    validateModelCatalog(catalog); catalog.models.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
+    atomicJson(file, catalog); cachedSource = ""; return catalog;
+  });
 }
 
 function findModelCatalogFile(): string {
