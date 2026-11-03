@@ -146,7 +146,9 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   if (turns[turns.length - 1]!.role === "assistant") anthropicInvalid("Claude assistant prefill is not supported; append a user turn");
   const body: Block = { model, max_tokens: maxTokens, messages: turns, stream: request.stream !== false };
   if (system.length) body.system = system;
-  const tools = request.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+  // Standard Claude streaming buffers each parameter value. Request fragments
+  // for every client tool; previews remain non-executable until final validation.
+  const tools = request.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema, ...(request.stream !== false ? { eager_input_streaming: true } : {}) }));
   if (tools.length) {
     body.tools = tools;
     const choice = request.toolChoice;

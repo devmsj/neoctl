@@ -26,7 +26,7 @@ test('administrator quick switch uses the selected owner rather than the previou
 })
 
 test('sidebar paginates independently, preserves manager navigation and switches only after loading', async () => {
-  const requests = [], errors = []
+  const requests = [], errors = [], listedAt = Date.now()
   let release, delay = false
   const gate = new Promise(resolve => { release = resolve })
   const snapshot = id => observabilitySnapshot({session:{sessionId:id,title:id==='obs-session'?'Current':'Session '+id},lines:[{id:1,kind:'user',text:'Content '+id}],runningSessionIds:['s2']})
@@ -35,7 +35,7 @@ test('sidebar paginates independently, preserves manager navigation and switches
     if (url.pathname === '/api/sessions') {
       const page = Number(url.searchParams.get('page')), size = Number(url.searchParams.get('pageSize')), q = url.searchParams.get('q') || ''
       requests.push({page,size,q})
-      const all=Array.from({length:25},(_,i)=>({sessionId:i?'s'+i:'obs-session',title:i?'Session s'+i:'Current',updatedAt:new Date().toISOString()}))
+      const all=Array.from({length:25},(_,i)=>({sessionId:i?'s'+i:'obs-session',title:i?'Session s'+i:'Current',updatedAt:new Date(listedAt-i*1000).toISOString()}))
       const matches=all.filter(item=>!q||item.title.includes(q))
       await route.fulfill({json:{sessions:matches.slice((page-1)*size,page*size),total:matches.length,totalCount:25,totalPages:Math.max(1,Math.ceil(matches.length/size)),page}});return true
     }

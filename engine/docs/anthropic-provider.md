@@ -30,7 +30,7 @@ Web and REPL `/login` expose `anthropic`, its credentials, base URL, model and c
 ## Supported behavior
 
 - Text, multi-turn history and system instructions.
-- Client tools, parallel tool calls, tool failures and subsequent results.
+- Client tools, parallel tool calls, tool failures and subsequent results. Streaming requests set `eager_input_streaming: true` on every client tool so large parameter values arrive during generation rather than after server-side buffering. No legacy beta header is added. Partial JSON feeds previews only; execution still waits for the complete, validated response and never runs truncated tool batches.
 - SSE streaming, fragmented UTF-8 / JSON, ping events and cumulative usage.
 - Non-streaming responses; cancellation and idle timeout; transient retries before output only.
 - Image **input** in the existing neo image pipeline. No Claude image generation implementation or tool registration.

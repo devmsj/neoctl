@@ -79,6 +79,7 @@ export type SessionDisplayEntry =
   | { type: "compact"; createdAt: string; reason?: CompactionReason; report?: CompactionReport };
 
 export interface SessionStoreSnapshot {
+  createdAt?: string;
   updatedAt?: string;
   sessionId: string;
   sessionDir: string;
@@ -115,6 +116,7 @@ export class SessionStore {
   readonly toolResultMemory: ToolResultMemory;
   private writeFailed = false;
   private updatedAt?: string;
+  private createdAt?: string;
   private execution?: ExecutionState;
   private readonly agentId: string;
   private readonly resumedMessages: Message[];
@@ -186,7 +188,9 @@ export class SessionStore {
     checkSessionPaths(sessionDir);
     const store = new SessionStore(options, sessionId, loaded);
     // Read once on open, never stat the transcript on streaming snapshots.
-    store.updatedAt = (await fsp.stat(transcriptPath).catch(() => undefined))?.mtime.toISOString();
+    const transcriptStat = await fsp.stat(transcriptPath).catch(() => undefined);
+    store.updatedAt = transcriptStat?.mtime.toISOString();
+    store.createdAt = (transcriptStat ?? await fsp.stat(sessionDir)).birthtime.toISOString();
     return store;
   }
 
@@ -456,6 +460,7 @@ export class SessionStore {
   snapshot(): SessionStoreSnapshot {
     return {
       updatedAt: this.updatedAt,
+      createdAt: this.createdAt,
       sessionId: this.sessionId,
       sessionDir: this.sessionDir,
       transcriptPath: this.transcriptPath,

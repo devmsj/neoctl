@@ -7,13 +7,17 @@ export function sessionTimestamp(item) {
   }
   return 0
 }
-export function mergeSessionActivity(rows, current) {
-  if (!current?.sessionId) return rows
+export function sortSessionActivity(rows) {
+  if (rows.every((item, index) => !index || sessionTimestamp(rows[index - 1]) >= sessionTimestamp(item))) return rows
+  return [...rows].sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
+}
+export function mergeSessionActivity(rows, current, { insert = false } = {}) {
+  if (!current?.sessionId) return sortSessionActivity(rows)
   const index = rows.findIndex(item => sessionKey(item) === sessionKey(current))
-  if (index < 0) return rows
+  if (index < 0) return sortSessionActivity(insert ? [...rows, { ...current }] : rows)
   const previous = rows[index]
   const updatedAt = sessionTimestamp(current) > sessionTimestamp(previous) ? current.updatedAt || current.createdAt : previous.updatedAt
-  if (previous.title === (current.title || previous.title) && previous.updatedAt === updatedAt) return rows
+  if (previous.title === (current.title || previous.title) && previous.updatedAt === updatedAt) return sortSessionActivity(rows)
   return rows.map((item, i) => i === index ? { ...item, title: current.title || item.title, updatedAt } : item)
     .sort((a,b) => sessionTimestamp(b) - sessionTimestamp(a))
 }

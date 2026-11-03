@@ -1,14 +1,13 @@
-# Neo Desktop 0.1.36
+# Neo Desktop 0.1.37
 
-Includes Web 0.1.33 and Core 0.2.56.
+Includes Web 0.1.34 and Core 0.2.57.
 
-- Fix native Anthropic session-title generation and persistence. Title requests use an isolated, tool-free prompt and only provider-confirmed visible text.
-- Request readable adaptive-thinking summaries from Claude and supported reasoning summaries from OpenAI. Preserve streamed and completion-only summaries without duplicates; retain opaque signatures for protocol replay without displaying empty thinking cards.
-- End thinking explicitly before answer text or tool generation, and on completion, cancellation or errors. Deliver the stopped state immediately over SSE so completed thinking icons cannot keep animating.
-- Append a concise English UTC timestamp, precise to seconds, for every model turn including tool continuation. Persist prior timestamps unchanged and keep completed request prefixes stable, without adding cache controls.
-- Separate machine/runtime system context from user-authored workspace documents. Remove the legacy date from User context and use concise English continuation/recovery instructions.
-- Support native mid-conversation Claude system messages on documented model families, including Claude Haiku 5.5. Validate tool-result ordering and interrupted runtime tails. Unsupported models fail explicitly rather than silently changing roles; verified custom aliases can use the adapter capability override.
+- Enable fine-grained Anthropic input streaming for every client tool, including file editing/writing, terminal commands, plans and plugin tools. Preview incomplete arguments immediately; execute only after the complete response validates. Truncated, malformed, disconnected and cancelled streams never execute partial calls.
+- Retain newly persisted sessions in the sidebar after switching away, and update generated titles in place.
+- Sort loaded and live session rows consistently before date grouping. Empty sessions expose a stable creation date instead of appearing under older conversations.
+- Refresh background session titles, additions and deletions in place while the window is visible and when it regains focus, preserving loaded pagination and scroll position. Search and administrator owner scopes remain isolated.
+- Preserve the title, thinking lifecycle, concise English system-time injection and stable-prefix fixes from Desktop 0.1.36.
 
-Live validation covered Anthropic Messages, OpenAI Responses and OpenAI Chat through a compatible endpoint: title generation/reload, thinking-to-answer and thinking-to-tool flows, immediate SSE/browser animation stop, and two-turn timestamp/prefix preservation. Readable thinking remains dependent on what the upstream provider returns; missing historical summaries cannot be reconstructed from signatures.
+Live validation used Claude Haiku 5.5, Claude Opus 5.5, OpenAI Responses and OpenAI Chat through a compatible endpoint, with actual Edge DOM observation. Opus baseline buffered long parameter values until completion; enabling eager input produced continuous previews throughout generation. Regression tests cover five tool shapes, interleaved call IDs, completion/error/cancellation safety, session title retention, ordering, background refresh and search isolation.
 
 Windows x64 installer, SHA-256 checksum, source commit, and payload/version manifests are attached to this release.

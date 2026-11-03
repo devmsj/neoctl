@@ -95,6 +95,20 @@ test("parallel tool results precede runtime text and preserve error status", () 
   assert.deepEqual((body.tools as any[])[0].input_schema, tool.inputSchema);
 });
 
+test("every streamed client tool requests eager input, without changing schemas or non-streaming requests", () => {
+  const tools = ["file_edit", "file_write", "terminal_run", "plan_update", "custom_plugin"].map(name => ({ ...tool, name }));
+  for (const stream of [undefined, true, false]) {
+    const body = buildAnthropicRequest(request({ tools, stream }), { model });
+    assert.equal(body.stream, stream !== false);
+    for (const [index, mapped] of (body.tools as Record<string, unknown>[]).entries()) {
+      assert.equal(mapped.name, tools[index]!.name);
+      assert.deepEqual(mapped.input_schema, tools[index]!.inputSchema);
+      assert.equal(mapped.eager_input_streaming, stream === false ? undefined : true);
+    }
+  }
+  assert.equal(buildAnthropicRequest(request(), { model }).tools, undefined);
+});
+
 test("thinking settings are native, model-aware and validate invalid combinations", () => {
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model }).thinking, { type: "adaptive", display: "summarized" });
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model: "claude-haiku-4-5" }).thinking, { type: "enabled", budget_tokens: 4096 });

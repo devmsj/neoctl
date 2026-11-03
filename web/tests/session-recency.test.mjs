@@ -26,3 +26,14 @@ test('timestamp handles numeric values, invalid dates and createdAt fallback',()
  assert.equal(sessionTimestamp({updatedAt:now}),now)
  assert.equal(sessionDateGroup({},now),'更早')
 })
+
+test('new persisted rows are retained, deduplicated and sorted across later pages',()=>{
+ const recent={sessionId:'new',title:'Generated title',updatedAt:today}
+ let rows=mergeSessionActivity([{sessionId:'old',updatedAt:yesterday}],recent,{insert:true})
+ assert.deepEqual(rows.map(r=>r.sessionId),['new','old'])
+ rows=mergeSessionActivity(rows,{...recent,title:'Refined title'},{insert:true})
+ assert.equal(rows.length,2);assert.equal(rows[0].title,'Refined title')
+ rows=mergeSessionActivity([...rows,{sessionId:'other',updatedAt:today}],{sessionId:'old'})
+ assert.deepEqual(rows.map(r=>r.sessionId),['new','other','old'])
+ assert.equal(new Set(rows.map(r=>sessionDateGroup(r,now))).size,2)
+})

@@ -109,3 +109,14 @@ test("snapshots expose last durable activity without treating resume as new acti
   const reopened = await SessionStore.open({ rootDir, sessionId: "one", agentId: "main", resume: true });
   assert.ok(Math.abs(Date.parse(reopened.snapshot().updatedAt!) - Date.parse(updated)) < 100);
 }));
+
+test("empty sessions have a stable creation date without claiming persisted activity", async () => temporary(async rootDir => {
+  const store = await SessionStore.open({ rootDir, sessionId: "empty", agentId: "main" });
+  const snapshot = store.snapshot();
+  assert.ok(Number.isFinite(Date.parse(snapshot.createdAt!)));
+  assert.equal(snapshot.updatedAt, undefined);
+  assert.equal(store.snapshot().createdAt, snapshot.createdAt);
+  assert.equal(fs.existsSync(store.transcriptPath), false);
+  const reopened = await SessionStore.open({ rootDir, sessionId: "empty", agentId: "main", resume: true });
+  assert.equal(reopened.snapshot().createdAt, snapshot.createdAt);
+}));

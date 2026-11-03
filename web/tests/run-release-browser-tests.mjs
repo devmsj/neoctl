@@ -37,6 +37,7 @@ const files = [
   'session-loading-browser.test.mjs',
   'session-pagination-browser.test.mjs',
   'session-quick-list-browser.test.mjs',
+  'session-live-list-browser.test.mjs',
   'sidebar-actions-browser.test.mjs',
   'home-navigation-browser.test.mjs',
   'scrollbar-theme-browser.test.mjs',

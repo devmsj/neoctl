@@ -8,18 +8,16 @@ const rows = ref([]), query = ref(''), searchOpen = ref(false), searchInput = re
 const viewport = ref(null), sentinel = ref(null), loading = ref(false), error = ref(''), finished = ref(false)
 let page = 0, version = 0, controller, observer, resizeObserver, debounce, disposed = false
 const calendarDay = ref(new Date().toDateString())
-let calendarTimer
-// Persist the active row's activity locally when changing sessions, without refetching pages.
+let calendarTimer, refreshTimer, refreshing = false
+// Retain newly persisted sessions when switching away; do not inject unrelated search results.
+function mergeCurrent(items) {
+  return mergeSessionActivity(items, props.current, { insert: !query.value.trim() && !!props.current?.updatedAt })
+}
 watch(() => [key(props.current), props.current?.updatedAt, props.current?.title], () => {
-  rows.value = mergeSessionActivity(rows.value, props.current)
+  rows.value = mergeCurrent(rows.value)
 }, { immediate: true })
 const currentKey = computed(() => key(props.current))
-const visibleRows = computed(() => {
-  const items = [...mergeSessionActivity(rows.value, props.current)]
-  // Empty/new sessions are not yet in the persisted list. Keep the active one reachable.
-  if (props.current?.sessionId && !query.value.trim() && !items.some(item => key(item) === currentKey.value)) items.unshift(props.current)
-  return items
-})
+const visibleRows = computed(() => mergeSessionActivity(rows.value, props.current, { insert: !query.value.trim() }))
 function group(item) {
   calendarDay.value // Midnight invalidates grouping even without incoming activity.
   return sessionDateGroup(item)
@@ -30,7 +28,7 @@ function nearEnd() {
 }
 function checkEnd() { if (nearEnd() && !error.value) void more() }
 async function more() {
-  if (disposed || loading.value || finished.value) return
+  if (disposed || loading.value || refreshing || finished.value) return
   loading.value = true; error.value = ''
   const request = version, nextPage = page + 1
   controller = new AbortController()
@@ -39,7 +37,7 @@ async function more() {
     if (disposed || request !== version) return
     const batch = Array.isArray(result.sessions) ? result.sessions : []
     const known = new Set(rows.value.map(key))
-    rows.value = mergeSessionActivity([...rows.value, ...batch.filter(item => { const id = key(item); if (known.has(id)) return false; known.add(id); return true })], props.current)
+    rows.value = mergeCurrent([...rows.value, ...batch.filter(item => { const id = key(item); if (known.has(id)) return false; known.add(id); return true })])
     page = nextPage
     finished.value = batch.length === 0 || (Number.isFinite(result.totalPages) ? nextPage >= result.totalPages : nextPage * 10 >= (result.total ?? batch.length)) || (result.page && result.page < nextPage)
   } catch (cause) {
@@ -48,9 +46,32 @@ async function more() {
     if (request === version && !disposed) { loading.value = false; await nextTick(); checkEnd() }
   }
 }
+// Refresh loaded pages in place: background titles/new sessions must not require
+// reopening the app, and refreshing must not reset the scroll or pagination.
+async function refresh() {
+  if (disposed || document.hidden || loading.value || refreshing || !page) return
+  refreshing = true
+  const request = version, loadedPages = page
+  controller = new AbortController()
+  try {
+    const batches = []
+    let last
+    for (let n = 1; n <= loadedPages; n++) {
+      last = await props.loadPage({ page: n, pageSize: 10, q: query.value.trim(), signal: controller.signal })
+      if (disposed || request !== version) return
+      batches.push(...(last.sessions || []))
+      if (last.totalPages && n >= last.totalPages) break
+    }
+    const unique = [...new Map(batches.map(item => [key(item), item])).values()]
+    rows.value = mergeCurrent(unique)
+    page = Math.min(loadedPages, last?.totalPages || loadedPages)
+    finished.value = Number.isFinite(last?.totalPages) ? page >= last.totalPages : unique.length >= (last?.total ?? unique.length)
+  } catch { /* Keep the last usable list on transient refresh failures. */ }
+  finally { if (request === version) { refreshing = false; await nextTick(); checkEnd() } }
+}
 function reset() {
   version++; controller?.abort(); clearTimeout(debounce)
-  rows.value = []; page = 0; finished.value = false; error.value = ''; loading.value = false
+  rows.value = []; page = 0; finished.value = false; error.value = ''; loading.value = false; refreshing = false
   if (viewport.value) viewport.value.scrollTop = 0
   void more()
 }
@@ -59,7 +80,7 @@ watch(query, () => {
   loading.value = true; error.value = ''
   debounce = setTimeout(reset, 250)
 })
-watch(() => props.revision, reset)
+watch(() => [props.revision, props.admin], reset)
 async function toggleSearch() {
   searchOpen.value = !searchOpen.value
   if (searchOpen.value) { await nextTick(); searchInput.value?.focus() }
@@ -72,13 +93,16 @@ function closeSearch(event) {
 function clearSearch() { if (!searchOpen.value && query.value) query.value = '' }
 onMounted(() => {
   calendarTimer = setInterval(() => { calendarDay.value = new Date().toDateString() }, 30000)
+  refreshTimer = setInterval(refresh, 15000)
+  window.addEventListener('focus', refresh)
+  document.addEventListener('visibilitychange', refresh)
   document.addEventListener('click', closeSearch)
   observer = new IntersectionObserver(checkEnd, { root: viewport.value, rootMargin: '0px 0px 36px 0px' })
   observer.observe(sentinel.value)
   resizeObserver = new ResizeObserver(checkEnd); resizeObserver.observe(viewport.value)
   void more()
 })
-onBeforeUnmount(() => { clearInterval(calendarTimer); document.removeEventListener('click', closeSearch); disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
+onBeforeUnmount(() => { clearInterval(calendarTimer); clearInterval(refreshTimer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); document.removeEventListener('click', closeSearch); disposed = true; version++; controller?.abort(); clearTimeout(debounce); observer?.disconnect(); resizeObserver?.disconnect() })
 </script>
 
 <template>
