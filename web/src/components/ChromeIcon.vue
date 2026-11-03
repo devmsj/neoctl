@@ -3,6 +3,12 @@
 defineProps({ name: String })
 const paths = {
   plus: 'M10 4v12M4 10h12',
+  diagnose: 'M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0ZM4.5 10H7l1.5-4 3 8 1.5-4h2.5',
+  model: 'M5 5h10v10H5ZM8 8h4v4H8ZM7 2v3m6-3v3M7 15v3m6-3v3M2 7h3m-3 6h3m10-6h3m-3 6h3',
+  library: 'M3 3h4v14H3ZM7 3h4v14H7Zm5 1 3-1 3 13-3 1ZM4.5 6h1m3 0h1',
+  sliders: 'M3 5h3m4 0h7M3 10h8m4 0h2M3 15h3m4 0h7M6 3h4v4H6Zm5 5h4v4h-4Zm-5 5h4v4H6Z',
+  search: 'M14 8.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0Zm-1.5 4L18 18',
+  imageGenerate: 'M10 3H3v14h14v-7M3 14l4-4 3 3 2-2 5 5M6 6h.01M15 1l1.1 2.9L19 5l-2.9 1.1L15 9l-1.1-2.9L11 5l2.9-1.1Z',
   copy: 'M7 7h10v11H7ZM4 13H2V2h11v2',
   paste: 'M7 4H4v14h12V4h-3M7 2h6v4H7ZM7 10h6m-6 4h6',
   check: 'm4 10 4 4 8-8',

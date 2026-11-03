@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
+import { createAppearanceStore, createAppearanceRoute } from '../appearance-store.mjs';
 import fs from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createChunkUploadHandler } from '../chunk-uploads.mjs';
 import path from 'node:path';
-import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer } from '../core-runtime.mjs';
+import { coreRuntimeInfo, createWebRuntime, loadNeoPlugins, runWebServer, validateImageBytes } from '../core-runtime.mjs';
 import { createWebPluginHost } from '../plugins.mjs';
 import { createWebPluginSettings } from '../plugin-settings.mjs';
 import { createWebToolSettings } from '../tool-settings.mjs';
@@ -25,6 +26,7 @@ const upstreamPort = Number(process.env.NEO_RUNTIME_UPSTREAM_PORT || runtimePort
 const appHost = process.env.VITE_HOST || '0.0.0.0';
 const appPort = String(process.env.VITE_PORT || 5173);
 const { dataRoot, workspaceRoot } = resolveWebStorage();
+const appearanceRoute = createAppearanceRoute(createAppearanceStore(path.join(dataRoot, 'appearance'), { validateImage: validateImageBytes }));
 const promptLibraryFile = path.resolve(process.env.NEO_PROMPT_LIBRARY_FILE || path.join(dataRoot, 'prompt-library.json'));
 const uploadsDir = path.resolve(process.env.NEO_UPLOADS_DIR || path.join(dataRoot, 'uploads'));
 const pluginDir = path.resolve(process.env.NEO_WEB_PLUGIN_DIR || path.join(process.cwd(), 'plugins'));
@@ -122,6 +124,7 @@ async function routeRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://${host}:${runtimePort}`);
   try {
     if (await isolation.route(req, res, url)) return;
+    if (await appearanceRoute(req, res, url)) return;
     if (await pluginHost.route(req, res, url, { readJsonBody, sendJson })) return;
     if (req.method === 'GET' && url.pathname === '/api/prompt-library') {
       return sendJson(res, { items: await readPromptLibrary() });
