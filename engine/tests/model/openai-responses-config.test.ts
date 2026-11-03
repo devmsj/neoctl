@@ -23,7 +23,7 @@ test("OpenAI config ignores legacy endpoint selection and login has no endpoint 
     }
   }
   assert.equal(repl.loginForm("openai").fields.find(field => field.key === "maxOutputTokens")?.placeholder, "Leave empty for server default");
-  assert.equal(repl.loginForm("anthropic").fields.find(field => field.key === "maxOutputTokens")?.placeholder, "8192");
+  assert.equal(repl.loginForm("anthropic").fields.find(field => field.key === "maxOutputTokens")?.placeholder, "模型库上限 / 未知模型 64000");
 });
 
 test("application gateway appends /v1/responses to origin and never falls back to chat", async () => {

@@ -1,4 +1,4 @@
-import { publishModelSettings, modelUsage, interruptModelUsers } from "../model/settings-sync.js";
+import { publishModelSettings, modelUsage, interruptModelUsers, connectionUsage, interruptConnectionUsers } from "../model/settings-sync.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -109,8 +109,20 @@ export async function handleModelSettingsRequest(req: IncomingMessage, res: Serv
     let text = ""; for await (const chunk of req) { text += chunk.toString(); if (Buffer.byteLength(text) > 2_000_000) throw new Error("配置请求过大。"); }
     const body = JSON.parse(text || "{}");
     if (url.pathname.endsWith("/connection")) send(store.publicState(store.saveConnection(body.revision, body.connection)));
-    else if (url.pathname.endsWith("/connection/delete")) send(store.publicState(store.removeConnection(body.revision, body.id)));
-    else if (url.pathname.endsWith("/apply")) { const state = store.apply(body.revision, body.composition); send({ ...store.publicState(state), activation: publishModelSettings() }); }
+    else if (url.pathname.endsWith("/connection/usage")) {
+      const state = store.initialize();
+      if (!state.connections.some(c => c.id === body.id)) throw new ModelMetadataConflict("API 配置已不存在。");
+      send({ revision: state.revision, usage: connectionUsage(body.id) });
+    }
+    else if (url.pathname.endsWith("/connection/delete")) {
+      if (body.confirmed !== true) throw new Error("请确认删除 API。");
+      const state = store.removeConnection(body.revision, body.id, () => {
+        if (connectionUsage(body.id).running > 0 && body.interruptConfirmed !== true) throw new ModelMetadataConflict("有活动会话使用此 API，删除将打断会话，请重新确认。");
+      });
+      interruptConnectionUsers(body.id);
+      send({ ...store.publicState(state), activation: publishModelSettings() });
+    }
+    else if (url.pathname.endsWith("/apply")) { const state = store.apply(body.revision, body.composition); send({ ...store.publicState(state), activation: publishModelSettings(true) }); }
     else if (url.pathname.endsWith("/metadata")) { saveModelMetadata(body.entry, body.original, body.catalogRevision); send({ ...store.publicState(), activation: publishModelSettings() }); }
     else if (url.pathname.endsWith("/metadata/usage")) {
       const catalog = loadModelCatalog();
@@ -122,8 +134,9 @@ export async function handleModelSettingsRequest(req: IncomingMessage, res: Serv
       if (body.confirmed !== true || typeof body.catalogRevision !== "string") throw new Error("请确认删除模型。");
       const ids = modelMetadataIds(body.original);
       deleteModelMetadata(body.original, body.catalogRevision, () => {
-        if (modelUsage(ids).holders > 0 && body.interruptConfirmed !== true) throw new ModelMetadataConflict("有会话占用该模型，删除会中断会话。请重新确认删除。");
+        if (modelUsage(ids).running > 0 && body.interruptConfirmed !== true) throw new ModelMetadataConflict("有会话占用该模型，删除会中断会话。请重新确认删除。");
       });
+      store.clearRemovedModels(ids);
       interruptModelUsers(ids);
       send({ ...store.publicState(), activation: publishModelSettings() });
     }

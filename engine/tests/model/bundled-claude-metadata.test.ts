@@ -28,7 +28,7 @@ test("bundled Claude catalog contains only current mainstream official IDs and v
   for (const m of models) {
     assert.deepEqual(m.modelIds, [m.id]);
     assert.deepEqual(m.protocols, ["anthropic"]);
-    assert.equal(m.contextWindowTokens, 1_000_000);
+    assert.equal(m.contextWindowTokens, 256_000); // neo's configured usage ceiling, not the upstream maximum
     assert.equal(m.maxOutputTokens, 128_000);
     assert.equal(m.knowledgeCutoff, "2026-06");
     assert.equal(m.imageInput, true);

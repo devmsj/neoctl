@@ -31,7 +31,7 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
 export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions): Block {
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
-  const maxTokens = request.maxOutputTokens ?? options.defaultMaxOutputTokens ?? 8192;
+  const maxTokens = request.maxOutputTokens ?? options.defaultMaxOutputTokens ?? metadata?.maxOutputTokens ?? 64000;
   if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0) anthropicInvalid("Claude max_tokens must be a positive integer");
   if (metadata?.provider === "anthropic" && metadata.maxOutputTokens && maxTokens > metadata.maxOutputTokens) anthropicInvalid(`max_tokens exceeds the configured limit for ${model}: ${metadata.maxOutputTokens}`);
   const split = splitSystemPromptPrefix(request.instructions ?? request.systemPrompt ?? "");
@@ -153,7 +153,8 @@ export function anthropicUsage(raw: Block): ModelUsage {
   const number = (key: string) => typeof raw[key] === "number" ? raw[key] as number : 0;
   const inputTokens = number("input_tokens") + number("cache_creation_input_tokens") + number("cache_read_input_tokens");
   const outputTokens = number("output_tokens");
-  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cachedTokens: number("cache_read_input_tokens"), raw };
+  const details = record(raw.output_tokens_details) ? raw.output_tokens_details : undefined;
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, cachedTokens: number("cache_read_input_tokens"), ...(typeof details?.thinking_tokens === "number" ? { reasoningTokens: details.thinking_tokens } : {}), raw };
 }
 
 function assistantMessage(content: Block[], model: string, id?: string): Message {
@@ -175,7 +176,9 @@ export function* normalizeAnthropicObject(body: Block, model: string): Generator
   if (body.type !== "message" || !Array.isArray(body.content)) protocolError("Expected an Anthropic Message response");
   if (typeof body.stop_reason !== "string" || !body.stop_reason) protocolError("Incomplete Claude Message response: missing stop_reason");
   if (!body.content.every(record)) protocolError("Invalid Claude Message content block");
-  const content = body.content as Block[];
+  const truncated = body.stop_reason === "max_tokens" || body.stop_reason === "model_context_window_exceeded";
+  // Match streaming safety: no tool from an incomplete response may execute.
+  const content = (body.content as Block[]).filter(b => !truncated || b.type === "text" || b.type === "thinking");
   const id = typeof body.id === "string" ? body.id : undefined;
   if (id) yield { type: "response_started", responseId: id };
   yield { type: "assistant_message", message: assistantMessage(content, model, id) };
@@ -185,6 +188,7 @@ export function* normalizeAnthropicObject(body: Block, model: string): Generator
 export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Array>, model: string, idleTimeoutMs = 120000): AsyncGenerator<ModelStreamEvent> {
   const blocks = new Map<number, Block>();
   const partialJson = new Map<number, string>();
+  const invalidToolInputs = new Set<number>();
   const openBlocks = new Set<number>();
   let id: string | undefined, started = false, stopped = false, reason: string | undefined;
   let usage: Block = {};
@@ -201,6 +205,10 @@ export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Arra
       id = typeof message.id === "string" ? message.id : undefined;
       if (record(message.usage)) usage = { ...message.usage };
       if (id) yield { type: "response_started", responseId: id };
+      if (record(message.usage)) {
+        const input = anthropicUsage(usage);
+        yield { type: "usage", provisional: true, usage: { inputTokens: input.inputTokens, cachedTokens: input.cachedTokens } };
+      }
     } else if (type === "content_block_start") {
       const index = event.index as number;
       if (!started || !Number.isInteger(index) || blocks.has(index) || !record(event.content_block)) protocolError("Invalid Claude content_block_start");
@@ -233,15 +241,28 @@ export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Arra
       if (!block || !openBlocks.delete(index)) protocolError("Claude stopped an unopened content block");
       if (block!.type === "tool_use") {
         const json = partialJson.get(index);
-        if (json) { try { block!.input = JSON.parse(json); } catch { protocolError("Claude returned incomplete or malformed tool JSON"); } }
-        if (!record(block!.input)) protocolError("Claude tool input must be an object");
+        // A max_tokens response can end inside tool JSON. Wait for stop_reason
+        // before classifying it; never publish these arguments for execution.
+        if (json) { try { block!.input = JSON.parse(json); } catch { invalidToolInputs.add(index); } }
+        if (!record(block!.input)) invalidToolInputs.add(index);
       }
       if (block!.type === "text") yield { type: "assistant_text_done" };
     } else if (type === "message_delta") {
       if (record(event.delta) && typeof event.delta.stop_reason === "string") reason = event.delta.stop_reason;
       if (record(event.usage)) usage = { ...usage, ...event.usage };
     } else if (type === "message_stop") {
-      if (!started || openBlocks.size || !reason) protocolError("Incomplete Claude message at message_stop");
+      if (!started || !reason) protocolError("Incomplete Claude message at message_stop");
+      if (reason === "max_tokens" || reason === "model_context_window_exceeded") {
+        // Some compatible servers omit block_stop on truncation. Preserve usage
+        // and the real stop reason, but discard the entire executable tool batch.
+        const visible = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, b]) => b).filter(b => b.type === "text" || b.type === "thinking");
+        if (visible.length) yield { type: "assistant_message", message: assistantMessage(visible, model, id) };
+        yield completionEvent(reason, anthropicUsage(usage));
+        stopped = true;
+        break;
+      }
+      if (openBlocks.size) protocolError("Incomplete Claude message at message_stop");
+      if (invalidToolInputs.size) protocolError("Claude returned incomplete or malformed tool JSON");
       stopped = true;
       const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, b]) => b);
       // Emit completed tool calls only after the whole message validates. A

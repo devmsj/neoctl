@@ -317,7 +317,7 @@ test('memory is authenticated and admin model settings reach existing, new and r
   for (const route of ['/api/memory', '/api/login', '/api/model-settings']) assert.equal((await f.request(route)).status, 401);
   assert.equal((await f.request('/api/model-settings', alice)).status, 403);
   assert.equal((await f.request('/api/model-settings/apply', alice, {})).status, 403);
-  for (const route of ['/api/model-settings/metadata', '/api/model-settings/metadata/usage', '/api/model-settings/metadata/delete', '/api/model-settings/connection', '/api/model-settings/test']) assert.equal((await f.request(route, alice, {})).status, 403);
+  for (const route of ['/api/model-settings/metadata', '/api/model-settings/metadata/usage', '/api/model-settings/metadata/delete', '/api/model-settings/connection', '/api/model-settings/connection/usage', '/api/model-settings/connection/delete', '/api/model-settings/test']) assert.equal((await f.request(route, alice, {})).status, 403);
   const modelSettings = await f.request('/api/model-settings', admin);
   assert.equal(modelSettings.status, 200);
   const archived = await modelSettings.json();

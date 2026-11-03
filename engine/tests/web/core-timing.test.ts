@@ -139,6 +139,38 @@ test("early tool activity reaches snapshot/SSE without argument leakage or token
 });
 
 
+test("provisional input usage updates Web/SSE immediately and is not added to session totals", async () => {
+  const rt = runtime(() => []);
+  const added: unknown[] = [];
+  rt.usage.add = ((value: unknown) => { added.push(value); }) as typeof rt.usage.add;
+  const repl = new WebRepl(rt as never);
+  const handle = (repl as unknown as { handleEvent(event: AgentEvent): void }).handleEvent.bind(repl);
+  const chunks: string[] = [];
+  const response = Object.assign(new EventEmitter(), { writeHead() {}, write(chunk: string) { chunks.push(chunk); return true; } });
+  repl.subscribe(response as never);
+  try {
+    handle({ type: "state", phase: "preparing" });
+    handle({ type: "usage", provisional: true, usage: { inputTokens: 6722, cachedTokens: 6000 } });
+    handle({ type: "thinking.delta", text: "Reviewing input and planning tool calls" });
+    handle({ type: "tool_call.delta", callId: "stream", name: "file_write", argumentsDelta: '{"content":"hello' });
+    const status = repl.snapshot(false).status;
+    assert.equal(status.usage?.inputTokens, 6722);
+    assert.equal(status.usage?.outputTokens, undefined);
+    assert.ok(status.streamedOutputTokens > 0);
+    assert.ok(status.inputTokenUpdatedAt && status.outputTokenUpdatedAt);
+    assert.equal(added.length, 0);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const delta = chunks.filter(chunk => chunk.includes("\nevent: delta\n")).at(-1)!;
+    assert.equal(JSON.parse(delta.split("data: ")[1]).status.usage.inputTokens, 6722);
+    handle({ type: "usage", usage: { inputTokens: 6722, outputTokens: 559, totalTokens: 7281 } });
+    assert.equal(added.length, 1);
+    assert.equal(repl.snapshot(false).status.usage?.outputTokens, 559);
+    handle({ type: "state", phase: "preparing" });
+    assert.equal(repl.snapshot(false).status.usage, undefined);
+    assert.equal(repl.snapshot(false).status.streamedOutputTokens, 0);
+  } finally { response.emit("close"); }
+});
+
 test("tool connection membership survives later model calls for frontend timed playback", () => {
   const repl = new WebRepl(runtime(() => []) as never);
   const handle = (repl as unknown as { handleEvent(event: AgentEvent): void }).handleEvent.bind(repl);

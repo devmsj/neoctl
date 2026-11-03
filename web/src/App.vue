@@ -542,7 +542,9 @@ watch(() => state.modelDraft, () => {
   else state.modelError = ''
 })
 const contextPercent = computed(() => {
-  const ratio = state.status?.metrics?.contextUsageRatio
+  const actualInput = state.status?.usage?.inputTokens
+  const window = state.status?.metrics?.contextWindowTokens
+  const ratio = actualInput !== undefined && window > 0 ? actualInput / window : state.status?.metrics?.contextUsageRatio
   return ratio === undefined ? '—' : `${(ratio * 100).toFixed(1)}%`
 })
 const inputTokens = computed(() => compactNumber(state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens))
@@ -1976,7 +1978,7 @@ async function compressSession() {
 }
 
 function openModelModal() {
-  state.modelDraft = selectedModelSettings.value.model || modelOptions.value[0] || ''
+  state.modelDraft = selectedModelSettings.value.model || ''
   const reasoning = selectedModelSettings.value.reasoning
   state.reasoningDraft = reasoning?.effort || 'high'
   state.modelSearch = ''
@@ -3002,7 +3004,9 @@ function lineElapsedText(line) {
 }
 
 function updateComposerMetricTargets() {
-  const ratio = state.status?.metrics?.contextUsageRatio
+  const actualInput = state.status?.usage?.inputTokens
+  const window = state.status?.metrics?.contextWindowTokens
+  const ratio = actualInput !== undefined && window > 0 ? actualInput / window : state.status?.metrics?.contextUsageRatio
   animateComposerMetric('context', ratio === undefined ? 0 : ratio * 100)
   animateComposerMetric('inputTokens', Number(state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens ?? 0))
   animateComposerMetric('outputTokens', Number(state.status?.usage?.outputTokens ?? state.status?.streamedOutputTokens ?? 0))

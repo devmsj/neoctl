@@ -1,4 +1,4 @@
-import { registerSettingsConsumer } from "../model/settings-sync.js";
+import { registerSettingsConsumer, settingsGatewayConnections } from "../model/settings-sync.js";
 import { loadModelCatalog, type ModelCatalog } from "../model/context-window.js";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -242,7 +242,7 @@ export class QueryEngine {
   }
 
   forkForSession(sessionId?: string, resume = true): QueryEngine {
-    return new QueryEngine({
+    const fork = new QueryEngine({
       ...this.options,
       model: this.currentModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
@@ -252,6 +252,8 @@ export class QueryEngine {
         ? { ...this.options.session, sessionId, resume }
         : undefined,
     });
+    fork.modelSelectionCleared = this.modelSelectionCleared;
+    return fork;
   }
 
   onSessionTitleChange(listener: (snapshot: SessionStoreSnapshot | undefined) => void): () => void {
@@ -347,6 +349,12 @@ export class QueryEngine {
       await this.settingsMutation;
       await this.initialize();
       if (!this.simulation) { this.options.beforeQuery?.(this); this.activeModelCatalog = loadModelCatalog(); }
+      if (!this.simulation && (this.modelSelectionCleared || (this.options.beforeQuery && !this.currentModel))) {
+        yield { type: "error", error: new Error("模型未配置，请选择模型后继续会话。") };
+        yield { type: "terminal", reason: "model_error" };
+        terminalReceived = true;
+        return;
+      }
       const recovery = isResumableExecution(this.executionState) ? this.executionState : undefined;
       if (text === undefined && !recovery) throw new Error("No interrupted execution to continue");
       queryAccepted = true;
@@ -598,6 +606,7 @@ export class QueryEngine {
     const changed: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
+      this.restoreModelConfiguration();
       this.currentModel = patch.model;
       changed.model = patch.model;
     }
@@ -634,17 +643,22 @@ export class QueryEngine {
     }
   }
 
+  private modelSelectionCleared = false;
+
   setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
+    this.restoreModelConfiguration();
     this.currentModel = model?.trim() || undefined;
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 
   setModelProvider(settings: { modelGateway: ModelGateway; model?: string; reasoning?: ReasoningConfig | null }): void {
     this.currentModelGateway = settings.modelGateway;
-    this.currentModel = settings.model?.trim() || undefined;
+    this.currentModel = this.modelSelectionCleared ? undefined : settings.model?.trim() || undefined;
     this.currentReasoning = settings.reasoning === null ? null : cloneReasoningConfig(settings.reasoning);
   }
 
+  getHeldConnectionIds(): string[] { return this.modelSelectionCleared ? [] : settingsGatewayConnections(this.currentModelGateway); }
+  restoreModelConfiguration(): void { this.modelSelectionCleared = false; this.sessionStore?.recordModelSelectionCleared(false); }
   getHeldModelIds(): string[] {
     return [this.currentModel, this.pendingSessionSettings.model].filter((id): id is string => Boolean(id));
   }
@@ -652,6 +666,12 @@ export class QueryEngine {
     this.modelRemovalController?.abort(new Error("模型已被删除，请重新选择模型后继续会话。"));
     this.compactRemovalController?.abort(new Error("模型已被删除，压缩已中断。"));
     this.cancelPendingTitleWork();
+    this.modelSelectionCleared = true;
+    this.sessionStore?.recordModelSelectionCleared(true);
+    this.currentModel = undefined;
+    this.currentReasoning = undefined;
+    delete this.pendingSessionSettings.model;
+    delete this.pendingSessionSettings.reasoning;
   }
   isModelConfigurationBusy(): boolean { return this.running || Boolean(this.compactRemovalController); }
   getActiveModelCatalog(): ModelCatalog { return this.activeModelCatalog ?? loadModelCatalog(); }
@@ -954,6 +974,8 @@ export class QueryEngine {
       resume: options.resume,
       toolResultThresholdChars: this.options.session.toolResultThresholdChars,
     });
+    this.modelSelectionCleared = this.modelSelectionCleared || this.sessionStore.getModelSelectionCleared();
+    if (this.modelSelectionCleared) { this.currentModel = undefined; this.sessionStore.recordModelSelectionCleared(true); }
     this.imageStore = await SessionImageStore.open(this.sessionStore.sessionDir, this.agentId);
     const execution = this.sessionStore.getExecutionState();
     this.executionState = execution?.status === "running"

@@ -50,7 +50,15 @@ test("API archives preserve keys; apply is immutable; revisions prevent lost upd
   assert.deepEqual(state.applied, applied);
   assert.equal(store.publicState(state).pendingConnections, true);
   assert.throws(() => store.saveConnection(revision, state.connections[0]!), /更新/);
-  assert.throws(() => store.removeConnection(state.revision, "openai"), /引用/);
+  assert.throws(() => store.removeConnection(state.revision, "openai", () => { throw new Error("confirmation required"); }), /confirmation/);
+  assert.equal(store.read()?.connections.length, 1);
+  state = store.removeConnection(state.revision, "openai");
+  assert.equal(state.connections.length, 0);
+  for (const c of [state.composition, state.applied!.composition]) for (const slot of ["main", "image", "search"] as const) {
+    assert.equal(c[slot].api, "");
+    assert.equal(c[slot].model, "");
+  }
+  assert.equal(compositionModelConfig(state.applied!.composition, state.applied!.connections), undefined);
   assert.equal(JSON.stringify(store.publicState(state)).includes('"key":'), false);
 });
 

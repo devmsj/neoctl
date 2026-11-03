@@ -715,7 +715,7 @@ async function* handleModelEvent(
   }
 
   if (event.type === "usage") {
-    yield { type: "usage", usage: event.usage };
+    yield { type: "usage", usage: event.usage, ...(event.provisional ? { provisional: true } : {}) };
     return {};
   }
 
@@ -735,6 +735,8 @@ async function* handleModelEvent(
     const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
     if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     if (event.usage) yield { type: "usage", usage: event.usage };
+    if (event.reason === "max_tokens") throw new ModelAPIError({ provider: "anthropic", category: "max_output_tokens", message: "Claude reached max_tokens before completing the response. No incomplete tool call was executed; increase the output limit or split the work into smaller calls.", retryable: false });
+    if (event.reason === "model_context_window_exceeded") throw new ModelAPIError({ provider: "anthropic", category: "context_length", message: "Claude model context window exceeded", retryable: false });
     return { previousResponseId: event.responseId, incompleteReason: event.reason };
   }
 

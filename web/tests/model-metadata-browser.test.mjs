@@ -65,7 +65,7 @@ test('model library edits IDs and deletes with fresh occupancy confirmation agai
     assert.equal(findModelMetadata('ui-model').id, 'ui-model-renamed', 'retained alias keeps old session IDs usable')
     await p.getByRole('button', { name: '删除模型 ui-model-renamed', exact: true }).click()
     await p.getByRole('dialog', { name: '删除模型', exact: true }).waitFor()
-    assert.equal(await p.getByText('有会话占用该模型，删除会中断会话。', { exact: true }).count(), 0)
+    assert.equal(await p.getByText('有活动会话使用该模型，删除将打断会话，模型选择将清空。', { exact: true }).count(), 0)
     await p.getByRole('button', { name: '取消', exact: true }).click()
     assert.ok(findModelMetadata('ui-model'))
     await p.getByRole('button', { name: '删除模型 ui-model-renamed', exact: true }).click()
@@ -74,7 +74,7 @@ test('model library edits IDs and deletes with fresh occupancy confirmation agai
     await p.getByRole('button', { name: '删除', exact: true }).click()
     await p.getByRole('button', { name: '删除并中断', exact: true }).waitFor()
     assert.ok(findModelMetadata('ui-model')); assert.equal(interrupted, 0)
-    assert.ok(await p.getByText('有会话占用该模型，删除会中断会话。', { exact: true }).isVisible())
+    assert.ok(await p.getByText('有活动会话使用该模型，删除将打断会话，模型选择将清空。', { exact: true }).isVisible())
     await p.getByRole('button', { name: '删除并中断', exact: true }).click()
     await p.getByRole('dialog', { name: '模型库', exact: true }).waitFor()
     assert.equal(findModelMetadata('ui-model'), undefined)
@@ -91,6 +91,33 @@ test('model library edits IDs and deletes with fresh occupancy confirmation agai
     assert.equal(findModelMetadata('ui-restored'), undefined)
     const disk = JSON.parse(await readFile(path.join(home, 'model-metadata.json'), 'utf8'))
     assert.ok(disk.removedModelIds.includes('ui-model-renamed'))
+    // Referenced API deletion is a confirmation flow, not a dead-end error.
+    await p.getByRole('button', { name: '关闭', exact: true }).click()
+    const store = new ModelSettingsStore()
+    let state = store.initialize({})
+    state = store.saveConnection(state.revision, { id: '', name: 'ui-api', kind: 'openai', baseUrl: 'http://localhost:9', key: 'fixture' })
+    const apiId = state.connections[0].id
+    let apiHeld = true, apiBusy = false, apiCleared = 0
+    const apiConsumer = { isModelConfigurationBusy: () => apiBusy, refreshModelConfigurationIfIdle() {}, getHeldConnectionIds: () => apiHeld ? [apiId] : [], interruptForModelRemoval() { apiCleared++; apiHeld = false } }
+    registerSettingsConsumer(apiConsumer)
+    const c = structuredClone(state.composition); c.main = { api: apiId, model: 'gpt-6.1-sol', effort: 'high' }
+    store.apply(state.revision, c)
+    await p.getByRole('button', { name: '重新加载配置', exact: true }).click()
+    await p.getByRole('button', { name: 'API 配置', exact: true }).click()
+    await p.getByRole('button', { name: '删除 ui-api', exact: true }).click()
+    await p.getByRole('dialog', { name: '删除 API', exact: true }).waitFor()
+    assert.equal(await p.getByText('有活动会话使用此 API，删除将打断会话，模型选择将清空。', { exact: true }).count(), 0)
+    apiBusy = true
+    await p.getByRole('button', { name: '删除', exact: true }).click()
+    await p.getByRole('button', { name: '删除并中断', exact: true }).waitFor()
+    assert.equal(apiCleared, 0)
+    await p.getByRole('button', { name: '删除并中断', exact: true }).click()
+    await p.getByRole('dialog', { name: 'API 配置', exact: true }).waitFor()
+    assert.equal(apiCleared, 1)
+    assert.equal(store.read().applied.composition.main.model, '')
+    assert.equal(await p.getByRole('button', { name: '删除 ui-api', exact: true }).count(), 0)
+    await p.getByRole('button', { name: '完成', exact: true }).click()
+    assert.equal(await p.getByRole('combobox', { name: '主模型', exact: true }).inputValue(), '')
     assert.deepEqual(ui.errors, [])
     assert.ok(!ui.requests.some(r => /\/api\/(send|interrupt|model-settings\/test)/.test(r.url)))
   } finally {

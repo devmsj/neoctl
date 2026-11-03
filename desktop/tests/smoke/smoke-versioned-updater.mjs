@@ -14,14 +14,15 @@ const root = path.join(base, 'app'), resources = path.join(base, 'resources');
 let blocker;
 const fixtureNpm = `const fs=require('fs'),p=require('path');const root=process.cwd();fs.writeFileSync(p.join(root,'package-lock.json'),JSON.stringify({lockfileVersion:3,packages:{}}));const web=p.join(root,'node_modules/neoctl-web');const core=p.join(web,'node_modules/neoctl');fs.mkdirSync(core,{recursive:true});fs.writeFileSync(p.join(web,'package.json'),JSON.stringify({name:'neoctl-web',version:'1.0.0',dependencies:{neoctl:'^2.0.0'}}));fs.writeFileSync(p.join(core,'package.json'),JSON.stringify({name:'neoctl',version:'2.0.0'}));fs.writeFileSync(p.join(web,'server.mjs'),'// isolated protocol test fixture');`;
 async function invoke(operation, onReady) {
-  const child = spawn(exe, [operation, root, resources, 'bundled'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(exe, [operation, root, resources, 'bundled', 'official'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code)); });
   let stderr = '', last, failure;
+  const events = [];
   child.stderr.on('data', chunk => stderr += chunk);
   const timer = setTimeout(() => child.kill(), 60000);
   try {
     for await (const line of createInterface({ input: child.stdout })) {
-      const event = JSON.parse(line); last = event;
+      const event = JSON.parse(line); last = event; events.push(event);
       if (event.event === 'ready') {
         try { child.stdin.end(`${await onReady(event)}\n`); }
         catch (error) { failure = error; child.stdin.end('abort\n'); }
@@ -29,7 +30,7 @@ async function invoke(operation, onReady) {
     }
     const code = await exited;
     if (failure) throw failure;
-    assert.equal(code, 0, JSON.stringify(last) + stderr);
+    assert.equal(code, 0, JSON.stringify(events) + stderr);
     return last;
   } finally { clearTimeout(timer); }
 }
@@ -39,7 +40,7 @@ try {
   await mkdir(path.join(resources, 'payload'), { recursive: true });
   await copyFile(path.join(desktop, 'resources/node/node.exe'), path.join(resources, 'node/node.exe'));
   await cp(path.join(desktop, 'resources/node/node_modules/npm/node_modules/semver'), path.join(resources, 'node/node_modules/npm/node_modules/semver'), { recursive: true });
-  for (const [name, source] of [['pacote', 'exports.tarball={stream(){throw Error("offline fixture must not download")}}'], ['npm-install-checks', 'exports.checkPlatform=()=>{}']]) {
+  for (const [name, source] of [['pacote', 'exports.tarball={stream(){throw Error("offline fixture must not download")}}'], ['make-fetch-happen', 'module.exports=()=>{throw Error("offline fixture must not access registry")}'], ['npm-install-checks', 'exports.checkPlatform=()=>{}']]) {
     const dir = path.join(resources, 'node/node_modules/npm/node_modules', name);
     await mkdir(dir, { recursive: true }); await writeFile(path.join(dir, 'index.js'), source);
   }

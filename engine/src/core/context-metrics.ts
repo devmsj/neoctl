@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import type { ToolDefinition } from "../tools/tool.js";
 import type { ContextMetrics, PromptCacheDiagnostics } from "../types/events.js";
 import { withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
@@ -11,7 +12,7 @@ function getEncoder(): ((text: string) => number[]) | undefined {
   if (_encode || _encoderLoadFailed) return _encode;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("gpt-tokenizer");
+    const mod = createRequire(import.meta.url)("gpt-tokenizer");
     _encode = mod.encode ?? mod.default?.encode;
     if (!_encode) _encoderLoadFailed = true;
   } catch {

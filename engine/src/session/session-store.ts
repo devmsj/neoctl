@@ -23,6 +23,7 @@ export type SessionTranscriptEntry =
   | { type: "title"; sessionId: string; agentId: string; title: string; createdAt: string; kind?: SessionTitleKind }
   | { type: "app-prompt"; sessionId: string; agentId: string; createdAt: string; appPrompt?: AppPromptValue }
   | { type: "session-prompt"; sessionId: string; agentId: string; createdAt: string; prompt: SessionPromptState }
+  | { type: "model-selection-cleared"; sessionId: string; agentId: string; cleared: boolean }
   | { type: "fast-mode"; sessionId: string; agentId: string; createdAt: string; enabled: boolean }
   | { type: "context-window"; sessionId: string; agentId: string; createdAt: string; tokens: number }
   | {
@@ -91,6 +92,7 @@ export interface SessionStoreSnapshot {
   appPrompt?: AppPromptValue;
   sessionPrompt?: SessionPromptState;
   fastMode: boolean;
+  modelSelectionCleared?: boolean;
   contextWindowTokens?: number;
   windowNumber: number;
   lastCompaction?: CompactionReport;
@@ -125,6 +127,7 @@ export class SessionStore {
   private appPrompt?: AppPromptValue;
   private sessionPrompt?: SessionPromptState;
   private fastMode = false;
+  private modelSelectionCleared = false;
   private contextWindowTokens?: number;
   private lastCompaction?: CompactionReport;
   private windowNumber: number;
@@ -151,6 +154,7 @@ export class SessionStore {
     this.appPrompt = loaded.appPrompt;
     this.sessionPrompt = loaded.sessionPrompt;
     this.fastMode = loaded.fastMode;
+    this.modelSelectionCleared = loaded.modelSelectionCleared ?? false;
     this.contextWindowTokens = loaded.contextWindowTokens;
     this.lastCompaction = loaded.lastCompaction ? cloneCompactionReport(loaded.lastCompaction) : undefined;
     this.windowNumber = loaded.windowNumber;
@@ -377,6 +381,13 @@ export class SessionStore {
     this.sessionPrompt = stored;
   }
 
+  getModelSelectionCleared(): boolean { return this.modelSelectionCleared; }
+  recordModelSelectionCleared(cleared: boolean): void {
+    if (this.modelSelectionCleared === cleared) return;
+    this.appendEntry({ type: "model-selection-cleared", sessionId: this.sessionId, agentId: this.agentId, cleared });
+    this.modelSelectionCleared = cleared;
+  }
+
   getFastMode(): boolean {
     return this.fastMode;
   }
@@ -507,6 +518,7 @@ interface LoadedTranscript {
   appPrompt?: AppPromptValue;
   sessionPrompt?: SessionPromptState;
   fastMode: boolean;
+  modelSelectionCleared?: boolean;
   contextWindowTokens?: number;
   lastCompaction?: CompactionReport;
   windowNumber: number;
@@ -614,6 +626,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       loaded.sessionPrompt = { ...prompt };
     }
     if (entry.type === "fast-mode") loaded.fastMode = entry.enabled === true;
+    if (entry.type === "model-selection-cleared") loaded.modelSelectionCleared = entry.cleared === true;
     if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
   }
   return loaded;

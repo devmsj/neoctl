@@ -1,14 +1,15 @@
-# Neo Desktop 0.1.34
+# Neo Desktop 0.1.35
 
-Includes Web 0.1.31 and Core 0.2.54.
+Includes Web 0.1.32 and Core 0.2.55.
 
-- Add native Anthropic Messages support alongside OpenAI Responses, with explicit protocol selection and editable API connections.
-- Introduce a single model composition for the main model, OpenAI image generation and OpenAI search with Exa fallback. Apply changes across sessions at safe API-turn boundaries without changing an in-flight request.
-- Add an editable, persistent model library with custom reasoning tiers, model ID changes and deletion confirmations. Warn before interrupting sessions holding a deleted model; preserve edits and removals across upgrades.
-- Refresh the bundled Claude catalog using official model IDs, token limits, image-input capabilities and supported reasoning settings.
-- Run capability checks independently and report results as they complete. Correct Anthropic-compatible tool-continuation detection, including DeepSeek responses.
-- Simplify model settings, improve action icons and add an accent-aware, animated reasoning slider with keyboard and touch controls.
-- Fix Appearance loading in the local development Web, improve desktop registry selection and refine session recency handling.
-- Extend model lifecycle, live synchronization, isolation, detection and browser regression coverage.
+- Improve native Anthropic streaming and multi-turn tool execution. Report output-limit truncation accurately, preserve final usage, and never execute a truncated tool batch.
+- Use model-library output limits by default (128K for bundled Claude models; 64K fallback for unknown Anthropic-compatible models), while respecting explicit user settings.
+- Show input usage from the first Anthropic packet without double-counting totals or freezing streamed output estimates. Correct the context meter using reported usage and fix local tokenizer loading.
+- Set bundled Claude context budgets to 256K and retain the current fifth-generation catalog. This is a Neo context policy, not an upstream limit or pricing guarantee.
+- Allow deleting referenced API connections and model entries. Require explicit interruption confirmation for active sessions, clear affected model selections, preserve conversation history, and keep cleared selections across reopening and session forks.
+- Refresh deletion confirmations when occupancy changes and preserve unrelated unsaved settings.
+- Repair the offline updater protocol fixture for the registry transport dependency and include protocol events in failure diagnostics.
 
-The release workflow verifies published package versions, runs Core/Web/Desktop regressions, builds the Windows x64 installer and tests actual installation and upgrade before publishing assets.
+Validated with native Claude multi-turn file/terminal tools, child tasks, image understanding, session resume, model-driven compaction, and a long tool response beyond the former 8K default. External image generation and search were not invoked as part of these live Claude checks.
+
+Windows x64 installer, SHA-256 checksum, source commit, and payload/version manifests are attached to this release.

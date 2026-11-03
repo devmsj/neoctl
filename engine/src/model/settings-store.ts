@@ -59,7 +59,7 @@ export function validateComposition(c: Composition, connections: ApiConnection[]
     if (kind === "anthropic" && !/claude-(?:opus-4-[678]|sonnet-4-6|(?:opus|sonnet|haiku|fable|mythos)-5|mythos-preview)/i.test(c.main.model) && ["low", "medium", "high"].includes(c.main.effort) && tokens && tokens <= 1024) throw new Error("启用旧版 Claude 推理时最大输出 Token 至少为 1025。");
   }
   optionalInteger(c.main.idle, "流式空闲超时"); optionalInteger(c.main.retries, "重试次数", 0);
-  if (!["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"].includes(c.image.model)) throw new Error("不支持的图片模型。");
+  if ((c.image.api || c.image.model) && !["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"].includes(c.image.model)) throw new Error("不支持的图片模型。");
   if (typeof c.search.exa !== "boolean") throw new Error("Exa 开关无效。");
   if (c.search.context && !["low", "medium", "high"].includes(c.search.context)) throw new Error("搜索上下文档位无效。");
   optionalInteger(c.search.tokens, "搜索最大输出 Token"); optionalInteger(c.search.exaTimeout, "Exa 超时");
@@ -67,7 +67,7 @@ export function validateComposition(c: Composition, connections: ApiConnection[]
   validUrl(c.search.exaUrl);
 }
 export function compositionModelConfig(c: Composition, connections: ApiConnection[]): ModelProviderConfig | undefined {
-  const a = connections.find(x => x.id === c.main.api); if (!a) return undefined;
+  const a = connections.find(x => x.id === c.main.api); if (!a || !c.main.model.trim()) return undefined;
   const kind = mainProvider(c, a);
   return { provider: kind, apiKey: a.key, baseUrl: a.baseUrl, model: c.main.model,
     defaultReasoning: findModelMetadata(c.main.model)?.reasoning === false ? null : { effort: c.main.effort as ReasoningEffort },
@@ -132,8 +132,29 @@ export class ModelSettingsStore {
       if (old) s.connections[s.connections.indexOf(old)] = connection; else s.connections.push(connection);
     });
   }
-  removeConnection(revision: string, id: string): SettingsState {
-    return this.mutate(revision, s => { if ([s.composition, s.applied?.composition].some(c => c && [c.main.api, c.image.api, c.search.api].includes(id))) throw new Error("此 API 仍被引用，请先更换并应用。"); s.connections = s.connections.filter(a => a.id !== id); });
+  removeConnection(revision: string, id: string, beforeDelete?: () => void): SettingsState {
+    return this.mutate(revision, s => {
+      if (!s.connections.some(a => a.id === id)) throw new Error("API 配置已不存在。");
+      beforeDelete?.();
+      // Preserve an explicit empty configuration instead of reviving environment credentials on restart.
+      if (!s.applied && [s.composition.main.api, s.composition.image.api, s.composition.search.api].includes(id)) s.applied = { revision: randomUUID(), composition: structuredClone(s.composition), connections: structuredClone(s.connections) };
+      const appliedChanged = s.applied && [s.applied.composition.main.api, s.applied.composition.image.api, s.applied.composition.search.api].includes(id);
+      for (const c of [s.composition, s.applied?.composition]) if (c) for (const slot of ["main", "image", "search"] as const) if (c[slot].api === id) { c[slot].api = ""; c[slot].model = ""; }
+      s.connections = s.connections.filter(a => a.id !== id);
+      if (s.applied) { s.applied.connections = s.applied.connections.filter(a => a.id !== id); if (appliedChanged) s.applied.revision = randomUUID(); }
+    });
+  }
+  clearRemovedModels(ids: readonly string[]): void {
+    const current = this.read(); if (!current) return;
+    const wanted = new Set(ids.map(id => id.toLowerCase()));
+    const references = (c: Composition | undefined) => c && [c.main, c.image, c.search].some(slot => wanted.has(slot.model.toLowerCase()));
+    if (!references(current.composition) && !references(current.applied?.composition)) return;
+    this.mutate(current.revision, s => {
+      if (!s.applied && references(s.composition)) s.applied = { revision: randomUUID(), composition: structuredClone(s.composition), connections: structuredClone(s.connections) };
+      const appliedChanged = references(s.applied?.composition);
+      for (const c of [s.composition, s.applied?.composition]) if (c) for (const slot of ["main", "image", "search"] as const) if (wanted.has(c[slot].model.toLowerCase())) { c[slot].model = ""; if (slot !== "main") c[slot].api = ""; }
+      if (s.applied && appliedChanged) s.applied.revision = randomUUID();
+    });
   }
   apply(revision: string, c: Composition): SettingsState {
     return this.mutate(revision, s => { validateComposition(c, s.connections); s.composition = structuredClone(c); s.applied = { revision: randomUUID(), composition: structuredClone(c), connections: structuredClone(s.connections.filter(a => [c.main.api, c.image.api, c.search.api].includes(a.id))) }; });

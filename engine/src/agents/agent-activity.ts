@@ -131,7 +131,7 @@ export class AgentActivityStore {
       this.recordToolFinished(activity, event.toolUse, event.ok);
     } else if (event.type === "tool.finished") {
       this.removeActiveTool(activity, event.toolUse.id);
-    } else if (event.type === "usage") {
+    } else if (event.type === "usage" && !event.provisional) {
       this.recordUsage(activity, event.usage);
     } else if (event.type === "retrying") {
       this.push(activity, { kind: "status", title: `retrying #${event.attempt}`, detail: event.error.message, status: "running" });

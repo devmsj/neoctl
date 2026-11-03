@@ -78,7 +78,10 @@ test("native request has system blocks, merged roles and no OpenAI-only paramete
   assert.deepEqual(body.system, [{ type: "text", text: "base" }, { type: "text", text: "runtime" }, { type: "text", text: "extra" }]);
   assert.equal((body.messages as any[]).length, 1);
   for (const key of ["previous_response_id", "store", "reasoning", "prompt_cache_key", "instructions", "input"]) assert.equal(key in body, false);
-  assert.equal(body.max_tokens, 8192);
+  assert.equal(body.max_tokens, 128000);
+  assert.equal(buildAnthropicRequest(request(), { model: "unknown-compatible-model" }).max_tokens, 64000);
+  assert.equal(buildAnthropicRequest(request(), { model, defaultMaxOutputTokens: 16000 }).max_tokens, 16000);
+  assert.equal(buildAnthropicRequest(request({ maxOutputTokens: 32000 }), { model, defaultMaxOutputTokens: 16000 }).max_tokens, 32000);
 });
 
 test("parallel tool results precede runtime text and preserve error status", () => {
@@ -154,6 +157,41 @@ test("truncation and malformed tool JSON never publish executable calls", async 
   await assert.rejects(collect(normalizeAnthropicStream(stream(broken), model)), /malformed tool JSON/);
 });
 
+test("initial usage corrects input before output without resetting output estimates", async () => {
+  const events = await collect(normalizeAnthropicStream(stream(frames()), model));
+  const index = events.findIndex(e => e.type === "usage");
+  assert.ok(index >= 0 && index < events.findIndex(e => e.type === "assistant_delta"));
+  const initial = events[index];
+  assert.ok(initial?.type === "usage" && initial.provisional);
+  assert.deepEqual(initial.usage, { inputTokens: 60, cachedTokens: 20 });
+  assert.equal(events.filter(e => e.type === "response_completed").length, 1);
+});
+
+for (const reason of ["max_tokens", "model_context_window_exceeded"]) {
+  for (const omitBlockStop of [false, true]) {
+    test(`${reason} preserves usage and discards entire tool batch (open block: ${omitBlockStop})`, async () => {
+      const content = [
+        { type: "text", text: "working" },
+        { type: "tool_use", id: "complete", name: "echo", input: { text: "valid" } },
+        { type: "tool_use", id: "partial", name: "echo", input: { text: "incomplete" } },
+      ];
+      const raw = frames(content, reason).filter(e => !(omitBlockStop && e.type === "content_block_stop" && e.index === 2));
+      for (const e of raw) if (e.type === "content_block_delta" && e.index === 2) (e.delta as any).partial_json = "{";
+      const streamed = await collect(normalizeAnthropicStream(stream(raw), model));
+      const plain = [...normalizeAnthropicObject(completion([...content.slice(0, 2), { ...content[2], input: "{" }], reason), model)];
+      for (const events of [streamed, plain]) {
+        assert.equal(events.some(e => e.type === "tool_use" || e.type === "response_completed"), false);
+        const messages = events.filter(e => e.type === "assistant_message");
+        assert.ok(messages.every(e => e.type === "assistant_message" && e.message.blocks.every(b => b.type !== "tool_use")));
+        const end = events.find(e => e.type === "response_incomplete");
+        assert.ok(end?.type === "response_incomplete");
+        assert.equal(end.reason, reason);
+        assert.equal(end.usage?.outputTokens, 5);
+      }
+    });
+  }
+}
+
 for (const suffix of ["", "/v1", "/v1/", "/v1/messages"]) {
   test(`real HTTP to local CPA-contract endpoint normalizes base URL ${suffix || '(origin)'}`, async () => {
     let captured: any;
@@ -228,6 +266,25 @@ test("native adapter completes neo tool loop and signed history survives session
   } finally { await local.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
 
+
+test("query reports native output exhaustion with final usage and executes no partial tools", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-anthropic-limit-"));
+  let executed = 0;
+  const raw = frames([{ type: "tool_use", id: "cut", name: "echo", input: { text: "unfinished" } }], "max_tokens");
+  for (const e of raw) if (e.type === "content_block_delta") (e.delta as any).partial_json = "{";
+  const local = await server((_req, res) => { res.setHeader("Content-Type", "text/event-stream"); res.end(encode(raw)); });
+  try {
+    const tools = new ToolRegistry(); tools.register({ ...tool, metadata: { readOnly: true, concurrent: true, visible: true }, async call() { executed++; return { ok: true, output: "unexpected" }; } });
+    const events = await collect(runAgent({ agentId: "cutoff", agent: { agentType: "test", whenToUse: "test", tools: ["echo"] }, prompt: "use echo", model, workspaceCwd: root, maxTurns: 3,
+      parentContext: { session: { sessionId: "parent", sessionDir: root } } as ToolUseContext,
+      dependencies: { tools, modelGateway: new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "test", maxRetries: 0 }), contextManager: { async build() { return { systemPrompt: "test", promptSections: [], userContext: { currentDate: "2026-11-03" }, systemContext: { cwd: root, platform: process.platform } }; } }, compactor: { async compact(messages: readonly Message[]) { return { messages: [...messages], changed: false }; } } },
+    }));
+    assert.equal(executed, 0);
+    assert.ok(events.some(e => e.type === "error" && /max_tokens/.test(e.error.message)));
+    assert.ok(events.some(e => e.type === "usage" && !e.provisional && e.usage.outputTokens === 5));
+    assert.ok(!events.some(e => e.type === "terminal" && e.reason === "completed"));
+  } finally { await local.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
 
 test("image input maps to native base64 source, without adding image generation", () => {
   const gif = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";

@@ -29,6 +29,18 @@ test('composer keeps model ID and usage in one compact row', async () => {
   } finally { await ui.close() }
 })
 
+test('Claude first-packet input usage corrects the context meter while output keeps streaming', async () => {
+  const snapshot = observabilitySnapshot({ modelSettings: { model: 'claude-haiku-5-5' } })
+  snapshot.status = { ...snapshot.status, phase: 'calling_model', usage: { inputTokens: 25600 }, streamedOutputTokens: 1234, metrics: { model: 'claude-haiku-5-5', estimatedInputTokens: 1000, contextWindowTokens: 256000, contextUsageRatio: 1000 / 256000 } }
+  const ui = await createObservabilityBrowser(snapshot)
+  try {
+    await ui.page.waitForFunction(() => document.querySelector('.composer-usage')?.textContent.includes('10.0%'))
+    const text = await ui.page.locator('.composer-usage').innerText()
+    assert.match(text, /输入\s*26k/i) // Existing compact formatter rounds values above 10k.
+    assert.match(text, /1\.2k/i)
+  } finally { await ui.close() }
+})
+
 test('composer shows unconfigured model placeholder without a label', async () => {
   const ui = await createObservabilityBrowser(observabilitySnapshot())
   try {

@@ -161,7 +161,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
         appendContext([event.message], options.runGeneration);
       }
       if (event.type === "tool.started") totalToolUseCount += 1;
-      if (event.type === "usage") lastUsage = event.usage;
+      if (event.type === "usage" && !event.provisional) lastUsage = event.usage;
       if (event.type === "terminal") terminalReason = event.reason;
       yield event;
     } } finally { settingsBoundary.stop(); }

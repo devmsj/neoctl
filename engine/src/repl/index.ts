@@ -375,7 +375,7 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   const settingsRevisions = new WeakMap<QueryEngine, string>();
   const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedSettings ? [appliedSettings.composition.main.api, appliedSettings.composition.image.api, appliedSettings.composition.search.api] : []);
   const taskStore = new TaskStore();
   const agentActivityStore = new AgentActivityStore();
   const secretStore = await SecretStore.open();
@@ -437,11 +437,10 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
       const revision = applied.revision;
       if (settingsRevisions.get(engine) === revision) return;
       const config = compositionModelConfig(applied.composition, applied.connections);
-      if (!config) return;
-      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision);
-      engine.setModelProvider({ modelGateway: gateway, model: config.model, reasoning: config.defaultReasoning });
+      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision, [applied.composition.main.api, applied.composition.image.api, applied.composition.search.api]);
+      engine.setModelProvider({ modelGateway: gateway, model: config?.model, reasoning: config?.defaultReasoning });
       registerCompositionTools(tools, applied.composition, applied.connections);
-      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config.defaultReasoning;
+      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config?.defaultReasoning;
       settingsRevisions.set(engine, revision);
     },
     contextManager: new SkillCatalogContextManager(skills),
@@ -1067,7 +1066,7 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
 
   const handleEvent = (event: AgentEvent) => {
     setStatus((current) => reduceStatus(current, event));
-    if (event.type === "usage") runtime.usage.add(event.usage);
+    if (event.type === "usage" && !event.provisional) runtime.usage.add(event.usage);
     if (event.type === "state") return;
     if (
       event.type === "context.metrics" ||
@@ -3023,7 +3022,7 @@ async function handleModelCommand(
             reasoning: config.defaultReasoning,
           });
           syncImageGenerationTool(runtime, config.provider);
-          runtime.defaultReasoning = config.defaultReasoning;
+          runtime.defaultReasoning = config?.defaultReasoning;
         }
       }
     } catch (error) {
@@ -3799,7 +3798,7 @@ async function submitLoginForm(
       reasoning: config.defaultReasoning,
     });
     syncImageGenerationTool(runtime, config.provider);
-    runtime.defaultReasoning = config.defaultReasoning;
+    runtime.defaultReasoning = config?.defaultReasoning;
     const metrics = await runtime.engine.contextMetrics();
     setStatus((current) => ({
       ...current,

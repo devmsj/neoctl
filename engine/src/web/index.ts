@@ -539,7 +539,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const settingsRevisions = new WeakMap<QueryEngine, string>();
   const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedSettings ? [appliedSettings.composition.main.api, appliedSettings.composition.image.api, appliedSettings.composition.search.api] : []);
   const taskStore = new TaskStore();
   const pluginCatalog = normalizeWebRuntimePlugins(options.externalPlugins);
   const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
@@ -619,13 +619,12 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
       const revision = applied.revision;
       if (settingsRevisions.get(engine) === revision) return;
       const config = compositionModelConfig(applied.composition, applied.connections);
-      if (!config) return;
-      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision);
-      engine.setModelProvider({ modelGateway: gateway, model: config.model, reasoning: config.defaultReasoning });
-      effectiveModelProviders.set(engine, config.provider);
+      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision, [applied.composition.main.api, applied.composition.image.api, applied.composition.search.api]);
+      engine.setModelProvider({ modelGateway: gateway, model: config?.model, reasoning: config?.defaultReasoning });
+      if (config) effectiveModelProviders.set(engine, config.provider);
       registerCompositionTools(tools, applied.composition, applied.connections);
       for (const name of ["web_search", "image_create"]) { const tool = tools.get(name); if (tool) catalogTool(tool, { source: "builtin" }); }
-      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config.defaultReasoning;
+      runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config?.defaultReasoning;
       settingsRevisions.set(engine, revision);
       captureTools();
     },
@@ -1922,7 +1921,7 @@ export class WebRepl {
       run.engine.setModelProvider({ modelGateway: this.runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
     }
     syncImageGenerationTool(this.runtime, config.provider);
-    this.runtime.defaultReasoning = config.defaultReasoning;
+    this.runtime.defaultReasoning = config?.defaultReasoning;
     const metrics = await this.runtime.engine.contextMetrics();
     this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
     this.publishRuntimeContext();
@@ -2262,7 +2261,7 @@ export class WebRepl {
 
   private reduce(event: AgentEvent): void {
     this.status = reduceStatus(this.status, event);
-    if (event.type === "usage") this.runtime.usage.add(event.usage);
+    if (event.type === "usage" && !event.provisional) this.runtime.usage.add(event.usage);
   }
 
   private finalizeLiveLine(id: number | undefined): void {
@@ -3585,7 +3584,7 @@ async function handleModelCommand(command: Extract<ReturnType<typeof parseReplCo
           runtime.agentRuntime.modelGateway = runtime.modelGateway;
           runtime.engine.setModelProvider({ modelGateway: runtime.modelGateway, model: config.model, reasoning: config.defaultReasoning });
           syncImageGenerationTool(runtime, config.provider);
-          runtime.defaultReasoning = config.defaultReasoning;
+          runtime.defaultReasoning = config?.defaultReasoning;
         }
       }
     } catch (error) {
@@ -3653,8 +3652,8 @@ const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]>
   anthropic: [
     { key: "apiKey", label: "API / CPA key", envKey: "ANTHROPIC_API_KEY", scope: "provider", required: true, secret: true },
     { key: "baseUrl", label: "Base URL", envKey: "ANTHROPIC_BASE_URL", scope: "provider", placeholder: "https://api.anthropic.com" },
-    { key: "model", label: "Model", envKey: "ANTHROPIC_MODEL", scope: "provider", required: true, placeholder: "claude-sonnet-4-6" },
-    ...SHARED_LOGIN_FIELDS.map(field => field.key === "reasoningEffort" ? { ...field, options: ["", "off", "none", "low", "medium", "high", "xhigh", "max"] } : field.key === "maxOutputTokens" ? { ...field, placeholder: "8192" } : field),
+    { key: "model", label: "Model", envKey: "ANTHROPIC_MODEL", scope: "provider", required: true, placeholder: "claude-sonnet-5-5" },
+    ...SHARED_LOGIN_FIELDS.map(field => field.key === "reasoningEffort" ? { ...field, options: ["", "off", "none", "low", "medium", "high", "xhigh", "max"] } : field.key === "maxOutputTokens" ? { ...field, placeholder: "模型库上限 / 未知模型 64000" } : field),
   ],
   openai: [
     { key: "apiKey", label: "API key", envKey: "OPENAI_API_KEY", scope: "provider", required: true, secret: true, placeholder: "sk-..." },
