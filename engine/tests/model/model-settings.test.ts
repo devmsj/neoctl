@@ -60,7 +60,7 @@ test("protocol/capability validation, reasoning and output constraints", () => {
   assert.equal(compositionModelConfig(c, [api])?.defaultReasoning, null);
   c.main.model = "unknown-model";
   assert.throws(() => validateComposition(c, [api]), /推理/);
-  c.main.model = "claude-sonnet-4-6";
+  c.main.model = "claude-sonnet-5-5";
   validateComposition(c, [{ ...api, kind: "anthropic" }]);
   assert.ok(!supportedEfforts(c.main.model, "anthropic").includes("minimal"));
   c.image.api = "a";
@@ -71,7 +71,7 @@ test("protocol/capability validation, reasoning and output constraints", () => {
 });
 
 test("image and search are independently available with an Anthropic main connection", () => {
-  const c = main(); c.main.model = "claude-sonnet-4-6"; c.image.api = "b"; c.search.api = "b";
+  const c = main(); c.main.model = "claude-sonnet-5-5"; c.image.api = "b"; c.search.api = "b";
   const connections = [{ ...api, kind: "anthropic" as const }, { ...api, id: "b" }];
   validateComposition(c, connections);
   const tools = new ToolRegistry(); registerCompositionTools(tools, c, connections);

@@ -1,4 +1,4 @@
-import { findModelMetadata, modelProtocols } from "./context-window.js";
+import { assertModelNotRemoved, findModelMetadata, modelProtocols } from "./context-window.js";
 import type { ModelGateway } from "./model-gateway.js";
 import { NotConfiguredModelGateway } from "./model-gateway.js";
 import { AnthropicAdapter } from "./anthropic-adapter.js";
@@ -12,6 +12,7 @@ export function createModelGatewayFromConfig(config: ModelProviderConfig | undef
   const stream = gateway.stream.bind(gateway);
   gateway.stream = (request) => {
     const model = request.model ?? config.model;
+    assertModelNotRemoved(model);
     const metadata = findModelMetadata(model);
     const reasoning = request.reasoning === undefined ? config.defaultReasoning : request.reasoning;
     if (metadata && !modelProtocols(metadata).includes(config.provider)) throw new Error(`模型 ${model} 不支持当前接口，请重新选择模型。`);

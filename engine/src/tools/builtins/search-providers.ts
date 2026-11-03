@@ -1,3 +1,4 @@
+import { assertModelNotRemoved } from "../../model/context-window.js";
 export type SearchProviderName = "exa" | "openai" | "gpt" | (string & {});
 
 export interface SearchToolInput {
@@ -139,6 +140,7 @@ export function createOpenAISearchProvider(config: OpenAISearchProviderConfig = 
   return {
     name: "openai",
     async search(input, signal) {
+      assertModelNotRemoved(model);
       if (!apiKey) throw new SearchProviderError("OpenAI search requires OPENAI_SEARCH_API_KEY or OPENAI_API_KEY", "openai");
       const response = await callOpenAIWebSearch({
         apiKey,

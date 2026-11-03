@@ -10,11 +10,14 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
   let tools = ['file_read', 'terminal_run', 'file_write', 'web_search'].map(name => ({ name, configuredEnabled: true, source: 'builtin' }))
   let plugins = ['下载', '视频播放', '较长名称的测试插件', '小红书编辑器'].map((name, i) => ({ id: 'p' + i, name, tools: ['one'], configuredEnabled: true }))
   let failCpa = false
+  let modelConfig = { revision: '1', connections: [{ id: 'a', name: 'Fixture', kind: 'openai', protocols: ['openai'] }], composition: { main: { api: 'a', protocol: 'responses', model: 'test-model', effort: 'high' }, image: { api: '' }, search: { api: '', exa: true } }, catalog: { models: [{ id: 'test-model', provider: 'openai', modelIds: ['test-model'], reasoning: true, reasoningEfforts: ['low', 'high'] }, { id: 'new-model', provider: 'openai', modelIds: ['new-model'], reasoning: true, reasoningEfforts: ['high'] }] } }
   const fixture = await createObservabilityBrowser(observabilitySnapshot(), async route => {
     const req = route.request(), url = new URL(req.url()), post = req.method() === 'POST'
     const data = post ? req.postDataJSON() : null
     if (post) writes.push({ path: url.pathname, data })
     let payload
+    if (url.pathname === '/api/model-settings') payload = modelConfig
+    if (url.pathname === '/api/model-settings/apply') { modelConfig = { ...modelConfig, composition: data.composition, activation: { deferred: false } }; payload = modelConfig }
     if (url.pathname === '/api/login') payload = post ? { ok: true } : { provider: url.searchParams.get('provider') || 'openai', providers: ['openai', 'anthropic'], fields: [{ key: 'model', label: 'Model' }], values: { model: 'test-model' } }
     if (url.pathname === '/api/cpa-quota') payload = { config: { url: 'http://localhost:8317', hasPassword: true }, quotas: [] }
     if (url.pathname === '/api/cpa-config') {
@@ -32,13 +35,14 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
   try {
     const { page } = fixture
     await openGlobalSettings(page)
-    const root = page.locator('.settings-page'), model = root.locator('.settings-model-card'), cpa = root.locator('.settings-cpa-card'), tool = root.locator('.settings-tools-card'), plugin = root.locator('.settings-plugins-card')
+    const root = page.locator('.settings-page'), model = root.locator('.model-settings-content'), cpa = root.locator('.settings-cpa-card'), tool = root.locator('.settings-tools-card'), plugin = root.locator('.settings-plugins-card')
     async function visit(name) {
       const back = root.getByRole('button', { name: '返回全局配置', exact: true })
       if (await back.count()) await back.click()
       await root.getByRole('button', { name, exact: true }).click()
       assert.equal(await root.locator('h2').innerText(), name)
-      assert.equal(await root.locator('form').count(), 1)
+      if (name === '模型') await model.getByRole('region', { name: '主模型配置', exact: true }).waitFor()
+      assert.equal(await root.locator('form').count(), name === '模型' ? 0 : 1)
     }
     await root.getByRole('button', { name: '模型', exact: true }).waitFor()
     assert.equal(await root.locator('form').count(), 0)
@@ -53,11 +57,9 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
     await plugin.getByRole('checkbox').first().uncheck()
     await visit('CPA')
     await cpa.getByRole('textbox', { name: 'URL', exact: true }).fill('http://example.test:8317')
-    // A provider switch must not reload the other persistence scopes.
+    // A model draft must not reload the other persistence scopes.
     await visit('模型')
-    await model.getByRole('button', { name: '供应商' }).click()
-    await model.getByRole('option', { name: /Anthropic/i }).click()
-    await page.waitForFunction(() => !document.querySelector('.settings-model-card .settings-save-button')?.disabled)
+    await model.getByRole('combobox', { name: '主模型', exact: true }).fill('new-model')
     assert.equal(await root.locator('h2').innerText(), '模型')
     await visit('工具')
     assert.equal(await tool.getByRole('checkbox').first().isChecked(), false)
@@ -66,10 +68,10 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
     await visit('CPA')
     assert.equal(await cpa.getByRole('textbox', { name: 'URL', exact: true }).inputValue(), 'http://example.test:8317')
     await visit('模型')
-    await model.getByRole('textbox').fill('new-model')
-    await model.getByRole('textbox').press('Enter')
-    await page.waitForFunction(() => document.querySelector('.toast')?.textContent === '模型配置已保存')
-    assert.deepEqual(writes.map(w => w.path), ['/api/login'])
+    await model.getByRole('combobox', { name: '主模型', exact: true }).fill('new-model')
+    await model.getByRole('button', { name: '应用', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.toast')?.textContent === '已生效')
+    assert.deepEqual(writes.map(w => w.path), ['/api/model-settings/apply'])
     await visit('CPA')
     await cpa.getByRole('textbox', { name: 'URL', exact: true }).press('Enter')
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent === 'CPA 配置已保存')
@@ -104,10 +106,15 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
       const buttons = []
       for (const name of ['模型', 'CPA', '工具', '插件']) {
         await visit(name)
+        if (name === '模型') {
+          assert.equal(await model.getByRole('button', { name: '应用', exact: true }).count(), 1)
+          assert.ok(await root.evaluate(el => el.scrollWidth <= el.clientWidth + 1))
+          continue
+        }
         buttons.push(await root.locator('.settings-save-button').evaluate(el => { const s = getComputedStyle(el); return [el.textContent.trim(), s.width, s.height, s.borderRadius, s.boxShadow, s.backgroundColor] }))
         assert.ok(await root.evaluate(el => el.scrollWidth <= el.clientWidth + 1))
       }
-      assert.equal(buttons.length, 4)
+      assert.equal(buttons.length, 3)
       assert.ok(buttons.every(b => b[0] === '' && JSON.stringify(b) === JSON.stringify(buttons[0])))
       const rows = await plugin.locator('.plugin-settings-row').evaluateAll(els => els.map(el => { const a = el.querySelector('.plugin-toggle').getBoundingClientRect(), b = el.querySelector('.plugin-uninstall').getBoundingClientRect(); return { toggleX: a.x, deleteX: b.x, gap: b.x - a.right, dy: Math.abs(a.y + a.height / 2 - b.y - b.height / 2) } }))
       assert.ok(rows.every(r => r.gap >= 0 && r.gap <= 12 && r.dy < 1), JSON.stringify(rows))

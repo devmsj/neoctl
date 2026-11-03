@@ -97,7 +97,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   let lastUsage: ModelUsage | undefined;
   let totalToolUseCount = 0;
 
-  const settingsBoundary = agentSettingsBoundary(options.dependencies.modelGateway);
+  const settingsBoundary = agentSettingsBoundary(options.dependencies.modelGateway, resolveAgentModel(options.agent, options.model));
   const dependencies = {
     acquireTurnResources: () => {
       const resources = options.dependencies.acquireTurnResources?.() ?? { tools: options.dependencies.tools, release() {} };
@@ -144,7 +144,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       maxOutputTokensOverride: options.maxOutputTokensOverride,
       maxTurns,
       queryOrigin: "subagent",
-      abortSignal: options.abortSignal,
+      abortSignal: options.abortSignal ? AbortSignal.any([options.abortSignal, settingsBoundary.signal]) : settingsBoundary.signal,
       workspaceCwd: options.workspaceCwd,
       stopOnAgentReport: options.agent.requiresReport === true,
       agentReportToolName: options.agent.reportToolName,

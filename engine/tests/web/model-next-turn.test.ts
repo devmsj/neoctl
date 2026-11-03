@@ -33,7 +33,7 @@ test("apply during streaming switches connection/protocol/tools at next API turn
     } else {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.end([
-        { type: "message_start", message: { id: "new_message", type: "message", role: "assistant", model: "claude-fable-5", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+        { type: "message_start", message: { id: "new_message", type: "message", role: "assistant", model: "claude-fable-5-1", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
         { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
         { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } },
         { type: "content_block_stop", index: 0 },
@@ -59,11 +59,11 @@ test("apply during streaming switches connection/protocol/tools at next API turn
     assert.equal(publishModelSettings().deferred, true);
     assert.ok(!runtime.engine.getActiveModelCatalog().models.find(m => m.id === metadata.id)?.reasoningEfforts?.includes("custom-live"));
     assert.ok(idle.getActiveModelCatalog().models.find(m => m.id === metadata.id)?.reasoningEfforts?.includes("custom-live"));
-    const c = structuredClone(state.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5"; c.image.api = ""; c.search.api = ""; c.search.exa = false;
+    const c = structuredClone(state.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5-1"; c.image.api = ""; c.search.api = ""; c.search.exa = false;
     state = store.apply(state.revision, c);
     assert.equal(publishModelSettings().deferred, true);
     assert.equal(runtime.engine.getModelSettings().model, "gpt-6.1-sol");
-    assert.equal(idle.getModelSettings().model, "claude-fable-5");
+    assert.equal(idle.getModelSettings().model, "claude-fable-5-1");
     // A sibling adopting the new global plan must not change this streaming session's catalog.
     const during = repl.snapshot();
     assert.equal(during.catalog?.modelProtocol, "openai");
@@ -72,7 +72,7 @@ test("apply during streaming switches connection/protocol/tools at next API turn
     assert.equal(errors.length, 0, JSON.stringify(errors));
     assert.equal(requests.length, 2);
     assert.equal(requests[0]!.url, "/v1/responses"); assert.equal(requests[1]!.url, "/v1/messages");
-    assert.equal(requests[1]!.body.model, "claude-fable-5");
+    assert.equal(requests[1]!.body.model, "claude-fable-5-1");
     assert.equal(requests[1]!.body.previous_response_id, undefined);
     assert.ok(!requests[1]!.body.tools.some((t: any) => t.name === "image_create" || t.name === "web_search"));
     assert.ok(requests[1]!.body.messages.some((m: any) => m.content.some((b: any) => b.type === "tool_result")));

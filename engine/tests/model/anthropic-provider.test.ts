@@ -19,7 +19,7 @@ import type { ToolUseContext } from "../../src/tools/tool.js";
 import { ModelDrivenCompactor } from "../../src/context/compaction.js";
 import { WebRepl } from "../../src/web/index.js";
 
-const model = "claude-sonnet-4-6";
+const model = "claude-sonnet-5-5";
 const tool = { name: "echo", description: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } };
 const user = () => createTextMessage("user", "hello");
 const request = (patch: Partial<ModelRequest> = {}): ModelRequest => ({ messages: [user()], tools: [], stream: true, ...patch });
@@ -95,7 +95,7 @@ test("parallel tool results precede runtime text and preserve error status", () 
 test("thinking settings are native, model-aware and validate invalid combinations", () => {
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model }).thinking, { type: "adaptive" });
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model: "claude-haiku-4-5" }).thinking, { type: "enabled", budget_tokens: 4096 });
-  assert.deepEqual(buildAnthropicRequest(request({ reasoning: null }), { model }).thinking, { type: "disabled" });
+  assert.deepEqual(buildAnthropicRequest(request({ reasoning: null }), { model: "claude-sonnet-4-6" }).thinking, { type: "disabled" });
   assert.throws(() => buildAnthropicRequest(request({ reasoning: { effort: "high" }, maxOutputTokens: 1024 }), { model: "claude-haiku-4-5" }), /budget/);
   assert.throws(() => buildAnthropicRequest(request({ reasoning: null }), { model: "claude-opus-5-5" }), /cannot be disabled/);
   assert.throws(() => buildAnthropicRequest(request({ tools: [tool], toolChoice: "required", reasoning: { effort: "high" } }), { model }), /auto or none/);
@@ -104,7 +104,7 @@ test("thinking settings are native, model-aware and validate invalid combination
 });
 
 test("known Claude model limits reject unsupported effort and excessive output locally", () => {
-  assert.throws(() => buildAnthropicRequest(request({ reasoning: { effort: "xhigh" } }), { model }), /does not support effort/);
+  assert.throws(() => buildAnthropicRequest(request({ reasoning: { effort: "none" } }), { model }), /does not support effort/);
   assert.throws(() => buildAnthropicRequest(request({ maxOutputTokens: 1000000 }), { model }), /max_tokens exceeds/);
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" }, maxOutputTokens: 2500 }), { model: "claude-haiku-4-5" }).thinking, { type: "enabled", budget_tokens: 2499 });
   assert.throws(() => buildAnthropicRequest(request({ reasoning: { effort: "high" }, maxOutputTokens: 2500 }), { model: "claude-haiku-4-5", thinkingBudgetTokens: 4096 }), /budget/);
@@ -121,7 +121,7 @@ test("non-streaming malformed or incomplete messages never publish executable ca
 
 test("schema output and tool choice mappings do not copy OpenAI wrapper fields", () => {
   const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"], additionalProperties: false };
-  const body = buildAnthropicRequest(request({ tools: [tool], toolChoice: { type: "function", name: "echo" }, textFormat: { type: "json_schema", schema, name: "response", strict: true } }), { model });
+  const body = buildAnthropicRequest(request({ tools: [tool], toolChoice: { type: "function", name: "echo" }, textFormat: { type: "json_schema", schema, name: "response", strict: true } }), { model: "claude-sonnet-4-6" });
   assert.deepEqual(body.tool_choice, { type: "tool", name: "echo" });
   assert.deepEqual(body.output_config, { format: { type: "json_schema", schema } });
   assert.throws(() => buildAnthropicRequest(request({ textFormat: { type: "json_object" } }), { model }), /json_schema/);

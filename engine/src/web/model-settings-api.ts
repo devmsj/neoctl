@@ -1,10 +1,10 @@
-import { publishModelSettings } from "../model/settings-sync.js";
+import { publishModelSettings, modelUsage, interruptModelUsers } from "../model/settings-sync.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ModelSettingsStore, compositionModelConfig, validateComposition, type Composition } from "../model/settings-store.js";
-import { saveModelMetadata, supportsImageInput } from "../model/context-window.js";
+import { saveModelMetadata, deleteModelMetadata, modelMetadataIds, loadModelCatalog, ModelMetadataConflict, supportsImageInput } from "../model/context-window.js";
 import { createModelGatewayFromConfig } from "../model/provider-factory.js";
 import { compositionProviders } from "../model/composition-runtime.js";
 import { createTextMessage, type Message, type ToolUseRequest } from "../types/messages.js";
@@ -39,14 +39,23 @@ export async function testModelComposition(c: Composition, connections: Paramete
         }
         const tools = id === "main" ? [{ name: "configuration_probe", description: "Return the supplied value.", inputSchema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false } }] : [];
         const messages: Message[] = [user], uses: ToolUseRequest[] = [];
+        const collectUse = (use: ToolUseRequest) => {
+          const existing = uses.find(item => item.id === use.id);
+          if (!existing) uses.push(use);
+          else if (existing.name !== use.name || JSON.stringify(existing.input) !== JSON.stringify(use.input)) throw new Error("同一工具调用 ID 的内容不一致。");
+        };
         const request: ModelRequest = { model: config.model, messages, tools, stream: true, cancellation: signal };
         let text = "", completed = false;
         for await (const event of gateway.stream(request)) {
           if (event.type === "error") throw event.error;
           if (event.type === "response_incomplete") throw new Error(`回复不完整：${event.reason}`);
-          if (event.type === "assistant_message") messages.push(event.message);
+          if (event.type === "assistant_message") {
+            messages.push(event.message);
+            // Messages adapters publish validated calls inside the completed message.
+            for (const block of event.message.blocks) if (block.type === "tool_use") collectUse({ id: block.id, name: block.name, input: block.input });
+          }
           if (event.type === "assistant_delta") text += event.text;
-          if (event.type === "tool_use") uses.push(event.toolUse);
+          if (event.type === "tool_use") collectUse(event.toolUse);
           if (event.type === "response_completed") completed = true;
         }
         if (id === "main") {
@@ -102,7 +111,22 @@ export async function handleModelSettingsRequest(req: IncomingMessage, res: Serv
     if (url.pathname.endsWith("/connection")) send(store.publicState(store.saveConnection(body.revision, body.connection)));
     else if (url.pathname.endsWith("/connection/delete")) send(store.publicState(store.removeConnection(body.revision, body.id)));
     else if (url.pathname.endsWith("/apply")) { const state = store.apply(body.revision, body.composition); send({ ...store.publicState(state), activation: publishModelSettings() }); }
-    else if (url.pathname.endsWith("/metadata")) { saveModelMetadata(body.entry, body.original); send({ ...store.publicState(), activation: publishModelSettings() }); }
+    else if (url.pathname.endsWith("/metadata")) { saveModelMetadata(body.entry, body.original, body.catalogRevision); send({ ...store.publicState(), activation: publishModelSettings() }); }
+    else if (url.pathname.endsWith("/metadata/usage")) {
+      const catalog = loadModelCatalog();
+      const entry = catalog.models.find(m => m.id === body.id);
+      if (!entry) throw new ModelMetadataConflict("模型条目已不存在，请重新加载。");
+      send({ usage: modelUsage(modelMetadataIds(entry)), original: entry, catalogRevision: catalog.revision });
+    }
+    else if (url.pathname.endsWith("/metadata/delete")) {
+      if (body.confirmed !== true || typeof body.catalogRevision !== "string") throw new Error("请确认删除模型。");
+      const ids = modelMetadataIds(body.original);
+      deleteModelMetadata(body.original, body.catalogRevision, () => {
+        if (modelUsage(ids).holders > 0 && body.interruptConfirmed !== true) throw new ModelMetadataConflict("有会话占用该模型，删除会中断会话。请重新确认删除。");
+      });
+      interruptModelUsers(ids);
+      send({ ...store.publicState(), activation: publishModelSettings() });
+    }
     else if (url.pathname.endsWith("/test")) {
       const state = store.initialize(); if (state.revision !== body.revision) throw new Error("API 配置已更新，请重新加载后检测。");
       const controller = new AbortController(); const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on("close", abort);
@@ -110,6 +134,6 @@ export async function handleModelSettingsRequest(req: IncomingMessage, res: Serv
       try { send({ results: await testModelComposition(body.composition, state.connections, body.selection, body.imageConsent === true, controller.signal) }); }
       finally { clearTimeout(timeout); res.off("close", abort); }
     } else send({ error: "not found" }, 404);
-  } catch (e) { send({ error: e instanceof Error ? e.message : String(e) }, 400); }
+  } catch (e) { send({ error: e instanceof Error ? e.message : String(e) }, e instanceof ModelMetadataConflict ? 409 : 400); }
   return true;
 }

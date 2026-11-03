@@ -3,6 +3,27 @@ import { modelSettingsHome } from "./settings-files.js";
 export interface SettingsConsumer {
   isModelConfigurationBusy(): boolean;
   refreshModelConfigurationIfIdle(): void;
+  getHeldModelIds?(): string[];
+  interruptForModelRemoval?(): void;
+}
+
+/** Counts live holders in this service, including other isolated users and child threads. */
+export function modelUsage(ids: readonly string[]): { holders: number; running: number } {
+  const matches = matchingConsumers(ids);
+  return { holders: matches.length, running: matches.filter(c => c.isModelConfigurationBusy()).length };
+}
+export function interruptModelUsers(ids: readonly string[]): void {
+  for (const consumer of matchingConsumers(ids)) consumer.interruptForModelRemoval?.();
+}
+function matchingConsumers(ids: readonly string[]): SettingsConsumer[] {
+  const wanted = new Set(ids.map(id => id.trim().toLowerCase()));
+  const result: SettingsConsumer[] = [];
+  for (const entry of consumers) {
+    const consumer = entry.ref.deref();
+    if (!consumer) { consumers.delete(entry); continue; }
+    if (entry.home === modelSettingsHome() && consumer.getHeldModelIds?.().some(id => wanted.has(id.trim().toLowerCase()))) result.push(consumer);
+  }
+  return result;
 }
 const consumers = new Set<{ home: string; ref: WeakRef<SettingsConsumer> }>();
 const listeners = new Set<{ home: string; ref: WeakRef<() => void> }>();

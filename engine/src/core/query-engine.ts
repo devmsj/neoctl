@@ -147,6 +147,8 @@ export class QueryEngine {
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
   private running = false;
+  private modelRemovalController?: AbortController;
+  private compactRemovalController?: AbortController;
   private pendingSessionSettings: PendingSessionSettings = {};
   private sessionPromptState?: SessionPromptState;
   private activeSessionPrompt: SessionPromptState | null = null;
@@ -336,6 +338,9 @@ export class QueryEngine {
   private async *runQuery(text: string | undefined, options: { abortSignal?: AbortSignal; blocks?: MessageBlock[]; displayText?: string; stopAfterTurn?: QueryOptions["stopAfterTurn"] } = {}): AsyncGenerator<AgentEvent> {
     if (this.running) throw new Error("query engine is already running");
     this.running = true;
+    const removalController = new AbortController();
+    this.modelRemovalController = removalController;
+    options = { ...options, abortSignal: options.abortSignal ? AbortSignal.any([options.abortSignal, removalController.signal]) : removalController.signal };
     let terminalReceived = false;
     let queryAccepted = text !== undefined;
     try {
@@ -491,7 +496,7 @@ export class QueryEngine {
         }
         await this.flushSessionSettings();
       }
-      finally { this.running = false; }
+      finally { this.running = false; this.modelRemovalController = undefined; }
     }
   }
 
@@ -515,18 +520,21 @@ export class QueryEngine {
       await this.initialize();
       if (normalized.compact) delete this.pendingSessionSettings.compact;
       const previousExecution = this.getExecutionState();
+      const removalController = normalized.compact ? new AbortController() : undefined;
+      this.compactRemovalController = removalController;
+      const signal = removalController ? (options.abortSignal ? AbortSignal.any([options.abortSignal, removalController.signal]) : removalController.signal) : options.abortSignal;
       if (normalized.compact) this.setExecutionState({ status: "running", resumeCompaction: true });
       try {
-        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(options.abortSignal), options.onCompactionDelta);
-        options.abortSignal?.throwIfAborted();
+        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(signal), options.onCompactionDelta);
+        signal?.throwIfAborted();
         if (update?.compaction) this.applyCompactionResult(update.compaction);
         if (normalized.compact) this.setExecutionState({ status: previousExecution?.status ?? "completed", reason: previousExecution?.reason });
         return { deferred: false, ...(update?.compaction ? { compaction: update.compaction } : {}) };
       } catch (error) {
-        if (normalized.compact) this.setExecutionState(options.abortSignal?.aborted
+        if (normalized.compact) this.setExecutionState(signal?.aborted
           ? { status: "paused", reason: "user_pause" } : { status: "interrupted", reason: "compaction_failed" });
         throw error;
-      }
+      } finally { if (this.compactRemovalController === removalController) this.compactRemovalController = undefined; }
     });
     // A rejected mutation must not poison subsequent settings or user input.
     this.settingsMutation = mutation.catch(() => undefined);
@@ -637,10 +645,18 @@ export class QueryEngine {
     this.currentReasoning = settings.reasoning === null ? null : cloneReasoningConfig(settings.reasoning);
   }
 
-  isModelConfigurationBusy(): boolean { return this.running; }
+  getHeldModelIds(): string[] {
+    return [this.currentModel, this.pendingSessionSettings.model].filter((id): id is string => Boolean(id));
+  }
+  interruptForModelRemoval(): void {
+    this.modelRemovalController?.abort(new Error("模型已被删除，请重新选择模型后继续会话。"));
+    this.compactRemovalController?.abort(new Error("模型已被删除，压缩已中断。"));
+    this.cancelPendingTitleWork();
+  }
+  isModelConfigurationBusy(): boolean { return this.running || Boolean(this.compactRemovalController); }
   getActiveModelCatalog(): ModelCatalog { return this.activeModelCatalog ?? loadModelCatalog(); }
   refreshModelConfigurationIfIdle(): void {
-    if (!this.running && !this.simulation) {
+    if (!this.isModelConfigurationBusy() && !this.simulation) {
       this.options.beforeQuery?.(this);
       this.activeModelCatalog = loadModelCatalog();
     }
@@ -725,18 +741,25 @@ export class QueryEngine {
     await this.initialize();
     if (options.abortSignal?.aborted) return { messages: this.getHistoryMessages(), changed: false, reason: "none" };
 
-    const compactor = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
-    const contextBudget = {
-      ...this.options.contextBudget,
-      imageRegistry: this.imageStore?.snapshot(),
-      contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
-    };
-    const result = withCompactionReport(
-      await (compactor.pureCompact?.(this.history, contextBudget) ?? { messages: this.getHistoryMessages(), changed: false, reason: "none" as const }),
-      this.history.length,
-    );
-    this.applyCompactionResult(result);
-    return result;
+    const controller = new AbortController();
+    this.compactRemovalController = controller;
+    const signal = options.abortSignal ? AbortSignal.any([options.abortSignal, controller.signal]) : controller.signal;
+    try {
+      const compactor = this.simulation?.compactor ?? this.options.compactor ?? new ModelDrivenCompactor(this.currentModelGateway);
+      const contextBudget = {
+        ...this.options.contextBudget,
+        abortSignal: signal,
+        imageRegistry: this.imageStore?.snapshot(),
+        contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens,
+      };
+      const result = withCompactionReport(
+        await abortableWork(() => compactor.pureCompact?.(this.history, contextBudget) ?? Promise.resolve({ messages: this.getHistoryMessages(), changed: false, reason: "none" as const }), signal),
+        this.history.length,
+      );
+      signal.throwIfAborted();
+      this.applyCompactionResult(result);
+      return result;
+    } finally { if (this.compactRemovalController === controller) this.compactRemovalController = undefined; }
   }
 
   snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; contextWindowTokensOverride?: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {

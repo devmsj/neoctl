@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { assertModelNotRemoved } from "../../model/context-window.js";
 import { getContextImageStore, imageRegistryForContext, resolveContextImage } from "../../core/session-images.js";
 import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
@@ -174,7 +175,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
       return true;
     },
     async call(input, context, callOptions): Promise<ToolResult> {
-      try { input = normalize(input); }
+      try { input = normalize(input); assertModelNotRemoved(input.model || DEFAULT_IMAGE_MODEL); }
       catch (error) { return { ok: false, output: { provider: "openai", error: error instanceof Error ? error.message : String(error) } }; }
       const warnings = imageInputWarnings(input as unknown as Record<string, unknown>);
       const apiKey = resolveApiKey(options.apiKey);

@@ -22,7 +22,7 @@ test("legacy connection migration, dual protocols, immutable apply and explicit 
   let s = store.initialize({ OPENAI_API_KEY: "test", OPENAI_MODEL: "gpt-6.1-sol" });
   assert.deepEqual(connectionProtocols(s.connections[0]!), ["openai"]);
   s = store.saveConnection(s.revision, { ...s.connections[0]!, protocols: ["openai", "anthropic"], baseUrl: "https://example.invalid/api" });
-  const c = structuredClone(s.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5";
+  const c = structuredClone(s.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5-1";
   c.image.api = c.main.api; c.search.api = c.main.api;
   validateComposition(c, s.connections);
   assert.equal(compositionModelConfig(c, s.connections)?.provider, "anthropic");
@@ -36,7 +36,7 @@ test("legacy connection migration, dual protocols, immutable apply and explicit 
 });
 
 test("custom effort values persist without enum filtering and adaptive Messages forwards them", () => {
-  const original = structuredClone(findModelMetadata("claude-fable-5")!);
+  const original = structuredClone(findModelMetadata("claude-fable-5-1")!);
   const entry = { ...original, protocols: ["openai", "anthropic"] as Array<"openai" | "anthropic">, reasoningEfforts: ["high", "ultra-v2"] };
   saveModelMetadata(entry, original);
   assert.deepEqual(findModelMetadata(entry.id)?.reasoningEfforts, ["high", "ultra-v2"]);

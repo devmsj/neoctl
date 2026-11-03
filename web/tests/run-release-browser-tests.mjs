@@ -32,6 +32,8 @@ const files = [
   'composer-ime-browser.test.mjs',
   'small-desktop-browser.test.mjs',
   'global-settings-browser.test.mjs',
+  'model-metadata-browser.test.mjs',
+  'reasoning-slider-browser.test.mjs',
   'session-loading-browser.test.mjs',
   'session-pagination-browser.test.mjs',
   'session-quick-list-browser.test.mjs',

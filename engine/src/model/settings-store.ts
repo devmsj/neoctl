@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readModelProviderConfig, type ModelProviderConfig } from "./config.js";
-import { findModelMetadata, loadModelCatalog, modelProtocols } from "./context-window.js";
+import { assertModelNotRemoved, findModelMetadata, loadModelCatalog, modelProtocols } from "./context-window.js";
 import type { ReasoningEffort } from "./model-gateway.js";
 
 import { modelSettingsHome, atomicJson, locked } from "./settings-files.js";
@@ -43,6 +43,7 @@ export function validateComposition(c: Composition, connections: ApiConnection[]
     const b = c[slot]; if (typeof b.api !== "string" || typeof b.model !== "string") throw new Error("API 与模型必须是字符串。");
     if (b.api && !byId(b.api)) throw new Error("API 配置不存在。");
     if (b.api && slot !== "main" && !connectionProtocols(byId(b.api)!).includes("openai")) throw new Error("图片生成和 OpenAI 搜索只支持 OpenAI 兼容连接。");
+    if (b.api) assertModelNotRemoved(b.model);
     if (b.api && !b.model.trim()) throw new Error("请输入模型 ID。");
     if (b.api && !byId(b.api)!.key.trim()) throw new Error("请填写 API Key。");
     optionalInteger(b.timeout, "请求超时");

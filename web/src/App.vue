@@ -29,6 +29,7 @@ import TerminalOutputReader from './TerminalOutputReader.vue'
 import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import ChromeIcon from './components/ChromeIcon.vue'
+import ReasoningSlider from './components/ReasoningSlider.vue'
 import LoadingRing from './components/LoadingRing.vue'
 import SessionQuickList from './components/SessionQuickList.vue'
 import ControlVisibility from './components/ControlVisibility.vue'
@@ -5860,13 +5861,7 @@ function createMobileSession() {
               <span>{{ model }}</span>
             </label>
           </div>
-          <fieldset class="session-reasoning-options" :disabled="state.modelSaving">
-            <legend>推理强度</legend>
-            <label v-for="effort in modelReasoningOptions" :key="effort" :class="{ selected: state.reasoningDraft === effort }">
-              <input v-model="state.reasoningDraft" type="radio" name="session-reasoning" :value="effort" />
-              <span>{{ effort }}</span>
-            </label>
-          </fieldset>
+          <ReasoningSlider v-model="state.reasoningDraft" :options="modelReasoningOptions" :disabled="state.modelSaving" :empty-label="state.catalog.modelReasoningEnabled?.[state.modelDraft] === false ? '不支持推理' : '未配置档位'" />
           <p v-if="state.modelError" class="context-window-error" role="alert">{{ state.modelError }}</p>
           <div class="context-window-actions">
             <button type="button" class="ghost" data-tooltip="取消" aria-label="取消" @click="closeModelModal"><ChromeIcon name="close" /></button>

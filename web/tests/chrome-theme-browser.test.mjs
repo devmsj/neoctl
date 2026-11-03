@@ -38,6 +38,7 @@ try {
    const sessions=all.filter(item=>item.title.includes(params.get('q')||''))
    json={sessions,runningSessionIds:[],page:1,pageSize:10,total:sessions.length,totalCount:all.length,totalPages:1}
   }
+  else if(path==='/api/model-settings')json={revision:'1',connections:[{id:'a',name:'Fixture',kind:'openai',protocols:['openai']}],composition:{main:{api:'a',protocol:'responses',model:'fixture',effort:'high'},image:{api:''},search:{api:'',exa:true}},catalog:{models:[{id:'fixture',provider:'openai',modelIds:['fixture'],reasoning:true,reasoningEfforts:['high'],imageInput:true}]}}
   else if(path==='/api/login')json={provider:'openai',providers:['openai','anthropic'],fields:[{key:'baseUrl',label:'Base URL'},{key:'apiKey',label:'API Key',secret:true},{key:'model',label:'模型',options:['gpt-5.6-luna']}],values:{baseUrl:'https://example.invalid/v1',model:'gpt-5.6-luna'}}
   else if(path==='/api/tools')json={items:[{name:'file_read',source:'builtin',configuredEnabled:true},{name:'framework_feedback',source:'builtin',configuredEnabled:false}]}
   else if(path==='/api/plugins')json={items:[{id:'sample',name:'工作区插件',tools:['sample_tool'],configuredEnabled:true}],installationSupported:false}
@@ -81,8 +82,8 @@ try {
  await openGlobalSettings(page)
  await page.getByRole('button',{name:'模型',exact:true}).click()
  await page.locator('.settings-form').waitFor()
- assert.equal((await styleOf('.settings-card')).border,'1px')
- assert.equal((await styleOf('.settings-card')).shadow,'none')
+ assert.equal((await styleOf('.composition-panel')).border,'1px')
+ assert.equal((await styleOf('.composition-panel')).shadow,'none')
  assert.equal((await styleOf('.settings-form input')).background,rgb(surfaces.surface))
  assert.equal(await page.locator('.history-view-setting').count(),0,'history view modification is hidden')
  assert.equal(await page.getByText('历史展示',{exact:true}).count(),0)
