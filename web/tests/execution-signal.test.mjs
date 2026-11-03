@@ -4,7 +4,10 @@ import { executionSignal, waitDotStyle } from '../src/execution-signal.mjs'
 test('signal follows the selected observation rather than historical/current tool rotation', () => {
  const status={phase:'running_tools',currentTool:{name:'plan_update'}}
  assert.deepEqual(executionSignal(status,'',false,{toolName:'terminal_control'}),{mode:'tools',tools:['terminal_control']})
- assert.deepEqual(executionSignal(status,'',false,{kind:'thinking'}),{mode:'tools',tools:['thinking']})
+ assert.deepEqual(executionSignal(status,'',false,{kind:'thinking',live:false}),{mode:'tools',tools:['plan_update']})
+ assert.deepEqual(executionSignal({phase:'thinking',modelOutput:{kind:'thinking'}},'',false,{kind:'thinking',live:true}),{mode:'tools',tools:['thinking']})
+ assert.deepEqual(executionSignal({phase:'calling_model'},'',false,{kind:'thinking',live:true}),{mode:'waiting',tools:[]})
+ assert.deepEqual(executionSignal({phase:'calling_model',modelOutput:{kind:'text'}},'',false,{kind:'thinking',live:true}),{mode:'working',tools:[]})
  assert.deepEqual(executionSignal(status),{mode:'tools',tools:['plan_update']})
  assert.deepEqual(executionSignal({phase:'calling_model',modelOutput:{kind:'text'}}),{mode:'working',tools:[]})
 })

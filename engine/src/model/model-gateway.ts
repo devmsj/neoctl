@@ -54,6 +54,8 @@ export type ModelStreamEvent =
   /** Provider-confirmed text-part boundary; the response may continue with reasoning/tools. */
   | { type: "assistant_text_done" }
   | { type: "thinking_delta"; text: string }
+  /** Readable thinking has ended; later text/tools must not keep its UI active. */
+  | { type: "thinking_done" }
   | { type: "assistant_message"; message: Message }
   | { type: "tool_use"; toolUse: ToolUseRequest }
   /** Tool-call generation has begun; arguments may be absent. Not tool execution. */
@@ -77,6 +79,7 @@ export class NotConfiguredModelGateway implements ModelGateway {
     const lastUserText = request.messages
       .slice()
       .reverse()
+      .filter((message) => message.role === "user" && !message.isMeta)
       .flatMap((message) => message.blocks)
       .find((block) => block.type === "text")?.text;
 

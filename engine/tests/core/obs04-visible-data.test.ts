@@ -135,7 +135,7 @@ test("child transcript tags only new query messages with actual generation; rest
     const entries = (await readFile(child.transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as SessionTranscriptEntry);
     const rows = entries.filter((entry): entry is Extract<SessionTranscriptEntry, { type: "message" }> => entry.type === "message");
     const tagged = rows.filter((entry) => entry.runGeneration !== undefined);
-    assert.deepEqual(tagged.map((entry) => entry.runGeneration), [7, 7, 7, 11]);
+    assert.deepEqual(tagged.filter(entry => !entry.message.metadata?.runtimeTime && !entry.message.metadata?.runtimeContextUpdate).map((entry) => entry.runGeneration), [7, 7, 7, 11]);
     assert(tagged.some((entry) => entry.message.role === "tool_result" && entry.runGeneration === 7));
     assert.equal(visibleText(tagged.filter((entry) => entry.runGeneration === 7).map((entry) => entry.message)), "ROUND_ONE");
     assert.equal(visibleText(tagged.filter((entry) => entry.runGeneration === 11).map((entry) => entry.message)), "");

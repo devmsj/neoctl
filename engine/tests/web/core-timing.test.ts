@@ -134,7 +134,7 @@ test("early tool activity reaches snapshot/SSE without argument leakage or token
     handle({ type: "assistant.delta", text: "hello" });
     assert.deepEqual(repl.snapshot(false).status.modelOutput, { kind: "text" });
     handle({ type: "thinking.delta", text: "reasoning" });
-    assert.equal(repl.snapshot(false).status.modelOutput, undefined);
+    assert.deepEqual(repl.snapshot(false).status.modelOutput, { kind: "thinking" });
   } finally { response.emit("close"); }
 });
 

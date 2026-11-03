@@ -50,9 +50,9 @@ test("pause returns synchronously; stuck model is aborted; continue/new input is
   assert.equal((await repl.submit("不要继续旧任务，先解释原因")).ok, true);
   assert.equal(repl.continueRun().ok, false, "duplicate click must not schedule another query");
   await waitFor(() => requests.length === 2 && !repl.snapshot().busy);
-  assert.match(JSON.stringify(requests[1]), /用户主动暂停/);
+  assert.match(JSON.stringify(requests[1]), /The user paused/);
   assert.match(JSON.stringify(requests[1]), /不要继续旧任务/);
-  assert.match(JSON.stringify(requests[1]), /避免重复执行/);
+  assert.match(JSON.stringify(requests[1]), /before repeating side effects/);
   assert.equal(repl.snapshot().runControl.canResume, false);
   stuck.resolve();
 });
@@ -70,7 +70,7 @@ test("network failure remains resumable; continued request carries unexpected te
   assert.equal(engine.getExecutionState()?.reason, "model_error");
   assert.equal(repl.continueRun().ok, true);
   await waitFor(() => requests.length === 2 && !repl.snapshot().busy);
-  assert.match(JSON.stringify(requests[1]), /意外终止/);
+  assert.match(JSON.stringify(requests[1]), /ended unexpectedly/);
   assert.match(JSON.stringify(requests[1]), /model_error/);
   const recovery = requests[1].messages.find(message => message.blocks.some(block => block.type === 'text' && block.text.includes('executionRecovery')))!;
   assert.equal(recovery.isMeta, true);
@@ -79,7 +79,7 @@ test("network failure remains resumable; continued request carries unexpected te
   assert.match(JSON.stringify(recovery), /System context/);
   assert.equal(engine.getHistoryMessages().filter(message => message.role === 'user' && !message.isMeta).length, 1);
   assert.equal(repl.snapshot().lines.filter(line => line.kind === 'user').length, 1);
-  assert.ok(!JSON.stringify(engine.getHistoryMessages()).includes('executionRecovery'));
+  assert.ok(engine.getHistoryMessages().some(message => message.role === 'system' && message.metadata?.runtimeRequestContext));
   assert.equal(repl.continueRun().ok, false, "completed query must not resume");
   const completed = engine.getExecutionState();
   await assert.rejects(drain(engine.continueExecution()), /No interrupted execution/);

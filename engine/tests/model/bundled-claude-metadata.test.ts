@@ -43,7 +43,7 @@ test("every advertised Claude effort maps to native parameters without silently 
   for (const model of loadModelCatalog().models.filter(m => m.provider === "anthropic")) {
     for (const effort of model.reasoningEfforts!) {
       const body = buildAnthropicRequest({ messages: [createTextMessage("user", "hello")], tools: [], stream: true, reasoning: { effort } }, { model: model.id });
-      assert.deepEqual(body.thinking, { type: effort === "none" ? "disabled" : "adaptive" });
+      assert.deepEqual(body.thinking, effort === "none" ? { type: "disabled" } : { type: "adaptive", display: "summarized" });
       assert.deepEqual(body.output_config, effort === "none" ? undefined : { effort });
     }
     assert.throws(() => buildAnthropicRequest({ messages: [createTextMessage("user", "hello")], tools: [], stream: true, maxOutputTokens: 128_001 }, { model: model.id }), /max_tokens exceeds/);

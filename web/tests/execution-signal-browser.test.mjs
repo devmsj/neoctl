@@ -38,12 +38,25 @@ test('flashing icon stays with the observation while new updates and pinned prev
   await p.waitForTimeout(2700)
   assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'读取文件','must not rotate to plan')
   snapshot.lines.push({id:4,kind:'thinking',text:'current thought',live:true})
+  snapshot.status={phase:'thinking',modelOutput:{kind:'thinking'}}
   await p.evaluate(s=>window.signalEvents.dispatchEvent(new MessageEvent('sync',{data:JSON.stringify(s)})),snapshot)
   await p.locator('.tool-observation.is-main').getByText('current thought',{exact:true}).waitFor()
   assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'思考')
   await p.locator('.thinking-activity-row').last().click()
   await p.locator('.tool-observation.is-pinned').getByText('current thought',{exact:true}).waitFor()
   assert.equal(await p.locator('.execution-signal .signal-tool').getAttribute('aria-label'),'思考')
+  snapshot.lines.at(-1).live=false
+  snapshot.status={phase:'calling_model'}
+  await p.evaluate(s=>window.signalEvents.dispatchEvent(new MessageEvent('sync',{data:JSON.stringify(s)})),snapshot)
+  await p.waitForFunction(()=>!document.querySelector('.thinking-activity-row .activity-icon.active') && !document.querySelector('.execution-signal .signal-tool[aria-label="思考"]'))
+  assert.equal(await p.locator('.tool-observation.is-pinned').getByText('current thought',{exact:true}).count(),1,'completed thought stays readable')
+  assert.ok((await p.locator('.thinking-activity-row .motion').evaluateAll(es=>es.map(e=>getComputedStyle(e).animationName))).every(n=>n==='none'),'completed thought animations must stop')
+  snapshot.status={phase:'calling_model',modelOutput:{kind:'tool_call',name:'file_read',callId:'next'}}
+  await p.evaluate(s=>window.signalEvents.dispatchEvent(new MessageEvent('sync',{data:JSON.stringify(s)})),snapshot)
+  await p.waitForFunction(()=>document.querySelector('.execution-signal .signal-tool')?.getAttribute('aria-label')==='读取文件')
+  snapshot.status={phase:'calling_model',modelOutput:{kind:'text'}}
+  await p.evaluate(s=>window.signalEvents.dispatchEvent(new MessageEvent('sync',{data:JSON.stringify(s)})),snapshot)
+  await p.waitForFunction(()=>!document.querySelector('.execution-signal .signal-tool'))
   assert.deepEqual(ui.errors,[])
  }finally{await ui.close()}
 })

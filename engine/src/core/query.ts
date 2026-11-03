@@ -1,6 +1,7 @@
 import { ToolInputStream } from '../model/tool-input-stream.js';
 import { QueryTimingState, type TimingClock, type TimingRecord } from "./query-timing.js";
 import { abortableStream } from "./abortable-stream.js";
+import { withThinkingLifecycle } from "../model/thinking-lifecycle.js";
 import { InMemoryAppState } from "../app/app-state.js";
 import type { Compactor, ContextBudgetOptions, CompactionResult } from "../context/compaction.js";
 import { ModelDrivenCompactor, withCompactionReport } from "../context/compaction.js";
@@ -21,7 +22,8 @@ import {
   ensureToolResultPairing,
   getMessagesAfterCompactBoundary,
   applyRuntimeContextForPromptCache,
-  insertRuntimeContextBeforeLatestUser,
+  createRuntimeContextMessage,
+  createRuntimeTimeMessage,
 } from "./message-pipeline.js";
 import {
   createInitialState,
@@ -77,7 +79,7 @@ export interface QueryOptions {
   toolChoice?: ModelRequest["toolChoice"];
   /** Resolved workspace root for tools (e.g. subagent `cwd` from parent `agent` tool). */
   workspaceCwd?: string;
-  /** Ephemeral request-scoped context inserted beside the latest user message. */
+  /** Runtime instructions appended at the next model-turn boundary. */
   requestContext?: Record<string, unknown>;
   /** Called immediately before the model gateway receives this request context. */
   onRequestContextConsumed?: () => void;
@@ -103,6 +105,8 @@ export interface QueryDependencies {
   onTiming?: (record: TimingRecord) => void;
   onTimingState?: (state: QueryTimingState) => void;
   timingClock?: TimingClock;
+  /** Wall clock for model-visible time, independent of observability timing. */
+  runtimeNow?: () => Date;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
@@ -457,8 +461,9 @@ async function prepareMessagesForQuery(
 }
 
 function applyRequestContext(messages: readonly Message[], requestContext: Record<string, unknown> | undefined): Message[] {
-  return requestContext && Object.keys(requestContext).length > 0
-    ? insertRuntimeContextBeforeLatestUser(messages, {}, requestContext)
+  const message = requestContext && createRuntimeContextMessage({}, requestContext);
+  return message
+    ? [...messages, { ...message, metadata: { ...message.metadata, runtimeRequestContext: true } }]
     : [...messages];
 }
 
@@ -480,7 +485,11 @@ async function* callModelForTurn(
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
   let activeModel = state.currentModel ?? options.model;
-  const modelMessages = withoutThinkingBlocks(adaptMessagesForModelCapabilities(messagesForQuery, activeModel));
+  const historyIds = new Set((state.modelInputMessages ?? state.messages).map(message => message.id));
+  const contextUpdates = messagesForQuery.filter(message => !historyIds.has(message.id)
+    && (message.metadata?.runtimeContextUpdate || message.metadata?.runtimeRequestContext));
+  const updateIds = new Set(contextUpdates.map(message => message.id));
+  const modelMessages = withoutThinkingBlocks(adaptMessagesForModelCapabilities(messagesForQuery.filter(message => !updateIds.has(message.id)), activeModel));
 
   yield { type: "state", phase: "preparing", detail: "messages prepared for model" };
   yield { type: "context.metrics", metrics: telemetry.metrics };
@@ -494,8 +503,20 @@ async function* callModelForTurn(
       state.messages = [...state.messages, ...pending];
       if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, ...pending];
     }
-    if (options.requestContext) options.onRequestContextConsumed?.();
-    for await (const event of abortableStream(dependencies.modelGateway.stream({
+    // Persist before sending: later requests must replay these exact values in
+    // the same positions, including across tool rounds, pause and session reload.
+    const runtimeMessages = [...contextUpdates, createRuntimeTimeMessage(dependencies.runtimeNow?.())];
+    for (const message of runtimeMessages) {
+      modelMessages.push(message);
+      state.messages = [...state.messages, message];
+      if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, message];
+      yield { type: "message", message };
+    }
+    if (options.requestContext) {
+      options.onRequestContextConsumed?.();
+      options.requestContext = undefined;
+    }
+    for await (const event of withThinkingLifecycle(abortableStream(dependencies.modelGateway.stream({
       model: activeModel,
       messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
@@ -508,7 +529,11 @@ async function* callModelForTurn(
       queryOrigin: options.queryOrigin,
       serviceTier: options.serviceTier,
       cancellation: options.abortSignal,
-    }), options.abortSignal)) {
+    }), options.abortSignal))) {
+      if (event.type === "thinking_done") {
+        yield { type: "thinking.done" };
+        continue;
+      }
       if (options.abortSignal?.aborted) {
         const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
         if (thinkingMessage) yield { type: "message", message: thinkingMessage };

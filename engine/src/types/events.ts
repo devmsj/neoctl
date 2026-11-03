@@ -62,6 +62,7 @@ export type AgentEvent =
   | { type: "context.compacted"; compaction: CompactionReport }
   | { type: "assistant.delta"; text: string; displayChannel?: "visible" }
   | { type: "thinking.delta"; text: string }
+  | { type: "thinking.done" }
   /** Provider announced a tool call. No complete input, approval or execution implied. */
   | { type: "tool_call.started"; callId: string; name: string }
   | { type: "tool_call.input"; callId: string; name?: string; changes: import("../model/tool-input-stream.js").ToolInputChange[]; truncated?: boolean }

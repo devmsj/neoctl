@@ -30,7 +30,7 @@ class ContextOverflowThenSuccessGateway implements ModelGateway {
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     this.calls += 1;
-    this.sawUserContext ||= request.messages.some((message) => message.metadata?.userContext === true);
+    this.sawUserContext ||= request.messages.some((message) => message.role === "user");
     this.sawSystemContext ||= request.messages.some((message) => message.metadata?.systemContext === true);
 
     if (this.calls === 1) {
@@ -128,12 +128,12 @@ async function main(): Promise<void> {
   const changedCwdMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, { ...runtime.systemContext, cwd: `${runtime.systemContext.cwd}-next` });
   const changedSessionMessages = applyRuntimeContextForPromptCache(secondHistory, runtime.userContext, { ...runtime.systemContext, sessionDir: `${sessionDir}-next` });
   const cwdTransitionMessages = insertUserContextBeforeLatestUser(changedCwdMessages, { cwdTransition: { paths: ["A", "B", "C"], current: "C" } });
-  const lastRuntimeBlock = runtimeContextMessages.at(-1)?.blocks[0];
+  const lastRuntimeBlock = runtimeContextMessages.find(message => message.role === "user" && !message.isMeta)?.blocks[0];
   const firstRuntimeBlock = runtimeContextMessages[0]?.blocks[0];
   const nextFirstRuntimeBlock = nextRuntimeContextMessages[0]?.blocks[0];
   const changedFirstRuntimeBlock = changedCwdMessages[0]?.blocks[0];
   const changedSessionRuntimeBlock = changedSessionMessages[0]?.blocks[0];
-  const cwdTransitionBlock = cwdTransitionMessages.at(-2)?.blocks[0];
+  const cwdTransitionBlock = cwdTransitionMessages.find(message => JSON.stringify(message.blocks).includes("cwdTransition"))?.blocks[0];
   const cacheIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", runtimeContextMessages);
   const changedCwdIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", changedCwdMessages);
   const changedSessionIdentity = buildPromptCacheIdentity(runtime.systemPrompt, [], "fake", changedSessionMessages);
@@ -142,11 +142,11 @@ async function main(): Promise<void> {
     toolBudgetPromptOccurrences === 1 &&
     runtime.systemPrompt.includes("48000 serialized characters") &&
     runtime.systemPrompt.includes("within 1-200000") &&
-    runtime.userContext.currentDate === "2026-05-05" &&
+    runtime.userContext.currentDate === undefined &&
     Boolean(runtime.systemContext.cwd) &&
     runtime.systemContext.sessionDir === sessionDir &&
     !runtime.systemPrompt.includes("## System Context") &&
-    runtimeContextMessages[0]?.metadata?.userContext === true &&
+    runtimeContextMessages[0]?.metadata?.userContext === false && runtimeContextMessages[0]?.role === "system" &&
     runtimeContextMessages[0]?.metadata?.systemContext === true &&
     firstRuntimeBlock?.type === "text" &&
     nextFirstRuntimeBlock?.type === "text" &&
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
     firstRuntimeBlock.text.split(`sessionDir: ${sessionDir}`).length - 1 === 1 &&
     cacheIdentity.key === changedCwdIdentity.key &&
     cacheIdentity.key !== changedSessionIdentity.key &&
-    changedCwdMessages.at(-2)?.metadata?.cacheStableRuntimeContext === false &&
+    changedCwdMessages.at(-1)?.metadata?.cacheStableRuntimeContext === false &&
     cwdTransitionBlock?.type === "text" &&
     cwdTransitionBlock.text.includes('"paths":["A","B","C"]') === true &&
     lastRuntimeBlock?.type === "text" &&
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     recoveryGateway.requests.length === 2 &&
     recoveryConsumed === 1 &&
     recoveryFirstText.split("Interrupted subagents can be resumed.").length - 1 === 1 &&
-    !recoverySecondText.includes("Interrupted subagents can be resumed.") &&
+    recoverySecondText.split("Interrupted subagents can be resumed.").length - 1 === 1 &&
     !JSON.stringify(recoveryGateway.requests[0]?.messages[0]).includes("Interrupted subagents can be resumed.");
 
   const toolResult = createToolResultMessage({ id: "call_big", name: "big", input: {} }, true, "x".repeat(120));
@@ -398,7 +398,7 @@ async function main(): Promise<void> {
     keepRecentMessages: 3,
     summaryMaxChars: 24,
   });
-  const compactRequestMessages = summaryGateway.lastRequest?.messages ?? [];
+  const compactRequestMessages = (summaryGateway.lastRequest?.messages ?? []).filter(message => !message.metadata?.runtimeTime);
   const compactInstruction = compactRequestMessages.at(-1);
   const modelCompactOk =
     summaryGateway.compactCalls === 1 &&
@@ -438,7 +438,8 @@ async function main(): Promise<void> {
     sequenceGateway.requests.length === 2 &&
     secondSequenceRequest?.messages.some((message) => message.metadata?.compactBoundary === true && JSON.stringify(message).includes("OLDER_CHECKPOINT")) === true &&
     secondSequenceRequest.messages.some((message) => message.role === "user" && JSON.stringify(message).includes("corrected request")) &&
-    secondSequenceRequest.messages.at(-1)?.metadata?.compactInstruction === true &&
+    secondSequenceRequest.messages.at(-2)?.metadata?.compactInstruction === true &&
+    secondSequenceRequest.messages.at(-1)?.metadata?.runtimeTime === true &&
     secondSequenceCompact?.summary?.includes("LATEST_CHECKPOINT") === true &&
     !secondSequenceCompact.summary.includes("OLDER_CHECKPOINT") &&
     !secondSequenceCompact.summary.includes("Persistent facts:");

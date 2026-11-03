@@ -69,7 +69,7 @@ class ParentAndSubagentGateway implements ModelGateway {
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n");
-      const lastPrompt = request.messages.at(-1)?.blocks
+      const lastPrompt = request.messages.filter(message => message.role === "user").at(-1)?.blocks
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n") ?? "";

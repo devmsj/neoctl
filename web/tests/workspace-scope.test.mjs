@@ -57,8 +57,10 @@ test('scope and project documents stay dynamic without changing the cache prefix
   const message={id:'user',role:'user',blocks:[{type:'text',text:'test'}],createdAt:new Date().toISOString()};
   const one=applyRuntimeContextForPromptCache([message],first.userContext,first.systemContext),two=applyRuntimeContextForPromptCache([message],second.userContext,second.systemContext);
   assert.equal(first.systemPrompt,second.systemPrompt);assert.deepEqual(one[0].blocks,two[0].blocks);
-  const dynamic=JSON.stringify(two.find(m=>m.metadata?.cacheStableRuntimeContext===false));
+  const dynamic=JSON.stringify(two.filter(m=>m.metadata?.cacheStableRuntimeContext===false));
   assert.match(dynamic,/Workspace scope changed/);assert.match(dynamic,/SECOND MEMORY/);assert.doesNotMatch(dynamic,/FIRST MEMORY/);
+  assert.equal(two.find(m=>JSON.stringify(m.blocks).includes('SECOND MEMORY'))?.role,'user');
+  assert.equal(two.find(m=>JSON.stringify(m.blocks).includes('Workspace scope changed'))?.role,'system');
   assert.deepEqual(second.systemContext['Workspace scope changed'],[b]);assert.equal(second.userContext.projectMemory,undefined);
   engine.setWorkspacePaths([]);const empty=await engine.buildWorkspaceContext(input);assert.equal(empty.systemContext.workspaceMemory,undefined);assert.deepEqual(empty.systemContext['Workspace scope changed'],[]);
   await assert.rejects(engine.updateWorkspacePaths([a],async()=>{throw Error('disk failure')}));assert.deepEqual(engine.getWorkspacePaths(),[]);

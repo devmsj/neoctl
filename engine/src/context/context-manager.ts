@@ -21,9 +21,11 @@ export interface ContextBuildInput extends EffectiveSystemPromptOptions {
 }
 
 export interface UserContext {
-  currentDate: string;
+  /** @deprecated Runtime time is supplied by the query loop, not user context. */
+  currentDate?: string;
   projectMemory?: string;
   memoryFiles?: string[];
+  workspaceMemory?: { path: string; content: string }[];
 }
 
 export interface SystemContext {
@@ -54,6 +56,7 @@ export interface DefaultContextManagerOptions {
   promptConfigStore?: PromptConfigStore;
   cwd?: string;
   memoryFileNames?: readonly string[];
+  /** @deprecated Kept for source compatibility; the query loop supplies current time. */
   currentDate?: () => string;
 }
 
@@ -127,7 +130,6 @@ export class DefaultContextManager implements ContextManager {
   private getUserContext(cwd: string): UserContext {
     const memory = readProjectMemory(cwd, this.options.memoryFileNames ?? DEFAULT_MEMORY_FILE_NAMES);
     return {
-      currentDate: this.options.currentDate?.() ?? new Date().toISOString().slice(0, 10),
       ...(memory.content ? { projectMemory: memory.content, memoryFiles: memory.files } : {}),
     };
   }

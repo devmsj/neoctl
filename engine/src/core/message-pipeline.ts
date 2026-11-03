@@ -128,7 +128,7 @@ export function insertUserContextBeforeLatestUser<T extends object>(messages: re
 }
 
 export function createUserContextMessage<T extends object>(userContext: T): Message | undefined {
-  const entries = Object.entries(userContext).filter(([, value]) => value !== undefined);
+  const entries = Object.entries(userContext).filter(([key, value]) => key !== "currentDate" && value !== undefined);
   if (entries.length === 0) return undefined;
   const contextText = renderObjectEntries(entries);
   return {
@@ -140,13 +140,13 @@ export function createUserContextMessage<T extends object>(userContext: T): Mess
 
 export function createRuntimeContextMessage<TUser extends object, TSystem extends object>(userContext: TUser, systemContext: TSystem): Message | undefined {
   const parts: string[] = [];
-  const userEntries = Object.entries(userContext).filter(([, value]) => value !== undefined);
+  const userEntries = Object.entries(userContext).filter(([key, value]) => key !== "currentDate" && value !== undefined);
   const systemEntries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
   if (userEntries.length > 0) parts.push(`User context:\n${renderObjectEntries(userEntries)}`);
   if (systemEntries.length > 0) parts.push(`System context:\n${renderObjectEntries(systemEntries)}`);
   if (parts.length === 0) return undefined;
   return {
-    ...createTextMessage("user", parts.join("\n\n")),
+    ...createTextMessage(userEntries.length ? "user" : "system", parts.join("\n\n")),
     isMeta: true,
     metadata: { runtimeContext: true, userContext: userEntries.length > 0, systemContext: systemEntries.length > 0 },
   };
@@ -158,25 +158,33 @@ export function prependRuntimeContext<TUser extends object, TSystem extends obje
   return [contextMessage, ...messages];
 }
 
+/** Stable machine facts lead the request; changing context is append-only history. */
 export function applyRuntimeContextForPromptCache<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
   const { stableSystemContext, dynamicSystemContext } = splitSystemContextForPromptCache(systemContext);
-  const stableContext = createRuntimeContextMessage(userContext, stableSystemContext);
-  const dynamicContext = createRuntimeContextMessage({}, dynamicSystemContext);
-  const stableContextMessage = stableContext
-    ? { ...stableContext, metadata: { ...stableContext.metadata, cacheStableRuntimeContext: true } }
-    : undefined;
-  const dynamicContextMessage = dynamicContext
-    ? { ...dynamicContext, metadata: { ...dynamicContext.metadata, cacheStableRuntimeContext: false } }
-    : undefined;
-  const stableMessages = [stableContextMessage, ...messages].filter((message): message is Message => Boolean(message));
-  if (!dynamicContextMessage) return stableMessages;
-  const latestUserIndex = findLastIndex(stableMessages, (message) => message.role === "user" && !message.isMeta);
-  if (latestUserIndex < 0) return [...stableMessages, dynamicContextMessage];
-  return [
-    ...stableMessages.slice(0, latestUserIndex),
-    dynamicContextMessage,
-    ...stableMessages.slice(latestUserIndex),
-  ];
+  const stable = createRuntimeContextMessage({}, stableSystemContext);
+  const result = stable ? [{ ...stable, metadata: { ...stable.metadata, cacheStableRuntimeContext: true } }, ...messages] : [...messages];
+  // Legacy/custom context managers may still supply a date or workspace documents
+  // in the wrong bucket. Never promote project instructions to system authority.
+  const user = Object.fromEntries(Object.entries(userContext).filter(([key]) => key !== "currentDate"));
+  if (dynamicSystemContext.workspaceMemory !== undefined) user.workspaceMemory = dynamicSystemContext.workspaceMemory;
+  delete dynamicSystemContext.workspaceMemory;
+  for (const [kind, values] of [["user", user], ["system", dynamicSystemContext]] as const) {
+    const previous = [...messages].reverse().find(message => message.metadata?.runtimeContextUpdate === kind);
+    let message = kind === "user" ? createUserContextMessage(values) : createRuntimeContextMessage({}, values);
+    if (!message && previous) message = { ...createTextMessage(kind, kind === "user" ? "User context: (none)" : "System context: (none)"), isMeta: true };
+    if (!message || (previous && JSON.stringify(previous.blocks) === JSON.stringify(message.blocks))) continue;
+    result.push({ ...message, metadata: { ...message.metadata, runtimeContextUpdate: kind, cacheStableRuntimeContext: false } });
+  }
+  return result;
+}
+
+/** Sample immediately before a model turn; persist each value unchanged. */
+export function createRuntimeTimeMessage(now: Date = new Date()): Message {
+  return {
+    ...createTextMessage("system", `Current time: ${now.toISOString().replace(/\.\d{3}Z$/, "Z")}`),
+    isMeta: true,
+    metadata: { runtimeTime: true },
+  };
 }
 
 export function insertRuntimeContextBeforeLatestUser<TUser extends object, TSystem extends object>(messages: readonly Message[], userContext: TUser, systemContext: TSystem): Message[] {
@@ -199,7 +207,7 @@ export function appendSystemContext<T extends object>(systemPrompt: string, syst
 }
 
 function splitSystemContextForPromptCache<TSystem extends object>(systemContext: TSystem): { stableSystemContext: Record<string, unknown>; dynamicSystemContext: Record<string, unknown> } {
-  const entries = Object.entries(systemContext).filter(([, value]) => value !== undefined);
+  const entries = Object.entries(systemContext).filter(([key, value]) => key !== "currentDate" && value !== undefined);
   return {
     stableSystemContext: Object.fromEntries(entries.filter(([key]) => !["cwd", "Workspace scope changed", "workspaceMemory"].includes(key))),
     dynamicSystemContext: Object.fromEntries(entries.filter(([key]) => ["cwd", "Workspace scope changed", "workspaceMemory"].includes(key))),

@@ -3,6 +3,8 @@ import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
+import { withThinkingLifecycle } from "./thinking-lifecycle.js";
+import { findModelMetadata } from "./context-window.js";
 import { ModelAPIError } from "./errors.js";
 import {
   asNumber,
@@ -39,6 +41,10 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
   const instructions = [promptCache.stableSystemPrompt, promptCache.dynamicSystemPrompt].filter(Boolean).join("\n\n") || undefined;
   const input = [...stableRuntimeInput, ...conversationInput];
   const reasoningDisabled = request.reasoning === null || (request.reasoning === undefined && options.defaultReasoning === null);
+  const reasoning = request.reasoning ?? options.defaultReasoning ?? undefined;
+  const supportsReasoning = findModelMetadata(model)?.reasoning ?? (!!reasoning || /^(?:o[134](?:-|$)|gpt-[5-9](?:[.-]|$))/i.test(model));
+  const visibleReasoning = !reasoningDisabled && reasoning?.effort !== "none" && supportsReasoning
+    ? { ...reasoning, summary: reasoning?.summary ?? "auto" } : reasoning;
   const toolChoice = constrainedResponsesToolChoice(request.toolChoice, tools);
   const body = dropUndefined({
     model,
@@ -46,7 +52,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     input,
     previous_response_id: request.previousResponseId,
     max_output_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens,
-    reasoning: reasoningDisabled ? undefined : (request.reasoning ?? options.defaultReasoning ?? undefined),
+    reasoning: reasoningDisabled ? undefined : visibleReasoning,
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
     service_tier: request.serviceTier,
@@ -74,6 +80,13 @@ export async function* normalizeResponsesStream(
   stream: ReadableStream<Uint8Array>,
   options: OpenAIResponsesMapperOptions,
 ): AsyncGenerator<ModelStreamEvent> {
+  yield* withThinkingLifecycle(normalizeResponsesStreamEvents(stream, options));
+}
+
+async function* normalizeResponsesStreamEvents(
+  stream: ReadableStream<Uint8Array>,
+  options: OpenAIResponsesMapperOptions,
+): AsyncGenerator<ModelStreamEvent> {
   const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
@@ -82,6 +95,32 @@ export async function* normalizeResponsesStream(
   let reasoningPartKey: string | undefined;
   const outputItems = new Map<string | number, Record<string, unknown>>();
   const contentParts = new Map<string, Record<string, unknown>>();
+  const reasoningTextByPart = new Map<string, string>();
+  const completedReasoning = new Map<string | number, Record<string, unknown>>();
+  function* publishReasoning(text: string, key: string, snapshot = false): Generator<ModelStreamEvent> {
+    if (!text) return;
+    const previous = reasoningTextByPart.get(key) ?? "";
+    const delta = snapshot ? (text.startsWith(previous) ? text.slice(previous.length) : previous ? "" : text) : text;
+    reasoningTextByPart.set(key, snapshot ? text : previous + text);
+    if (!delta) return;
+    const separated = reasoningPartKey !== undefined && reasoningPartKey !== key ? `\n\n${delta}` : delta;
+    reasoningPartKey = key;
+    thinkingParts.push(separated);
+    yield { type: "thinking_delta", text: separated };
+  }
+  function* publishReasoningItem(item: Record<string, unknown>, fallback: string | number): Generator<ModelStreamEvent> {
+    const id = asString(item.id) ?? String(fallback);
+    completedReasoning.set(id, item);
+    let structured = false;
+    for (const field of ["summary", "content"] as const) {
+      const parts = Array.isArray(item[field]) ? item[field] as unknown[] : [];
+      for (const [index, part] of parts.entries()) {
+        const text = typeof part === "string" ? part : part && typeof part === "object" ? extractReasoningText(part as Record<string, unknown>) : "";
+        if (text) { structured = true; yield* publishReasoning(text, `${id}:${field}:${index}`, true); }
+      }
+    }
+    if (!structured) yield* publishReasoning(extractReasoningText(item), `${id}:content:0`, true);
+  }
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
     const event = sse.data as Record<string, unknown>;
@@ -96,7 +135,7 @@ export async function* normalizeResponsesStream(
     }
 
     const itemKey = asString(event.item_id) ?? asNumber(event.output_index) ?? 0;
-    if (type === "response.output_item.added") {
+    if (type === "response.output_item.added" || type === "response.output_item.done") {
       const item = event.item as Record<string, unknown> | undefined;
       if (item) {
         outputItems.set(asNumber(event.output_index) ?? 0, item);
@@ -123,17 +162,18 @@ export async function* normalizeResponsesStream(
       yield { type: "assistant_text_done" };
     }
 
+    const reasoningEvent = { ...event, item_id: event.item_id ?? outputItems.get(asNumber(event.output_index) ?? 0)?.id };
     if (isReasoningDeltaEvent(type)) {
-      const delta = extractThinkingDelta(event);
-      if (delta) {
-        const nextPartKey = reasoningPartKeyForEvent(type, event);
-        const text = reasoningPartKey !== undefined && nextPartKey !== undefined && reasoningPartKey !== nextPartKey
-          ? `\n\n${delta}`
-          : delta;
-        reasoningPartKey = nextPartKey ?? reasoningPartKey;
-        thinkingParts.push(text);
-        yield { type: "thinking_delta", text };
-      }
+      yield* publishReasoning(extractThinkingDelta(event), reasoningPartKeyForEvent(type, reasoningEvent)!);
+    }
+    if (type?.startsWith("response.reasoning") && (type.endsWith(".done") || type.endsWith(".added"))) {
+      const part = event.part && typeof event.part === "object" ? event.part as Record<string, unknown> : event;
+      yield* publishReasoning(extractReasoningText(part), reasoningPartKeyForEvent(type, reasoningEvent)!, true);
+      if (type.endsWith(".done")) yield { type: "thinking_done" };
+    }
+    if (type === "response.output_item.done" && (event.item as Record<string, unknown> | undefined)?.type === "reasoning") {
+      yield* publishReasoningItem(event.item as Record<string, unknown>, itemKey);
+      yield { type: "thinking_done" };
     }
 
     if (type === "response.output_item.added") {
@@ -183,7 +223,11 @@ export async function* normalizeResponsesStream(
     if (type === "response.completed") {
       const response = event.response as Record<string, unknown> | undefined;
       responseId = asString(response?.id) ?? responseId;
-      const thinking = collectThinkingFromResponse(response, thinkingParts);
+      for (const [index, item] of ((Array.isArray(response?.output) ? response.output : []) as Record<string, unknown>[]).entries()) {
+        if (item.type === "reasoning") yield* publishReasoningItem(item, index);
+      }
+      yield { type: "thinking_done" };
+      const thinking = collectThinkingFromResponse({ output: [...completedReasoning.values()] }, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
       if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
       const usage = normalizeUsage(response?.usage);
@@ -193,7 +237,11 @@ export async function* normalizeResponsesStream(
 
     if (type === "response.incomplete") {
       const response = event.response as Record<string, unknown> | undefined;
-      const thinking = collectThinkingFromResponse(response, thinkingParts);
+      for (const [index, item] of ((Array.isArray(response?.output) ? response.output : []) as Record<string, unknown>[]).entries()) {
+        if (item.type === "reasoning") yield* publishReasoningItem(item, index);
+      }
+      yield { type: "thinking_done" };
+      const thinking = collectThinkingFromResponse({ output: [...completedReasoning.values()] }, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
       const usage = normalizeUsage(response?.usage);
       yield {
@@ -316,11 +364,11 @@ function collectThinkingFromResponse(response: Record<string, unknown> | undefin
 }
 
 function reasoningPartKeyForEvent(type: string | undefined, event: Record<string, unknown>): string | undefined {
-  const itemId = asString(event.item_id) ?? "reasoning";
-  if (type === "response.reasoning_summary.delta" || type === "response.reasoning_summary_text.delta") {
+  const itemId = asString(event.item_id) ?? String(asNumber(event.output_index) ?? 0);
+  if (type?.startsWith("response.reasoning_summary")) {
     return `${itemId}:summary:${asNumber(event.summary_index) ?? 0}`;
   }
-  if (type === "response.reasoning_text.delta" || type === "response.reasoning.delta") {
+  if (type?.startsWith("response.reasoning")) {
     return `${itemId}:content:${asNumber(event.content_index) ?? 0}`;
   }
   return undefined;

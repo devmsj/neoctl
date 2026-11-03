@@ -340,7 +340,7 @@ function actionFailure(errorCode: string, error: string): WebActionFailure {
 interface UiStatus {
   compactionText?: string;
   // Transient observation only: never part of messages or model requests.
-  modelOutput?: { kind: "text" } | { kind: "tool_call"; callId: string; name?: string };
+  modelOutput?: { kind: "text" } | { kind: "thinking" } | { kind: "tool_call"; callId: string; name?: string };
   // UI-only waiting age, retained in snapshots but never sent to the model.
   responseWaitStartedAt?: number;
   queryTiming?: TimingRecord;
@@ -2418,7 +2418,21 @@ export class WebRepl {
     // Model lifecycle defines membership only. The frontend owns the fixed
     // two-second playback and must not be interrupted by the next request.
     if (event.type === "state" && event.phase === "calling_model") this.previousTurnToolId = undefined;
+    // End thinking before publishing the next operation, even for custom/legacy
+    // gateways that did not emit an explicit boundary. Keep the text for history.
+    const endsThinking = event.type === "thinking.done" || event.type === "assistant.output.done"
+      || (event.type === "assistant.delta" && !!event.text)
+      || (event.type === "message" && event.message.role === "assistant")
+      || event.type === "tool_call.started" || event.type === "tool_call.input" || event.type === "tool_call.delta" || event.type === "tool_call.ready"
+      || event.type === "tool.started" || event.type === "retrying" || event.type === "error" || event.type === "terminal"
+      || (event.type === "state" && event.phase !== "thinking");
+    if (endsThinking) this.reduce({ type: "thinking.done" });
     this.reduce(event);
+    if (endsThinking) this.finalizeThinkingLine();
+    if (event.type === "thinking.done") {
+      this.broadcastSync();
+      return;
+    }
     if (event.type === "timing.updated") {
       if (event.timing.kind === "tool") {
         const line = this.lines.find(item => item.timing?.id === event.timing.id)
@@ -2491,7 +2505,14 @@ export class WebRepl {
       return;
     }
     if (event.type === "thinking.delta") {
+      if (!event.text) return;
       const id = this.thinkingLineId ?? this.finalizedThinkingLineId ?? this.append(thinkingLine("", true), true);
+      // Responses may deliver several summary parts with their own done frames.
+      // Reusing the row must reactivate it only while the next part is arriving.
+      if (this.thinkingLineId === undefined && this.finalizedThinkingLineId !== undefined) {
+        this.lines = this.lines.map(line => line.id === id ? { ...line, live: true } : line);
+        this.queueDeltaOperation({ type: "line.patch", id, patch: { live: true } });
+      }
       this.thinkingLineId = id;
       this.finalizedThinkingLineId = undefined;
       this.appendLineText(id, event.text);
@@ -3524,7 +3545,9 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "message" && event.message.role === "assistant" && event.message.blocks.some(block => block.type === "text") && status.modelOutput?.kind === "text") return { ...status, modelOutput: undefined, activityTick: status.activityTick + 1 };
   if (event.type === "assistant.delta" && !event.text) return status;
   if (event.type === "assistant.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "text" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "thinking.delta") return { ...status, phase: "thinking", modelOutput: undefined, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "thinking.done") return status.phase === "thinking" || status.modelOutput?.kind === "thinking" ? { ...status, phase: "calling_model", modelOutput: undefined, activityTick: status.activityTick + 1 } : status;
+  if (event.type === "thinking.delta" && !event.text) return status;
+  if (event.type === "thinking.delta") return { ...status, phase: "thinking", modelOutput: { kind: "thinking" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.started") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name ?? (status.modelOutput?.kind === "tool_call" && status.modelOutput.callId === event.callId ? status.modelOutput.name : undefined) }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "retrying") return { ...status, phase: "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
@@ -3850,7 +3873,8 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       append({ ...line, messageId: message.id, parentToolName, parentToolUseId });
       rendered = true;
     } else if (block.type === "thinking") {
-      if (options.includeThinkingBlocks === false) continue;
+      // Signed/opaque history may legitimately contain no readable summary.
+      if (options.includeThinkingBlocks === false || !block.text.trim()) continue;
       append({ ...thinkingLine(block.text), messageId: message.id });
       rendered = true;
     } else if (block.type === "tool_use" && options.includeToolUseBlocks) {

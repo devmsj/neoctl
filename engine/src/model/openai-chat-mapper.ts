@@ -1,8 +1,9 @@
-import { createTextMessage, createThinkingMessage } from "../types/messages.js";
+import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
+import { withThinkingLifecycle } from "./thinking-lifecycle.js";
 import {
   asNumber,
   asString,
@@ -57,7 +58,15 @@ export async function* normalizeChatStream(
   stream: ReadableStream<Uint8Array>,
   options: OpenAIChatMapperOptions,
 ): AsyncGenerator<ModelStreamEvent> {
-  const textParts: string[] = [];
+  yield* withThinkingLifecycle(normalizeChatStreamEvents(stream, options));
+}
+
+async function* normalizeChatStreamEvents(
+  stream: ReadableStream<Uint8Array>,
+  options: OpenAIChatMapperOptions,
+): AsyncGenerator<ModelStreamEvent> {
+  const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
+  const choiceScopes = new Map<number, Record<string, unknown>>();
   const thinkingParts: string[] = [];
   const toolBuffers = new Map<number, ToolBuffer>();
   const announcedToolCalls = new Set<number>();
@@ -79,16 +88,25 @@ export async function* normalizeChatStream(
 
     for (const choice of choices as Record<string, unknown>[]) {
       const delta = choice.delta as Record<string, unknown> | undefined;
-      const content = asString(delta?.content);
-      if (content) {
-        textParts.push(content);
-        yield { type: "assistant_delta", text: content };
+      const choiceIndex = asNumber(choice.index) ?? 0;
+      const scope = { ...choiceScopes.get(choiceIndex) };
+      for (const key of ["role", "channel", "phase"]) {
+        const value = delta?.[key] ?? choice[key] ?? event[key];
+        if (value !== undefined) scope[key] = value;
       }
-
-      const reasoningContent = asString(delta?.reasoning_content);
+      choiceScopes.set(choiceIndex, scope);
+      // Some compatible chunks include the last reasoning text and first answer
+      // together. Publish thinking first so the answer boundary really ends it.
+      const reasoningContent = asString(delta?.reasoning_content) ?? asString(delta?.reasoning);
       if (reasoningContent) {
         thinkingParts.push(reasoningContent);
         yield { type: "thinking_delta", text: reasoningContent };
+      }
+      const content = asString(delta?.content);
+      if (content) {
+        const visible = allowsVisibleChatContent(event, choice, scope);
+        appendChatText(textBlocks, content, visible);
+        yield { type: "assistant_delta", text: content, ...(visible ? { displayChannel: "visible" as const } : {}) };
       }
 
       const toolCalls = Array.isArray(delta?.tool_calls) ? delta?.tool_calls : [];
@@ -123,8 +141,7 @@ export async function* normalizeChatStream(
 
   const thinking = thinkingParts.join("").trim();
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-  const text = textParts.join("");
-  if (text) yield { type: "assistant_message", message: createTextMessage("assistant", text) };
+  if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
   yield { type: "response_completed", responseId, stopReason: "completed", usage };
 }
 
@@ -135,10 +152,14 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   const choices = Array.isArray(body.choices) ? body.choices : [];
   for (const choice of choices as Record<string, unknown>[]) {
     const message = choice.message as Record<string, unknown> | undefined;
-    const reasoningContent = asString(message?.reasoning_content);
+    const reasoningContent = asString(message?.reasoning_content) ?? asString(message?.reasoning);
     if (reasoningContent) yield { type: "assistant_message", message: createThinkingMessage(reasoningContent) };
     const content = asString(message?.content);
-    if (content) yield { type: "assistant_message", message: createTextMessage("assistant", content) };
+    if (content) {
+      const blocks: Extract<MessageBlock, { type: "text" }>[] = [];
+      appendChatText(blocks, content, allowsVisibleChatContent(body, choice, message));
+      yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks } };
+    }
     const toolCalls = Array.isArray(message?.tool_calls) ? message?.tool_calls : [];
     for (const toolCall of toolCalls as Record<string, unknown>[]) {
       const fn = toolCall.function as Record<string, unknown> | undefined;
@@ -155,4 +176,21 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
   yield { type: "response_completed", responseId, stopReason: "completed", usage };
+}
+
+// Chat content is public by contract, but compatible servers may explicitly
+// label private channels. Never authorize reasoning fields or an analysis channel.
+function allowsVisibleChatContent(...scopes: (Record<string, unknown> | undefined)[]): boolean {
+  return scopes.every(scope => !scope || (
+    (scope.role === undefined || scope.role === "assistant") &&
+    (scope.channel === undefined || ["commentary", "answer", "final"].includes(String(scope.channel))) &&
+    (scope.phase === undefined || ["commentary", "answer", "final", "final_answer"].includes(String(scope.phase)))
+  ));
+}
+
+function appendChatText(blocks: Extract<MessageBlock, { type: "text" }>[], text: string, visible: boolean): void {
+  const displayChannel = visible ? "visible" : undefined;
+  const last = blocks.at(-1);
+  if (last && last.displayChannel === displayChannel) last.text += text;
+  else blocks.push({ type: "text", text, ...(visible ? { displayChannel: "visible" as const } : {}) });
 }

@@ -117,7 +117,8 @@ test("session instructions append to actual model instructions, while tools and 
   assert.match(f.requests[0].systemPrompt!, /PLUGIN_RULE/);
   assert.equal(f.requests[0].tools[0].name, "probe");
   assert.match(JSON.stringify(f.requests[0].messages), /PROJECT_MEMORY/);
-  assert.match(JSON.stringify(f.requests[0].messages), /2026-09-08/);
+  assert.doesNotMatch(JSON.stringify(f.requests[0].messages), /currentDate/);
+  assert.ok(f.requests[0].messages.some(message => message.role === "system" && message.metadata?.runtimeTime));
   assert.match(JSON.stringify(f.requests[0].messages), /USER_INPUT/);
   const wire = buildResponsesRequest(f.requests[0], { model: "gpt-5" });
   assert.ok(String(wire.instructions).includes(text));

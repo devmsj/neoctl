@@ -19,6 +19,7 @@ import { ensureToolResultPairing } from "./message-pipeline.js";
 export interface RunAgentDependencies {
   acquireTurnResources?: import("./query.js").QueryDependencies["acquireTurnResources"];
   timingClock?: TimingClock;
+  runtimeNow?: () => Date;
   modelGateway: ModelGateway;
   tools: ToolRegistry;
   contextManager?: ContextManager;
@@ -117,6 +118,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       notifyContext();
     },
     contextBudget: options.dependencies.contextBudget,
+    runtimeNow: options.dependencies.runtimeNow,
     canUseTool: options.dependencies.canUseTool,
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,
     toolResultMemory: childSession?.toolResultMemory ?? options.dependencies.toolResultMemory ?? options.parentContext?.toolResultMemory,

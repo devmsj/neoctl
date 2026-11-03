@@ -5,7 +5,11 @@ export function executionSignal(status = {}, runState = '', loading = false, obs
   if (['paused', 'interrupted', 'resuming'].includes(runState)) return { mode: 'paused', tools: [] }
   if (status.phase === 'compacting') return { mode: 'compacting', tools: [] }
   if (status.phase === 'calling_model' && !status.modelOutput) return { mode: 'waiting', tools: [] }
-  const name = observed?.kind === 'thinking' ? 'thinking' : observed?.toolName
+  // A pinned/completed thought is history, not a currently running operation.
+  // Do not let the observation selector's switching delay keep its icon pulsing.
+  if (status.modelOutput?.kind === 'text') return { mode: 'working', tools: [] }
+  const thinking = status.phase === 'thinking' || status.modelOutput?.kind === 'thinking'
+  const name = observed?.kind === 'thinking' ? (thinking && observed.live !== false ? 'thinking' : undefined) : observed?.toolName
   // Without a preview, use only the current operation, never past turn tools.
   const current = name || (status.modelOutput?.kind === 'tool_call' && status.modelOutput.name) || status.currentTool?.name
   if (current) return { mode: 'tools', tools: [current] }

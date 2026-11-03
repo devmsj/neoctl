@@ -14,5 +14,7 @@ test('observation content subscriptions touch only changed rows and clean up on 
  view.toggle(store.get(99));assert.equal(view.pinned.value,99)
  session.value='two';store.replace([]);store.append({id:1,kind:'thinking',text:'next'});await nextTick();await nextTick()
  assert.equal(view.pinned.value,null);assert.equal(view.observed.value.id,1)
+ store.patch(1,{live:true});await nextTick();await nextTick();assert.equal(view.observed.value.live,true)
+ store.patch(1,{live:false});await nextTick();await nextTick();assert.equal(view.observed.value.live,false,'done-only row patches must invalidate the observation')
  const reads=signalReads;app.unmount();store.patch(1,{text:'unmounted'});await nextTick();assert.equal(signalReads,reads)
 })

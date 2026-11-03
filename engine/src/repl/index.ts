@@ -3274,7 +3274,9 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
       activityTick: status.activityTick + 1,
     };
   }
+  if (event.type === "thinking.done") return status.phase === "thinking" ? { ...status, phase: "calling_model", activityTick: status.activityTick + 1 } : status;
   if (event.type === "thinking.delta") {
+    if (!event.text) return status;
     return {
       ...status,
       phase: "thinking",

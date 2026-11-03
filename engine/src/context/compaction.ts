@@ -1,4 +1,5 @@
 import { abortableStream } from "../core/abortable-stream.js";
+import { createRuntimeTimeMessage } from "../core/message-pipeline.js";
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
@@ -152,7 +153,7 @@ export class ModelDrivenCompactor implements Compactor {
     for await (const event of abortableStream(this.modelGateway.stream({
       cancellation: options.abortSignal,
       model: options.compactModel,
-      messages: compactMessages,
+      messages: [...compactMessages, createRuntimeTimeMessage()],
       tools: [],
       toolChoice: "none",
       stream: true,

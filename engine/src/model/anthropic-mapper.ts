@@ -6,15 +6,18 @@ import { validateImageInput } from "../core/image-input.js";
 import { ModelAPIError } from "./errors.js";
 import type { ModelRequest, ModelStreamEvent, ModelUsage, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
+import { withThinkingLifecycle } from "./thinking-lifecycle.js";
 import { findModelMetadata } from "./context-window.js";
 
 type Block = Record<string, unknown>;
-interface Turn { role: "user" | "assistant"; content: Block[] }
+interface Turn { role: "user" | "assistant" | "system"; content: Block[] }
 export interface AnthropicMapperOptions {
   model: string;
   defaultMaxOutputTokens?: number;
   defaultReasoning?: ReasoningConfig | null;
   thinkingBudgetTokens?: number;
+  /** Explicit capability override for compatible model aliases. No role fallback. */
+  midConversationSystem?: boolean;
 }
 
 export function anthropicInvalid(message: string): never {
@@ -28,6 +31,12 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
   return createHash("sha256").update(JSON.stringify(blocks.filter(b => b.type !== "thinking"))).digest("hex");
 }
 
+/** Documented text-system support; do not infer support from provider alone. */
+export function supportsAnthropicMidConversationSystem(model: string): boolean {
+  const id = findModelMetadata(model)?.id ?? model;
+  return /(?:^|[/.])claude-(?:opus-(?:4-8|5(?:-5)?)|(?:sonnet|haiku)-5-5|(?:fable|mythos)-5(?:-1)?)(?:$|-(?:latest|\d{8})$)/i.test(id);
+}
+
 export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions): Block {
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
@@ -37,6 +46,16 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   const split = splitSystemPromptPrefix(request.instructions ?? request.systemPrompt ?? "");
   const system: Block[] = [split.stablePrefix, split.dynamicSuffix].filter(Boolean).map(text => ({ type: "text", text }));
   const turns: Turn[] = [];
+  const midSystem = options.midConversationSystem ?? supportsAnthropicMidConversationSystem(model);
+  let runtimeContent: Block[] = [];
+  const flushRuntime = () => {
+    if (!runtimeContent.length) return;
+    if (!midSystem) anthropicInvalid(`Model ${model} does not support mid-conversation system messages; select a supported model or explicitly configure its capability`);
+    const last = turns.at(-1);
+    if (last?.role === "system") last.content.push(...runtimeContent);
+    else turns.push({ role: "system", content: runtimeContent });
+    runtimeContent = [];
+  };
   const uses = new Set<string>(), results = new Set<string>();
   for (const m of request.messages) for (const b of m.blocks) {
     if (b.type === "tool_use") uses.add(b.id);
@@ -46,7 +65,21 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   for (const message of request.messages) {
     if (message.role === "progress" || message.role === "tombstone" || message.metadata?.displayOnly || message.metadata?.systemInit) continue;
     if (message.role === "system") {
-      for (const b of message.blocks) if (b.type === "text" && b.text.trim()) system.push({ type: "text", text: b.text });
+      const content = message.blocks.flatMap(b => b.type === "text" && b.text.trim() ? [{ type: "text", text: b.text }] : []);
+      if (!content.length) continue;
+      if (!turns.length || message.metadata?.compactBoundary) { system.push(...content); continue; }
+      // An aborted request may leave runtime facts with no assistant turn.
+      // Carry that unsatisfied tail past later user input, never across an
+      // assistant response (and never rewrite a completed cached prefix).
+      if (message.metadata?.runtimeTime || message.metadata?.runtimeContextUpdate || message.metadata?.runtimeRequestContext) {
+        runtimeContent.push(...content);
+        continue;
+      }
+      flushRuntime();
+      if (!midSystem) anthropicInvalid(`Model ${model} does not support mid-conversation system messages; select a supported model or explicitly configure its capability`);
+      const last = turns.at(-1)!;
+      if (last.role === "system") last.content.push(...content);
+      else turns.push({ role: "system", content });
       continue;
     }
     const role = message.role === "assistant" ? "assistant" : "user";
@@ -74,15 +107,32 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
       }
     }
     if (!content.length) continue;
+    if (role === "assistant") flushRuntime();
     const last = turns[turns.length - 1];
     if (last?.role === role) last.content.push(...content);
     else turns.push({ role, content });
   }
+  // A paused visible-only stream is not a completed assistant turn and cannot
+  // be sent as Claude prefill. Retain it as quoted runtime state in the pending
+  // system tail; never invent a user utterance just to resume the request.
+  const lastMessage = [...request.messages].reverse().find(message => message.role === "assistant" || message.role === "user" || message.role === "tool_result");
+  const lastTurn = turns.at(-1);
+  if (runtimeContent.length && lastMessage?.metadata?.streamedPartial && lastTurn?.role === "assistant" && lastTurn.content.every(block => block.type === "text")) {
+    turns.pop();
+    runtimeContent.unshift({ type: "text", text: `Interrupted assistant output (quoted):\n${lastTurn.content.map(block => block.text).join("\n")}` });
+  }
+  flushRuntime();
   // Multiple parallel tool results and injected runtime context share a user
   // turn. Anthropic requires all tool_result blocks before ordinary user text.
   for (const turn of turns) if (turn.role === "user") turn.content = [...turn.content.filter(b => b.type === "tool_result"), ...turn.content.filter(b => b.type !== "tool_result")];
   let pending = new Set<string>();
-  for (const turn of turns) {
+  for (const [index, turn] of turns.entries()) {
+    if (turn.role === "system") {
+      if (pending.size || turns[index - 1]?.role !== "user" || (turns[index + 1] && turns[index + 1]!.role !== "assistant")) {
+        anthropicInvalid("Claude mid-conversation system content must follow a complete user/tool-result turn and precede an assistant turn or end the request");
+      }
+      continue;
+    }
     if (turn.role === "user") {
       const ids = turn.content.filter(b => b.type === "tool_result").map(b => String(b.tool_use_id));
       if (ids.length !== new Set(ids).size || ids.some(id => !pending.has(id)) || [...pending].some(id => !ids.includes(id))) anthropicInvalid("Claude tool results must immediately follow and match all assistant tool calls");
@@ -143,9 +193,13 @@ function configureThinking(body: Block, request: ModelRequest, options: Anthropi
       body.thinking = { type: "enabled", budget_tokens: budget };
     }
   }
+  const defaultThinking = /claude-(?:(?:opus|sonnet|haiku|fable|mythos)-5|mythos-preview)/i.test(model) && !disabled;
+  // Claude 5 gateways may omit readable thinking and send only a signature.
+  // Request the supported summary explicitly; signatures remain opaque.
+  if (defaultThinking && !body.thinking) body.thinking = { type: "adaptive" };
+  if ((body.thinking as Block | undefined)?.type === "adaptive") (body.thinking as Block).display = "summarized";
   const choice = body.tool_choice as Block | undefined;
   const thinkingEnabled = !!body.thinking && (body.thinking as Block).type !== "disabled";
-  const defaultThinking = /claude-(?:(?:opus|sonnet|haiku|fable|mythos)-5|mythos-preview)/i.test(model) && !disabled;
   if ((thinkingEnabled || defaultThinking) && (choice?.type === "any" || choice?.type === "tool")) anthropicInvalid("Claude thinking requires auto or none tool choice");
 }
 
@@ -160,7 +214,7 @@ export function anthropicUsage(raw: Block): ModelUsage {
 function assistantMessage(content: Block[], model: string, id?: string): Message {
   const blocks: MessageBlock[] = [];
   for (const b of content) {
-    if (b.type === "text" && typeof b.text === "string") blocks.push({ type: "text", text: b.text });
+    if (b.type === "text" && typeof b.text === "string") blocks.push({ type: "text", text: b.text, displayChannel: "visible" });
     else if (b.type === "thinking") blocks.push({ type: "thinking", text: String(b.thinking ?? ""), signature: typeof b.signature === "string" ? b.signature : undefined });
     else if (b.type === "tool_use") {
       if (typeof b.id !== "string" || typeof b.name !== "string" || !record(b.input)) protocolError("Invalid Claude tool_use block");
@@ -186,6 +240,10 @@ export function* normalizeAnthropicObject(body: Block, model: string): Generator
 }
 
 export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Array>, model: string, idleTimeoutMs = 120000): AsyncGenerator<ModelStreamEvent> {
+  yield* withThinkingLifecycle(normalizeAnthropicStreamEvents(stream, model, idleTimeoutMs));
+}
+
+async function* normalizeAnthropicStreamEvents(stream: ReadableStream<Uint8Array>, model: string, idleTimeoutMs: number): AsyncGenerator<ModelStreamEvent> {
   const blocks = new Map<number, Block>();
   const partialJson = new Map<number, string>();
   const invalidToolInputs = new Set<number>();
@@ -214,7 +272,10 @@ export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Arra
       if (!started || !Number.isInteger(index) || blocks.has(index) || !record(event.content_block)) protocolError("Invalid Claude content_block_start");
       const block = { ...(event.content_block as Block) };
       blocks.set(index, block); openBlocks.add(index);
-      if (block.type === "tool_use") {
+      // Compatible servers may include initial text in the start frame.
+      if (block.type === "text" && typeof block.text === "string" && block.text) yield { type: "assistant_delta", text: block.text, displayChannel: "visible" };
+      else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) yield { type: "thinking_delta", text: block.thinking };
+      else if (block.type === "tool_use") {
         partialJson.set(index, "");
         yield { type: "tool_call_started", callId: String(block.id), name: String(block.name) };
       }
@@ -224,10 +285,10 @@ export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Arra
       const b = block!, delta = event.delta as Block;
       if (delta.type === "text_delta") {
         const text = String(delta.text ?? ""); b.text = String(b.text ?? "") + text;
-        yield { type: "assistant_delta", text };
+        if (text) yield { type: "assistant_delta", text, displayChannel: "visible" };
       } else if (delta.type === "thinking_delta") {
         const text = String(delta.thinking ?? ""); b.thinking = String(b.thinking ?? "") + text;
-        yield { type: "thinking_delta", text };
+        if (text) yield { type: "thinking_delta", text };
       } else if (delta.type === "signature_delta") b.signature = String(b.signature ?? "") + String(delta.signature ?? "");
       else if (delta.type === "input_json_delta") {
         const text = String(delta.partial_json ?? "");
@@ -247,6 +308,7 @@ export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Arra
         if (!record(block!.input)) invalidToolInputs.add(index);
       }
       if (block!.type === "text") yield { type: "assistant_text_done" };
+      else if (block!.type === "thinking") yield { type: "thinking_done" };
     } else if (type === "message_delta") {
       if (record(event.delta) && typeof event.delta.stop_reason === "string") reason = event.delta.stop_reason;
       if (record(event.usage)) usage = { ...usage, ...event.usage };

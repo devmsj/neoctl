@@ -1,15 +1,14 @@
-# Neo Desktop 0.1.35
+# Neo Desktop 0.1.36
 
-Includes Web 0.1.32 and Core 0.2.55.
+Includes Web 0.1.33 and Core 0.2.56.
 
-- Improve native Anthropic streaming and multi-turn tool execution. Report output-limit truncation accurately, preserve final usage, and never execute a truncated tool batch.
-- Use model-library output limits by default (128K for bundled Claude models; 64K fallback for unknown Anthropic-compatible models), while respecting explicit user settings.
-- Show input usage from the first Anthropic packet without double-counting totals or freezing streamed output estimates. Correct the context meter using reported usage and fix local tokenizer loading.
-- Set bundled Claude context budgets to 256K and retain the current fifth-generation catalog. This is a Neo context policy, not an upstream limit or pricing guarantee.
-- Allow deleting referenced API connections and model entries. Require explicit interruption confirmation for active sessions, clear affected model selections, preserve conversation history, and keep cleared selections across reopening and session forks.
-- Refresh deletion confirmations when occupancy changes and preserve unrelated unsaved settings.
-- Repair the offline updater protocol fixture for the registry transport dependency and include protocol events in failure diagnostics.
+- Fix native Anthropic session-title generation and persistence. Title requests use an isolated, tool-free prompt and only provider-confirmed visible text.
+- Request readable adaptive-thinking summaries from Claude and supported reasoning summaries from OpenAI. Preserve streamed and completion-only summaries without duplicates; retain opaque signatures for protocol replay without displaying empty thinking cards.
+- End thinking explicitly before answer text or tool generation, and on completion, cancellation or errors. Deliver the stopped state immediately over SSE so completed thinking icons cannot keep animating.
+- Append a concise English UTC timestamp, precise to seconds, for every model turn including tool continuation. Persist prior timestamps unchanged and keep completed request prefixes stable, without adding cache controls.
+- Separate machine/runtime system context from user-authored workspace documents. Remove the legacy date from User context and use concise English continuation/recovery instructions.
+- Support native mid-conversation Claude system messages on documented model families, including Claude Haiku 5.5. Validate tool-result ordering and interrupted runtime tails. Unsupported models fail explicitly rather than silently changing roles; verified custom aliases can use the adapter capability override.
 
-Validated with native Claude multi-turn file/terminal tools, child tasks, image understanding, session resume, model-driven compaction, and a long tool response beyond the former 8K default. External image generation and search were not invoked as part of these live Claude checks.
+Live validation covered Anthropic Messages, OpenAI Responses and OpenAI Chat through a compatible endpoint: title generation/reload, thinking-to-answer and thinking-to-tool flows, immediate SSE/browser animation stop, and two-turn timestamp/prefix preservation. Readable thinking remains dependent on what the upstream provider returns; missing historical summaries cannot be reconstructed from signatures.
 
 Windows x64 installer, SHA-256 checksum, source commit, and payload/version manifests are attached to this release.

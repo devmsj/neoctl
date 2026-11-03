@@ -21,6 +21,7 @@ function clock() {
 function dependencies(extra: Partial<QueryDependencies> = {}): QueryDependencies {
   return {
     tools: new ToolRegistry(),
+    runtimeNow: () => new Date("2026-11-03T12:00:00Z"),
     contextManager: { async build() { return { systemPrompt: "Stable prefix", promptSections: [],
       userContext: { currentDate: "2026-09-21" }, systemContext: { cwd: "fixed", platform: "win32" } }; } },
     compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },

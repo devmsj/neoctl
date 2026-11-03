@@ -96,7 +96,7 @@ test("parallel tool results precede runtime text and preserve error status", () 
 });
 
 test("thinking settings are native, model-aware and validate invalid combinations", () => {
-  assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model }).thinking, { type: "adaptive" });
+  assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model }).thinking, { type: "adaptive", display: "summarized" });
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: { effort: "high" } }), { model: "claude-haiku-4-5" }).thinking, { type: "enabled", budget_tokens: 4096 });
   assert.deepEqual(buildAnthropicRequest(request({ reasoning: null }), { model: "claude-sonnet-4-6" }).thinking, { type: "disabled" });
   assert.throws(() => buildAnthropicRequest(request({ reasoning: { effort: "high" }, maxOutputTokens: 1024 }), { model: "claude-haiku-4-5" }), /budget/);
@@ -304,16 +304,17 @@ test("max_tokens stop reason is incomplete, not successful completion", async ()
   }
 });
 
-test("model-driven compaction uses Messages API with a legal smaller thinking budget", async () => {
+test("model-driven compaction uses Messages API with adaptive thinking and runtime time", async () => {
   let seen: any;
   const local = await server((_req, res, body) => { seen = body; res.setHeader("Content-Type", "text/event-stream"); res.end(encode(frames([{ type: "text", text: "Summary: keep working on the task." }]))); });
   try {
-    const adapter = new AnthropicAdapter({ model: "claude-haiku-4-5", baseUrl: local.url, apiKey: "key", maxRetries: 0, defaultReasoning: { effort: "high" } });
+    const adapter = new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "key", maxRetries: 0, defaultReasoning: { effort: "high" } });
     const compacted = await new ModelDrivenCompactor(adapter).manualCompact([user(), createTextMessage("assistant", "some work"), createTextMessage("user", "continue")]);
     assert.ok(seen, "compaction must really reach the adapter, not silently fall back");
     assert.equal(seen.max_tokens, 2500);
-    assert.equal(seen.thinking.type, "enabled");
-    assert.ok(seen.thinking.budget_tokens < seen.max_tokens);
+    assert.equal(seen.thinking.type, "adaptive");
+    assert.equal(seen.messages.at(-1).role, "system");
+    assert.match(JSON.stringify(seen.messages.at(-1)), /Current time:/);
     assert.equal(compacted.changed, true);
     assert.ok(compacted.messages.some(message => message.metadata?.modelDriven === true));
   } finally { await local.close(); }

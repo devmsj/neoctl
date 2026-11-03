@@ -36,7 +36,7 @@ export function useToolObservation(lines, session, runtimeSignal = () => []) {
       ids.add(line.id)
       if(subscriptions.get(line.id)?.line===line)continue
       subscriptions.get(line.id)?.stop()
-      const stop=watch(()=>[line.activity,line.observation,line.toolDisplay,line.toolStream,line.titleStatus,line.text,line.resources,line.timing?.status,...runtimeSignal(line)],(parts,old)=>{
+      const stop=watch(()=>[line.activity,line.observation,line.toolDisplay,line.toolStream,line.titleStatus,line.text,line.live,line.resources,line.timing?.status,...runtimeSignal(line)],(parts,old)=>{
         if(old&&parts.length===old.length&&parts.every((part,i)=>part===old[i]))return
         revisions.set(line.id,++revision);changed.value++
       },{immediate:true})
