@@ -1,3 +1,5 @@
+import { DEFAULT_MAX_RETRIES, retryDelayMs, waitForRetry } from "./retry-policy.js";
+import { anthropicFastModeBeta, isFastModeUnavailable } from "./fast-mode.js";
 import { EnvCredentialProvider, StaticCredentialProvider, type CredentialProvider } from "./credentials.js";
 import { categoryForStatus, ModelAPIError, normalizeUnknownError, parseRetryAfterMs } from "./errors.js";
 import type { ModelRequest, ModelStreamEvent } from "./model-gateway.js";
@@ -35,22 +37,22 @@ export class AnthropicAdapter implements ProviderAdapter {
     const body = buildAnthropicRequest(request, this.options);
     const credential = await this.credentials.getCredential();
     if (!credential) throw new ModelAPIError({ provider: this.name, category: "auth_unavailable", message: "ANTHROPIC_API_KEY (official or gateway key) is not configured" });
-    const maxRetries = this.options.maxRetries ?? 2;
+    const maxRetries = this.options.maxRetries ?? DEFAULT_MAX_RETRIES;
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
         for await (const event of this.attempt(request, body, credential)) {
-          if (["assistant_delta", "thinking_delta", "assistant_message", "tool_call_started", "tool_call_delta", "tool_use"].includes(event.type)) published = true;
+          if (!["provider_event", "retrying", "retry"].includes(event.type)) published = true;
           yield event;
         }
         return;
       } catch (error) {
         if (request.cancellation?.aborted) throw new ModelAPIError({ provider: this.name, category: "user_abort", message: "Claude request cancelled", retryable: false });
         const normalized = normalizeUnknownError(error, this.name);
-        if (published || !normalized.retryable || attempt >= maxRetries) throw normalized;
-        const delayMs = Math.min(normalized.retryAfterMs ?? 3000, 32000);
+        if (published || (request.fastMode && isFastModeUnavailable(normalized)) || !normalized.retryable || attempt >= maxRetries) throw normalized;
+        const delayMs = retryDelayMs(attempt + 1, normalized.retryAfterMs);
         yield { type: "retrying", error: normalized, attempt: attempt + 1, delayMs };
-        await abortableDelay(delayMs, request.cancellation);
+        await waitForRetry(delayMs, request.cancellation);
       }
     }
   }
@@ -62,10 +64,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     request.cancellation?.addEventListener("abort", cancel, { once: true });
     const timeoutMs = request.timeoutMs ?? this.options.timeoutMs ?? 120000;
     const timer = timeoutMs > 0 ? setTimeout(cancel, timeoutMs) : undefined;
+    const beta = request.fastMode ? anthropicFastModeBeta(request.model ?? this.options.model) : undefined;
     try {
       const response = await fetch(this.url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: request.stream === false ? "application/json" : "text/event-stream", "User-Agent": "neoctl/anthropic", "x-api-key": credential, "anthropic-version": this.options.apiVersion ?? "2023-06-01" },
+        headers: { ...(beta ? { "anthropic-beta": beta } : {}), "Content-Type": "application/json", Accept: request.stream === false ? "application/json" : "text/event-stream", "User-Agent": "neoctl/anthropic", "x-api-key": credential, "anthropic-version": this.options.apiVersion ?? "2023-06-01" },
         body: JSON.stringify(body), signal: controller.signal,
       });
       if (request.stream !== false && response.ok && timer) clearTimeout(timer);
@@ -89,13 +92,4 @@ export class AnthropicAdapter implements ProviderAdapter {
       controller.abort();
     }
   }
-}
-
-async function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw new ModelAPIError({ provider: "anthropic", category: "user_abort", message: "Claude request cancelled", retryable: false });
-  await new Promise<void>((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(new ModelAPIError({ provider: "anthropic", category: "user_abort", message: "Claude request cancelled", retryable: false })); };
-    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, ms);
-    signal?.addEventListener("abort", abort, { once: true });
-  });
 }

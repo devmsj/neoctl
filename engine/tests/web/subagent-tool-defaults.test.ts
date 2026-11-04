@@ -49,48 +49,54 @@ function assertDisabled(tools: ToolRegistry, name: string) {
   assert.ok(tools.names({ includeDisabled: true }).includes(name), "keep configurable catalog entry");
 }
 
-test("all seven delegation tools default off in registry and web settings", () => {
+test("all seven delegation tools default on in registry and web settings", () => {
   const { tools, repl } = fixture();
   for (const name of names) {
-    assert.equal(isToolEnabledByDefault(name), false);
-    assertDisabled(tools, name);
-    assert.equal(repl.globalTools().items.find(tool => tool.name === name)?.configuredEnabled, false);
+    assert.equal(isToolEnabledByDefault(name), true);
+    assert.ok(tools.get(name));
+    assert.ok(tools.definitions(undefined, { includeDeferred: true }).some(tool => tool.name === name));
+    assert.equal(repl.globalTools().items.find(tool => tool.name === name)?.configuredEnabled, true);
     const item = repl.sessionTools().items.find(tool => tool.name === name)!;
     assert.equal(item.mode, "inherit");
-    assert.equal(item.globallyEnabled, false);
-    assert.equal(item.effectiveEnabled, false);
+    assert.equal(item.globallyEnabled, true);
+    assert.equal(item.effectiveEnabled, true);
   }
   assert.ok(tools.get("file_read"), "ordinary tools keep their defaults");
-  assert.equal(isToolEnabledByDefault("subagent_future_tool"), false);
+  assert.equal(isToolEnabledByDefault("subagent_future_tool"), true);
 });
 
-test("registry opt-in and aliases cannot bypass disabled defaults", () => {
+test("registry opt-out blocks aliases and re-registration restores the default", () => {
   const tools = new ToolRegistry();
   const tool = { ...createAgentTool(), aliases: ["test_delegate"] };
   tools.register(tool);
+  assert.equal(tools.getByAlias("test_delegate"), tool);
+  tools.setEnabled("test_delegate", false);
   assertDisabled(tools, tool.name);
   assert.equal(tools.getByAlias("test_delegate"), undefined);
   assert.equal(tools.get("test_delegate"), undefined);
   tools.setEnabled("test_delegate", true);
   assert.equal(tools.get(tool.name), tool);
   assert.equal(tools.getByAlias("test_delegate"), tool);
+  tools.setEnabled(tool.name, false);
   tools.unregister(tool.name);
   tools.register(tool);
-  assertDisabled(tools, tool.name);
+  assert.equal(tools.get(tool.name), tool);
 });
 
-test("global save enables delegation explicitly and reset restores off", async () => {
+test("global save disables delegation explicitly and reset restores on", async () => {
   const { tools, repl, persisted } = fixture();
-  const overrides = Object.fromEntries(names.map(name => [name, true]));
+  const overrides = Object.fromEntries(names.map(name => [name, false]));
   assert.equal((await repl.setGlobalTools(overrides)).ok, true);
   assert.deepEqual(persisted().global, overrides);
   for (const name of names) {
-    assert.ok(tools.get(name));
-    assert.equal(repl.globalTools().items.find(tool => tool.name === name)?.configuredEnabled, true);
-    assert.equal(repl.sessionTools().items.find(tool => tool.name === name)?.effectiveEnabled, true);
+    assertDisabled(tools, name);
+    assert.equal(repl.globalTools().items.find(tool => tool.name === name)?.configuredEnabled, false);
+    assert.equal(repl.sessionTools().items.find(tool => tool.name === name)?.effectiveEnabled, false);
   }
+  const restored = fixture(persisted().global);
+  for (const name of names) assertDisabled(restored.tools, name);
   assert.equal((await repl.setGlobalTools({})).ok, true);
-  for (const name of names) assertDisabled(tools, name);
+  for (const name of names) assert.ok(tools.get(name));
 });
 
 test("session opt-in, inherit, reload and global/session precedence stay consistent", async () => {
@@ -100,15 +106,18 @@ test("session opt-in, inherit, reload and global/session precedence stay consist
   assert.equal((await repl.setSessionTools({ subagent_run: "inherit", subagent_output: "enabled" })).ok, true);
   assert.ok(tools.get("subagent_run"));
   assert.ok(tools.get("subagent_output"));
-  assertDisabled(tools, "subagent_get");
-  assert.equal((await repl.setGlobalTools({})).ok, true);
+  assert.ok(tools.get("subagent_get"), "inherit restores the enabled default");
+  assert.equal((await repl.setGlobalTools({ subagent_run: false })).ok, true);
   assertDisabled(tools, "subagent_run");
-  assert.ok(tools.get("subagent_output"), "session opt-in survives global reset");
+  assert.ok(tools.get("subagent_output"), "session opt-in survives global changes");
   tools.setEnabled("subagent_output", false);
   await repl.loadSessionTools("test-session");
   assert.ok(tools.get("subagent_output"), "saved session opt-in reloads");
   assert.equal((await repl.setSessionTools({ subagent_output: "inherit" })).ok, true);
-  for (const name of names) assertDisabled(tools, name);
+  assertDisabled(tools, "subagent_run");
+  for (const name of names.filter(name => name !== "subagent_run")) assert.ok(tools.get(name));
+  assert.equal((await repl.setGlobalTools({})).ok, true);
+  for (const name of names) assert.ok(tools.get(name));
 });
 
 test("child registries preserve permitted explicit opt-ins but never allow nested delegation", () => {

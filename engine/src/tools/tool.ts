@@ -97,6 +97,7 @@ export interface ToolRuntimeOptions {
   reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
   contextWindowTokensOverride?: number;
   maxOutputTokensOverride?: number;
+  fastMode?: boolean;
   serviceTier?: import("../model/model-gateway.js").ModelRequest["serviceTier"];
   activeSkill?: ActiveSkillRuntimeState;
   loadedSkillStructures?: Set<string>;

@@ -48,7 +48,12 @@ test('core loader discovers the plugin resource directory', async () => {
     'read_xhs_artifact',
   ]);
   const host = createWebPluginHost({ plugins: catalog });
-  assert.deepEqual(host.ids, ['downloads', 'video-share', 'xhs-artifact']);
-  const runtimePlugin = host.runtimePlugins('session-1').externalPlugins.find((plugin) => plugin.id === 'xhs-artifact');
+  assert.deepEqual(host.ids, ['downloads', 'video-share']);
+  assert.ok(!host.tools.some((tool) => tool.name.includes('xhs')));
+  assert.equal(host.runtimePlugins('session-1').externalPlugins.find((plugin) => plugin.id === 'xhs-artifact').globallyEnabled, false);
+  assert.deepEqual(host.promptSections, catalog.filter((plugin) => plugin.id !== 'xhs-artifact').flatMap((plugin) => plugin.promptSections || []));
+  const enabledHost = createWebPluginHost({ plugins: catalog, enabled: 'xhs-artifact' });
+  assert.deepEqual(enabledHost.ids, ['xhs-artifact']);
+  const runtimePlugin = enabledHost.runtimePlugins('session-1').externalPlugins.find((plugin) => plugin.id === 'xhs-artifact');
   assert.equal(typeof runtimePlugin.presentToolResult, 'function');
 });

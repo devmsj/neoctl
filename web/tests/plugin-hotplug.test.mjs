@@ -12,6 +12,12 @@ import { createWebRuntime, WebRepl } from '../../engine/dist/web/index.js';
 
 test('real web runtime keeps current tools leased and refreshes main/child prompts after a live uninstall', async t => {
   const { root, manager } = await fixture(t);
+  const previousModelDir = process.env.NEO_MODEL_CONFIG_DIR;
+  process.env.NEO_MODEL_CONFIG_DIR = path.join(root, 'model-config');
+  t.after(() => {
+    if (previousModelDir === undefined) delete process.env.NEO_MODEL_CONFIG_DIR;
+    else process.env.NEO_MODEL_CONFIG_DIR = previousModelDir;
+  });
   const settings = await createWebPluginSettings();
   const host = await manager.createHost({ settings });
   const runtime = await createWebRuntime({ cwd: root, sessionRootDir: path.join(root, 'sessions'), sessionId: 'live', ...host.runtimePlugins('live') });

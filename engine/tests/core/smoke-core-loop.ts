@@ -313,7 +313,7 @@ async function main(): Promise<void> {
     snapshot.fastMode === true &&
     narratedToolTextFlushed &&
     gateway.requests.length > 0 &&
-    gateway.requests.every((request) => request.serviceTier === "priority") &&
+    gateway.requests.every((request) => request.fastMode === true) &&
     abortDuringToolsOk &&
     userImagePinned &&
     storedImageCompacted &&

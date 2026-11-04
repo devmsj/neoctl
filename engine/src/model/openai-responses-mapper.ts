@@ -55,7 +55,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
     reasoning: reasoningDisabled ? undefined : visibleReasoning,
     text: request.textFormat ? { format: request.textFormat } : undefined,
     metadata: request.metadata,
-    service_tier: request.serviceTier,
+    service_tier: request.fastMode ? "priority" : request.serviceTier,
     prompt_cache_key: promptCache.key,
     prompt_cache_options: explicitCaching ? { mode: "implicit" } : undefined,
     store: shouldStoreResponse(request, tools.length),

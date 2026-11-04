@@ -1,11 +1,14 @@
+import { DEFAULT_MAX_RETRIES, retryDelayMs, waitForRetry } from "./retry-policy.js";
 import { ModelAPIError, normalizeUnknownError } from "./errors.js";
 import type { ModelStreamEvent } from "./model-gateway.js";
 
 export interface RetryOptions {
   provider: string;
-  maxRetries: number;
+  maxRetries?: number;
+  signal?: AbortSignal;
   delayMs?: number;
   maxDelayMs?: number;
+  skipRetry?: (error: ModelAPIError) => boolean;
 }
 
 export async function* streamWithRetry(
@@ -13,28 +16,24 @@ export async function* streamWithRetry(
   options: RetryOptions,
 ): AsyncGenerator<ModelStreamEvent> {
   for (let attempt = 1; ; attempt += 1) {
+    options.signal?.throwIfAborted();
+    let published = false;
     try {
-      yield* operation(attempt);
+      for await (const event of operation(attempt)) {
+        if (!["provider_event", "retrying", "retry"].includes(event.type)) published = true;
+        yield event;
+      }
       return;
     } catch (error) {
       const normalized = normalizeUnknownError(error, options.provider);
-      if (!shouldRetry(normalized, attempt, options.maxRetries)) throw normalized;
-      const delayMs = computeDelayMs(normalized, options);
+      if (options.signal?.aborted || published || options.skipRetry?.(normalized) || !shouldRetry(normalized, attempt, options.maxRetries ?? DEFAULT_MAX_RETRIES)) throw normalized;
+      const delayMs = retryDelayMs(attempt, normalized.retryAfterMs, options.delayMs, options.maxDelayMs);
       yield { type: "retrying", error: normalized, attempt, delayMs };
-      await sleep(delayMs);
+      await waitForRetry(delayMs, options.signal);
     }
   }
 }
 
 function shouldRetry(error: ModelAPIError, attempt: number, maxRetries: number): boolean {
   return error.retryable && attempt <= maxRetries;
-}
-
-function computeDelayMs(error: ModelAPIError, options: RetryOptions): number {
-  const delayMs = options.delayMs ?? error.retryAfterMs ?? 3000;
-  return Math.min(delayMs, options.maxDelayMs ?? 32000);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

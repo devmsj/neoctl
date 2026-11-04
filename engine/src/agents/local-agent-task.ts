@@ -75,6 +75,7 @@ export interface LocalAgentTask {
     reasoning?: import("../model/model-gateway.js").ReasoningConfig | null;
     contextWindowTokensOverride?: number;
     maxOutputTokensOverride?: number;
+    fastMode?: boolean;
     serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
     maxTurns?: number; maxTokens?: number; temperature?: number;
     query?: { maxTurns?: number; maxTokens?: number; temperature?: number };

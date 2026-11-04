@@ -495,6 +495,7 @@ interface WebSubscriber {
   needsSync: boolean;
   needsRuntimeContext: boolean;
   pendingClientReload?: WebClientReloadPayload;
+  pendingFastModeFallback?: { revision: number; sessionId?: string };
 }
 
 interface WebBackgroundSessionRun {
@@ -1274,6 +1275,7 @@ export class WebRepl {
       modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning, imageInput: findModelMetadata(engineSnapshot.model || "")?.imageInput },
       pendingSessionSettings,
       fastMode: this.runtime.engine.isFastMode(),
+      fastModeRevision: engineSnapshot.fastModeRevision,
       appPrompt: this.runtime.engine.getAppPrompt(),
       catalog: webCatalog(this.runtime),
       interactive: includeCatalog ? webInteractiveCatalog(this.runtime) : undefined,
@@ -1757,13 +1759,13 @@ export class WebRepl {
     this.setStatus({ ...this.status, metrics, activityTick: this.status.activityTick + 1 });
   }
 
-  async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean; deferred: boolean }>> {
+  async setFastMode(enabled: boolean): Promise<WebActionResult<{ fastMode: boolean; deferred: boolean; fastModeRevision: number }>> {
     if (this.deletingSession) return actionFailure("SESSION_DELETING", "会话正在删除");
     const engine = this.runtime.engine;
     try {
       const { deferred } = await engine.updateSessionSettings({ fastMode: enabled });
       if (this.runtime.engine === engine) this.broadcastSync();
-      return { ok: true, fastMode: enabled, deferred };
+      return { ok: true, fastMode: engine.getPendingSessionSettings().fastMode ?? engine.isFastMode(), deferred, fastModeRevision: engine.getFastModeRevision() };
     } catch (error) {
       return actionFailure("FAST_MODE_UPDATE_FAILED", error instanceof Error ? error.message : String(error));
     }
@@ -1852,7 +1854,9 @@ export class WebRepl {
     }
     try {
       // An idle click executes now through the settings barrier, not the chat/input queue.
-      const result = await engine.updateSessionSettings({ compact: true }, { abortSignal: controller?.signal, onCompactionDelta: text => {
+      const result = await engine.updateSessionSettings({ compact: true }, { abortSignal: controller?.signal, onRetry: event => {
+        if (showProgress && this.runtime.engine === engine && this.foregroundRunToken === runToken && !controller?.signal.aborted) this.handleEvent(event);
+      }, onCompactionDelta: text => {
         if (showProgress && this.runtime.engine === engine && this.foregroundRunToken === runToken && !controller?.signal.aborted) {
           this.handleEvent({ type: "context.compaction.delta", text });
         }
@@ -2489,6 +2493,11 @@ export class WebRepl {
       this.appendCompaction(event.compaction);
       return;
     }
+    if (event.type === "fast-mode.fallback") {
+      this.broadcastSync();
+      for (const subscriber of this.subscribers) this.send(subscriber, "fast-mode.fallback", { revision: event.revision, sessionId: this.runtime.engine.snapshot().session?.sessionId });
+      return;
+    }
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "retrying") {
       this.broadcastSync();
       return;
@@ -2756,7 +2765,7 @@ export class WebRepl {
         if (this.foregroundRunToken !== runToken) continue;
         if (this.runtime.engine !== engine) continue;
         if (this.suppressReattachedStreaming.has(engine)) {
-          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage" || event.type === "timing.updated") {
+          if (event.type === "message" || event.type === "terminal" || event.type === "error" || event.type === "context.metrics" || event.type === "usage" || event.type === "timing.updated" || event.type === "fast-mode.fallback") {
             if (event.type === "message" || event.type === "terminal" || event.type === "error") this.suppressReattachedStreaming.delete(engine);
             this.handleEvent(event);
           }
@@ -2831,6 +2840,7 @@ export class WebRepl {
   private send(subscriber: WebSubscriber, event: string, data: unknown): void {
     if (subscriber.blocked) {
       if (event === "client.reload") subscriber.pendingClientReload = data as WebClientReloadPayload;
+      else if (event === "fast-mode.fallback") subscriber.pendingFastModeFallback = data as WebSubscriber["pendingFastModeFallback"];
       else if (event === "runtime.context") subscriber.needsRuntimeContext = true;
       else subscriber.needsSync = true;
       return;
@@ -2850,6 +2860,11 @@ export class WebRepl {
       if (subscriber.needsSync) {
         subscriber.needsSync = false;
         this.send(subscriber, "sync", this.snapshot(false));
+      }
+      if (subscriber.pendingFastModeFallback) {
+        const payload = subscriber.pendingFastModeFallback;
+        subscriber.pendingFastModeFallback = undefined;
+        this.send(subscriber, "fast-mode.fallback", payload);
       }
       if (subscriber.needsRuntimeContext) {
         subscriber.needsRuntimeContext = false;
@@ -3536,7 +3551,7 @@ function toolStreamStepStatus(phase: string | undefined): UiToolStreamStep["stat
 }
 
 function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
-  if (event.type === "context.compaction.delta") return { ...status, phase: "compacting", compactionText: (status.compactionText || "") + event.text, activityTick: status.activityTick + 1 };
+  if (event.type === "context.compaction.delta") return { ...status, retryCooldownUntil: undefined, phase: "compacting", compactionText: (status.compactionText || "") + event.text, activityTick: status.activityTick + 1 };
   if (event.type === "state") return { ...status, phase: event.phase, detail: event.detail, compactionText: event.phase === "compacting" && status.phase === "compacting" ? status.compactionText : undefined, modelOutput: undefined, currentTool: event.phase === "running_tools" ? status.currentTool : undefined, usage: event.phase === "preparing" ? undefined : status.usage, streamedOutputTokens: event.phase === "preparing" ? 0 : status.streamedOutputTokens, inputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.inputTokenUpdatedAt, outputTokenUpdatedAt: event.phase === "preparing" ? undefined : status.outputTokenUpdatedAt, retryCooldownUntil: event.phase === "preparing" ? undefined : status.retryCooldownUntil, activityTick: status.activityTick + 1 };
   if (event.type === "context.compacted") return { ...status, phase: "compacting", detail: formatCompactionReportSummary(event.compaction), activityTick: status.activityTick + 1 };
   if (event.type === "context.metrics") return { ...status, metrics: event.metrics, inputTokenUpdatedAt: event.metrics.estimatedInputTokens !== status.metrics?.estimatedInputTokens ? Date.now() : status.inputTokenUpdatedAt, activityTick: status.activityTick + 1 };
@@ -3544,13 +3559,13 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "assistant.output.done") return status.modelOutput?.kind === "text" ? { ...status, modelOutput: undefined, activityTick: status.activityTick + 1 } : status;
   if (event.type === "message" && event.message.role === "assistant" && event.message.blocks.some(block => block.type === "text") && status.modelOutput?.kind === "text") return { ...status, modelOutput: undefined, activityTick: status.activityTick + 1 };
   if (event.type === "assistant.delta" && !event.text) return status;
-  if (event.type === "assistant.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "text" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "assistant.delta") return { ...status, retryCooldownUntil: undefined, phase: "calling_model", modelOutput: { kind: "text" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "thinking.done") return status.phase === "thinking" || status.modelOutput?.kind === "thinking" ? { ...status, phase: "calling_model", modelOutput: undefined, activityTick: status.activityTick + 1 } : status;
   if (event.type === "thinking.delta" && !event.text) return status;
-  if (event.type === "thinking.delta") return { ...status, phase: "thinking", modelOutput: { kind: "thinking" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "tool_call.started") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
+  if (event.type === "thinking.delta") return { ...status, retryCooldownUntil: undefined, phase: "thinking", modelOutput: { kind: "thinking" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
+  if (event.type === "tool_call.started") return { ...status, retryCooldownUntil: undefined, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name ?? (status.modelOutput?.kind === "tool_call" && status.modelOutput.callId === event.callId ? status.modelOutput.name : undefined) }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "retrying") return { ...status, phase: "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
+  if (event.type === "retrying") return { ...status, phase: status.phase === "compacting" ? "compacting" : "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
   if (event.type === "tool.started") return { ...status, phase: "running_tools", modelOutput: undefined, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.progress") return { ...status, phase: "running_tools", detail: event.progress.message || status.detail, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: status.currentTool?.id === event.toolUse.id ? status.currentTool.startedAt : Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.result.available" || event.type === "tool.finished" || event.type === "tool.batch.completed") return { ...status, currentTool: "toolUse" in event && status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };
@@ -3668,7 +3683,7 @@ const SHARED_LOGIN_FIELDS: LoginFieldDefinition[] = [
   { key: "maxOutputTokens", label: "Max output tokens", envKey: "MODEL_MAX_OUTPUT_TOKENS", scope: "shared", placeholder: "Leave empty for server default" },
   { key: "timeoutMs", label: "Timeout ms", envKey: "MODEL_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
   { key: "streamIdleTimeoutMs", label: "Stream idle timeout ms", envKey: "MODEL_STREAM_IDLE_TIMEOUT_MS", scope: "shared", placeholder: "120000" },
-  { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "2" },
+  { key: "maxRetries", label: "Max retries", envKey: "MODEL_MAX_RETRIES", scope: "shared", placeholder: "5" },
 ];
 
 const LOGIN_FIELD_DEFINITIONS: Record<LoginProviderName, LoginFieldDefinition[]> = {

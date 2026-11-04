@@ -44,12 +44,15 @@ export interface ModelRequest {
   stream: boolean;
   timeoutMs?: number;
   queryOrigin?: string;
+  /** Session speed intent; mapped independently of provider-specific service tiers. */
+  fastMode?: boolean;
   serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
   cancellation?: AbortSignal;
   providerOptions?: Record<string, unknown>;
 }
 
 export type ModelStreamEvent =
+  | { type: "fast_mode_fallback" }
   | { type: "assistant_delta"; text: string; displayChannel?: "visible" }
   /** Provider-confirmed text-part boundary; the response may continue with reasoning/tools. */
   | { type: "assistant_text_done" }

@@ -5,7 +5,7 @@ import { getNeoctlHome } from "../../paths.js";
 import type { Tool, ToolUseContext } from "../tool.js";
 
 export const FRAMEWORK_FEEDBACK_TOOL = "framework_feedback";
-export const FRAMEWORK_FEEDBACK_PROMPT = "使用 neo 时主动记录实际框架问题。先完成用户任务，再用 framework_feedback 提交；每次一条，标题、正文尽量短，正文含问题、复现、改进方向。不臆测、不重复、不含敏感信息。";
+export const FRAMEWORK_FEEDBACK_PROMPT = "Proactively note framework issues actually encountered while using neo. Complete the user's task first, then submit one item at a time through framework_feedback. Keep the title and body concise; include the issue, reproduction steps, and suggested improvement. Do not speculate, duplicate feedback, or include sensitive information.";
 export interface FrameworkFeedbackInput { title: string; body: string }
 export interface FrameworkFeedback extends FrameworkFeedbackInput { id: string; createdAt: string }
 const RECORD_NAME = /^\d{13}-[a-f0-9-]{36}\.json$/;
@@ -62,12 +62,12 @@ export class FrameworkFeedbackStore {
 export function createFrameworkFeedbackTool(store = new FrameworkFeedbackStore()): Tool<FrameworkFeedbackInput> {
   return {
     name: FRAMEWORK_FEEDBACK_TOOL,
-    description: "用户任务完成后，提交一条实际遇到的 neo 框架改进建议。标题和正文尽量短；正文含问题、复现、改进方向，不含密钥或用户隐私。仅本机保存。",
+    description: "After completing the user's task, submit one improvement suggestion for a neo framework issue actually encountered. Keep the title and body concise; include the issue, reproduction steps, and suggested improvement. Exclude secrets and private user information. Saved locally only.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["title", "body"],
       properties: {
-        title: { type: "string", minLength: 1, maxLength: 60, description: "一条意见的简短标题，最多60字。" },
-        body: { type: "string", minLength: 1, maxLength: 400, description: "问题；复现；改进。尽量短，最多400字。" },
+        title: { type: "string", minLength: 1, maxLength: 60, description: "A concise title for one suggestion, up to 60 characters." },
+        body: { type: "string", minLength: 1, maxLength: 400, description: "Issue, reproduction steps, and suggested improvement. Keep concise, up to 400 characters." },
       },
     },
     metadata: { readOnly: false, concurrent: true, visible: true },

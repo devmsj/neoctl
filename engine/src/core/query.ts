@@ -48,6 +48,8 @@ export interface SessionSettingsPatch {
   compact?: boolean;
 }
 
+import { streamWithFastModeFallback } from "../model/fast-mode.js";
+
 export interface BeforeTurnUpdate {
   modelGateway?: ModelGateway;
   /** Only changed fields; never a full settings snapshot. */
@@ -59,7 +61,7 @@ export interface QueryOptions {
   /** Safe boundary before context construction, never inside streaming/retries/tools.
    * Compaction is calculated from these authoritative query messages, not engine history.
    */
-  beforeTurn?: (messages: readonly Message[], onCompactionStart?: CompactionStarted, onCompactionDelta?: (text: string) => void) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
+  beforeTurn?: (messages: readonly Message[], onCompactionStart?: CompactionStarted, onCompactionDelta?: (text: string) => void, onRetry?: ContextBudgetOptions["onRetry"]) => BeforeTurnUpdate | undefined | Promise<BeforeTurnUpdate | undefined>;
   /** Synchronous inbox handoff immediately before a model request. */
   takePendingMessages?: () => Message[];
   agentId: string;
@@ -67,6 +69,9 @@ export interface QueryOptions {
   reasoning?: ReasoningConfig | null;
   queryOrigin?: string;
   serviceTier?: ModelRequest["serviceTier"];
+  fastMode?: boolean;
+  getFastModeRevision?: () => number;
+  onFastModeFallback?: (revision: number) => number | undefined;
   maxOutputTokensOverride?: number;
   contextWindowTokensOverride?: number;
   maxTurns?: number;
@@ -211,6 +216,7 @@ async function* queryLoop(
       contextWindowTokensOverride: options.contextWindowTokensOverride,
       maxOutputTokensOverride: options.maxOutputTokensOverride,
       serviceTier: options.serviceTier,
+      fastMode: options.fastMode,
     },
     toolResultMemory: dependencies.toolResultMemory,
     session: dependencies.session,
@@ -225,7 +231,7 @@ async function* queryLoop(
     if (options.abortSignal?.aborted) return "aborted_streaming";
     if (maxTurns !== undefined && state.turnCount >= maxTurns) return "max_turns";
 
-    const update = yield* withCompactionProgress((started, delta) => options.beforeTurn?.(state.messages, started, delta), options.abortSignal);
+    const update = yield* withCompactionProgress((started, delta, retry) => options.beforeTurn?.(state.messages, started, delta, retry), options.abortSignal);
     if (update?.modelGateway && update.modelGateway !== dependencies.modelGateway) {
       dependencies.modelGateway = update.modelGateway;
       state.previousResponseId = undefined;
@@ -242,7 +248,7 @@ async function* queryLoop(
         options.model = settings.model;
       }
       if (Object.hasOwn(settings, "reasoning")) options.reasoning = settings.reasoning;
-      if (Object.hasOwn(settings, "fastMode")) options.serviceTier = settings.fastMode ? "priority" : undefined;
+      if (Object.hasOwn(settings, "fastMode")) options.fastMode = settings.fastMode === true;
       if (Object.hasOwn(settings, "contextWindowTokens")) options.contextWindowTokensOverride = settings.contextWindowTokens;
     }
     if (update?.compaction && !update.compaction.changed) await dependencies.applyCompaction?.(update.compaction);
@@ -268,6 +274,7 @@ async function* queryLoop(
           modelGateway: dependencies.modelGateway,
           reasoning: options.reasoning,
           serviceTier: options.serviceTier,
+          fastMode: options.fastMode,
           contextWindowTokensOverride: options.contextWindowTokensOverride,
           maxOutputTokensOverride: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
         },
@@ -286,14 +293,14 @@ async function* queryLoop(
       });
       const systemPrompt = context.systemPrompt;
       const requestContextForTurn = options.requestContext;
-      const prepared = yield* withCompactionProgress((started, delta) => prepareMessagesForQuery(state, context, dependencies, compactor, {
+      const prepared = yield* withCompactionProgress((started, delta, retry) => prepareMessagesForQuery(state, context, dependencies, compactor, {
         model: state.currentModel ?? options.model,
         contextWindowTokensOverride: options.contextWindowTokensOverride,
         systemPrompt,
         toolDefinitions,
         toolUseContext: toolContext,
         requestContext: requestContextForTurn,
-      }, started, options.abortSignal, delta), options.abortSignal);
+      }, started, options.abortSignal, delta, retry), options.abortSignal);
       options.abortSignal?.throwIfAborted();
       if (prepared.compaction?.changed) {
         state = { ...state, messages: prepared.compactedMessages };
@@ -385,6 +392,7 @@ async function prepareMessagesForQuery(
   onCompactionStart?: CompactionStarted,
   abortSignal?: AbortSignal,
   onCompactionDelta?: (text: string) => void,
+  onRetry?: ContextBudgetOptions["onRetry"],
 ): Promise<PreparedMessages> {
   const baseMessages = state.modelInputMessages ?? getMessagesAfterCompactBoundary(state.messages);
   const budgetResult = telemetry.toolUseContext?.toolResultMemory
@@ -426,6 +434,7 @@ async function prepareMessagesForQuery(
     ...dependencies.contextBudget,
     onCompactionStart,
     onCompactionDelta,
+    onRetry,
     abortSignal,
     imageRegistry: dependencies.imageStore?.snapshot(),
     estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
@@ -516,7 +525,8 @@ async function* callModelForTurn(
       options.onRequestContextConsumed?.();
       options.requestContext = undefined;
     }
-    for await (const event of withThinkingLifecycle(abortableStream(dependencies.modelGateway.stream({
+    const fastModeRevision = options.getFastModeRevision?.() ?? 0;
+    for await (const event of withThinkingLifecycle(abortableStream(streamWithFastModeFallback(dependencies.modelGateway, {
       model: activeModel,
       messages: modelMessages,
       systemPrompt: telemetry.systemPrompt,
@@ -528,8 +538,16 @@ async function* callModelForTurn(
       previousResponseId: state.previousResponseId,
       queryOrigin: options.queryOrigin,
       serviceTier: options.serviceTier,
+      fastMode: options.fastMode,
       cancellation: options.abortSignal,
     }), options.abortSignal))) {
+      if (event.type === "fast_mode_fallback") {
+        options.fastMode = false;
+        if (toolContext.options) toolContext.options.fastMode = false;
+        const revision = options.onFastModeFallback?.(fastModeRevision);
+        if (revision !== undefined) yield { type: "fast-mode.fallback", revision };
+        continue;
+      }
       if (event.type === "thinking_done") {
         yield { type: "thinking.done" };
         continue;
@@ -587,8 +605,8 @@ async function* callModelForTurn(
         summaryMaxChars: escalatedSummaryMax,
       };
       const compacted = withCompactionReport(
-        yield* withCompactionProgress((started, delta) => {
-          const budget = { ...reactiveBudget, onCompactionStart: started, onCompactionDelta: delta };
+        yield* withCompactionProgress((started, delta, retry) => {
+          const budget = { ...reactiveBudget, onCompactionStart: started, onCompactionDelta: delta, onRetry: retry };
           const pending = compactor.reactiveCompact?.(state.messages, normalized, budget) ?? compactor.compact(state.messages, budget);
           started("reactive_compact");
           return pending;

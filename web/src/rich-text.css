@@ -27,7 +27,7 @@
   --syntax-comment: var(--appearance-syntax-comment, #929fae);
   --syntax-deletion: #e2a0ab;
 }
-:root[data-theme] .message-loading-body:has(.execution-signal, .execution-resume) { display: flex; align-items: center; gap: 12px; }
+:root[data-theme] .message-loading-body:has(.execution-signal, .execution-resume, .execution-retry) { display: flex; align-items: center; gap: 12px; }
 :root[data-theme] .execution-resume { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; background: transparent !important; color: var(--chrome-accent); box-shadow: none !important; cursor: pointer; }
 :root[data-theme] .execution-resume:hover:not(:disabled) { background: var(--chrome-hover) !important; }
 .execution-resume svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

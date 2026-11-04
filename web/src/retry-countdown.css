@@ -1,0 +1,46 @@
+/* Shared verbatim by the standalone preview. Same 28px footprint as resume. */
+:root[data-theme] .execution-retry {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  color: var(--chrome-accent) !important;
+  isolation: isolate;
+  min-height: 28px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: var(--appearance-radius, 5px) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+:root[data-theme] .execution-retry:hover:not(:disabled) { background: var(--chrome-hover) !important; }
+.execution-retry:focus-visible { outline: 1px solid var(--chrome-accent); outline-offset: 3px; }
+.execution-retry:disabled { opacity: .4; cursor: default; }
+.execution-retry > svg {
+  grid-area: 1 / 1;
+  width: 28px;
+  height: 28px;
+  fill: currentColor;
+  fill-opacity: .13;
+  stroke: currentColor;
+  stroke-opacity: .36;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.execution-retry-count {
+  grid-area: 1 / 1;
+  z-index: 1;
+  color: var(--chrome-accent) !important;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.7px;
+  padding-right: .7px;
+  text-shadow: 0 1px 3px var(--chrome-bg), 0 -1px 3px var(--chrome-bg);
+}

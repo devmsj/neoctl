@@ -66,7 +66,7 @@ test("midstream settings are gated, merged and next-turn-local; same-model cache
   assert.equal(f.engine.isFastMode(), false);
   f.resume.release();
   const events = await result;
-  assert.equal(f.requests[1].serviceTier, "priority");
+  assert.equal(f.requests[1].fastMode, true);
   assert.deepEqual(f.requests[1].reasoning, { effort: "high" });
   // Existing full-history tool turns intentionally omit response chaining.
   assert.equal(f.requests[1].previousResponseId, undefined);
@@ -78,9 +78,9 @@ test("midstream settings are gated, merged and next-turn-local; same-model cache
   assert.deepEqual(promptMessages(f.requests[1].messages.slice(0, f.requests[0].messages.length)), promptMessages(f.requests[0].messages));
   assert.equal(identity(f.requests[0]).key, identity(f.requests[1]).key);
   assert.equal(identity(f.requests[0]).stablePrefixHash, identity(f.requests[1]).stablePrefixHash);
-  assert.equal(f.toolOptions[0]?.serviceTier, undefined);
+  assert.equal(f.toolOptions[0]?.fastMode, false);
   assert.deepEqual(f.toolOptions[0]?.reasoning, { effort: "low" });
-  assert.equal(f.builds[1]?.serviceTier, "priority");
+  assert.equal(f.builds[1]?.fastMode, true);
   assert.equal(f.builds[1]?.contextWindowTokensOverride, 70000);
   assert(events.some((e) => e.type === "context.metrics" && e.metrics.contextWindowTokens === 70000));
   assert.deepEqual(f.engine.getPendingSessionSettings(), {});
@@ -96,7 +96,7 @@ test("real model switch clears response chain, no-op model and canceling LWW do 
     f.resume.release(); await done;
     assert.equal(f.requests[1].model, switchModel ? "gpt-5-mini" : "gpt-5");
     assert.equal(f.requests[1].previousResponseId, undefined);
-    assert.equal(f.requests[1].serviceTier, undefined);
+    assert.equal(f.requests[1].fastMode, false);
     assert.equal(identity(f.requests[0]).key === identity(f.requests[1]).key, !switchModel);
   }
 });
@@ -117,7 +117,7 @@ test("max-output recovery keeps escalation and response chain under no-op/fast/c
     resume.release(); await done;
     assert.equal(requests[1].maxOutputTokens, 64000);
     assert.equal(requests[1].previousResponseId, switchModel ? undefined : "resp-recover");
-    assert.equal(requests[1].serviceTier, "priority");
+    assert.equal(requests[1].fastMode, true);
     if (switchModel) assert.match(JSON.stringify(requests[1].messages), /RECOVER_INPUT/);
     else assert.match(JSON.stringify(requests[1].messages), /Continue from the exact point/);
   }
@@ -186,7 +186,7 @@ test("idle mutations serialize compaction ahead of new user generator; idle comp
   releaseCompact.release();
   const result = await update; assert.equal(result.deferred, false); assert.equal(result.compaction?.changed, true);
   await f.opened.promise;
-  assert.equal(f.requests[0].serviceTier, "priority"); assert.equal(f.requests[0].reasoning, null);
+  assert.equal(f.requests[0].fastMode, true); assert.equal(f.requests[0].reasoning, null);
   assert.match(JSON.stringify(f.requests[0].messages), /IDLE_CHECKPOINT/);
   assert.match(JSON.stringify(f.requests[0].messages), /NEW_INPUT/);
   f.resume.release(); await done;

@@ -5,7 +5,7 @@ import type { AgentEvent } from "../types/events.js";
 export type CompactionStarted = (reason: Exclude<CompactionReason, "none">) => void;
 
 /** Forward start notifications while awaiting summary work, not after it has finished. */
-export async function* withCompactionProgress<T>(work: (started: CompactionStarted, delta: (text: string) => void) => Promise<T> | T, signal?: AbortSignal): AsyncGenerator<AgentEvent, T, void> {
+export async function* withCompactionProgress<T>(work: (started: CompactionStarted, delta: (text: string) => void, retry: (event: Extract<AgentEvent, { type: "retrying" }>) => void) => Promise<T> | T, signal?: AbortSignal): AsyncGenerator<AgentEvent, T, void> {
   const events: AgentEvent[] = [];
   const seen = new Set<CompactionReason>();
   let wake: (() => void) | undefined;
@@ -23,6 +23,10 @@ export async function* withCompactionProgress<T>(work: (started: CompactionStart
     const last = events.at(-1);
     if (last?.type === "context.compaction.delta") last.text += text;
     else events.push({ type: "context.compaction.delta", text });
+    wake?.();
+  }, event => {
+    if (settled || signal?.aborted) return;
+    events.push(event);
     wake?.();
   }), signal).then(value => { result = value; }, cause => { failed = true; error = cause; }).finally(() => {
     settled = true;

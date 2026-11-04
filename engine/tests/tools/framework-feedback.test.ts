@@ -100,5 +100,10 @@ test("effective model prompt and schemas follow enabled tools on each request", 
     assert.equal(request.systemPrompt!.includes(FRAMEWORK_FEEDBACK_PROMPT), enabled);
     assert.equal(request.systemPrompt!.includes("framework_feedback"), enabled);
     assert.equal(request.tools.some(tool => tool.name === "framework_feedback"), enabled);
+    assert.doesNotMatch(request.systemPrompt!, /使用 neo 时主动记录/);
+    if (enabled) {
+      assert.doesNotMatch(FRAMEWORK_FEEDBACK_PROMPT, /\p{Script=Han}/u);
+      assert.doesNotMatch(JSON.stringify(request.tools.find(tool => tool.name === "framework_feedback")), /\p{Script=Han}/u);
+    }
   }
 });

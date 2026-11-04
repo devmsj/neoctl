@@ -43,6 +43,7 @@ export interface RunAgentOptions {
   model?: string;
   reasoning?: QueryOptions["reasoning"];
   contextWindowTokensOverride?: QueryOptions["contextWindowTokensOverride"];
+  fastMode?: boolean;
   serviceTier?: QueryOptions["serviceTier"];
   maxOutputTokensOverride?: QueryOptions["maxOutputTokensOverride"];
   /** Only a new explicit directive; never repeat the original prompt on restore. */
@@ -143,6 +144,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       reasoning: options.reasoning,
       contextWindowTokensOverride: options.contextWindowTokensOverride,
       serviceTier: options.serviceTier,
+      fastMode: options.fastMode,
       maxOutputTokensOverride: options.maxOutputTokensOverride,
       maxTurns,
       queryOrigin: "subagent",

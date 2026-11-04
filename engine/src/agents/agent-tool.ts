@@ -602,6 +602,7 @@ function effectiveExecutionOptions(input: AgentToolInput, agent: AgentDefinition
     contextWindowTokensOverride: context.options?.contextWindowTokensOverride,
     maxOutputTokensOverride: context.options?.maxOutputTokensOverride,
     serviceTier: context.options?.serviceTier,
+    fastMode: context.options?.fastMode,
   };
 }
 

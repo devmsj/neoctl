@@ -54,6 +54,7 @@ export interface ContextMetrics {
 import type { TimingRecord } from "../core/query-timing.js";
 
 export type AgentEvent =
+  | { type: "fast-mode.fallback"; revision: number }
   | { type: "timing.updated"; timing: TimingRecord }
   | { type: "state"; phase: string; detail?: string }
   | { type: "assistant.output.done" }

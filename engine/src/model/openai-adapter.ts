@@ -1,3 +1,4 @@
+import { isFastModeUnavailable } from "./fast-mode.js";
 import type { CredentialProvider } from "./credentials.js";
 import { EnvCredentialProvider, StaticCredentialProvider } from "./credentials.js";
 import type { OpenAIEndpointPreference } from "./config.js";
@@ -57,8 +58,9 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
     const endpoint = this.options.endpoint ?? "auto";
     yield* streamWithRetry((attempt) => this.streamAttempt(request, endpoint, attempt), {
       provider: this.name,
-      maxRetries: this.options.maxRetries ?? 2,
-      delayMs: 3000,
+      maxRetries: this.options.maxRetries,
+      signal: request.cancellation,
+      skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
     });
   }
 
@@ -78,7 +80,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
       return;
     } catch (error) {
       const normalized = normalizeUnknownError(error, this.name);
-      if (endpoint === "auto" && shouldFallbackToChat(normalized)) {
+      if (endpoint === "auto" && !(request.fastMode && isFastModeUnavailable(normalized)) && shouldFallbackToChat(normalized)) {
         this.assertChatCompatibility(request);
         yield { type: "provider_event", event: { type: "endpoint_fallback", from: "responses", to: "chat", reason: normalized.message, attempt } };
         yield* this.streamChat(request);

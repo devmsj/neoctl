@@ -11,6 +11,25 @@ import { WebRepl, type WebRuntime } from "../../src/web/index.js";
 // updateSessionSettings boundary. These do NOT test QueryEngine's turn hooks.
 // Run from engine/: node --import tsx --test tests/web/session-settings.test.ts
 
+test("fast-mode fallback notification survives SSE backpressure without entering chat", (t) => {
+  const f = fixture(t);
+  const frames: string[] = [];
+  let drain: (() => void) | undefined;
+  let block = true;
+  const subscriber = { blocked: false, needsSync: false, needsRuntimeContext: false,
+    response: { destroyed: false, write(frame: string) { frames.push(frame); return !block; }, once(_event: string, callback: () => void) { drain = callback; } } };
+  const send = (f.repl as any).send.bind(f.repl);
+  send(subscriber, "sync", {});
+  send(subscriber, "fast-mode.fallback", { sessionId: "owner-A", revision: 2 });
+  assert.equal(frames.length, 1);
+  block = false;
+  drain!();
+  assert.equal(frames.length, 2);
+  assert.match(frames[1], /event: fast-mode.fallback/);
+  assert.match(frames[1], /"sessionId":"owner-A"/);
+  assert.equal(f.repl.snapshot().lines.length, 0);
+});
+
 type Patch = Parameters<QueryEngine["updateSessionSettings"]>[0];
 type UpdateResult = Awaited<ReturnType<QueryEngine["updateSessionSettings"]>>;
 type Metrics = WebRuntime["initialMetrics"];
@@ -40,6 +59,7 @@ function fixture(t: TestContext, busy = false) {
   const agentRuntime = { modelGateway: gateway };
   const appPrompt = Object.freeze({ hasActivePrompt: true, id: "existing-prompt", text: "unchanged prefix" });
   let pending: Patch = {};
+  let fastMode = false;
   const settings = { model: "gpt-5.6-sol", reasoning: { effort: "medium" } };
   const metrics = { contextWindowTokens: 256_000, messageCount: 2 } as Metrics;
   const calls: Patch[] = [];
@@ -47,6 +67,7 @@ function fixture(t: TestContext, busy = false) {
   let publishCalls = 0;
   let update: (patch: Patch) => Promise<UpdateResult> = async (patch) => {
     if (busy) pending = { ...pending, ...patch };
+    else if (patch.fastMode !== undefined) fastMode = patch.fastMode;
     return { deferred: busy };
   };
   let readMetrics = async () => metrics;
@@ -54,7 +75,7 @@ function fixture(t: TestContext, busy = false) {
     getDisplayEntries: () => [], getHistoryMessages: () => [],
     snapshot: () => ({ messages: 2, ...settings, session: { sessionId: "owner-A", sessionDir: root } }),
     getModelSettings: () => ({ ...settings }), getPendingSessionSettings: () => ({ ...pending }),
-    isFastMode: () => false, getAppPrompt: () => appPrompt,
+    getFastModeRevision: () => 0, isFastMode: () => fastMode, getAppPrompt: () => appPrompt,
     onSessionTitleChange: () => () => undefined,
     redactDisplayValue: <T>(value: T) => value,
     updateSessionSettings: async (patch: Patch) => { calls.push(patch); return update(patch); },
@@ -108,8 +129,8 @@ for (const busy of [false, true]) {
     assert.deepEqual(await f.repl.setSessionModel(" gpt-5.6-sol ", "high"), {
       ok: true, deferred: busy, modelSettings: { model: "gpt-5.6-sol", reasoning: { effort: "high" } },
     });
-    assert.deepEqual(await f.repl.setFastMode(true), { ok: true, fastMode: true, deferred: busy });
-    assert.deepEqual(await f.repl.setFastMode(false), { ok: true, fastMode: false, deferred: busy });
+    assert.deepEqual(await f.repl.setFastMode(true), { ok: true, fastMode: true, deferred: busy, fastModeRevision: 0 });
+    assert.deepEqual(await f.repl.setFastMode(false), { ok: true, fastMode: false, deferred: busy, fastModeRevision: 0 });
     assert.deepEqual(await f.repl.setContextWindowK("128"), {
       ok: true, contextWindowK: 128, contextWindowTokens: 128_000, deferred: busy,
     });

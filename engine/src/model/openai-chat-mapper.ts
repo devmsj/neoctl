@@ -40,7 +40,7 @@ export function buildChatRequest(request: ModelRequest, options: OpenAIChatMappe
     reasoning_effort: chatReasoningEffortOption(request.model ?? options.model, reasoning),
     thinking: chatThinkingOption(request.model ?? options.model, reasoning, reasoningDisabled),
     metadata: options.includeMetadata === false ? undefined : request.metadata,
-    service_tier: request.serviceTier,
+    service_tier: request.fastMode ? "priority" : request.serviceTier,
     prompt_cache_key: promptCache.key,
     ...((request.providerOptions?.chat as Record<string, unknown> | undefined) ?? {}),
   });

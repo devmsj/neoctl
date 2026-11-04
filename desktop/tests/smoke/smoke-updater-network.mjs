@@ -53,9 +53,9 @@ async function healthy(candidate, versions) {
           for (const name of delegationTools) {
             const tool = tools.items.find(item => item.name === name);
             assert.ok(tool, `missing configurable tool ${name}`);
-            assert.equal(tool.configuredEnabled, false, `${name} must default off`);
+            assert.equal(tool.configuredEnabled, true, `${name} must default on`);
           }
-          console.log(`PASS HTTP health Web=${versions.web_version} Core=${info.coreVersion}; all seven delegation tools default off`);
+          console.log(`PASS HTTP health Web=${versions.web_version} Core=${info.coreVersion}; all seven delegation tools default on`);
           return;
         }
       } catch (error) { if (error?.code === 'ERR_ASSERTION') throw error; }

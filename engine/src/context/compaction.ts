@@ -12,6 +12,7 @@ export interface ContextBudgetOptions {
   imageRegistry?: ImageRegistry;
   /** Emitted before summary work starts; a budget check alone must not emit this. */
   onCompactionDelta?: (text: string) => void;
+  onRetry?: (event: Extract<import("../types/events.js").AgentEvent, { type: "retrying" }>) => void;
   onCompactionStart?: (reason: Exclude<CompactionReason, "none">) => void;
   snipMaxChars?: number;
   microCompactMaxChars?: number;
@@ -163,6 +164,7 @@ export class ModelDrivenCompactor implements Compactor {
         compact: true,
       },
     }), options.abortSignal)) {
+      if (event.type === "retrying") options.onRetry?.(event);
       if (event.type === "assistant_delta") { streamedText += event.text; options.onCompactionDelta?.(event.text); }
       if (event.type === "assistant_message") {
         finalAssistantText = extractText(event.message).trim() || finalAssistantText;

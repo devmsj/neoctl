@@ -14,6 +14,7 @@ function snapshot(busy = false, id = 'settings-session') {
       commands: [], modelIds: ['gpt-test', 'plain-model', longModel],
       reasoning: ['default', 'off', 'low', 'high', 'xhigh'],
       modelReasoning: { 'gpt-test': ['low', 'high'], 'plain-model': [], [longModel]: [] },
+      modelReasoningEnabled: { 'gpt-test': true, 'plain-model': false, [longModel]: false },
     },
   })
 }
@@ -96,28 +97,28 @@ for (const busy of [false, true]) {
       const { page } = fixture
       const suffix = busy ? '将在下一轮生效' : '已生效'
       let dialog = await openModel(page)
-      assert.equal(await dialog.getByRole('radio', { name: initialModel, exact: true }).isChecked(), true)
+      assert.equal(await dialog.getByRole('radio', { name: initialModel, exact: true }).count(), 0, 'models outside the compatible catalog must not be offered')
       await dialog.getByRole('radio', { name: 'gpt-test', exact: true }).check()
       assert.equal(await dialog.getByRole('radio', { name: 'xhigh', exact: true }).count(), 0)
-      await dialog.getByRole('radio', { name: 'high', exact: true }).check()
+      await dialog.locator('.effort-labels').getByRole('button', { name: 'high', exact: true }).click()
       await dialog.getByRole('radio', { name: 'plain-model', exact: true }).check()
       assert.equal(await dialog.getByRole('radio', { name: 'high', exact: true }).count(), 0)
-      assert.equal(await dialog.getByRole('radio', { name: '默认', exact: true }).isChecked(), true)
+      assert.equal(await dialog.locator('.effort-value').textContent(), '不支持推理')
       await dialog.getByRole('radio', { name: 'gpt-test', exact: true }).check()
-      await dialog.getByRole('radio', { name: 'high', exact: true }).check()
+      await dialog.locator('.effort-labels').getByRole('button', { name: 'high', exact: true }).click()
       await confirm(page, dialog)
       await toast(page, `模型${suffix}`)
       await sync(page, current)
-      assert.match(await page.locator('.model-trigger:visible').textContent(), /gpt-test.*high/)
+      assert.match(await page.locator('.model-trigger:visible').textContent(), /gpt-test/)
       dialog = await openModel(page)
       assert.equal(await dialog.getByRole('radio', { name: 'gpt-test', exact: true }).isChecked(), true)
-      assert.equal(await dialog.getByRole('radio', { name: 'high', exact: true }).isChecked(), true)
+      assert.equal(await dialog.getByRole('slider', { name: '推理强度' }).getAttribute('aria-valuetext'), 'high')
       await page.keyboard.press('Escape')
       await dialog.waitFor({ state: 'hidden' })
       assert.equal(await page.locator('.model-trigger:visible').evaluate(el => el === document.activeElement), true)
 
       await page.locator('.fast-mode-button:visible').click()
-      await toast(page, `快速模式${suffix}`)
+      await toast(page, busy ? '快速模式将在下一轮 API 调用时生效，消耗倍率增加' : '已开启快速模式，消耗倍率增加')
       await sync(page, current)
       assert.equal(await page.locator('.fast-mode-button:visible').getAttribute('aria-pressed'), 'true')
       const beforeContext = await page.locator('.context-window-trigger:not(.model-trigger):visible strong').textContent()
@@ -162,7 +163,7 @@ for (const busy of [false, true]) {
         Object.assign(current.status.metrics, { contextWindowTokens: 200000, contextUsageRatio: 0.05 })
         current.pendingSessionSettings = {}
         await sync(page, current)
-        assert.match(await page.locator('.model-trigger:visible').textContent(), /gpt-test.*high/)
+        assert.match(await page.locator('.model-trigger:visible').textContent(), /gpt-test/)
         assert.equal(await page.locator('.fast-mode-button:visible').getAttribute('aria-pressed'), 'true')
         assert.equal(await compact.isEnabled(), true)
       }
@@ -186,7 +187,8 @@ test('model and context dialogs stay minimal, keyboard-operable and within mobil
       await dialog.getByRole('searchbox').fill('plain')
       assert.equal(await dialog.locator('.session-model-option').count(), 1)
       await dialog.getByRole('radio', { name: 'plain-model', exact: true }).check()
-      assert.deepEqual(await dialog.locator('.session-reasoning-options span').allTextContents(), ['默认', '关闭'])
+      assert.equal(await dialog.locator('.effort-value').textContent(), '不支持推理')
+      assert.equal(await dialog.getByRole('slider').count(), 0)
       const bounds = await dialog.evaluate(el => {
         const rect = el.getBoundingClientRect()
         return { left: rect.left, right: rect.right, bottom: rect.bottom, overflow: el.scrollWidth > el.clientWidth + 1 }
@@ -260,7 +262,7 @@ test('next-round SSE overtaking deferred HTTP cannot resurrect pending settings'
     current.status.metrics.contextWindowTokens = 100000
     await sync(page, current)
     dialog = await openModel(page)
-    assert.equal(await dialog.getByRole('radio', { name: '默认', exact: true }).isChecked(), true, 'missing pending reasoning must not retain old high effort')
+    assert.equal(await dialog.locator('.effort-value').textContent(), '不支持推理', 'non-reasoning models must not retain old effort controls')
     await page.keyboard.press('Escape')
     assert.equal(await page.locator('.fast-mode-button:visible').getAttribute('aria-pressed'), 'false')
     dialog = await openContext(page)
@@ -347,18 +349,18 @@ test('compaction stays outside folded process groups and uses explicit live sema
     await page.getByRole('dialog', { name: '压缩上下文详情' }).waitFor()
     await page.keyboard.press('Escape')
     await page.locator('.compact-button:visible').click()
-    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩中'))
+    await page.locator('.compact-button.is-compacting .loading-ring').waitFor()
     assert.equal(posted, true)
     assert.equal(await page.locator('.compact-button:visible').isDisabled(), true)
     current.busy = true
     current.status = { ...current.status, phase: 'compacting', detail: 'manualcompact: generating context summary' }
     await sync(page, current)
-    assert.match(await page.locator('.message-loading-label').textContent(), /压缩中/)
+    assert.equal(await page.locator('.execution-signal[data-mode="compacting"] .signal-compacting').isVisible(), true)
     assert.equal(await page.locator('.compact-button:visible').getAttribute('aria-label'), '正在压缩上下文')
     current.status.detail = 'autocompact: generating context summary'
     await sync(page, current)
-    await page.waitForFunction(() => document.querySelector('.message-loading-label')?.textContent?.includes('压缩中'))
-    assert.doesNotMatch(await page.locator('.message-loading-label').textContent(), /准备中/)
+    await page.locator('.execution-signal[data-mode="compacting"] .signal-compacting').waitFor()
+    assert.equal(await page.locator('.message-loading-label').count(), 0)
     current.busy = false
     current.status.phase = 'ready'
     release()

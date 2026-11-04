@@ -49,7 +49,7 @@ npm --prefix desktop run build
 
 - 正式流水线设置 `NEO_RELEASE_PAYLOAD=registry`，内置 Web tgz 直接取自 npm 已发布版本，不重新打出另一份同版本包。Web 精确锁定 Core；首次安装仍需联网下载 Core 和其余依赖，不是完全离线安装包。
 - 流水线开始、准备资源和发布前均核验仓库版本与 npm `latest` 一致，版本不一致会失败，禁止悄悄使用旧版。
-- 必须通过 Core 类型检查与本次子代理回归、Web 设置测试、桌面脚本/Rust 测试、独立更新器离线协议测试及真实 npm 安装/升级测试。联网测试检查 Web/Core 精确版本、7 个子代理开关默认关闭、旧版本删除及数据保留。
+- 必须通过 Core 类型检查与本次子代理回归、Web 设置测试、桌面脚本/Rust 测试、独立更新器离线协议测试及真实 npm 安装/升级测试。联网测试检查 Web/Core 精确版本、7 个子代理开关默认开启、旧版本删除及数据保留。
 - Release 附带安装包、SHA256、`release-versions.json`、`payload-manifest.json` 和源码 commit。可通过 `workflow_dispatch` 指定已有标签重跑同一份源码；失败步骤不会被忽略。
 - Core 全量测试存在与本次变更无关的基线失败；发布专项流水线通过不等于历史全量测试全绿，不能通过跳过断言掩盖历史问题。
 

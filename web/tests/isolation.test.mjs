@@ -15,6 +15,12 @@ process.env.NEO_EXECUTION_BACKEND = 'local';
 
 async function fixture(t, enabled = true, configOverrides = {}, plugins = false) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-isolation-'));
+  const previousModelDir = process.env.NEO_MODEL_CONFIG_DIR;
+  process.env.NEO_MODEL_CONFIG_DIR = path.join(root, 'model-config');
+  t.after(() => {
+    if (previousModelDir === undefined) delete process.env.NEO_MODEL_CONFIG_DIR;
+    else process.env.NEO_MODEL_CONFIG_DIR = previousModelDir;
+  });
   const configFile = path.join(root, 'isolation.json');
   const passwordHash = await hashPassword('TestPasswordOnly');
   await fs.writeFile(configFile, JSON.stringify({ enabled, users: [{ username: 'Alice', passwordHash }, { username: 'Bob', passwordHash }, { username: 'Admin', passwordHash, role: 'admin' }], ...configOverrides }));

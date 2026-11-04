@@ -97,6 +97,38 @@ for (const mode of ["auto", "reactive", "manual", "queued"] as const) {
   });
 }
 
+for (const compact of [false, true]) test(`cancel auto-retry stops pending request and keeps resume available (compact=${compact})`, { timeout: 10000 }, async t => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'neo-retry-pause-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requests: ModelRequest[] = [];
+  let blocked = false;
+  const gateway: ModelGateway = { async *stream(request) {
+    requests.push(request);
+    if (blocked) {
+      yield { type: 'retrying', attempt: 1, delayMs: 60000, error: new ModelAPIError({ provider: 'openai', category: 'network', message: 'reset' }) };
+      await new Promise<void>(resolve => { if (request.cancellation?.aborted) resolve(); else request.cancellation?.addEventListener('abort', () => resolve(), { once: true }); });
+      request.cancellation?.throwIfAborted();
+    }
+    yield { type: 'assistant_message', message: createTextMessage('assistant', 'done') };
+    yield { type: 'response_completed' };
+  } };
+  const engine = new QueryEngine({ modelGateway: gateway, tools: new ToolRegistry(), session: { rootDir: root, sessionId: 'retry-pause' } });
+  const repl = replFor(engine);
+  await drain(engine.sendUserText('retain original'));
+  blocked = true;
+  const operation = compact ? repl.compactSession() : repl.submit('continue');
+  await waitFor(() => Number(repl.snapshot().status.retryCooldownUntil) > Date.now());
+  if (compact) assert.equal(repl.snapshot().status.phase, 'compacting');
+  const count = requests.length;
+  assert.equal(repl.pauseRun().ok, true);
+  await operation;
+  await waitFor(() => repl.snapshot().runControl.canResume);
+  assert.equal(repl.snapshot().status.retryCooldownUntil, undefined);
+  assert.equal(requests.at(-1)?.cancellation?.aborted, true);
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(requests.length, count, 'cancellation must not initiate a retry');
+});
+
 test('pending compaction survives restart and retries before any normal request', { timeout: 10000 }, async t => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'neo-compact-restart-')));
   const entered = gate(), release = gate();

@@ -188,7 +188,7 @@ test("busy edits persist immediately but apply only on the next model turn; coal
   release.release(); await done;
   assert.match(requests[1].systemPrompt!, /QUEUED_TWO/);
   assert.match(requests[1].systemPrompt!, /GLOBAL_V1/);
-  assert.equal(requests[1].serviceTier, "priority");
+  assert.equal(requests[1].fastMode, true);
   assert.deepEqual(requests[1].tools, requests[0].tools);
   assert.deepEqual(f.engine.getPendingSessionSettings(), {});
   assert.equal((await f.engine.promptExportSnapshot()).sessionPrompt?.deferred, false);

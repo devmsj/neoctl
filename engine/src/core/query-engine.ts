@@ -145,6 +145,8 @@ export class QueryEngine {
   private currentModel?: string;
   private currentReasoning?: ReasoningConfig | null;
   private currentFastMode = false;
+  private fastModeRevision = Date.now();
+  private activeFastModeRevision = this.fastModeRevision;
   private running = false;
   private modelRemovalController?: AbortController;
   private compactRemovalController?: AbortController;
@@ -406,7 +408,18 @@ export class QueryEngine {
         model: this.currentModel,
         reasoning: cloneReasoningConfig(this.currentReasoning),
         queryOrigin: this.options.queryOrigin ?? "repl",
-        serviceTier: this.currentFastMode ? "priority" : undefined,
+        fastMode: this.currentFastMode,
+        getFastModeRevision: () => this.activeFastModeRevision,
+        onFastModeFallback: (revision) => {
+          if (revision !== this.activeFastModeRevision) return undefined;
+          this.currentFastMode = false;
+          this.sessionStore?.recordFastMode(false);
+          // A newer user choice must survive this older in-flight request.
+          if (revision !== this.fastModeRevision) return undefined;
+          delete this.pendingSessionSettings.fastMode;
+          this.activeFastModeRevision = ++this.fastModeRevision;
+          return this.fastModeRevision;
+        },
         maxOutputTokensOverride: this.options.maxOutputTokensOverride,
         contextWindowTokensOverride: this.currentContextWindowTokens,
         maxTurns: this.options.maxTurns,
@@ -428,14 +441,14 @@ export class QueryEngine {
         } : undefined,
         abortSignal: options.abortSignal,
         stopAfterTurn: options.stopAfterTurn,
-        beforeTurn: async (messages, started, delta) => {
+        beforeTurn: async (messages, started, delta, retry) => {
           const gateway = this.currentModelGateway;
           if (!this.simulation) {
             this.options.beforeQuery?.(this);
             this.activeModelCatalog = loadModelCatalog();
             this.options.refreshTools?.(this);
           }
-          const update = await this.consumeSessionSettings(messages, started, compactor, delta);
+          const update = await this.consumeSessionSettings(messages, started, compactor, delta, retry);
           return gateway !== this.currentModelGateway
             ? { ...update, modelGateway: this.currentModelGateway, settings: { ...update?.settings, model: this.currentModel, reasoning: cloneReasoningConfig(this.currentReasoning) } }
             : update;
@@ -505,7 +518,7 @@ export class QueryEngine {
   }
 
   /** Queue instance-local settings; no prompt messages or provider-global mutation. */
-  async updateSessionSettings(patch: SessionSettingsPatch, options: { abortSignal?: AbortSignal; onCompactionDelta?: (text: string) => void } = {}): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
+  async updateSessionSettings(patch: SessionSettingsPatch, options: { abortSignal?: AbortSignal; onCompactionDelta?: (text: string) => void; onRetry?: ContextBudgetOptions["onRetry"] } = {}): Promise<{ deferred: boolean; compaction?: CompactionResult }> {
     const normalized: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "model")) normalized.model = patch.model?.trim() || undefined;
     if (Object.hasOwn(patch, "reasoning")) normalized.reasoning = cloneReasoningConfig(patch.reasoning);
@@ -516,6 +529,7 @@ export class QueryEngine {
       normalized.contextWindowTokens = tokens;
     }
     if (patch.compact) normalized.compact = true;
+    if (Object.hasOwn(normalized, "fastMode")) this.fastModeRevision++;
     if (this.running) {
       this.pendingSessionSettings = { ...this.pendingSessionSettings, ...normalized };
       return { deferred: true };
@@ -529,7 +543,7 @@ export class QueryEngine {
       const signal = removalController ? (options.abortSignal ? AbortSignal.any([options.abortSignal, removalController.signal]) : removalController.signal) : options.abortSignal;
       if (normalized.compact) this.setExecutionState({ status: "running", resumeCompaction: true });
       try {
-        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(signal), options.onCompactionDelta);
+        const update = await this.applySessionSettings(normalized, this.getHistoryMessages(), undefined, this.cancellableCompactor(signal), options.onCompactionDelta, options.onRetry);
         signal?.throwIfAborted();
         if (update?.compaction) this.applyCompactionResult(update.compaction);
         if (normalized.compact) this.setExecutionState({ status: previousExecution?.status ?? "completed", reason: previousExecution?.reason });
@@ -591,14 +605,14 @@ export class QueryEngine {
     return patch;
   }
 
-  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted, compactor?: Compactor, delta?: (text: string) => void): Promise<BeforeTurnUpdate | undefined> {
+  private async consumeSessionSettings(messages: readonly Message[], started?: CompactionStarted, compactor?: Compactor, delta?: (text: string) => void, onRetry?: ContextBudgetOptions["onRetry"]): Promise<BeforeTurnUpdate | undefined> {
     const patch = { ...this.pendingSessionSettings, ...(this.executionState?.resumeCompaction ? { compact: true } : {}) };
     if (!Object.keys(patch).length) return undefined;
     this.pendingSessionSettings = {};
-    return this.applySessionSettings(patch, messages, started, compactor, delta);
+    return this.applySessionSettings(patch, messages, started, compactor, delta, onRetry);
   }
 
-  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted, activeCompactor?: Compactor, delta?: (text: string) => void): Promise<BeforeTurnUpdate | undefined> {
+  private async applySessionSettings(patch: PendingSessionSettings, messages: readonly Message[], started?: CompactionStarted, activeCompactor?: Compactor, delta?: (text: string) => void, onRetry?: ContextBudgetOptions["onRetry"]): Promise<BeforeTurnUpdate | undefined> {
     const changed: SessionSettingsPatch = {};
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
@@ -610,6 +624,7 @@ export class QueryEngine {
       this.currentReasoning = cloneReasoningConfig(patch.reasoning);
       changed.reasoning = cloneReasoningConfig(patch.reasoning);
     }
+    if (Object.hasOwn(patch, "fastMode")) this.activeFastModeRevision = this.fastModeRevision;
     if (Object.hasOwn(patch, "fastMode") && patch.fastMode !== this.currentFastMode) {
       this.currentFastMode = patch.fastMode === true;
       this.sessionStore?.recordFastMode(this.currentFastMode);
@@ -623,7 +638,7 @@ export class QueryEngine {
     let compaction: CompactionResult | undefined;
     if (patch.compact) {
       const compactor = activeCompactor ?? this.cancellableCompactor();
-      const budget = { ...this.options.contextBudget, onCompactionStart: started, onCompactionDelta: delta, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
+      const budget = { ...this.options.contextBudget, onCompactionStart: started, onCompactionDelta: delta, onRetry, imageRegistry: this.imageStore?.snapshot(), contextWindowTokens: this.currentContextWindowTokens ?? this.options.contextBudget?.contextWindowTokens };
       compaction = withCompactionReport(await (compactor.manualCompact?.(messages, budget) ?? compactor.compact(messages, budget)), messages.length);
     }
     return Object.keys(changed).length || compaction ? { settings: changed, compaction } : undefined;
@@ -691,12 +706,15 @@ export class QueryEngine {
     this.additionalPromptContextManager.setSections(promptSections);
   }
 
+  getFastModeRevision(): number { return this.fastModeRevision; }
+
   isFastMode(): boolean {
     return this.currentFastMode;
   }
 
   async setFastMode(enabled: boolean): Promise<boolean> {
     await this.initialize();
+    this.activeFastModeRevision = ++this.fastModeRevision;
     this.currentFastMode = enabled === true;
     this.sessionStore?.recordFastMode(this.currentFastMode);
     return this.currentFastMode;
@@ -778,13 +796,14 @@ export class QueryEngine {
     } finally { if (this.compactRemovalController === controller) this.compactRemovalController = undefined; }
   }
 
-  snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; contextWindowTokensOverride?: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
+  snapshot(): { agentId: string; messages: number; model?: string; reasoning?: ReasoningConfig | null; fastMode: boolean; fastModeRevision: number; contextWindowTokensOverride?: number; lastTerminalReason?: TerminalReason; session?: SessionStoreSnapshot } {
     return {
       agentId: this.agentId,
       messages: this.history.length,
       model: this.currentModel,
       reasoning: cloneReasoningConfig(this.currentReasoning),
       fastMode: this.currentFastMode,
+      fastModeRevision: this.fastModeRevision,
       contextWindowTokensOverride: this.currentContextWindowTokens,
       lastTerminalReason: this.lastTerminalReason,
       session: this.sessionStore?.snapshot(),

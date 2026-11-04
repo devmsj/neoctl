@@ -16,6 +16,8 @@ import { createRuntimeLines, indexRuntimeTasks } from './runtime-lines.mjs'
 import { createTranscriptLookup } from './transcript-lookup.mjs'
 import { composerRunAction } from './run-control.mjs'
 import { executionLabel } from './execution-label.mjs'
+import { retrySecondsRemaining } from './retry-countdown.mjs'
+import './retry-countdown.css'
 import { authState, authStorageSuffix, isIsolationAdmin } from './auth-state.mjs'
 import { appFetch, appUrl } from './app-url.mjs'
 import { createDemoTrigger } from './demo-trigger.js'
@@ -441,6 +443,9 @@ let memoryStateTimer
 let metricsRaf = 0
 let fastModeMutationQueue = Promise.resolve()
 let fastModeMutationVersion = 0
+let fastModeServerRevision = 0
+let fastModeFallbackRevision = -1
+let fastModeNotifiedRevision = -1
 let sessionSettingsEpoch = 0
 let sessionSettingsSyncRevision = 0
 let settingsReturnFocus
@@ -483,6 +488,7 @@ const exactPhaseLabel = computed(() => {
 
 const active = computed(() => !state.runControl.canResume && state.runControl.state !== 'resuming' && isActivePhase(state.status?.phase))
 const showTranscriptLoading = computed(() => active.value || state.busy || state.runControl.canResume || state.runControl.state === 'resuming' || state.sessionResumeLoading || state.compactSaving)
+const retrySeconds = computed(() => retrySecondsRemaining(state.status?.retryCooldownUntil, state.clockTick, { connected: state.connected, paused: state.runControl.canResume, busy: state.busy || active.value }))
 const transcriptLoadingLabel = computed(() => executionLabel({
   loading: state.sessionResumeLoading, runState: state.runControl.state, phase: state.status?.phase,
   compactSaving: state.compactSaving, busy: state.busy,
@@ -1092,6 +1098,20 @@ function connectEvents() {
   hasReceivedEventSync = false
   state.connecting = true
   es = new EventSource(runtimeUrl('/events'))
+  const source = es
+  es.addEventListener('fast-mode.fallback', (event) => {
+    if (source !== es) return
+    flushQueuedSync()
+    try {
+      const payload = JSON.parse(event.data)
+      if (payload.sessionId !== state.session?.sessionId || payload.revision < fastModeServerRevision) return
+      fastModeFallbackRevision = payload.revision
+      fastModeServerRevision = payload.revision
+      state.fastMode = false
+      delete state.pendingSessionSettings.fastMode
+      if (!state.fastModeMutating) notifyFastModeFallback()
+    } catch {}
+  })
   es.addEventListener('open', () => {
     hasReceivedEventSync = false
     state.connected = true
@@ -1435,9 +1455,18 @@ function applySync(payload) {
   state.runningSessionIds = payload.runningSessionIds || []
   state.session = payload.session
   state.modelSettings = payload.modelSettings
+  const acceptFastMode = payload.fastModeRevision === undefined || payload.fastModeRevision >= fastModeServerRevision
+  const previousPendingFastMode = state.pendingSessionSettings.fastMode
   state.pendingSessionSettings = { ...(payload.pendingSessionSettings || {}) }
+  if (!acceptFastMode) {
+    if (previousPendingFastMode === undefined) delete state.pendingSessionSettings.fastMode
+    else state.pendingSessionSettings.fastMode = previousPendingFastMode
+  }
   state.cwd = payload.cwd || ''
-  state.fastMode = payload.fastMode === true
+  if (acceptFastMode) {
+    state.fastMode = payload.fastMode === true
+    fastModeServerRevision = payload.fastModeRevision ?? fastModeServerRevision
+  }
   state.appPrompt = payload.appPrompt || { hasActivePrompt: false, activePrompt: undefined }
   rememberRuntimeSession(payload.session, allowRuntimeSessionChange)
   if (incomingSessionId && incomingSessionId !== previousSessionId) void Promise.all([fetchSessionPlugins(), fetchSessionTools()])
@@ -1910,6 +1939,9 @@ async function reconcileSessionSetting(request, isLatest = () => true) {
 }
 
 function resetSessionSettingsUi() {
+  fastModeServerRevision = 0
+  fastModeFallbackRevision = -1
+  fastModeNotifiedRevision = -1
   sessionSettingsEpoch += 1
   fastModeMutationVersion += 1
   fastModeMutationQueue = Promise.resolve()
@@ -2077,6 +2109,12 @@ async function saveContextWindow() {
   }
 }
 
+function notifyFastModeFallback() {
+  if (fastModeFallbackRevision !== fastModeServerRevision || fastModeNotifiedRevision === fastModeFallbackRevision) return
+  fastModeNotifiedRevision = fastModeFallbackRevision
+  notify('快速模式不可用，已切换普通模式，继续执行')
+}
+
 function toggleFastMode() {
   const enabled = !selectedFastMode.value
   const version = ++fastModeMutationVersion
@@ -2089,19 +2127,27 @@ function toggleFastMode() {
     .then(() => postJson(request.url, { enabled }, true))
     .then(async (result) => {
       if (!request.isCurrent() || version !== fastModeMutationVersion) return
+      if (result.fastModeRevision !== undefined && (result.fastModeRevision < fastModeServerRevision || result.fastModeRevision === fastModeFallbackRevision)) {
+        state.fastModeMutating = false
+        notifyFastModeFallback()
+        return
+      }
+      fastModeServerRevision = result.fastModeRevision ?? fastModeServerRevision
       if (result.deferred) state.pendingSessionSettings.fastMode = result.fastMode === true
       else {
         delete state.pendingSessionSettings.fastMode
         state.fastMode = result.fastMode === true
       }
       state.fastModeMutating = false
-      notifySetting('快速模式', result)
+      notify(result.fastMode === true
+        ? (result.deferred ? '快速模式将在下一轮 API 调用时生效，消耗倍率增加' : '已开启快速模式，消耗倍率增加')
+        : (result.deferred ? '普通模式将在下一轮 API 调用时生效' : '已切换普通模式'))
       await reconcileSessionSetting(request, () => version === fastModeMutationVersion)
     })
     .catch(async (error) => {
       if (!request.isCurrent() || version !== fastModeMutationVersion) return
       state.fastModeMutating = false
-      notifyActionError(error, '快速模式切换失败')
+      notify('切换失败，已恢复原状态')
       // This refresh is also owner-bound; never apply an old session's response.
       try {
         const res = await appFetch(request.url.replace('/api/fast-mode?', '/api/state?'))
@@ -5251,7 +5297,11 @@ function createMobileSession() {
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" />
                 <span v-if="transcriptElapsedMs !== undefined" class="execution-signal-divider" aria-hidden="true"></span>
-                <button v-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" data-tooltip="继续执行" @click="state.runControl.canResume && toggleRunPause()">
+                <button v-if="retrySeconds !== undefined" class="execution-retry" type="button" :disabled="composerActionPending || adminViewing" :aria-label="`取消自动重试（${retrySeconds} 秒）`" :data-tooltip="`${retrySeconds} 秒后自动重试，点击取消`" @click="toggleRunPause()">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
+                  <span class="execution-retry-count" aria-hidden="true">{{ retrySeconds }}</span>
+                </button>
+                <button v-else-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" data-tooltip="继续执行" @click="state.runControl.canResume && toggleRunPause()">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
                 </button>
                 <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="state.session?.sessionId" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />

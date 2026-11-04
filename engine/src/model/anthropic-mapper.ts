@@ -165,6 +165,7 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   if (request.serviceTier && request.serviceTier !== "auto" && request.serviceTier !== "default") anthropicInvalid(`Claude does not map OpenAI service tier '${request.serviceTier}'`);
   if (request.serviceTier === "auto") body.service_tier = "auto";
   if (request.serviceTier === "default") body.service_tier = "standard_only";
+  if (request.fastMode) body.speed = "fast";
   if (request.metadata?.user_id) body.metadata = { user_id: request.metadata.user_id };
   // Deliberately no OpenAI-only fields, previous_response_id, or arbitrary
   // providerOptions spreading. Claude history is sent explicitly each time.
