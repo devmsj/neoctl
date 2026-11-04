@@ -45,6 +45,9 @@ export class LoggingModelGateway implements ModelGateway {
     this.inner = inner;
   }
 
+  estimateInputTokens(request: ModelRequest): number | undefined { return this.inner.estimateInputTokens?.(request); }
+  async countInputTokens(request: ModelRequest): Promise<number | undefined> { return this.inner.countInputTokens?.(request); }
+
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     const log = await this.logger.createCallLog(request);
     try {

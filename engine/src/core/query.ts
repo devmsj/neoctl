@@ -34,6 +34,7 @@ import {
 } from "./state.js";
 import { AssistantOutputFilter } from "./assistant-output-filter.js";
 import { buildContextMetrics, computeStaticTokens } from "./context-metrics.js";
+import { ContextTokenCalibration } from "./context-token-calibration.js";
 import { buildPromptCacheDiagnostics } from "./prompt-cache-telemetry.js";
 import { readImageNoteForStoragePathSync, type ImageRetention } from "./image-notes.js";
 import { withCompactionProgress, type CompactionStarted } from "./compaction-progress.js";
@@ -113,6 +114,7 @@ export interface QueryDependencies {
   /** Wall clock for model-visible time, independent of observability timing. */
   runtimeNow?: () => Date;
   modelGateway: ModelGateway;
+  contextTokenCalibration?: ContextTokenCalibration;
   tools: ToolRegistry;
   contextManager?: ContextManager;
   compactor?: Compactor;
@@ -156,7 +158,7 @@ export async function* query(
 ): AsyncGenerator<AgentEvent, TerminalReason, void> {
   const imageStore = dependencies.imageStore ?? await SessionImageStore.open(dependencies.session?.sessionDir, options.agentId);
   if (!dependencies.imageStore) await imageStore.seedLegacyRegistry(getImageRegistryFromMessages(messages));
-  dependencies = { ...dependencies, imageStore };
+  dependencies = { ...dependencies, imageStore, contextTokenCalibration: dependencies.contextTokenCalibration ?? new ContextTokenCalibration() };
   const normalizedMessages: Message[] = [];
   for (const message of messages) normalizedMessages.push(await imageStore.persistMessage(message, { touch: false }));
   const initialState = createInitialState(normalizedMessages, {
@@ -233,6 +235,7 @@ async function* queryLoop(
 
     const update = yield* withCompactionProgress((started, delta, retry) => options.beforeTurn?.(state.messages, started, delta, retry), options.abortSignal);
     if (update?.modelGateway && update.modelGateway !== dependencies.modelGateway) {
+      dependencies.contextTokenCalibration?.reset();
       dependencies.modelGateway = update.modelGateway;
       state.previousResponseId = undefined;
       state.modelInputMessages = undefined;
@@ -241,6 +244,7 @@ async function* queryLoop(
     if (settings) {
       if (Object.hasOwn(settings, "model")) {
         if (settings.model !== (state.currentModel ?? options.model)) {
+          dependencies.contextTokenCalibration?.reset();
           state.previousResponseId = undefined;
           state.modelInputMessages = undefined;
         }
@@ -253,6 +257,7 @@ async function* queryLoop(
     }
     if (update?.compaction && !update.compaction.changed) await dependencies.applyCompaction?.(update.compaction);
     if (update?.compaction?.changed) {
+      dependencies.contextTokenCalibration?.reset();
       state = { ...state, messages: update.compaction.messages, modelInputMessages: undefined, previousResponseId: undefined };
       await dependencies.applyCompaction?.(update.compaction);
       if (update.compaction.report) yield { type: "context.compacted", compaction: update.compaction.report };
@@ -300,6 +305,9 @@ async function* queryLoop(
         toolDefinitions,
         toolUseContext: toolContext,
         requestContext: requestContextForTurn,
+        reasoning: options.reasoning,
+        maxOutputTokens: state.maxOutputTokensOverride ?? options.maxOutputTokensOverride,
+        toolChoice: options.toolChoice,
       }, started, options.abortSignal, delta, retry), options.abortSignal);
       options.abortSignal?.throwIfAborted();
       if (prepared.compaction?.changed) {
@@ -388,7 +396,7 @@ async function prepareMessagesForQuery(
   context: RuntimeContext,
   dependencies: QueryDependencies,
   compactor: Compactor,
-  telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown> },
+  telemetry: { model?: string; contextWindowTokensOverride?: number; systemPrompt: string; toolDefinitions: ReturnType<ToolRegistry["definitions"]>; toolUseContext?: ToolUseContext; requestContext?: Record<string, unknown>; reasoning?: ModelRequest["reasoning"]; maxOutputTokens?: number; toolChoice?: ModelRequest["toolChoice"] },
   onCompactionStart?: CompactionStarted,
   abortSignal?: AbortSignal,
   onCompactionDelta?: (text: string) => void,
@@ -415,7 +423,12 @@ async function prepareMessagesForQuery(
     telemetry.requestContext,
   );
 
-  const metricsBeforeCompact = buildContextMetrics({
+  const countRequest: ModelRequest = {
+    model: telemetry.model, messages: withoutThinkingBlocks(adaptMessagesForModelCapabilities(applyImageRetention(pairedBudgetedWithRuntimeContext), telemetry.model)), systemPrompt: telemetry.systemPrompt,
+    tools: telemetry.toolDefinitions, stream: true, reasoning: telemetry.reasoning, maxOutputTokens: telemetry.maxOutputTokens,
+    toolChoice: telemetry.toolChoice, cancellation: abortSignal,
+  };
+  const metricsBeforeCompact = await dependencies.contextTokenCalibration!.correct(buildContextMetrics({
     model: telemetry.model,
     contextWindowTokensOverride: telemetry.contextWindowTokensOverride,
     messages: pairedBudgetedWithRuntimeContext,
@@ -429,7 +442,7 @@ async function prepareMessagesForQuery(
       tools: telemetry.toolDefinitions,
       messages: pairedBudgetedWithRuntimeContext,
     }),
-  });
+  }), dependencies.modelGateway, countRequest);
   const compaction = withCompactionReport(await compactor.compact(pairedBudgeted, {
     ...dependencies.contextBudget,
     onCompactionStart,
@@ -440,13 +453,14 @@ async function prepareMessagesForQuery(
     estimatedInputTokens: metricsBeforeCompact.estimatedInputTokens,
     contextWindowTokens: metricsBeforeCompact.contextWindowTokens,
   }), pairedBudgeted.length);
+  if (compaction.changed) dependencies.contextTokenCalibration?.reset();
   const compactedMessages = ensureToolResultPairing(compaction.messages);
   const retentionAppliedMessages = applyImageRetention(compactedMessages);
   const messagesForQuery = applyRequestContext(
     applyRuntimeContextForPromptCache(retentionAppliedMessages, context.userContext, context.systemContext),
     telemetry.requestContext,
   );
-  const metrics = buildContextMetrics({
+  const localMetrics = buildContextMetrics({
     model: telemetry.model,
     contextWindowTokensOverride: telemetry.contextWindowTokensOverride,
     messages: messagesForQuery,
@@ -461,6 +475,10 @@ async function prepareMessagesForQuery(
       messages: messagesForQuery,
     }),
   });
+  const finalCountRequest = { ...countRequest, messages: withoutThinkingBlocks(adaptMessagesForModelCapabilities(messagesForQuery, telemetry.model)) };
+  const metrics = compaction.changed
+    ? await dependencies.contextTokenCalibration!.correct(localMetrics, dependencies.modelGateway, finalCountRequest)
+    : dependencies.contextTokenCalibration!.apply(localMetrics, dependencies.modelGateway, finalCountRequest);
   return {
     messagesForQuery,
     compactedMessages,
@@ -619,6 +637,7 @@ async function* callModelForTurn(
         yield { type: "error", error: normalized };
         return { terminal: terminalForModelError(normalized) };
       }
+      dependencies.contextTokenCalibration?.reset();
       await dependencies.applyCompaction?.(compacted);
       if (compacted.report) yield { type: "context.compacted", compaction: compacted.report };
       yield { type: "state", phase: "compacting", detail: `reactive compact retry ${attempts + 1}/${MAX_REACTIVE_COMPACT_ATTEMPTS} after prompt-too-long` };

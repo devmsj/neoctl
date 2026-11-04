@@ -18,18 +18,20 @@ export function createCompositionGateway(c: Composition, connections: ApiConnect
   if (!resolved.order || !config) return { gateway: main, config, heldConnections: () => [resolved.main.api, ...fixed] };
   const routes = new Map<string, ModelGateway>(), same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
   let current = resolved.main.api;
+  const select = (model = config.model): ModelGateway => {
+    if (same(model, config.model)) { current = resolved.main.api; return main; }
+    const route = routeModel(model, resolved, connections);
+    if (!route) throw new Error(`没有已启用的 API 提供模型 ${model}，请在模型页为 API 添加该模型。`);
+    current = route.connection.id;
+    const key = route.connection.id + "\u0000" + route.protocol + "\u0000" + model.trim().toLowerCase();
+    let routed = routes.get(key);
+    if (!routed) { routed = createModelGatewayFromConfig(connectionModelConfig(resolved, route.connection, route.protocol, model, false)); routes.set(key, routed); }
+    return routed;
+  };
   const gateway: ModelGateway = {
-    stream(request) {
-      const model = request.model ?? config.model;
-      if (same(model, config.model)) { current = resolved.main.api; return main.stream(request); }
-      const route = routeModel(model, resolved, connections);
-      if (!route) throw new Error(`没有已启用的 API 提供模型 ${model}，请在模型页为 API 添加该模型。`);
-      current = route.connection.id;
-      const key = route.connection.id + "\u0000" + route.protocol + "\u0000" + model.trim().toLowerCase();
-      let routed = routes.get(key);
-      if (!routed) { routed = createModelGatewayFromConfig(connectionModelConfig(resolved, route.connection, route.protocol, model, false)); routes.set(key, routed); }
-      return routed.stream(request);
-    },
+    stream: request => select(request.model).stream(request),
+    estimateInputTokens: request => select(request.model).estimateInputTokens?.(request),
+    countInputTokens: async request => select(request.model).countInputTokens?.(request),
   };
   return { gateway, config, heldConnections: () => [current, ...fixed] };
 }

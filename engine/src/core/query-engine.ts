@@ -20,7 +20,8 @@ import type { AgentEvent, ContextMetrics } from "../types/events.js";
 import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
-import { applyRuntimeContextForPromptCache } from "./message-pipeline.js";
+import { ContextTokenCalibration } from "./context-token-calibration.js";
+import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary } from "./message-pipeline.js";
 import { abortableWork } from "./abortable-stream.js";
 import type { CompactionStarted } from "./compaction-progress.js";
 import { SessionImageStore } from "./session-images.js";
@@ -112,6 +113,7 @@ export class QueryEngine {
   }
   private readonly agentId: string;
   private readonly history: Message[] = [];
+  private readonly contextTokenCalibration = new ContextTokenCalibration();
   private readonly titleTimers = new Set<ReturnType<typeof setTimeout>>();
   private lastTerminalReason?: TerminalReason;
   private executionState?: ExecutionState;
@@ -462,6 +464,7 @@ export class QueryEngine {
           acquireTurnResources: this.simulation ? undefined : this.options.acquireTurnResources ? () => this.options.acquireTurnResources!(this) : undefined,
           tools: this.simulation?.tools ?? this.options.tools,
           compactor,
+          contextTokenCalibration: this.contextTokenCalibration,
           onTimingState: timing => { this.queryTiming = timing; },
           onTiming: record => {
             this.timingRecords.set(record.id, { ...record });
@@ -865,6 +868,7 @@ export class QueryEngine {
     if (!result.changed) { this.clearPendingCompaction(); return; }
     this.sessionStore?.recordCompactCheckpoint(result.messages, result.reason, result.report);
     this.clearPendingCompaction();
+    this.contextTokenCalibration.reset();
     this.history.length = 0;
     this.history.push(...result.messages.map(cloneMessage));
   }
@@ -876,8 +880,12 @@ export class QueryEngine {
     const tools = Array.isArray(promptSnapshot.toolDefinitions) ? promptSnapshot.toolDefinitions : [];
     const promptSections = Array.isArray(promptSnapshot.promptSections) ? promptSnapshot.promptSections : [];
     const systemPrompt = promptSnapshot.systemPrompt ?? "";
-    const messagesForMetrics = applyRuntimeContextForPromptCache(messages, promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
-    return buildContextMetrics({
+    const windowMessages = getMessagesAfterCompactBoundary(messages);
+    const budgeted = this.sessionStore?.toolResultMemory
+      ? (await this.sessionStore.toolResultMemory.applyBudget(windowMessages)).messages
+      : applyToolResultBudget(windowMessages);
+    const messagesForMetrics = applyRuntimeContextForPromptCache(ensureToolResultPairing(budgeted), promptSnapshot.userContext ?? {}, promptSnapshot.systemContext ?? {});
+    return this.contextTokenCalibration.apply(buildContextMetrics({
       model: this.currentModel,
       contextWindowTokensOverride: this.currentContextWindowTokens,
       messages: messagesForMetrics,
@@ -891,6 +899,9 @@ export class QueryEngine {
         tools,
         messages: messagesForMetrics,
       }),
+    }), this.currentModelGateway, {
+      model: this.currentModel, messages: messagesForMetrics, systemPrompt, tools, stream: true,
+      reasoning: this.currentReasoning, maxOutputTokens: this.options.maxOutputTokensOverride,
     });
   }
 
@@ -979,6 +990,7 @@ export class QueryEngine {
   private async openSession(options: { sessionId?: string; resume?: boolean }): Promise<void> {
     if (this.options.session?.enabled === false || !this.options.session) return;
     this.cancelPendingTitleWork();
+    this.contextTokenCalibration.reset();
     this.simulation = undefined;
     this.displayOnlyMessages.length = 0;
     this.sessionStore = await SessionStore.open({

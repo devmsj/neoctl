@@ -19,6 +19,7 @@ test("apply during streaming switches connection/protocol/tools at next API turn
   const requests: Array<{ url: string; body: any }> = [];
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
+    if (req.url?.endsWith("/count_tokens")) { res.writeHead(404); res.end("{}"); return; }
     const body = JSON.parse(raw); requests.push({ url: req.url!, body });
     if (requests.length === 1) {
       first(); await gate;

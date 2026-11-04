@@ -33,6 +33,8 @@ export interface PromptCacheDiagnostics {
 export interface ContextMetrics {
   model?: string;
   estimatedInputTokens: number;
+  /** Prefer this unified estimate/count over generation usage for context display. */
+  inputTokenSource?: "estimate";
   estimatedChars: number;
   messageCount: number;
   toolCount: number;

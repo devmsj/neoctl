@@ -33,6 +33,7 @@ for (const ending of ["complete", "max_tokens", "malformed", "disconnect", "abor
     let requests = 0, responseStopped = false;
     const server = createServer(async (req, res) => {
       let raw = ""; for await (const chunk of req) raw += chunk;
+      if (req.url?.endsWith("/count_tokens")) { res.writeHead(404); res.end("{}"); return; }
       const body = JSON.parse(raw);
       assert.ok(body.tools.every((tool: any) => tool.eager_input_streaming === true));
       res.writeHead(200, { "Content-Type": "text/event-stream" });

@@ -548,12 +548,12 @@ watch(() => state.modelDraft, () => {
   else state.modelError = ''
 })
 const contextPercent = computed(() => {
-  const actualInput = state.status?.usage?.inputTokens
+  const actualInput = state.status?.metrics?.inputTokenSource ? undefined : state.status?.usage?.inputTokens
   const window = state.status?.metrics?.contextWindowTokens
   const ratio = actualInput !== undefined && window > 0 ? actualInput / window : state.status?.metrics?.contextUsageRatio
   return ratio === undefined ? '—' : `${(ratio * 100).toFixed(1)}%`
 })
-const inputTokens = computed(() => compactNumber(state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens))
+const inputTokens = computed(() => compactNumber(state.status?.metrics?.inputTokenSource ? state.status?.metrics?.estimatedInputTokens : state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens))
 const outputTokens = computed(() => compactNumber(state.status?.usage?.outputTokens ?? state.status?.streamedOutputTokens))
 const composerContextValue = computed(() => `${state.composerMetrics.context.display.toFixed(1)}%`)
 const currentContextWindowK = computed(() => {
@@ -3050,11 +3050,11 @@ function lineElapsedText(line) {
 }
 
 function updateComposerMetricTargets() {
-  const actualInput = state.status?.usage?.inputTokens
+  const actualInput = state.status?.metrics?.inputTokenSource ? undefined : state.status?.usage?.inputTokens
   const window = state.status?.metrics?.contextWindowTokens
   const ratio = actualInput !== undefined && window > 0 ? actualInput / window : state.status?.metrics?.contextUsageRatio
   animateComposerMetric('context', ratio === undefined ? 0 : ratio * 100)
-  animateComposerMetric('inputTokens', Number(state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens ?? 0))
+  animateComposerMetric('inputTokens', Number(state.status?.metrics?.inputTokenSource ? state.status?.metrics?.estimatedInputTokens : state.status?.usage?.inputTokens ?? state.status?.metrics?.estimatedInputTokens ?? 0))
   animateComposerMetric('outputTokens', Number(state.status?.usage?.outputTokens ?? state.status?.streamedOutputTokens ?? 0))
 }
 

@@ -74,6 +74,8 @@ export type ModelStreamEvent =
   | { type: "retry"; reason: string; attempt: number };
 
 export interface ModelGateway {
+  estimateInputTokens?(request: ModelRequest): number | undefined;
+  countInputTokens?(request: ModelRequest): Promise<number | undefined>;
   stream(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
 }
 

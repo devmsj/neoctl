@@ -405,7 +405,7 @@ function renderStatus() {
   const displayPhase = minimumDisplayPhase(s.phase || 'ready');
   const phase = phaseLabel(displayPhase);
   const ctx = contextParts(s.metrics);
-  const inputTokens = compactNumber(animatedNumber('input', (s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens)));
+  const inputTokens = compactNumber(animatedNumber('input', s.metrics?.inputTokenSource ? s.metrics.estimatedInputTokens : (s.usage && s.usage.inputTokens) ?? (s.metrics && s.metrics.estimatedInputTokens)));
   const outputTokens = compactNumber(animatedNumber('output', (s.usage && s.usage.outputTokens) ?? s.streamedOutputTokens));
   const model = truncateMiddle((s.metrics && s.metrics.model) || 'model?', window.innerWidth > 900 ? 26 : 14);
   const phaseActive = isActivePhase(displayPhase);

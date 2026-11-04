@@ -4902,7 +4902,7 @@ function contextColor(metrics: ContextMetrics | undefined): string {
 }
 
 function statusInputTokens(status: UiStatus): number | undefined {
-  return status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
+  return status.metrics?.inputTokenSource ? status.metrics.estimatedInputTokens : status.usage?.inputTokens ?? status.metrics?.estimatedInputTokens;
 }
 
 function statusOutputTokens(status: UiStatus): number | undefined {
