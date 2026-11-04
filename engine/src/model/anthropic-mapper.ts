@@ -16,8 +16,6 @@ export interface AnthropicMapperOptions {
   defaultMaxOutputTokens?: number;
   defaultReasoning?: ReasoningConfig | null;
   thinkingBudgetTokens?: number;
-  /** Explicit capability override for compatible model aliases. No role fallback. */
-  midConversationSystem?: boolean;
 }
 
 export function anthropicInvalid(message: string): never {
@@ -31,12 +29,6 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
   return createHash("sha256").update(JSON.stringify(blocks.filter(b => b.type !== "thinking"))).digest("hex");
 }
 
-/** Documented text-system support; do not infer support from provider alone. */
-export function supportsAnthropicMidConversationSystem(model: string): boolean {
-  const id = findModelMetadata(model)?.id ?? model;
-  return /(?:^|[/.])claude-(?:opus-(?:4-8|5(?:-5)?)|(?:sonnet|haiku)-5-5|(?:fable|mythos)-5(?:-1)?)(?:$|-(?:latest|\d{8})$)/i.test(id);
-}
-
 export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions): Block {
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
@@ -46,11 +38,9 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   const split = splitSystemPromptPrefix(request.instructions ?? request.systemPrompt ?? "");
   const system: Block[] = [split.stablePrefix, split.dynamicSuffix].filter(Boolean).map(text => ({ type: "text", text }));
   const turns: Turn[] = [];
-  const midSystem = options.midConversationSystem ?? supportsAnthropicMidConversationSystem(model);
   let runtimeContent: Block[] = [];
   const flushRuntime = () => {
     if (!runtimeContent.length) return;
-    if (!midSystem) anthropicInvalid(`Model ${model} does not support mid-conversation system messages; select a supported model or explicitly configure its capability`);
     const last = turns.at(-1);
     if (last?.role === "system") last.content.push(...runtimeContent);
     else turns.push({ role: "system", content: runtimeContent });
@@ -76,7 +66,6 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
         continue;
       }
       flushRuntime();
-      if (!midSystem) anthropicInvalid(`Model ${model} does not support mid-conversation system messages; select a supported model or explicitly configure its capability`);
       const last = turns.at(-1)!;
       if (last.role === "system") last.content.push(...content);
       else turns.push({ role: "system", content });

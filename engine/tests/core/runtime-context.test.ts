@@ -8,7 +8,7 @@ import { QueryEngine } from "../../src/core/query-engine.js";
 import { DefaultContextManager } from "../../src/context/context-manager.js";
 import { applyRuntimeContextForPromptCache, createRuntimeTimeMessage } from "../../src/core/message-pipeline.js";
 import { buildPromptCacheIdentity } from "../../src/core/prompt-cache-key.js";
-import { buildAnthropicRequest, supportsAnthropicMidConversationSystem } from "../../src/model/anthropic-mapper.js";
+import { buildAnthropicRequest } from "../../src/model/anthropic-mapper.js";
 import { buildChatRequest } from "../../src/model/openai-chat-mapper.js";
 import { buildResponsesRequest } from "../../src/model/openai-responses-mapper.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
@@ -127,17 +127,18 @@ test("Claude resumes interrupted visible text and compact checkpoints without in
   assert.equal((compacted.messages as any[]).at(-1).role, "system");
 });
 
-test("Claude model and placement guards never silently promote or downgrade dynamic context", () => {
-  for (const id of [model, "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5"]) assert(supportsAnthropicMidConversationSystem(id), id);
-  for (const id of ["claude-sonnet-5", "claude-sonnet-4-6", "unknown"]) assert(!supportsAnthropicMidConversationSystem(id), id);
+test("Anthropic compatible aliases preserve system roles without model-name gates while placement stays validated", () => {
   const user = createTextMessage("user", "start"), system = createTextMessage("system", "Runtime instruction");
   const build = (messages: Message[], id = model) => buildAnthropicRequest({ messages, tools: [], stream: true }, { model: id });
-  assert.throws(() => build([user, system], "claude-sonnet-4-6"), /does not support mid-conversation/);
+  for (const id of [model, "claude-sonnet-4-6", "deepseek-flash", "custom-alias"]) {
+    const body = build([user, system], id);
+    assert.deepEqual((body.messages as any[]).map(m => m.role), ["user", "system"]);
+  }
   assert.throws(() => build([user, system, createTextMessage("user", "bad position")]), /must follow/);
   const call = { id: "a", name: "probe", input: {} };
   const assistant = { ...createTextMessage("assistant", ""), blocks: [{ type: "tool_use" as const, ...call }] };
   const result = createToolResultMessage(call, true, "OK");
   assert.throws(() => build([user, assistant, system, result]), /must follow/);
   assert.doesNotThrow(() => build([user, assistant, result, system]));
-  assert.doesNotThrow(() => buildAnthropicRequest({ messages: [user, system], tools: [], stream: true }, { model: "custom-alias", midConversationSystem: true }));
+  assert.doesNotThrow(() => build([user, assistant, result, createRuntimeTimeMessage()], "deepseek-flash"));
 });
