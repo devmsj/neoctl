@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { trackSettingsGateway } from "../model/settings-sync.js";
-import { ModelSettingsStore, compositionModelConfig } from "../model/settings-store.js";
-import { registerCompositionTools } from "../model/composition-runtime.js";
+import { ModelSettingsStore } from "../model/settings-store.js";
+import { registerCompositionTools, createCompositionGateway } from "../model/composition-runtime.js";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -373,9 +373,10 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
   const settingsStore = new ModelSettingsStore();
   const appliedSettings = settingsStore.read()?.applied;
   const settingsRevisions = new WeakMap<QueryEngine, string>();
-  const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
+  const appliedGateway = appliedSettings ? createCompositionGateway(appliedSettings.composition, appliedSettings.connections) : undefined;
+  const modelConfig = appliedGateway ? appliedGateway.config : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedSettings ? [appliedSettings.composition.main.api, appliedSettings.composition.image.api, appliedSettings.composition.search.api] : []);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(appliedGateway ? appliedGateway.gateway : createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedGateway ? appliedGateway.heldConnections : []);
   const taskStore = new TaskStore();
   const agentActivityStore = new AgentActivityStore();
   const secretStore = await SecretStore.open();
@@ -436,8 +437,8 @@ async function createRuntime(options: { queryOrigin?: string } = {}): Promise<Re
       if (!applied) return;
       const revision = applied.revision;
       if (settingsRevisions.get(engine) === revision) return;
-      const config = compositionModelConfig(applied.composition, applied.connections);
-      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision, [applied.composition.main.api, applied.composition.image.api, applied.composition.search.api]);
+      const routed = createCompositionGateway(applied.composition, applied.connections), config = routed.config;
+      const gateway = trackSettingsGateway(new LoggingModelGateway(routed.gateway, communicationLogger), revision, routed.heldConnections);
       engine.setModelProvider({ modelGateway: gateway, model: config?.model, reasoning: config?.defaultReasoning });
       registerCompositionTools(tools, applied.composition, applied.connections);
       runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config?.defaultReasoning;

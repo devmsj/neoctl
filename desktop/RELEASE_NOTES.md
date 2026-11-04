@@ -1,12 +1,11 @@
-# Neo Desktop 0.1.39
+# Neo Desktop 0.1.40
 
-Includes Web 0.1.36 and Core 0.2.58.
+Includes Web 0.1.37 and Core 0.2.59.
 
-- Fall back to normal speed when OpenAI or Anthropic explicitly rejects fast mode, synchronize the session switch, and show a unified notification without replaying partially emitted output.
-- Default to five automatic retries with increasing delays capped at 60 seconds. Show a theme-aware triangle countdown; click it to cancel automatic retry and pause, then click the normal triangle to resume manually. Include context-compaction retries and remove retry-count configuration from the Web UI.
-- Enable subagent tools by default while instructing the assistant to delegate only when explicitly requested. Preserve saved tool overrides and prevent nested delegation.
-- Disable the Xiaohongshu editor plugin by default while preserving explicit plugin choices.
-- Keep unfinished work moving when requirements change, and use English for framework-feedback prompt and tool descriptions.
-- Extend regression coverage for fast-mode fallback, retry countdowns, session settings, and default tool/plugin switches. Isolate integration tests from local model configuration.
+- Enable several API connections at once in a drag-to-reorder priority list. Each capability uses the top-most enabled connection that lists its model and supports the model's own protocol; failed requests never switch connections automatically.
+- Choose the models each connection serves with a transfer box (search, select all, double-click, add a new model ID). One connection can serve both OpenAI- and Anthropic-compatible models.
+- Main model, image generation and search now pick models only; the effective connection is shown beside each field and on the list rows. Session model switching follows the same routing.
+- Deleting a connection that a running session uses still asks for interruption; the next qualifying connection then takes over. Model library, metadata editing and checks are unchanged.
+- Existing settings migrate automatically with identical routing and the previous session model list.
 
 Windows x64 installer, SHA-256 checksum, source commit, and payload/version manifests are attached to this release.

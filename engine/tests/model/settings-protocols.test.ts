@@ -22,7 +22,8 @@ test("legacy connection migration, dual protocols, immutable apply and explicit 
   let s = store.initialize({ OPENAI_API_KEY: "test", OPENAI_MODEL: "gpt-6.1-sol" });
   assert.deepEqual(connectionProtocols(s.connections[0]!), ["openai"]);
   s = store.saveConnection(s.revision, { ...s.connections[0]!, protocols: ["openai", "anthropic"], baseUrl: "https://example.invalid/api" });
-  const c = structuredClone(s.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5-1";
+  // Explicit-api compositions (no priority list) keep their legacy semantics.
+  const c = structuredClone(s.composition); delete c.order; c.main.protocol = "messages"; c.main.model = "claude-fable-5-1";
   c.image.api = c.main.api; c.search.api = c.main.api;
   validateComposition(c, s.connections);
   assert.equal(compositionModelConfig(c, s.connections)?.provider, "anthropic");
@@ -75,7 +76,7 @@ test("child boundary adopts new plan without mutating original tools", () => {
   let s = store.read()!;
   const boundary = agentSettingsBoundary(); boundary.start();
   assert.equal(boundary.beforeTurn(), undefined);
-  const c = structuredClone(s.composition); c.main.protocol = "responses"; c.main.model = "deepseek-custom"; c.main.effort = "ultra";
+  const c = structuredClone(s.composition); delete c.order; c.main.protocol = "responses"; c.main.model = "deepseek-custom"; c.main.effort = "ultra";
   c.image.api = ""; c.search.api = ""; c.search.exa = false;
   s = store.apply(s.revision, c);
   assert.equal(publishModelSettings().deferred, true);

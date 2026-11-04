@@ -7,6 +7,12 @@ import type { CompactionReport } from "../../src/context/compaction.js";
 import type { QueryEngine } from "../../src/core/query-engine.js";
 import { WebRepl, type WebRuntime } from "../../src/web/index.js";
 
+// Isolate from the developer's real model settings: session model checks follow the applied API priority list.
+const modelConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "neo-session-settings-"));
+const previousModelConfigHome = process.env.NEO_MODEL_CONFIG_DIR;
+process.env.NEO_MODEL_CONFIG_DIR = modelConfigHome;
+test.after(() => { if (previousModelConfigHome === undefined) delete process.env.NEO_MODEL_CONFIG_DIR; else process.env.NEO_MODEL_CONFIG_DIR = previousModelConfigHome; fs.rmSync(modelConfigHome, { recursive: true, force: true }); });
+
 // Web contract tests: the real WebRepl is exercised with a deliberately stubbed
 // updateSessionSettings boundary. These do NOT test QueryEngine's turn hooks.
 // Run from engine/: node --import tsx --test tests/web/session-settings.test.ts

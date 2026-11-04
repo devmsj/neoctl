@@ -35,7 +35,8 @@ test("applying composition leaves a running engine on its old model and tools, i
     const runtime = await createWebRuntime({ cwd: home, sessionRootDir: path.join(home, "sessions"), resume: false });
     const old = runtime.engine;
     const running = consume(old.sendUserText("reply done")); await first;
-    const next = structuredClone(state.composition); next.main.model = "gpt-5.6-sol"; next.image.api = ""; next.search.api = ""; next.search.exa = false;
+    state = store.saveConnection(state.revision, { ...state.connections[0]!, key: "", models: [...(state.connections[0]!.models ?? []), "gpt-5.6-sol"] });
+    const next = structuredClone(state.composition); next.main.model = "gpt-5.6-sol"; next.image.model = ""; next.search.model = ""; next.search.exa = false;
     state = store.apply(state.revision, next);
     const fork = old.forkForSession(undefined, false); runtime.engine = fork;
     await consume(fork.sendUserText("reply done"));

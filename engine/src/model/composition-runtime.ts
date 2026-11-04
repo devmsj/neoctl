@@ -1,10 +1,41 @@
 import { createSearchTool } from "../tools/builtins/search-tool.js";
 import { createOpenAISearchProvider, createExaSearchProvider } from "../tools/builtins/search-providers.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
-import { connectionProtocols, optionalInteger, type ApiConnection, type Composition } from "./settings-store.js";
+import { compositionModelConfig, connectionModelConfig, connectionProtocols, optionalInteger, resolveComposition, routeModel, type ApiConnection, type Composition } from "./settings-store.js";
+import { createModelGatewayFromConfig } from "./provider-factory.js";
+import type { ModelGateway } from "./model-gateway.js";
+import type { ModelProviderConfig } from "./config.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
+/**
+ * Main-model gateway for an applied composition. With a priority list, a session that switches
+ * to another model is sent to that model's own top-most connection; requests never fail over.
+ */
+export function createCompositionGateway(c: Composition, connections: ApiConnection[]): { gateway: ModelGateway; config: ModelProviderConfig | undefined; heldConnections: () => string[] } {
+  const resolved = resolveComposition(c, connections), config = compositionModelConfig(resolved, connections);
+  const main = createModelGatewayFromConfig(config);
+  const fixed = [resolved.image.api, resolved.search.api];
+  if (!resolved.order || !config) return { gateway: main, config, heldConnections: () => [resolved.main.api, ...fixed] };
+  const routes = new Map<string, ModelGateway>(), same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  let current = resolved.main.api;
+  const gateway: ModelGateway = {
+    stream(request) {
+      const model = request.model ?? config.model;
+      if (same(model, config.model)) { current = resolved.main.api; return main.stream(request); }
+      const route = routeModel(model, resolved, connections);
+      if (!route) throw new Error(`没有已启用的 API 提供模型 ${model}，请在模型页为 API 添加该模型。`);
+      current = route.connection.id;
+      const key = route.connection.id + "\u0000" + route.protocol + "\u0000" + model.trim().toLowerCase();
+      let routed = routes.get(key);
+      if (!routed) { routed = createModelGatewayFromConfig(connectionModelConfig(resolved, route.connection, route.protocol, model, false)); routes.set(key, routed); }
+      return routed.stream(request);
+    },
+  };
+  return { gateway, config, heldConnections: () => [current, ...fixed] };
+}
+
 export function compositionProviders(c: Composition, connections: ApiConnection[]) {
+  c = resolveComposition(c, connections);
   const connection = (id: string) => { const a = connections.find(a => a.id === id); if (!a || !connectionProtocols(a).includes("openai")) throw new Error("需要 OpenAI 兼容连接。"); return a; };
   const openai = c.search.api ? (() => { const a = connection(c.search.api); return createOpenAISearchProvider({ apiKey: a.key, baseUrl: a.baseUrl, model: c.search.model, maxOutputTokens: optionalInteger(c.search.tokens, "搜索 Token"), searchContextSize: c.search.context as "low" | "medium" | "high" || undefined, timeoutMs: optionalInteger(c.search.timeout, "搜索超时"), toolType: c.search.toolType }); })() : undefined;
   const exa = c.search.exa ? createExaSearchProvider({ mcpUrl: c.search.exaUrl, toolName: c.search.exaTool, timeoutMs: optionalInteger(c.search.exaTimeout, "Exa 超时") }) : undefined;

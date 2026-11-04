@@ -37,7 +37,7 @@ for (const target of ["model", "connection"] as const) test(`confirmed ${target}
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const store = new ModelSettingsStore(); let state = store.initialize(process.env);
-    const c = structuredClone(state.composition); c.image.api = ""; c.search.api = ""; c.search.exa = false;
+    const c = structuredClone(state.composition); c.image.model = ""; c.search.model = ""; c.search.exa = false;
     state = store.apply(state.revision, c);
     const runtime = await createWebRuntime({ cwd: home, resume: false });
     const repl = new WebRepl(runtime);
@@ -47,7 +47,7 @@ for (const target of ["model", "connection"] as const) test(`confirmed ${target}
     const run = (async () => { for await (const event of runtime.engine.sendUserText("held stream")) events.push(event); })();
     await ready;
     assert.ok(modelUsage(["gpt-6.1-sol"]).holders >= 3);
-    const connectionId = c.main.api;
+    const connectionId = state.applied!.composition.main.api;
     const preview = await (await post(target === "model" ? "/metadata/usage" : "/connection/usage", { id: target === "model" ? "gpt-6.1-sol" : connectionId })).json() as any;
     assert.ok(preview.usage.running >= 2);
     const compactRuns: Promise<unknown>[] = [];
@@ -82,7 +82,8 @@ for (const target of ["model", "connection"] as const) test(`confirmed ${target}
     assert.ok(runtime.engine.getHistoryMessages().some(m => m.blocks.some(b => b.type === "text" && b.text === "held stream")));
     if (target === "model") assert.ok(!repl.snapshot().catalog?.modelIds.includes("gpt-6.1-sol"));
     assert.equal(repl.snapshot().modelSettings?.model, undefined);
-    assert.equal(store.read()?.applied?.composition.main.model, "");
+    if (target === "model") assert.equal(store.read()?.applied?.composition.main.model, "");
+    else assert.equal(store.read()?.applied?.composition.main.api, "");
     if (target === "connection") assert.equal(connectionUsage(connectionId).holders, 0);
     const next: any[] = [];
     for await (const event of runtime.engine.sendUserText("do not contact removed model")) next.push(event);
@@ -92,8 +93,8 @@ for (const target of ["model", "connection"] as const) test(`confirmed ${target}
     // Explicit application can restore a cleared session; metadata saves cannot.
     if (target === "connection") {
       let latest = store.read()!;
-      latest = store.saveConnection(latest.revision, { id: "", name: "replacement", kind: "openai", key: "test", baseUrl: process.env.OPENAI_BASE_URL! });
-      const restored = structuredClone(latest.composition); restored.main.api = latest.connections[0]!.id; restored.main.model = "gpt-6.1-sol";
+      latest = store.saveConnection(latest.revision, { id: "", name: "replacement", kind: "openai", key: "test", baseUrl: process.env.OPENAI_BASE_URL!, models: ["gpt-6.1-sol"] });
+      const restored = structuredClone(latest.composition); restored.order = [...(restored.order ?? []), { id: latest.connections[0]!.id, enabled: true }]; restored.main.model = "gpt-6.1-sol";
       const applied = await post("/apply", { revision: latest.revision, composition: restored });
       assert.equal(applied.status, 200, JSON.stringify(await applied.json()));
       assert.equal(runtime.engine.getModelSettings().model, "gpt-6.1-sol");

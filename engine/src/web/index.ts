@@ -3,8 +3,8 @@ import { trackSettingsGateway } from "../model/settings-sync.js";
 import { observeModelSettings } from "../model/settings-sync.js";
 import { modelProtocols } from "../model/context-window.js";
 import { isReasoningEffort } from "../model/model-gateway.js";
-import { ModelSettingsStore, compositionModelConfig } from "../model/settings-store.js";
-import { registerCompositionTools } from "../model/composition-runtime.js";
+import { ModelSettingsStore, routeModel, type SettingsState } from "../model/settings-store.js";
+import { registerCompositionTools, createCompositionGateway } from "../model/composition-runtime.js";
 import { handleModelSettingsRequest } from "./model-settings-api.js";
 import { paginateSessions, sessionPageOptions, type SessionPageOptions } from "../session/session-pagination.js";
 import {applyToolInputChanges, type ToolInputChange} from "../model/tool-input-stream.js";
@@ -538,9 +538,10 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
   const settingsStore = new ModelSettingsStore();
   const appliedSettings = settingsStore.read()?.applied;
   const settingsRevisions = new WeakMap<QueryEngine, string>();
-  const modelConfig = appliedSettings ? compositionModelConfig(appliedSettings.composition, appliedSettings.connections) : readModelProviderConfig(process.env);
+  const appliedGateway = appliedSettings ? createCompositionGateway(appliedSettings.composition, appliedSettings.connections) : undefined;
+  const modelConfig = appliedGateway ? appliedGateway.config : readModelProviderConfig(process.env);
   const communicationLogger = new CommunicationLogger();
-  const modelGateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedSettings ? [appliedSettings.composition.main.api, appliedSettings.composition.image.api, appliedSettings.composition.search.api] : []);
+  const modelGateway = trackSettingsGateway(new LoggingModelGateway(appliedGateway ? appliedGateway.gateway : createModelGatewayFromConfig(modelConfig), communicationLogger), appliedSettings?.revision, appliedGateway ? appliedGateway.heldConnections : []);
   const taskStore = new TaskStore();
   const pluginCatalog = normalizeWebRuntimePlugins(options.externalPlugins);
   const pluginOverrides = normalizePluginOverrides(options.sessionPluginOverrides, pluginCatalog);
@@ -619,10 +620,11 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
       if (!applied) { if (!compositionToolSnapshots.has(engine)) captureTools(); return; }
       const revision = applied.revision;
       if (settingsRevisions.get(engine) === revision) return;
-      const config = compositionModelConfig(applied.composition, applied.connections);
-      const gateway = trackSettingsGateway(new LoggingModelGateway(createModelGatewayFromConfig(config), communicationLogger), revision, [applied.composition.main.api, applied.composition.image.api, applied.composition.search.api]);
+      const routed = createCompositionGateway(applied.composition, applied.connections), config = routed.config;
+      const gateway = trackSettingsGateway(new LoggingModelGateway(routed.gateway, communicationLogger), revision, routed.heldConnections);
       engine.setModelProvider({ modelGateway: gateway, model: config?.model, reasoning: config?.defaultReasoning });
       if (config) effectiveModelProviders.set(engine, config.provider);
+      effectiveModelRoutes.set(engine, applied);
       registerCompositionTools(tools, applied.composition, applied.connections);
       for (const name of ["web_search", "image_create"]) { const tool = tools.get(name); if (tool) catalogTool(tool, { source: "builtin" }); }
       runtime.modelGateway = gateway; runtime.agentRuntime.modelGateway = gateway; runtime.defaultReasoning = config?.defaultReasoning;
@@ -1799,9 +1801,13 @@ export class WebRepl {
     }
     const engine = this.runtime.engine;
     const nextModel = model.trim();
-    const provider = effectiveModelProviders.get(engine) ?? readModelProviderConfig()?.provider;
-    const metadata = (engine.getActiveModelCatalog?.() ?? loadModelCatalog()).models.find(m => m.modelIds.includes(nextModel));
-    if (metadata && provider && !modelProtocols(metadata).includes(provider)) return actionFailure("MODEL_INVALID", "模型不支持当前主连接接口");
+    const routes = appliedRoutes(engine);
+    if (routes) { if (!routeModel(nextModel, routes.composition, routes.connections)) return actionFailure("MODEL_INVALID", "没有已启用的 API 提供此模型"); }
+    else {
+      const provider = effectiveModelProviders.get(engine) ?? readModelProviderConfig()?.provider;
+      const metadata = (engine.getActiveModelCatalog?.() ?? loadModelCatalog()).models.find(m => m.modelIds.includes(nextModel));
+      if (metadata && provider && !modelProtocols(metadata).includes(provider)) return actionFailure("MODEL_INVALID", "模型不支持当前主连接接口");
+    }
     const current = { ...engine.getModelSettings(), ...engine.getPendingSessionSettings() };
     const argument = reasoning as ModelReasoningArgument | undefined;
     const validationError = validateModelReasoningArgument(nextModel, argument);
@@ -3319,10 +3325,19 @@ function sanitizeWebAttachments(value: unknown): WebAttachmentPayload[] {
 }
 
 const effectiveModelProviders = new WeakMap<QueryEngine, "openai" | "anthropic">();
+const effectiveModelRoutes = new WeakMap<QueryEngine, NonNullable<SettingsState["applied"]>>();
+/** Applied priority list for this engine (or the stored one before its first turn); undefined for legacy/env setups. */
+function appliedRoutes(engine: QueryEngine) {
+  const applied = effectiveModelRoutes.get(engine) ?? new ModelSettingsStore().read()?.applied;
+  return applied?.composition.order ? applied : undefined;
+}
 function webCatalog(runtime: WebRuntime) {
   const catalog = runtime.engine.getActiveModelCatalog?.() ?? loadModelCatalog();
   const provider = effectiveModelProviders.get(runtime.engine) ?? readModelProviderConfig()?.provider;
-  const models = catalog.models.filter(model => !provider || modelProtocols(model).includes(provider as "openai" | "anthropic"));
+  const routes = appliedRoutes(runtime.engine);
+  const models = routes
+    ? catalog.models.filter(model => routeModel(model.id, routes.composition, routes.connections))
+    : catalog.models.filter(model => !provider || modelProtocols(model).includes(provider as "openai" | "anthropic"));
   const modelIds = [...new Set(models.flatMap(model => model.modelIds.length ? model.modelIds : [model.id]))].sort((left, right) => left.localeCompare(right, "en", { numeric: true }));
   return {
     commands: replCommandDefinitions,

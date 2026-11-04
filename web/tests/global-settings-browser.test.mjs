@@ -10,7 +10,7 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
   let tools = ['file_read', 'terminal_run', 'file_write', 'web_search'].map(name => ({ name, configuredEnabled: true, source: 'builtin' }))
   let plugins = ['下载', '视频播放', '较长名称的测试插件', '小红书编辑器'].map((name, i) => ({ id: 'p' + i, name, tools: ['one'], configuredEnabled: true }))
   let failCpa = false
-  let modelConfig = { revision: '1', connections: [{ id: 'a', name: 'Fixture', kind: 'openai', protocols: ['openai'] }], composition: { main: { api: 'a', protocol: 'responses', model: 'test-model', effort: 'high' }, image: { api: '' }, search: { api: '', exa: true } }, catalog: { models: [{ id: 'test-model', provider: 'openai', modelIds: ['test-model'], reasoning: true, reasoningEfforts: ['low', 'high'] }, { id: 'new-model', provider: 'openai', modelIds: ['new-model'], reasoning: true, reasoningEfforts: ['high'] }] } }
+  let modelConfig = { revision: '1', connections: [{ id: 'a', name: 'Fixture', kind: 'openai', protocols: ['openai'], models: ['test-model', 'new-model'] }], composition: { order: [{ id: 'a', enabled: true }], main: { api: 'a', protocol: 'responses', model: 'test-model', effort: 'high' }, image: { api: '', model: '' }, search: { api: '', model: '', exa: true } }, catalog: { models: [{ id: 'test-model', provider: 'openai', modelIds: ['test-model'], reasoning: true, reasoningEfforts: ['low', 'high'] }, { id: 'new-model', provider: 'openai', modelIds: ['new-model'], reasoning: true, reasoningEfforts: ['high'] }] } }
   const fixture = await createObservabilityBrowser(observabilitySnapshot(), async route => {
     const req = route.request(), url = new URL(req.url()), post = req.method() === 'POST'
     const data = post ? req.postDataJSON() : null
@@ -59,7 +59,8 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
     await cpa.getByRole('textbox', { name: 'URL', exact: true }).fill('http://example.test:8317')
     // A model draft must not reload the other persistence scopes.
     await visit('模型')
-    await model.getByRole('combobox', { name: '主模型', exact: true }).fill('new-model')
+    await model.getByRole('button', { name: '主模型', exact: true }).click()
+    await page.getByRole('option', { name: 'new-model', exact: true }).click()
     assert.equal(await root.locator('h2').innerText(), '模型')
     await visit('工具')
     assert.equal(await tool.getByRole('checkbox').first().isChecked(), false)
@@ -68,7 +69,8 @@ test('global settings: scoped saves, draft preservation, aligned icon controls, 
     await visit('CPA')
     assert.equal(await cpa.getByRole('textbox', { name: 'URL', exact: true }).inputValue(), 'http://example.test:8317')
     await visit('模型')
-    await model.getByRole('combobox', { name: '主模型', exact: true }).fill('new-model')
+    await model.getByRole('button', { name: '主模型', exact: true }).click()
+    await page.getByRole('option', { name: 'new-model', exact: true }).click()
     await model.getByRole('button', { name: '应用', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent === '已生效')
     assert.deepEqual(writes.map(w => w.path), ['/api/model-settings/apply'])

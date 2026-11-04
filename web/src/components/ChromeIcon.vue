@@ -42,6 +42,11 @@ const paths = {
   folder: 'M2.5 5h5l2 2h8v9h-15Z',
   terminal: 'm4 5 5 5-5 5m7 0h5',
   incoming: 'M15 4v6H5m4-4-4 4 4 4',
+  grip: 'M7.5 5h.01M12.5 5h.01M7.5 10h.01M12.5 10h.01M7.5 15h.01M12.5 15h.01',
+  right: 'm7 4 6 6-6 6',
+  left: 'm13 4-6 6 6 6',
+  rightAll: 'm4 4 6 6-6 6m5-12 6 6-6 6',
+  leftAll: 'm16 4-6 6 6 6m-5-12-6 6 6 6',
 }
 </script>
 

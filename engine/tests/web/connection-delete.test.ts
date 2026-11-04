@@ -37,7 +37,7 @@ test("connection deletion rechecks active usage, preserves unrelated homes, clea
     busy = false;
     assert.equal((await post("/connection/delete", payload)).status, 200, "idle holder only needs ordinary confirmation");
     assert.equal(cleared, 1); assert.equal(otherCleared, 0);
-    assert.equal(store.read()?.applied?.composition.main.model, "");
+    assert.equal(store.read()?.applied?.composition.main.api, "");
     assert.equal(store.read()?.connections.length, 0);
   } finally {
     server.closeAllConnections(); await new Promise<void>(r => server.close(() => r()));

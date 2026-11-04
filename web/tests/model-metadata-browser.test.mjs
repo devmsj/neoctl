@@ -45,11 +45,8 @@ test('model library edits IDs and deletes with fresh occupancy confirmation agai
     for (const width of [1280, 390]) {
       await p.setViewportSize({ width, height: 1000 })
       assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
-      if (width === 1280) {
-        const a = await searchSection.locator('.api-control').boundingBox()
-        const b = await searchSection.locator('.settings-field-grid>.settings-field').nth(1).locator('.neo-select').boundingBox()
-        assert.ok(Math.abs(a.y - b.y) < 2, 'search connection and model controls stay aligned')
-      }
+      // Capabilities pick models only; connections come from the API priority list.
+      assert.equal(await searchSection.locator('.api-control').count(), 0)
     }
     await p.setViewportSize(desktop)
     await p.getByRole('button', { name: '模型库', exact: true }).click()
@@ -91,33 +88,53 @@ test('model library edits IDs and deletes with fresh occupancy confirmation agai
     assert.equal(findModelMetadata('ui-restored'), undefined)
     const disk = JSON.parse(await readFile(path.join(home, 'model-metadata.json'), 'utf8'))
     assert.ok(disk.removedModelIds.includes('ui-model-renamed'))
-    // Referenced API deletion is a confirmation flow, not a dead-end error.
+    // API priority list: top-most enabled API serving the model is effective; deletion falls through, never auto-switches on failure.
     await p.getByRole('button', { name: '关闭', exact: true }).click()
     const store = new ModelSettingsStore()
     let state = store.initialize({})
-    state = store.saveConnection(state.revision, { id: '', name: 'ui-api', kind: 'openai', baseUrl: 'http://localhost:9', key: 'fixture' })
-    const apiId = state.connections[0].id
+    state = store.saveConnection(state.revision, { id: '', name: 'ui-api', kind: 'openai', baseUrl: 'http://localhost:9', key: 'fixture', models: ['gpt-6.1-sol'] })
+    state = store.saveConnection(state.revision, { id: '', name: 'ui-api-2', kind: 'openai', baseUrl: 'http://localhost:10', key: 'fixture', models: ['gpt-6.1-sol'] })
+    const apiId = state.connections.find(a => a.name === 'ui-api').id, apiId2 = state.connections.find(a => a.name === 'ui-api-2').id
     let apiHeld = true, apiBusy = false, apiCleared = 0
     const apiConsumer = { isModelConfigurationBusy: () => apiBusy, refreshModelConfigurationIfIdle() {}, getHeldConnectionIds: () => apiHeld ? [apiId] : [], interruptForModelRemoval() { apiCleared++; apiHeld = false } }
     registerSettingsConsumer(apiConsumer)
-    const c = structuredClone(state.composition); c.main = { api: apiId, model: 'gpt-6.1-sol', effort: 'high' }
+    const c = structuredClone(state.composition); c.order = [{ id: apiId, enabled: true }, { id: apiId2, enabled: true }]; c.main = { api: '', model: 'gpt-6.1-sol', effort: 'high' }
     store.apply(state.revision, c)
+    assert.equal(store.read().applied.composition.main.api, apiId)
     await p.getByRole('button', { name: '重新加载配置', exact: true }).click()
-    await p.getByRole('button', { name: 'API 配置', exact: true }).click()
-    await p.getByRole('button', { name: '删除 ui-api', exact: true }).click()
+    assert.equal(await p.getByRole('button', { name: 'API 配置', exact: true }).count(), 0, 'no duplicate API manager entry')
+    const apiSection = p.getByRole('region', { name: 'API 配置', exact: true })
+    const rows = apiSection.getByRole('listitem')
+    await rows.first().waitFor()
+    assert.deepEqual(await rows.locator('.conn-main strong').allTextContents(), ['ui-api', 'ui-api-2'])
+    assert.equal(await rows.nth(0).getByLabel('主模型生效', { exact: true }).count(), 1)
+    await apiSection.getByRole('button', { name: '拖动排序 ui-api-2', exact: true }).focus()
+    await p.keyboard.press('ArrowUp')
+    await p.waitForTimeout(250)
+    assert.deepEqual(await rows.locator('.conn-main strong').allTextContents(), ['ui-api-2', 'ui-api'])
+    assert.equal(await rows.nth(0).getByLabel('主模型生效', { exact: true }).count(), 1, 'top-most API serving the model becomes effective')
+    assert.ok(await p.getByText('未应用', { exact: true }).isVisible())
+    await p.getByRole('button', { name: '撤销', exact: true }).click()
+    assert.deepEqual(await rows.locator('.conn-main strong').allTextContents(), ['ui-api', 'ui-api-2'])
+    await apiSection.getByRole('button', { name: 'ui-api 可用模型 1 个', exact: true }).click()
+    const apiDialog = p.getByRole('dialog', { name: '编辑 API', exact: true })
+    await apiDialog.waitFor()
+    assert.equal(await apiDialog.getByRole('listbox', { name: '可用模型', exact: true }).getByRole('option').count(), 1)
+    await apiDialog.getByRole('button', { name: '删除 API', exact: true }).click()
     await p.getByRole('dialog', { name: '删除 API', exact: true }).waitFor()
-    assert.equal(await p.getByText('有活动会话使用此 API，删除将打断会话，模型选择将清空。', { exact: true }).count(), 0)
+    const warning = '有活动会话正通过此 API 调用，删除将打断会话；之后由下方符合条件的 API 生效。'
+    assert.equal(await p.getByText(warning, { exact: true }).count(), 0)
     apiBusy = true
     await p.getByRole('button', { name: '删除', exact: true }).click()
     await p.getByRole('button', { name: '删除并中断', exact: true }).waitFor()
+    assert.ok(await p.getByText(warning, { exact: true }).isVisible())
     assert.equal(apiCleared, 0)
     await p.getByRole('button', { name: '删除并中断', exact: true }).click()
-    await p.getByRole('dialog', { name: 'API 配置', exact: true }).waitFor()
-    assert.equal(apiCleared, 1)
-    assert.equal(store.read().applied.composition.main.model, '')
-    assert.equal(await p.getByRole('button', { name: '删除 ui-api', exact: true }).count(), 0)
-    await p.getByRole('button', { name: '完成', exact: true }).click()
-    assert.equal(await p.getByRole('combobox', { name: '主模型', exact: true }).inputValue(), '')
+    await p.getByRole('dialog').waitFor({ state: 'detached' })
+    assert.equal(apiCleared, 1); apiBusy = false
+    assert.equal(store.read().applied.composition.main.api, apiId2, 'the next qualifying API takes over')
+    assert.deepEqual(await rows.locator('.conn-main strong').allTextContents(), ['ui-api-2'])
+    assert.equal(await rows.nth(0).getByLabel('主模型生效', { exact: true }).count(), 1)
     assert.deepEqual(ui.errors, [])
     assert.ok(!ui.requests.some(r => /\/api\/(send|interrupt|model-settings\/test)/.test(r.url)))
   } finally {

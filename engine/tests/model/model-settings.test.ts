@@ -54,9 +54,10 @@ test("API archives preserve keys; apply is immutable; revisions prevent lost upd
   assert.equal(store.read()?.connections.length, 1);
   state = store.removeConnection(state.revision, "openai");
   assert.equal(state.connections.length, 0);
-  for (const c of [state.composition, state.applied!.composition]) for (const slot of ["main", "image", "search"] as const) {
-    assert.equal(c[slot].api, "");
-    assert.equal(c[slot].model, "");
+  // Priority list: models stay selected; with no connection left nothing routes them.
+  for (const c of [state.composition, state.applied!.composition]) {
+    assert.deepEqual(c.order, []);
+    for (const slot of ["main", "image", "search"] as const) assert.equal(c[slot].api, "");
   }
   assert.equal(compositionModelConfig(state.applied!.composition, state.applied!.connections), undefined);
   assert.equal(JSON.stringify(store.publicState(state)).includes('"key":'), false);

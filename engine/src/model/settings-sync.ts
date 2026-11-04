@@ -64,10 +64,12 @@ export function publishModelSettings(restoreCleared = false): { deferred: boolea
 
 // Keep the inherited provider revision with its gateway, including child-task handoff.
 const gatewayRevisions = new WeakMap<object, string | undefined>();
-const gatewayConnections = new WeakMap<object, string[]>();
-export function settingsGatewayConnections(gateway: object): string[] { return gatewayConnections.get(gateway) ?? []; }
-export function trackSettingsGateway<T extends object>(gateway: T, revision: string | undefined, connections: string[] = []): T {
-  gatewayConnections.set(gateway, connections.filter(Boolean));
+const gatewayConnections = new WeakMap<object, () => string[]>();
+export function settingsGatewayConnections(gateway: object): string[] { return gatewayConnections.get(gateway)?.().filter(Boolean) ?? []; }
+/** connections may be live: a routed gateway holds whichever connection serves the session's current model. */
+export function trackSettingsGateway<T extends object>(gateway: T, revision: string | undefined, connections: string[] | (() => string[]) = []): T {
+  const list = connections;
+  gatewayConnections.set(gateway, typeof list === "function" ? list : () => list);
   gatewayRevisions.set(gateway, revision);
   return gateway;
 }

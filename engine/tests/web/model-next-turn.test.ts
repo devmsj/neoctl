@@ -59,7 +59,9 @@ test("apply during streaming switches connection/protocol/tools at next API turn
     assert.equal(publishModelSettings().deferred, true);
     assert.ok(!runtime.engine.getActiveModelCatalog().models.find(m => m.id === metadata.id)?.reasoningEfforts?.includes("custom-live"));
     assert.ok(idle.getActiveModelCatalog().models.find(m => m.id === metadata.id)?.reasoningEfforts?.includes("custom-live"));
-    const c = structuredClone(state.composition); c.main.protocol = "messages"; c.main.model = "claude-fable-5-1"; c.image.api = ""; c.search.api = ""; c.search.exa = false;
+    // The connection serves both protocols; listing the Claude model makes its own metadata pick Messages.
+    state = store.saveConnection(state.revision, { ...state.connections[0]!, key: "", models: [...(state.connections[0]!.models ?? []), "claude-fable-5-1"] });
+    const c = structuredClone(state.composition); c.main.model = "claude-fable-5-1"; c.image.model = ""; c.search.model = ""; c.search.exa = false;
     state = store.apply(state.revision, c);
     assert.equal(publishModelSettings().deferred, true);
     assert.equal(runtime.engine.getModelSettings().model, "gpt-6.1-sol");
@@ -78,7 +80,7 @@ test("apply during streaming switches connection/protocol/tools at next API turn
     assert.ok(requests[1]!.body.messages.some((m: any) => m.content.some((b: any) => b.type === "tool_result")));
     const after = repl.snapshot();
     assert.equal(after.catalog?.modelProtocol, "anthropic");
-    assert.ok(after.catalog?.modelIds.every(id => id.startsWith("claude-")));
+    assert.ok(after.catalog?.modelIds.includes("claude-fable-5-1"));
     assert.equal(publishModelSettings().deferred, false);
     await runtime.engine.settleSessionWrites(); await idle.settleSessionWrites();
   } finally {
