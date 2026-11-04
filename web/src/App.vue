@@ -2691,7 +2691,8 @@ function isCompactionLine(line) {
 }
 
 function compactionModeText(line) {
-  return line?.compaction?.modelDriven ? '模型生成摘要' : '确定性摘要'
+  if (line?.compaction?.modelDriven) return '模型生成摘要'
+  return line?.compaction?.fallbackReason ? '确定性摘要（模型摘要失败）' : '确定性摘要'
 }
 
 const contextFocusOrigins = new Map()
@@ -5977,7 +5978,7 @@ function createMobileSession() {
         </header>
         <div class="runtime-context-detail-content compaction-detail-content">
           <dl class="compaction-detail-stats">
-            <div><dt>压缩方式</dt><dd>{{ compactionModeText(compactionDetailLine) }}</dd></div>
+            <div><dt>压缩方式</dt><dd :title="compactionDetailLine.compaction.fallbackReason || undefined">{{ compactionModeText(compactionDetailLine) }}</dd></div>
             <div><dt>发生时间</dt><dd>{{ formatSessionTime(compactionDetailLine.compaction.createdAt) }}</dd></div>
             <div><dt>新窗口消息</dt><dd>{{ compactionDetailLine.compaction.newWindowMessages }}</dd></div>
             <div><dt>保留用户消息</dt><dd>{{ compactionDetailLine.compaction.preservedUserMessages }}</dd></div>

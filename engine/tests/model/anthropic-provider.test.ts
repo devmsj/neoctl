@@ -325,7 +325,9 @@ test("model-driven compaction uses Messages API with adaptive thinking and runti
     const adapter = new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "key", maxRetries: 0, defaultReasoning: { effort: "high" } });
     const compacted = await new ModelDrivenCompactor(adapter).manualCompact([user(), createTextMessage("assistant", "some work"), createTextMessage("user", "continue")]);
     assert.ok(seen, "compaction must really reach the adapter, not silently fall back");
-    assert.equal(seen.max_tokens, 2500);
+    // Same output limit as a normal turn: thinking must not exhaust a tiny summary cap.
+    assert.equal(seen.max_tokens, buildAnthropicRequest(request({}), { model }).max_tokens);
+    assert.ok(seen.max_tokens > 2500);
     assert.equal(seen.thinking.type, "adaptive");
     assert.equal(seen.messages.at(-1).role, "system");
     assert.match(JSON.stringify(seen.messages.at(-1)), /Current time:/);

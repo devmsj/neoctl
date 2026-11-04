@@ -1,5 +1,6 @@
 import { abortableStream } from "../core/abortable-stream.js";
-import { createRuntimeTimeMessage } from "../core/message-pipeline.js";
+import { createRuntimeTimeMessage, ensureToolResultPairing } from "../core/message-pipeline.js";
+import { ModelAPIError } from "../model/errors.js";
 import type { ModelGateway } from "../model/model-gateway.js";
 import { createTextMessage, withoutThinkingBlocks, type Message, type MessageBlock } from "../types/messages.js";
 import { estimateTextTokens } from "../core/context-metrics.js";
@@ -31,6 +32,10 @@ export interface ContextBudgetOptions {
   /** @deprecated Checkpoint summaries serialize the complete pre-compaction window. */
   compactInputMaxChars?: number;
   compactModel?: string;
+  /**
+   * Explicit output cap for model summaries. When omitted, the provider's normal
+   * request limit applies so reasoning/thinking tokens cannot exhaust the summary.
+   */
   compactMaxOutputTokens?: number;
 }
 
@@ -46,6 +51,8 @@ export interface CompactionReport {
   charsFreed: number;
   modelDriven: boolean;
   imageCount: number;
+  /** Why the model summary failed when a deterministic fallback was used. */
+  fallbackReason?: string;
 }
 
 export interface CompactionResult {
@@ -134,9 +141,9 @@ export class ModelDrivenCompactor implements Compactor {
     try {
       const summary = await this.summarizeWithModel(messages, CHECKPOINT_COMPACT_INSTRUCTIONS, options);
       return buildCompactionResult(messages, summary, reason, true, options);
-    } catch {
+    } catch (error) {
       options.abortSignal?.throwIfAborted();
-      return checkpointCompactWithSummary(messages, options, reason);
+      return checkpointCompactWithSummary(messages, options, reason, describeSummaryFailure(error));
     }
   }
 
@@ -145,33 +152,55 @@ export class ModelDrivenCompactor implements Compactor {
     instructions: string,
     options: ContextBudgetOptions,
   ): Promise<string> {
-    const compactMessages = prepareMessagesForModelSummary(messages, instructions);
-    if (compactMessages.length === 1) return "No earlier conversation content required preservation.";
+    const history = prepareHistoryForModelSummary(messages);
+    if (history.length === 0) return "No earlier conversation content required preservation.";
 
+    const historyTokens = history.reduce((total, message) => total + estimateMessageTokens(message), 0);
+    let input = history;
+    for (let attempt = 0; ; attempt += 1) {
+      const progress = { streamed: false };
+      try {
+        return await this.requestSummary([...input, createCompactInstructionMessage(instructions)], options, progress);
+      } catch (error) {
+        options.abortSignal?.throwIfAborted();
+        // Only a context overflow is recoverable here, and only before any summary
+        // text reached the UI. Retry once per ratio with the oldest input omitted.
+        const ratio = SUMMARY_INPUT_RETRY_RATIOS[attempt];
+        if (ratio === undefined || progress.streamed || !isSummaryContextOverflow(error)) throw error;
+        const trimmed = trimHistoryForModelSummary(history, Math.floor(historyTokens * ratio));
+        if (trimmed.omitted === 0) throw error;
+        input = trimmed.messages;
+      }
+    }
+  }
+
+  private async requestSummary(messages: Message[], options: ContextBudgetOptions, progress: { streamed: boolean }): Promise<string> {
     let streamedText = "";
     let finalAssistantText = "";
     let completed = false;
     for await (const event of abortableStream(this.modelGateway.stream({
       cancellation: options.abortSignal,
       model: options.compactModel,
-      messages: [...compactMessages, createRuntimeTimeMessage()],
+      messages: [...messages, createRuntimeTimeMessage()],
       tools: [],
       toolChoice: "none",
       stream: true,
-      maxOutputTokens: options.compactMaxOutputTokens ?? 2500,
+      // Undefined keeps the same output limit as normal turns. A small fixed cap
+      // is consumed by reasoning/thinking and truncates the summary.
+      maxOutputTokens: options.compactMaxOutputTokens,
       queryOrigin: "compact",
       providerOptions: {
         compact: true,
       },
     }), options.abortSignal)) {
       if (event.type === "retrying") options.onRetry?.(event);
-      if (event.type === "assistant_delta") { streamedText += event.text; options.onCompactionDelta?.(event.text); }
+      if (event.type === "assistant_delta") { streamedText += event.text; progress.streamed = true; options.onCompactionDelta?.(event.text); }
       if (event.type === "assistant_message") {
         finalAssistantText = extractText(event.message).trim() || finalAssistantText;
-        if (!streamedText && finalAssistantText) { options.onCompactionDelta?.(finalAssistantText); streamedText = finalAssistantText; }
+        if (!streamedText && finalAssistantText) { options.onCompactionDelta?.(finalAssistantText); streamedText = finalAssistantText; progress.streamed = true; }
       }
       if (event.type === "response_completed") completed = true;
-      if (event.type === "response_incomplete") throw new Error(`Model compaction response was incomplete: ${event.reason ?? "unknown reason"}`);
+      if (event.type === "response_incomplete") throw new SummaryIncompleteError(event.reason);
       if (event.type === "error") throw event.error;
     }
 
@@ -181,6 +210,25 @@ export class ModelDrivenCompactor implements Compactor {
     if (!summary) throw new Error("Model compaction produced an empty summary");
     return summary;
   }
+}
+
+/** Retry budgets, as fractions of the original summary input, after a context overflow. */
+const SUMMARY_INPUT_RETRY_RATIOS: readonly number[] = [0.6, 0.35];
+
+class SummaryIncompleteError extends Error {
+  constructor(readonly reason: string | undefined) {
+    super(`Model compaction response was incomplete: ${reason ?? "unknown reason"}`);
+  }
+}
+
+function isSummaryContextOverflow(error: unknown): boolean {
+  if (error instanceof ModelAPIError) return error.category === "context_length";
+  return error instanceof SummaryIncompleteError && error.reason === "model_context_window_exceeded";
+}
+
+function describeSummaryFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown error";
 }
 
 export class NoopCompactor implements Compactor {
@@ -238,6 +286,7 @@ export function withCompactionReport(result: CompactionResult, sourceMessages: n
     charsFreed: Math.max(0, result.charsFreed ?? result.tokensFreed ?? 0),
     modelDriven: boundary?.metadata?.modelDriven === true,
     imageCount: Array.isArray(imageRegistry?.images) ? imageRegistry.images.length : 0,
+    ...(typeof boundary?.metadata?.compactFallbackReason === "string" ? { fallbackReason: boundary.metadata.compactFallbackReason } : {}),
   };
   return {
     ...result,
@@ -384,6 +433,7 @@ function checkpointCompactWithSummary(
   messages: readonly Message[],
   options: ContextBudgetOptions,
   reason: "autocompact" | "reactive_compact" | "manualcompact",
+  fallbackReason?: string,
 ): CompactionResult {
   if (messages.length === 0) return { messages: [], changed: false, reason: "none" };
   const summary = buildCheckpointFallbackSummary(messages, options.summaryMaxChars ?? 6000);
@@ -393,6 +443,8 @@ function checkpointCompactWithSummary(
     reason,
     false,
     options,
+    messages,
+    fallbackReason,
   );
 }
 
@@ -443,6 +495,7 @@ function buildCompactionResult(
   modelDriven: boolean,
   options: ContextBudgetOptions,
   messagesForSelection: readonly Message[] = originalMessages,
+  fallbackReason?: string,
 ): CompactionResult {
   const label = reason === "autocompact"
     ? "Auto compacted earlier conversation."
@@ -452,7 +505,7 @@ function buildCompactionResult(
 
   const imageRegistry = options.imageRegistry ?? buildMergedImageRegistry(originalMessages);
   const preservedUsers = selectRecentUserMessages(messagesForSelection, options.keepRecentTokenBudget ?? COMPACT_USER_MESSAGE_MAX_TOKENS);
-  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven, imageRegistry);
+  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven, imageRegistry, fallbackReason);
   const compacted = [...preservedUsers, boundary];
   const freed = Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted));
   return {
@@ -574,7 +627,7 @@ function mergeResults(results: readonly CompactionResult[], reason: CompactionRe
   };
 }
 
-function createCompactionBoundaryMessage(summary: string, reason: string, modelDriven: boolean, imageRegistry?: ImageRegistry): Message {
+function createCompactionBoundaryMessage(summary: string, reason: string, modelDriven: boolean, imageRegistry?: ImageRegistry, fallbackReason?: string): Message {
   const registryText = imageRegistry && imageRegistry.images.length > 0
     ? `\n\n${formatImageRegistryForContext(imageRegistry)}`
     : "";
@@ -585,6 +638,7 @@ function createCompactionBoundaryMessage(summary: string, reason: string, modelD
       compactBoundary: true,
       compactionReason: reason,
       modelDriven,
+      ...(fallbackReason ? { compactFallbackReason: fallbackReason } : {}),
       ...(imageRegistry && imageRegistry.images.length > 0 ? { imageRegistry } : {}),
     },
   };
@@ -946,16 +1000,49 @@ function summarizePathForPureState(value: string): string {
   return tail ? `[path:${tail}]` : "[path]";
 }
 
-function prepareMessagesForModelSummary(messages: readonly Message[], instructions: string): Message[] {
-  const history = withoutThinkingBlocks(messages)
+function prepareHistoryForModelSummary(messages: readonly Message[]): Message[] {
+  return withoutThinkingBlocks(messages)
     .filter((message) => message.role !== "progress" && message.role !== "tombstone")
     .map(normalizeMessageForModelSummary);
-  const compactInstruction = {
+}
+
+function createCompactInstructionMessage(instructions: string): Message {
+  return {
     ...createTextMessage("user", instructions),
     isMeta: true,
     metadata: { compactInstruction: true },
   };
-  return [...history, compactInstruction];
+}
+
+/**
+ * Drop the oldest summary input until it fits the token budget. The previous
+ * checkpoint (and the users preserved with it) and the first request after it
+ * stay, tool calls stay paired, and an explicit note marks the omission.
+ */
+function trimHistoryForModelSummary(history: readonly Message[], tokenBudget: number): { messages: Message[]; omitted: number } {
+  let headEnd = 0;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (history[index].metadata?.compactBoundary === true) { headEnd = index + 1; break; }
+  }
+  while (history[headEnd]?.role === "system") headEnd += 1;
+  if (history[headEnd] && isRealUserMessage(history[headEnd])) headEnd += 1;
+  const tail = history.slice(headEnd);
+  let total = history.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+  let start = 0;
+  while (start < tail.length && total > tokenBudget) {
+    total -= estimateMessageTokens(tail[start]);
+    start += 1;
+  }
+  // Results whose calls were omitted cannot be sent on their own.
+  while (start < tail.length && tail[start].role === "tool_result") start += 1;
+  // Never summarize without the latest progress; the caller falls back instead.
+  if (start === 0 || start >= tail.length) return { messages: [...history], omitted: 0 };
+  const note: Message = {
+    ...createTextMessage("user", `[${start} earlier message(s) were omitted from this compaction input to fit the model context limit. Use the earlier checkpoint state, if any, for that period.]`),
+    isMeta: true,
+    metadata: { compactInputOmission: true },
+  };
+  return { messages: ensureToolResultPairing([...history.slice(0, headEnd), note, ...tail.slice(start)]), omitted: start };
 }
 
 function normalizeMessageForModelSummary(message: Message): Message {
@@ -1046,5 +1133,5 @@ const CHECKPOINT_COMPACT_INSTRUCTIONS = [
   "Include the current goal, progress, and key decisions; important context, constraints, and user preferences; completed work and validation status; what remains to be done with clear next steps; and any critical files, paths, identifiers, commands, data, examples, or references needed to continue.",
   "Use task continuity and current relevance to decide what to preserve. Report tool activity through durable findings and current consequences, not as a chronological call log. Include errors only when they remain relevant as blockers, risks, unresolved failures, or important lessons.",
   "Treat any earlier compaction summary as prior handoff state. Merge it with later developments, preserve still-valid constraints, and replace stale or superseded status with the newest known state instead of repeating both.",
-  "Be concise, structured, and specific enough for the next LLM to continue immediately. Use the conversation's primary language when practical. Do not invent facts, do not continue the task, and do not write a user-facing final answer.",
+  "Be concise, structured, and specific enough for the next LLM to continue immediately; keep the summary within about 2,500 tokens. Use the conversation's primary language when practical. Do not invent facts, do not continue the task, and do not write a user-facing final answer.",
 ].join("\n");

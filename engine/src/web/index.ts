@@ -4058,6 +4058,7 @@ function compactionReportFromBoundary(message: Message | undefined): CompactionR
     charsFreed: 0,
     modelDriven: message.metadata.modelDriven === true,
     imageCount: Array.isArray(imageRegistry?.images) ? imageRegistry.images.length : 0,
+    ...(typeof message.metadata.compactFallbackReason === "string" ? { fallbackReason: message.metadata.compactFallbackReason } : {}),
   };
 }
 
