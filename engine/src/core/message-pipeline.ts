@@ -1,3 +1,4 @@
+import { truncateToolText } from "../session/tool-result-memory.js";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 import { buildImageRegistry, extractRegistryFromBoundary, mergeImageRegistries, type ImageRegistry } from "./image-registry.js";
 
@@ -19,7 +20,7 @@ export function applyToolResultBudget(
 ): Message[] {
   const maxSerializedLength = options.maxSerializedLength ?? 16000;
   return messages.map((message) => {
-    if (message.role !== "tool_result") return message;
+    if (message.role !== "tool_result" || message.metadata?.toolResultBudgetApplied === true) return message;
     let changed = false;
     const blocks = message.blocks.map((block) => {
       if (block.type !== "tool_result") return block;
@@ -221,8 +222,10 @@ function renderObjectEntries(entries: readonly [string, unknown][]): string {
 }
 
 function buildStableToolResultPreview(serialized: string, maxSerializedLength: number): string {
-  const previewLength = Math.max(0, maxSerializedLength - 120);
-  return `[Tool result truncated for context budget: original ${serialized.length} chars, showing first ${previewLength} chars]\n${serialized.slice(0, previewLength)}`;
+  const marker = `[Tool result truncated for context budget: original ${serialized.length} chars]\n`;
+  return marker.length < maxSerializedLength
+    ? marker + truncateToolText(serialized, maxSerializedLength - marker.length)
+    : truncateToolText("[Tool result truncated]", maxSerializedLength);
 }
 
 function serializeToolOutput(output: unknown): string {

@@ -127,7 +127,8 @@ export function createSearchTool(options: CreateSearchToolOptions = {}): Tool<We
         };
       }
     },
-    mapResult(result) {
+    mapResult(result, request) {
+      if (request.input && typeof request.input === "object" && typeof (request.input as { maxResultChars?: unknown }).maxResultChars === "number") return result.output;
       return shrinkSearchOutputForTransport(result.output, 21_000);
     },
   };

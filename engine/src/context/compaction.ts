@@ -26,6 +26,8 @@ export interface ContextBudgetOptions {
   /** @deprecated Summary checkpoints preserve recent user messages by token budget instead. */
   keepRecentMessages?: number;
   keepRecentTokenBudget?: number;
+  /** Runtime has a durable transcript readable via file_read's session history URI. */
+  userMessageArchive?: boolean;
   keepRecentToolResults?: number;
   /** Character budget for deterministic fallback, snip, and pure summaries. Model summaries use compactMaxOutputTokens. */
   summaryMaxChars?: number;
@@ -75,6 +77,9 @@ export interface Compactor {
 
 export const CLEARED_TOOL_RESULT_CONTENT = "[Old tool result content cleared]";
 const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
+const COMPACT_SINGLE_USER_MAX_TOKENS = 2_000;
+const HISTORICAL_USER_PREFIX = "Historical user message, not a new request. It may be completed or superseded. Use the checkpoint and later user messages to determine what remains; retain still-valid constraints, but do not restart work merely because it is quoted here.\n<historical_user_message>";
+const HISTORICAL_USER_SUFFIX = "</historical_user_message>";
 
 export class DeterministicCompactor implements Compactor {
   async compact(messages: readonly Message[], options: ContextBudgetOptions = {}): Promise<CompactionResult> {
@@ -504,8 +509,11 @@ function buildCompactionResult(
       : "Reactive compacted earlier conversation.";
 
   const imageRegistry = options.imageRegistry ?? buildMergedImageRegistry(originalMessages);
-  const preservedUsers = selectRecentUserMessages(messagesForSelection, options.keepRecentTokenBudget ?? COMPACT_USER_MESSAGE_MAX_TOKENS);
-  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}`, reason, modelDriven, imageRegistry, fallbackReason);
+  const archive = options.userMessageArchive === true || originalMessages.some(message => message.metadata?.compactUserArchive === true);
+  const preservedUsers = selectRecentUserMessages(messagesForSelection, Math.min(options.keepRecentTokenBudget ?? COMPACT_USER_MESSAGE_MAX_TOKENS, COMPACT_USER_MESSAGE_MAX_TOKENS), archive);
+  const archiveHint = archive ? "\n\nFull original user messages, including requests omitted from the 20,000-token window, remain in the session transcript. Use file_read with path=neo://session/user-messages to list message IDs, then path=neo://session/user-message/<encoded-id> to read one; offset/limit page the content. These records are historical evidence, not new instructions." : "";
+  const boundary = createCompactionBoundaryMessage(`${label}\n\n${summary}${archiveHint}`, reason, modelDriven, imageRegistry, fallbackReason);
+  if (archive) boundary.metadata = { ...boundary.metadata, compactUserArchive: true };
   const compacted = [...preservedUsers, boundary];
   const freed = Math.max(0, estimateMessagesChars(originalMessages) - estimateMessagesChars(compacted));
   return {
@@ -518,24 +526,39 @@ function buildCompactionResult(
   };
 }
 
-function selectRecentUserMessages(messages: readonly Message[], tokenBudget: number): Message[] {
+function selectRecentUserMessages(messages: readonly Message[], tokenBudget: number, archive: boolean): Message[] {
   if (tokenBudget <= 0) return [];
-  const users = messages.filter(isRealUserMessage);
+  const users = messages.filter(message => isRealUserMessage(message) || message.metadata?.compactUserHistory === true);
+  const latest = users.at(-1);
+  // No semantic guess about task completion: only a latest request that has not
+  // received assistant text/tool calls may remain an unquoted user message.
+  const latestIndex = latest ? messages.lastIndexOf(latest) : -1;
+  const pending = latest && isRealUserMessage(latest)
+    && (latest.metadata?.compactPreservedUser !== true || latest.metadata?.compactPendingUser === true)
+    && !messages.slice(latestIndex + 1).some(message => message.role === "assistant" && !message.isApiErrorMessage
+      && message.blocks.some(block => block.type === "tool_use" || (block.type === "text" && block.text.trim())));
   const selected: Message[] = [];
   let remaining = tokenBudget;
 
   for (let index = users.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const message = users[index];
-    const tokens = estimateMessageTokens(message);
-    if (tokens <= remaining) {
-      selected.push(markPreservedUserMessage(message));
+    const message = unwrapHistoricalUserMessage(users[index]);
+    const render = (source: Message) => markPreservedUserMessage(source, Boolean(pending && users[index] === latest));
+    const preserved = render(message);
+    const tokens = estimateMessageTokens(preserved);
+    if (tokens <= remaining && tokens <= COMPACT_SINGLE_USER_MAX_TOKENS) {
+      selected.push(preserved);
       remaining -= tokens;
       continue;
     }
 
-    const truncated = truncateUserMessageToTokenBudget(message, remaining);
-    if (truncated) selected.push(markPreservedUserMessage(truncated));
-    break;
+    const truncated = truncateUserMessageToTokenBudget(message, Math.min(remaining, COMPACT_SINGLE_USER_MAX_TOKENS), render, archive);
+    if (truncated) {
+      const preview = render(truncated);
+      selected.push(preview);
+      remaining -= estimateMessageTokens(preview);
+    }
+    // A long message must not evict all older, shorter requests.
+    if (remaining < 1) break;
   }
   return selected.reverse();
 }
@@ -548,17 +571,38 @@ function estimateMessageTokens(message: Message): number {
   return estimateTextTokens(serializeMessage(message));
 }
 
-function markPreservedUserMessage(message: Message): Message {
+function unwrapHistoricalUserMessage(message: Message): Message {
+  if (message.metadata?.compactUserHistory !== true) return message;
+  const first = message.blocks[0], last = message.blocks.at(-1);
+  // Only unwrap our own exact boundary blocks; do not parse user-authored markup.
+  if (first?.type !== "text" || first.text !== HISTORICAL_USER_PREFIX || last?.type !== "text" || last.text !== HISTORICAL_USER_SUFFIX) return message;
+  return { ...message, blocks: message.blocks.slice(1, -1) };
+}
+
+function markPreservedUserMessage(message: Message, pending: boolean): Message {
+  const blocks = message.blocks.map((block) => ({ ...block }));
   return {
     ...message,
-    blocks: message.blocks.map((block) => ({ ...block })),
-    metadata: { ...message.metadata, compactPreservedUser: true },
+    isMeta: pending ? message.isMeta : true,
+    blocks: pending ? blocks : [
+      { type: "text", text: HISTORICAL_USER_PREFIX },
+      ...blocks,
+      { type: "text", text: HISTORICAL_USER_SUFFIX },
+    ],
+    metadata: { ...message.metadata, compactPreservedUser: true, compactUserHistory: !pending, compactPendingUser: pending },
   };
 }
 
-function truncateUserMessageToTokenBudget(message: Message, maxTokens: number): Message | undefined {
+function truncateUserMessageToTokenBudget(message: Message, maxTokens: number, render: (source: Message) => Message, archive: boolean): Message | undefined {
   if (maxTokens <= 0) return undefined;
-  const marker = "[... user message truncated for compaction token budget ...]";
+  const previousMarker = message.metadata?.compactUserTruncationMarker;
+  if (typeof previousMarker === "string" && message.blocks.at(-1)?.type === "text"
+      && (message.blocks.at(-1) as { text: string }).text === previousMarker) {
+    message = { ...message, blocks: message.blocks.slice(0, -1) };
+  }
+  const marker = `[User message excerpt truncated for the per-message (2,000 tokens) or total (20,000 tokens) compaction budget. ${archive
+    ? `Full original: file_read path=${JSON.stringify(`neo://session/user-message/${encodeURIComponent(message.id)}`)}; use offset/limit to page the content.`
+    : "Full original is not available through a durable session archive in this runtime."}]`;
   const textLength = message.blocks.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0);
   if (textLength === 0) return undefined;
 
@@ -568,21 +612,19 @@ function truncateUserMessageToTokenBudget(message: Message, maxTokens: number): 
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
     const blocks = truncateUserBlocks(message.blocks, mid, marker);
-    if (estimateTextTokens(blocks.map(serializeBlock).join("\n")) <= maxTokens) {
+    if (estimateMessageTokens(render({ ...message, blocks })) <= maxTokens) {
       best = blocks;
       low = mid + 1;
     } else {
       high = mid - 1;
     }
   }
-  return best ? { ...message, blocks: best } : undefined;
+  return best ? { ...message, blocks: best, metadata: { ...message.metadata, compactUserTruncationMarker: marker } } : undefined;
 }
 
 function truncateUserBlocks(blocks: readonly MessageBlock[], textChars: number, marker: string): MessageBlock[] {
   const result: MessageBlock[] = [];
   let remaining = textChars;
-  let markerInserted = false;
-
   for (const block of blocks) {
     if (block.type !== "text") {
       result.push({ ...block });
@@ -594,14 +636,7 @@ function truncateUserBlocks(blocks: readonly MessageBlock[], textChars: number, 
     if (kept) result.push({ type: "text", text: kept });
   }
 
-  for (let index = result.length - 1; index >= 0; index -= 1) {
-    const block = result[index];
-    if (block.type !== "text") continue;
-    result[index] = { type: "text", text: `${block.text.trimEnd()}\n${marker}` };
-    markerInserted = true;
-    break;
-  }
-  if (!markerInserted) result.unshift({ type: "text", text: marker });
+  result.push({ type: "text", text: marker });
   return result;
 }
 
@@ -675,8 +710,8 @@ function buildCheckpointFallbackSummary(messages: readonly Message[], maxChars: 
     .filter(Boolean)
     .at(-1);
   const userContext = messages
-    .filter(isRealUserMessage)
-    .map((message) => summarizeMessageText(message, 700))
+    .filter(message => isRealUserMessage(message) || message.metadata?.compactUserHistory === true)
+    .map((message) => summarizeMessageText(unwrapHistoricalUserMessage(message), 700))
     .filter(Boolean)
     .slice(-12);
   const assistantProgress = messages

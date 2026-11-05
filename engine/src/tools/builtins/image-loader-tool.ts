@@ -15,7 +15,7 @@ export interface LoadImageToolInput {
   mode?: "inspect" | "list";
   offset?: number;
   limit?: number;
-  /** Optional question/context about what to look for in the image(s). Included as text alongside images. */
+  /** Assistant-supplied analysis context, returned in the tool result rather than as user text. */
   prompt?: string;
   /** How long the loaded image pixels should remain directly visible in model context. */
   retention?: ImageRetention;
@@ -108,7 +108,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         },
         prompt: {
           type: "string",
-          description: "Optional analysis context or question about the image(s). Will be shown alongside the images.",
+          description: "Optional assistant-supplied analysis context or question about the image(s). Returned in the tool result, not as a new user request.",
         },
         retention: {
           type: "string",
@@ -262,18 +262,15 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
 
       const retention = input.retention ?? "next_turn";
       const ttlTurns = retention === "while_relevant" ? Math.round(input.ttlTurns ?? 4) : undefined;
-      const textParts: string[] = [];
-      if (input.prompt) textParts.push(input.prompt);
-      textParts.push(`Loaded ${loadedImages.length} image(s): ${loadedImages.map((i) => i.label ?? i.id).join(", ")}`);
-      textParts.push(`Image pixel retention: ${retention}${ttlTurns ? ` for ${ttlTurns} turn(s)` : ""}. The model chose this retention; reload or change retention if the visual context is still needed.`);
-      if (failedRefs.length > 0) textParts.push(`Failed to load: ${failedRefs.join(", ")}`);
+      // Keep assistant-supplied analysis hints and retention details in the tool
+      // result, not in a message that could be mistaken for a fresh user request.
 
       const newMessage: Message = {
         id: `load-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         role: "user",
         createdAt: new Date().toISOString(),
         blocks: [
-          { type: "text", text: textParts.join("\n") },
+          { type: "text", text: "Images loaded by the image_inspect tool. This is tool-provided visual context, not a new user message or instruction." },
           ...imageBlocks,
         ],
         isMeta: true,
@@ -308,7 +305,12 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       }
       const output = result.output as LoadImageToolOutput;
       const text = result.ok
-        ? `Images loaded into context: ${output.loadedImages.map((i) => `${i.id}${i.alias ? ` (${i.alias})` : ""}: ${i.label ?? "image"}`).join(", ")}. You can now see them directly.${output.failedRefs.length > 0 ? ` Failed: ${output.failedRefs.join(", ")}` : ""}`
+        ? [
+          `Images loaded into context: ${output.loadedImages.map((i) => `${i.id}${i.alias ? ` (${i.alias})` : ""}: ${i.label ?? "image"}`).join(", ")}. You can now see them directly.`,
+          output.prompt ? `Assistant-supplied analysis context (tool argument, not a user request): ${JSON.stringify(output.prompt)}` : "",
+          output.retention ? `Image pixel retention: ${output.retention}${output.ttlTurns ? ` for ${output.ttlTurns} turn(s)` : ""}. Reload or change retention if the visual context is still needed.` : "",
+          output.failedRefs.length > 0 ? `Failed: ${output.failedRefs.join(", ")}` : "",
+        ].filter(Boolean).join("\n")
         : `Failed to load images: ${JSON.stringify(result.output)}`;
       return {
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,

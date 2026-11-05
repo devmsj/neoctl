@@ -493,6 +493,7 @@ interface WebSubscriber {
   response: ServerResponse;
   blocked: boolean;
   needsSync: boolean;
+  snapshotDeltaOffset?: number;
   needsRuntimeContext: boolean;
   pendingClientReload?: WebClientReloadPayload;
   pendingFastModeFallback?: { revision: number; sessionId?: string };
@@ -1191,7 +1192,7 @@ export class WebRepl {
       "X-Accel-Buffering": "no",
     });
     if (clientInfo) this.send(subscriber, "client.version", clientInfo);
-    this.send(subscriber, "sync", this.snapshot(true));
+    this.sendSubscriberSnapshot(subscriber, this.snapshot(true));
     this.publishRuntimeContext([subscriber]);
     reqKeepAlive(res);
     res.on("close", () => this.subscribers.delete(subscriber));
@@ -2865,7 +2866,7 @@ export class WebRepl {
       }
       if (subscriber.needsSync) {
         subscriber.needsSync = false;
-        this.send(subscriber, "sync", this.snapshot(false));
+        this.sendSubscriberSnapshot(subscriber, this.snapshot(false));
       }
       if (subscriber.pendingFastModeFallback) {
         const payload = subscriber.pendingFastModeFallback;
@@ -2931,7 +2932,8 @@ export class WebRepl {
   private flushDeltaOperations(): void {
     this.pendingDeltaTimer = undefined;
     if (this.pendingDeltaOperations.length === 0 && !this.pendingDeltaStatus) return;
-    const operations = compactLineOperations(this.pendingDeltaOperations);
+    const pending = this.pendingDeltaOperations;
+    const operations = compactLineOperations(pending);
     this.pendingDeltaOperations = [];
     this.pendingDeltaStatus = false;
     const payload: WebDeltaPayload = {
@@ -2940,7 +2942,12 @@ export class WebRepl {
       operations,
       status: this.timedStatus(),
     };
-    for (const subscriber of this.subscribers) this.send(subscriber, "delta", payload);
+    for (const subscriber of this.subscribers) {
+      const offset = subscriber.snapshotDeltaOffset ?? 0;
+      subscriber.snapshotDeltaOffset = undefined;
+      // Text appends are not idempotent: skip operations its own snapshot already contains.
+      this.send(subscriber, "delta", offset > 0 ? { ...payload, operations: compactLineOperations(pending.slice(offset)) } : payload);
+    }
   }
 
   private discardPendingDeltaOperations(): void {
@@ -2948,6 +2955,13 @@ export class WebRepl {
     this.pendingDeltaTimer = undefined;
     this.pendingDeltaOperations = [];
     this.pendingDeltaStatus = false;
+    for (const subscriber of this.subscribers) subscriber.snapshotDeltaOffset = undefined;
+  }
+
+  /** Snapshot for one subscriber; it already includes every currently queued delta operation. */
+  private sendSubscriberSnapshot(subscriber: WebSubscriber, snapshot: ReturnType<WebRepl["snapshot"]>): void {
+    subscriber.snapshotDeltaOffset = this.pendingDeltaOperations.length;
+    this.send(subscriber, "sync", snapshot);
   }
 
   private dropInactiveTerminalOutput(): void {

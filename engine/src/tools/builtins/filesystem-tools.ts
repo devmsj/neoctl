@@ -1,3 +1,4 @@
+import { readArchivedUserMessage } from "../../session/user-message-archive.js";
 import { executionFs as fs } from "../../execution/filesystem.js";
 import path from "node:path";
 import type { Tool, ToolResult, ToolUseContext } from "../tool.js";
@@ -59,6 +60,7 @@ export const readFileTool: Tool<ReadFileToolInput> = {
     return true;
   },
   async call(input, context) {
+    if (input.path.startsWith("neo://session/")) return readArchivedUserMessage(input, context);
     const root = workingDirectory(context);
     const target = resolveTarget(root, input.path);
     const stat = await fs.stat(target).catch(() => undefined);
@@ -129,7 +131,8 @@ export const listDirectoryTool: Tool<ListDirectoryToolInput> = {
     searchHint: "list directory entries and file counts",
     ignoreUnknownInputProperties: true,
   },
-  mapResult(result) {
+  mapResult(result, request) {
+    if (request.input && typeof request.input === "object" && typeof (request.input as { maxResultChars?: unknown }).maxResultChars === "number") return result.output;
     return shrinkDirectoryOutputForTransport(result.output, 26000);
   },
   validate(input) {

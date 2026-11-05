@@ -87,7 +87,7 @@ for (const mode of ["auto", "reactive", "manual", "queued"] as const) {
     await waitFor(() => summaries === 2 && !repl.snapshot().busy);
     assert.equal(ordinary, ordinaryBefore + 1);
     assert.equal(engine.getExecutionState()?.resumeCompaction, undefined);
-    assert.equal(engine.getHistoryMessages().filter(m => m.role === 'user' && !m.isMeta).length, userCount);
+    assert.equal(engine.getHistoryMessages().filter(m => m.role === 'user' && (!m.isMeta || m.metadata?.compactUserHistory === true)).length, userCount);
     assert.match(JSON.stringify(engine.getHistoryMessages()), /FRESH SUMMARY/);
     const stable = JSON.stringify(engine.getHistoryMessages());
     release.resolve(); await new Promise(r => setTimeout(r, 30));

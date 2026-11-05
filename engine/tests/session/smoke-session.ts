@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const sessionId = "smoke-session";
   const messages = createToolMessages();
 
-  const memory = new FileToolResultMemory({ sessionDir: path.join(root, sessionId), thresholdChars: 180, previewChars: 40 });
+  const memory = new FileToolResultMemory({ sessionDir: path.join(root, sessionId), thresholdChars: 400, previewChars: 40 });
   const first = await memory.applyBudget(messages);
   const persistedBlocks = first.messages.flatMap((message) =>
     message.blocks.filter((block) => block.type === "tool_result" && String(block.output).startsWith(PERSISTED_OUTPUT_TAG)),
@@ -234,7 +234,7 @@ function createToolMessages(): Message[] {
       id: "result-b",
       role: "tool_result",
       createdAt,
-      blocks: [{ type: "tool_result", toolUseId: "call_b", name: "beta", ok: true, output: "b".repeat(220) }],
+      blocks: [{ type: "tool_result", toolUseId: "call_b", name: "beta", ok: true, output: "b".repeat(1000) }],
     },
   ];
 }

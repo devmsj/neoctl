@@ -69,7 +69,7 @@ export class FileToolResultMemory implements ToolResultMemory {
     }
 
     const persisted = await this.persistToolResult(toolUseId, output, serialized);
-    const replacement = buildLargeToolResultMessage(persisted);
+    const replacement = buildLargeToolResultMessage(persisted, thresholdChars);
     this.state.seenIds.add(toolUseId);
     this.state.replacements.set(toolUseId, replacement);
     return {
@@ -111,7 +111,7 @@ export class FileToolResultMemory implements ToolResultMemory {
       for (const candidate of selected) {
         this.state.seenIds.add(candidate.toolUseId);
         const persisted = await this.persistToolResult(candidate.toolUseId, candidate.output, candidate.serialized);
-        const replacement = buildLargeToolResultMessage(persisted);
+        const replacement = buildLargeToolResultMessage(persisted, maxSerializedLength);
         this.state.replacements.set(candidate.toolUseId, replacement);
         replacementMap.set(candidate.toolUseId, replacement);
         records.push({ kind: "tool-result", toolUseId: candidate.toolUseId, replacement });
@@ -196,7 +196,7 @@ function collectCandidatesByGroup(messages: readonly Message[], skipToolNames: R
 
   messages.forEach((message, messageIndex) => {
     if (message.role === "assistant" || message.role === "user" || message.role === "system") flush();
-    if (message.role !== "tool_result") return;
+    if (message.role !== "tool_result" || message.metadata?.toolResultBudgetApplied === true) return;
 
     message.blocks.forEach((block, blockIndex) => {
       if (block.type !== "tool_result") return;
@@ -246,7 +246,7 @@ function replaceToolResultOutputs(messages: readonly Message[], replacementMap: 
     const blocks: MessageBlock[] = message.blocks.map((block) => {
       if (block.type !== "tool_result") return block;
       const replacement = replacementMap.get(block.toolUseId);
-      if (replacement === undefined) return block;
+      if (replacement === undefined || replacement === block.output) return block;
       changed = true;
       return { ...block, output: replacement };
     });
@@ -258,16 +258,33 @@ function isContentAlreadyPersisted(content: string): boolean {
   return content.startsWith(PERSISTED_OUTPUT_TAG);
 }
 
-export function buildLargeToolResultMessage(result: PersistedToolResult): string {
-  return [
-    PERSISTED_OUTPUT_TAG,
-    `Output too large (${result.originalSize} chars). Full output saved to: ${result.filepath}`,
-    "",
-    `Preview (first ${result.preview.length} chars):`,
-    result.preview,
-    result.hasMore ? "..." : "",
-    PERSISTED_OUTPUT_CLOSING_TAG,
-  ].filter((line) => line !== undefined).join("\n");
+/** Budget includes the persisted-path wrapper, not only the preview. */
+export function buildLargeToolResultMessage(result: PersistedToolResult, maxChars = DEFAULT_TOOL_RESULT_BUDGET_CHARS): string {
+  const header = `${PERSISTED_OUTPUT_TAG}\nOutput too large (${result.originalSize} chars). Full output saved to: ${result.filepath}\n`;
+  const footer = `\n${PERSISTED_OUTPUT_CLOSING_TAG}`;
+  if (header.length + footer.length > maxChars) {
+    // A tiny budget cannot fit a usable persisted reference. The file remains
+    // durable, but never claim that a clipped path is a complete reference.
+    return truncateToolText("[Tool result truncated; full output saved in session tool-results.]", maxChars);
+  }
+  let preview = result.preview;
+  for (;;) {
+    const label = `\nPreview (first ${preview.length} chars):\n`;
+    const suffix = result.hasMore || preview.length < result.preview.length ? "\n..." : "";
+    const available = maxChars - header.length - footer.length - label.length - suffix.length;
+    if (available < 1) return header + footer;
+    if (preview.length <= available) return header + label + preview + suffix + footer;
+    preview = truncateToolText(preview, available);
+  }
+}
+
+/** Strict UTF-16 character budget, without splitting a surrogate pair. */
+export function truncateToolText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars < 1) return "";
+  let end = maxChars - 1;
+  if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+  return text.slice(0, end) + "…";
 }
 
 function generatePreview(content: string, maxChars: number): { preview: string; hasMore: boolean } {

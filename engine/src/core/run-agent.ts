@@ -118,7 +118,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
       contextMessages = messages.map(cloneMessage);
       notifyContext();
     },
-    contextBudget: options.dependencies.contextBudget,
+    contextBudget: { ...options.dependencies.contextBudget, userMessageArchive: Boolean(childSession) },
     runtimeNow: options.dependencies.runtimeNow,
     canUseTool: options.dependencies.canUseTool,
     maxToolResultSerializedLength: options.dependencies.maxToolResultSerializedLength,

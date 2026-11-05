@@ -1,5 +1,5 @@
 import { DEFAULT_OPENAI_IMAGE_MODEL, imageValidationError } from "./builtins/image-capabilities.js";
-import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
+import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS, truncateToolText } from "../session/tool-result-memory.js";
 import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
 import { validateJsonSchema } from "./schema.js";
 import { redactWithRegistry } from "../secrets/secret-redaction.js";
@@ -70,9 +70,18 @@ export async function runToolUse(
       onProgress,
     });
 
-    const output = redactWithRegistry(contextWithToolUseId.secretRedactions, await processToolOutput(tool, request, result, contextWithToolUseId));
     const safeResult = { ...result, output: redactWithRegistry(contextWithToolUseId.secretRedactions, result.output), summary: redactWithRegistry(contextWithToolUseId.secretRedactions, result.summary) };
-    const resultMessage = tool.renderToolResultMessage?.(safeResult, request) ?? createToolResultMessage(request, safeResult.ok, output);
+    // Render first: custom image renderers need the structured result, but their
+    // final textual output must pass through the same budget/persistence path.
+    const rendered = tool.renderToolResultMessage?.(safeResult, request);
+    const resultMessage = rendered ?? createToolResultMessage(request, safeResult.ok,
+      tool.mapResult ? tool.mapResult(safeResult, request) : safeResult.output);
+    for (const block of resultMessage.blocks) {
+      if (block.type !== "tool_result") continue;
+      block.output = await processToolOutput(tool, request,
+        redactWithRegistry(contextWithToolUseId.secretRedactions, block.output), contextWithToolUseId);
+    }
+    resultMessage.metadata = { ...resultMessage.metadata, toolResultBudgetApplied: true };
     const normalizedResult = context.imageStore ? await context.imageStore.persistMessage(resultMessage) : resultMessage;
     updates.push({ message: normalizedResult, context: result.contextModifier?.(contextWithToolUseId) });
 
@@ -161,8 +170,7 @@ async function callTool<TInput>(
   return { ok: false, output: { error: `Tool ${tool.name} has no call implementation` } };
 }
 
-async function processToolOutput(tool: Tool, request: ToolUseRequest, result: ToolResult, context: ToolUseContext): Promise<unknown> {
-  const mapped = tool.mapResult ? tool.mapResult(result, request) : result.output;
+async function processToolOutput(tool: Tool, request: ToolUseRequest, mapped: unknown, context: ToolUseContext): Promise<unknown> {
   const resultBudget = resolveToolResultBudget(request.input, tool.metadata.maxResultSizeChars);
   if (context.toolResultMemory) {
     const processed = await context.toolResultMemory.processToolResult(
@@ -180,7 +188,10 @@ async function processToolOutput(tool: Tool, request: ToolUseRequest, result: To
   const serialized = typeof mapped === "string" ? mapped : JSON.stringify(mapped);
   if (serialized.length <= maxSize) return mapped;
 
-  return `[Tool result truncated by transport: original ${serialized.length} chars, showing first ${maxSize} chars${result.summary ? `, summary: ${result.summary}` : ""}]\n${serialized.slice(0, maxSize)}`;
+  const marker = `[Tool result truncated by transport: original ${serialized.length} chars; no persistent result store available.]\n`;
+  return marker.length < maxSize
+    ? marker + truncateToolText(serialized, maxSize - marker.length)
+    : truncateToolText("[Tool result truncated]", maxSize);
 }
 
 function resolveToolResultBudget(input: unknown, defaultBudget: number | undefined): number | undefined {

@@ -212,7 +212,7 @@ async function main(): Promise<void> {
     compacted.changed &&
     compactBoundary?.role === "system" &&
     reportedCompaction.messages.at(-1)?.metadata?.compactBoundary === true &&
-    reportedCompaction.messages.slice(0, -1).every((message) => message.role === "user" && message.isMeta !== true) &&
+    reportedCompaction.messages.slice(0, -1).every((message) => message.role === "user" && message.metadata?.compactPreservedUser === true) &&
     getMessagesAfterCompactBoundary(reportedCompaction.messages).length === reportedCompaction.messages.length &&
     JSON.stringify(compactBoundary).includes("Internal continuation state") &&
     !JSON.stringify(compactBoundary).includes("Conversation summary");
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     metaUser,
     imageUser,
   ];
-  const budgetCompacted = await compactor.manualCompact(budgetHistory, { keepRecentTokenBudget: 80, summaryMaxChars: 2000 });
+  const budgetCompacted = await compactor.manualCompact(budgetHistory, { keepRecentTokenBudget: 240, summaryMaxChars: 2000 });
   const budgetPreserved = budgetCompacted.messages.slice(0, -1);
   const budgetPreservedTokens = budgetPreserved.reduce((total, message) => total + estimateTextTokens(message.blocks.map((block) => {
     if (block.type === "text") return block.text;
@@ -242,14 +242,14 @@ async function main(): Promise<void> {
   }).join("\n")), 0);
   const budgetWindowOk =
     budgetCompacted.messages.at(-1)?.metadata?.compactBoundary === true &&
-    budgetPreserved.every((message) => message.role === "user" && message.isMeta !== true) &&
+    budgetPreserved.every((message) => message.role === "user" && message.metadata?.compactPreservedUser === true) &&
     budgetPreserved[0]?.id === oversizedUser.id &&
     budgetPreserved.at(-1)?.id === imageUser.id &&
     budgetPreserved.some((message) => message.blocks.some((block) => block.type === "image" && block.label === "latest-image")) &&
-    budgetPreserved.some((message) => message.blocks.some((block) => block.type === "text" && block.text.includes("truncated for compaction token budget"))) &&
+    budgetPreserved.some((message) => message.blocks.some((block) => block.type === "text" && block.text.includes("excerpt truncated"))) &&
     budgetCompacted.summary?.includes("assistant content must not survive") === true &&
     budgetCompacted.summary.includes("tool content must not survive") &&
-    budgetPreservedTokens <= 80 &&
+    budgetPreservedTokens <= 240 &&
     !JSON.stringify(budgetPreserved).includes("assistant content must not survive") &&
     !JSON.stringify(budgetPreserved).includes("tool content must not survive") &&
     !JSON.stringify(budgetPreserved).includes("runtime metadata");
@@ -262,8 +262,8 @@ async function main(): Promise<void> {
   const defaultBudgetTokens = defaultBudgetCompacted.messages.slice(0, -1)
     .reduce((total, message) => total + estimateTextTokens(message.blocks.map((block) => block.type === "text" ? block.text : "").join("\n")), 0);
   const defaultBudgetOk =
-    defaultBudgetTokens <= 20_000 &&
-    defaultBudgetTokens >= 19_500 &&
+    defaultBudgetTokens <= 2_000 &&
+    defaultBudgetTokens >= 1_800 &&
     defaultBudgetCompacted.messages.slice(0, -1).every((message) => message.role === "user") &&
     defaultBudgetCompacted.messages.at(-1)?.metadata?.compactBoundary === true;
 
@@ -300,7 +300,7 @@ async function main(): Promise<void> {
   const consecutiveCompactOk =
     secondCompacted.messages.at(-1)?.metadata?.compactBoundary === true &&
     secondCompacted.messages.filter((message) => message.metadata?.compactBoundary === true).length === 1 &&
-    secondCompacted.messages.slice(0, -1).every((message) => message.role === "user" && message.isMeta !== true) &&
+    secondCompacted.messages.slice(0, -1).every((message) => message.role === "user" && message.metadata?.compactPreservedUser === true) &&
     getMessagesAfterCompactBoundary(secondCompacted.messages).length === secondCompacted.messages.length &&
     secondCompacted.summary?.includes("newest real request") === true;
 

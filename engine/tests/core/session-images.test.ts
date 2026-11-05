@@ -17,6 +17,8 @@ import { InMemoryAppState } from "../../src/app/app-state.js";
 import type { ToolUseContext } from "../../src/tools/tool.js";
 import { createTextMessage, type Message, type ImageMessageBlock } from "../../src/types/messages.js";
 import type { ModelStreamEvent } from "../../src/model/model-gateway.js";
+import { buildAnthropicRequest } from "../../src/model/anthropic-mapper.js";
+import { buildResponsesRequest } from "../../src/model/openai-responses-mapper.js";
 
 const png = pngPixel(0).toString("base64");
 const other = pngPixel(160).toString("base64");
@@ -59,6 +61,52 @@ test("inspect returns reusable identity; repeated file reads reuse it and change
   const listing = await tool.call!({ mode: "list", imageRefs: [], offset: 1, limit: 1 }, ctx, {});
   assert.deepEqual((listing.output as { images: { id: string }[] }).images.map(item => item.id), [second.id]);
   assert.equal((listing.output as { total: number }).total, 2);
+});
+
+test("inspection analysis hints stay in tool results; pixel injection has explicit provenance in both protocols", async t => {
+  const dir = await temporary(t);
+  const file = path.join(dir, "source.png");
+  await fs.writeFile(file, Buffer.from(png, "base64"));
+  const store = await SessionImageStore.open(dir);
+  const tool = createLoadImageTool();
+  const prompt = "ASSISTANT_ANALYSIS_HINT";
+  const input = { imageRefs: [file, "missing-ref"], prompt, retention: "while_relevant" as const, ttlTurns: 3 };
+  const result = await tool.call!(input, context(store), {});
+  assert.equal(result.ok, true);
+  assert.equal((result.output as LoadImageToolOutput).prompt, prompt);
+  const injected = result.newMessages![0]!;
+  assert.equal(injected.isMeta, true);
+  assert.equal(injected.metadata?.imageRetention, "while_relevant");
+  assert.equal(injected.metadata?.imageTtlTurns, 3);
+  const pixel = injected.blocks.find(b => b.type === "image") as ImageMessageBlock;
+  assert.equal(resolveContextImage(context(store), pixel.imageId!).data, png);
+  const injectedText = injected.blocks.filter(b => b.type === "text").map(b => b.text).join("\n");
+  assert.match(injectedText, /tool-provided visual context, not a new user message/);
+  assert.doesNotMatch(injectedText, /ASSISTANT_ANALYSIS_HINT|while_relevant|missing-ref/);
+  const call = { id: "inspect-call", name: "image_inspect", input };
+  const rendered = tool.renderToolResultMessage!(result, call)!;
+  assert.match(JSON.stringify(rendered), /Assistant-supplied analysis context/);
+  assert.match(JSON.stringify(rendered), /ASSISTANT_ANALYSIS_HINT|while_relevant/);
+  assert.match(JSON.stringify(rendered), /missing-ref/);
+  const assistant: Message = { ...createTextMessage("assistant", ""), blocks: [{ type: "tool_use", ...call }] };
+  const messages = [createTextMessage("user", "Inspect the image"), assistant, rendered, injected];
+  const request = { messages, tools: [], stream: true };
+  const openai = buildResponsesRequest(request, { model: "test-openai" });
+  const items = openai.input as Array<{ type?: string; role?: string; output?: string; content?: Array<{ type: string; text?: string }> }>;
+  assert.match(items.find(i => i.type === "function_call_output")!.output!, /ASSISTANT_ANALYSIS_HINT/);
+  assert.doesNotMatch(JSON.stringify(items.filter(i => i.role === "user")), /ASSISTANT_ANALYSIS_HINT/);
+  assert.equal(items.at(-1)!.content!.filter(b => b.type === "input_image").length, 1);
+  const anthropic = buildAnthropicRequest(request, { model: "test-anthropic" });
+  const turns = anthropic.messages as Array<{ role: string; content: Array<{ type: string; text?: string; content?: string }> }>;
+  const last = turns.at(-1)!;
+  assert.equal(last.role, "user");
+  assert.equal(last.content[0]!.type, "tool_result");
+  assert.match(last.content[0]!.content!, /ASSISTANT_ANALYSIS_HINT/);
+  assert.doesNotMatch(JSON.stringify(last.content.filter(b => b.type === "text")), /ASSISTANT_ANALYSIS_HINT/);
+  assert.equal(last.content.filter(b => b.type === "image").length, 1);
+  const expired = applyImageRetention([...messages, ...Array.from({ length: 4 }, () => createTextMessage("assistant", "later"))]);
+  assert.equal(expired.flatMap(m => m.blocks).some(b => b.type === "image"), false);
+  assert.equal(resolveContextImage(context(store), pixel.imageId!).data, png);
 });
 
 test("seven successive compactions and restart retain exact source bytes independently of message window", async t => {

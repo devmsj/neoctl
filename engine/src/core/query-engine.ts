@@ -854,7 +854,7 @@ export class QueryEngine {
       };
       return abortableWork(async () => {
         if (kind !== "compact") started(kind === "manualCompact" ? "manualcompact" : "reactive_compact");
-        const options = { ...budget, abortSignal: signal, onCompactionStart: started };
+        const options = { ...budget, userMessageArchive: Boolean(this.sessionStore), abortSignal: signal, onCompactionStart: started };
         return kind === "reactiveCompact" && source.reactiveCompact ? source.reactiveCompact(messages, error!, options)
           : kind === "manualCompact" && source.manualCompact ? source.manualCompact(messages, options)
           : source.compact(messages, options);
