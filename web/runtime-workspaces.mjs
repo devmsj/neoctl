@@ -249,6 +249,8 @@ export function createWorkspaceRuntimeManager(options) {
       this.syncScheduled = true;
       setImmediate(() => {
         this.syncScheduled = false;
+        // The snapshot already contains every queued line delta; replaying them would duplicate text.
+        this.discardPendingDeltaOperations();
         const payload = this.snapshot(false);
         for (const subscriber of this.subscribers) {
           const res = subscriber.response;

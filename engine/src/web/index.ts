@@ -1163,6 +1163,7 @@ export class WebRepl {
   private readonly settingsListener = () => {
     if (this.deletingSession) return;
     this.runtime.engine.refreshModelConfigurationIfIdle();
+    this.discardPendingDeltaOperations();
     for (const subscriber of this.subscribers) this.send(subscriber, "sync", this.snapshot());
   };
   constructor(private runtime: WebRuntime, private readonly demoOptions: { wait?: DemoWait } = {}) {

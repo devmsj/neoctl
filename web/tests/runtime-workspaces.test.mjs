@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -149,6 +150,46 @@ test('workspace slash input is literal for idle, queued, immediate and continuat
  repl.busy=false;const started=[];repl.startRun=(text)=>started.push(text);await repl.submitImmediately('/reset');assert.deepEqual(started,['/reset'])
  repl.runControl=()=>({canResume:true});let continuation;repl.continueRun=(text)=>{continuation=text;return{ok:true}};await repl.submit('/help');assert.equal(continuation,'/help')
 })
+
+test('deferred workspace sync does not replay line deltas already in its snapshot', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'neo-web-sync-delta-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const tools = new ToolRegistry(), taskStore = new TaskStore();
+  const engine = new QueryEngine({ modelGateway: { async *stream() { throw new Error('must not call model'); } }, tools, cwd: root, session: { rootDir: path.join(root, 'sessions'), resume: false } });
+  await engine.initialize();
+  taskStore.bindSession(engine.snapshot().session.sessionDir);
+  const runtime = { engine, tools, taskStore, execProcessManager: new ExecProcessManager(), usage: new SessionUsageTracker(), initialMetrics: await engine.contextMetrics(), envPath: path.join(root, '.env') };
+  const repl = createWorkspaceRuntimeManager({ projectRoot: root, registryFile: path.join(root, 'registry.json') }).createRepl(runtime);
+  repl.publishRuntimeContext = () => undefined;
+  const frames = [];
+  const response = Object.assign(new EventEmitter(), {
+    destroyed: false, writableEnded: false, writeHead() {},
+    write(frame) {
+      const event = /^event: (.+)$/m.exec(frame)?.[1], data = /^data: (.+)$/m.exec(frame)?.[1];
+      if (event && data) frames.push({ event, data: JSON.parse(data) });
+      return true;
+    },
+  });
+  repl.subscribe(response);
+  t.after(() => { clearTimeout(repl.pendingDeltaTimer); response.emit('close'); });
+  const text = 'Ciallo, how can I help?';
+  // A buffered provider can deliver the whole reply inside one 25 ms delta window.
+  repl.handleEvent({ type: 'assistant.delta', text });
+  repl.handleEvent({ type: 'message', message: { id: 'a1', role: 'assistant', createdAt: new Date().toISOString(), blocks: [{ type: 'text', text }] } });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  // Browser semantics: sync replaces rows, line.append ignores known IDs, text appends concatenate.
+  const lines = new Map();
+  for (const { event, data } of frames) {
+    if (event === 'sync') { lines.clear(); for (const line of data.lines || []) lines.set(line.id, { ...line }); }
+    if (event !== 'delta') continue;
+    for (const op of data.operations) {
+      if (op.type === 'line.append' && !lines.has(op.line.id)) lines.set(op.line.id, { ...op.line });
+      if (op.type === 'line.text.append') lines.get(op.id).text += op.text;
+      if (op.type === 'line.patch') Object.assign(lines.get(op.id), op.patch);
+    }
+  }
+  assert.deepEqual([...lines.values()].filter(line => line.kind === 'assistant').map(line => line.text), [text]);
+});
 
 test('workspace locations expose human-friendly roots', async () => {
   const locations = await discoverWorkspaceLocations();

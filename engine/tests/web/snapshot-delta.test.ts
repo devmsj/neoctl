@@ -37,6 +37,7 @@ function fixture(t: TestContext) {
       isFastMode: () => false,
       getAppPrompt: () => ({ hasActivePrompt: false }),
       onSessionTitleChange: () => () => undefined,
+      refreshModelConfigurationIfIdle: () => undefined,
     },
     taskStore: { subscribe: () => () => undefined, list: () => [] },
     execProcessManager: { subscribe: () => () => undefined, subscribeOutput: () => () => undefined, list: () => [] },
@@ -145,6 +146,18 @@ test("full sync discards pending offsets so the next batch is delivered", (t) =>
   f.append("new");
   f.flush();
   assert.deepEqual(delta(client.frames), [{ type: "line.text.append", id: 1, text: "new" }]);
+});
+
+test("model settings sync discards queued appends already in its snapshot", (t) => {
+  const f = fixture(t);
+  const client = f.connect();
+  f.append("queued");
+  (f.internal as unknown as { settingsListener(): void }).settingsListener();
+  assert.equal(client.frames.at(-1)!.event, "sync");
+  assert.equal(client.frames.at(-1)!.data.lines![0]!.text, "queued");
+  f.append(" next");
+  f.flush();
+  assert.deepEqual(delta(client.frames), [{ type: "line.text.append", id: 1, text: " next" }]);
 });
 
 test("snapshot offset counts all operation types, not only text appends", (t) => {
