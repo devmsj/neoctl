@@ -1,0 +1,43 @@
+/* ---- small pieces used by the interactive pages ---- */
+[hidden] { display: none !important; }
+.shell { transition: grid-template-columns var(--d4) var(--ease-out); }
+.info { overflow: hidden; transition: opacity var(--d2); }
+.shell.info-off { grid-template-columns: var(--appearance-sidebar-width, 264px) minmax(0, 1fr) 0px; }
+.shell.info-off .info { opacity: 0; pointer-events: none; }
+.sel-value .ph { color: var(--chrome-faint); }
+.label-line { min-height: 18px; }
+.label-line .mini-btn { width: 22px; height: 22px; margin: -3px 0; }
+:is(.card, .look-bar, .field):has(.sel.open) { position: relative; z-index: 20; }
+.label-line .mini-btn .ic { width: 13px; height: 13px; }
+.cap { display: inline-grid; place-items: center; }
+.card-body.one { grid-template-columns: minmax(0, 1fr); padding-top: 16px; }
+.tgl-inline { cursor: pointer; font-size: calc(12px * var(--s)); }
+.row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.color-row { display: flex; gap: 8px; }
+.swatch { width: 40px; height: 36px; flex: none; padding: 3px; border: var(--bw) solid var(--edge); border-radius: var(--r); background: var(--well); cursor: pointer; }
+.swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.swatch::-webkit-color-swatch { border: 0; border-radius: max(0px, calc(var(--r) - 3px)); }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 46px 0 50px; color: var(--chrome-faint); font-size: calc(12px * var(--s)); }
+.empty .ic { width: 22px; height: 22px; color: var(--chrome-accent); opacity: .7; }
+.shake { animation: shake 360ms var(--ease-std); border-color: var(--chrome-danger) !important; }
+@keyframes shake { 20% { translate: -5px 0; } 40% { translate: 4px 0; } 60% { translate: -3px 0; } 80% { translate: 2px 0; } }
+.sess-pad > .cl > div { padding-bottom: 10px; }
+.fresh-in .sess-card { animation: fresh 1.4s ease both, rise var(--d4) var(--ease-out) both; }
+.api-list { margin: 0 -6px; }
+.lib-row { padding-left: 10px; }
+.lib-row .cap { margin-right: 4px; }
+.lib-search { max-width: none; margin-bottom: 10px; }
+.tests { padding-top: 4px; padding-bottom: 12px; }
+.test-row { transition: opacity var(--d2); }
+.test-row.off { opacity: .42; }
+.btn[disabled] { opacity: .6; pointer-events: none; }
+.pcard .pcap .tag { margin-left: 2px; }
+.look-bar .btn .ic[data-i='edit'] { width: 14px; height: 14px; }
+.legacy-entry span .ic { width: 14px; height: 14px; }
+@media (max-width: 860px) {
+  .proto-bar { overflow-x: auto; }
+  .shell { grid-template-columns: 0 minmax(0, 1fr) !important; }
+  .sidebar { visibility: hidden; }
+  .scroller { padding: 48px 18px 60px; }
+  .card-body, .row2 { grid-template-columns: minmax(0, 1fr); }
+}

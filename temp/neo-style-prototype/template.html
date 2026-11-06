@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-style="new" data-motion="full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>neo 外壳风格原型</title>
+<style>
+/*@@CSS@@*/
+</style>
+</head>
+<body>
+<header class="proto-bar" aria-label="原型控制">
+  <strong class="pb-title">外壳风格</strong>
+  <div class="pseg" id="pStyle" role="group" aria-label="对比"><span class="seg-ind"></span><button type="button" data-v="new" aria-pressed="true">新方向</button><button type="button" data-v="legacy" aria-pressed="false">现状</button></div>
+  <label class="pb-f"><span>方案</span><select id="pPreset"></select></label>
+  <button type="button" class="pb-btn" id="pMode" aria-label="日夜切换"></button>
+  <label class="pb-f"><span>圆角</span><input type="range" id="pRadius" min="0" max="20" step="1"><output id="oRadius"></output></label>
+  <label class="pb-f"><span>边框</span><input type="range" id="pBorder" min="0" max="2" step="0.5"><output id="oBorder"></output></label>
+  <label class="pb-f" id="fTrans"><span>透明</span><input type="range" id="pTrans" min="0" max="100" step="1"><output id="oTrans"></output></label>
+  <label class="pb-f pb-chk"><input type="checkbox" id="pMotion"><span>减少动效</span></label>
+</header>
+<div class="stage" id="stage">
+  <div class="shell" id="shell">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main" id="main"><div class="scroller" id="scroller"><div class="view" id="view"></div></div></main>
+    <aside class="info" id="info"></aside>
+    <div class="winbar" id="winbar"></div>
+    <div class="core-version">内核版本 0.2.65</div>
+  </div>
+</div>
+<div class="layer" id="layer"></div>
+<div class="toast-stack" id="toasts" aria-live="polite"></div>
+<div class="tip" id="tip" role="tooltip"></div>
+<script type="module">
+/*@@SOURCE@@*/
+</script>
+</body>
+</html>
