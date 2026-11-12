@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { recordUserArchiveAppend } from "./user-message-archive.js";
 import { transcriptLines, reverseTranscriptLines, readResumeCache, writeResumeCache, transcriptStamp } from "./transcript-reader.js";
 import { readTranscriptSummary, forgetTranscriptSummary } from "./session-summary.js";
 import { isExecutionState, type ExecutionState } from "../core/execution-state.js";
@@ -595,9 +596,11 @@ export class SessionStore {
     checkSessionPaths(this.sessionDir);
     let descriptor: number | undefined;
     let writtenStat: fs.Stats | undefined;
+    let beforeStat: fs.Stats | undefined;
     try {
       descriptor = fs.openSync(this.transcriptPath, "a");
       const stat = fs.fstatSync(descriptor);
+      beforeStat = stat;
       if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session transcript");
       if (this.cacheSourceStamp ? transcriptStamp(stat) !== this.cacheSourceStamp : stat.size !== 0) this.cacheInvalid = true;
       fs.writeFileSync(descriptor, text, "utf8");
@@ -625,6 +628,7 @@ export class SessionStore {
           const closed = fs.statSync(this.transcriptPath);
           if (!writtenStat || closed.size !== writtenStat.size || closed.ino !== writtenStat.ino || (process.platform !== "win32" && closed.dev !== writtenStat.dev)) this.cacheInvalid = true;
           this.cacheSourceStamp = transcriptStamp(closed);
+          if (beforeStat && writtenStat) recordUserArchiveAppend(this.transcriptPath, entry, beforeStat, closed, Buffer.byteLength(text));
         }
         catch (error) { this.writeFailed = true; throw error; }
       }
