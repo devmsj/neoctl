@@ -80,6 +80,7 @@ export interface QueryEngineOptions {
     rootDir?: string;
     resume?: boolean;
     toolResultThresholdChars?: number;
+    lazyDisplay?: boolean;
   };
 }
 
@@ -484,8 +485,22 @@ export class QueryEngine {
         },
         queryOptions,
       );
+      const settledMessages = new Map<string, Message>();
       for await (const event of stream) {
+        // Commit each settled tool before publishing its available event. A later
+        // tool/abort must not erase an already observable completed result.
+        if (event.type === "tool.result.available") {
+          for (const original of event.messages) {
+            if (settledMessages.has(original.id)) continue;
+            const message = await this.persistMessageImages(original);
+            this.sessionStore?.recordMessage(message);
+            this.history.push(message);
+            settledMessages.set(message.id, message);
+          }
+        }
         if (event.type === "message") {
+          const settled = settledMessages.get(event.message.id);
+          if (settled) { settledMessages.delete(event.message.id); yield { ...event, message: settled }; continue; }
           const message = await this.persistMessageImages(event.message);
           this.history.push(message);
           this.sessionStore?.recordMessage(message);
@@ -824,12 +839,27 @@ export class QueryEngine {
 
   /** Read-only live snapshots from the core monotonic clock, independent of subscribers. */
   getTimingRecords(): TimingRecord[] {
-    const records = new Map(this.timingRecords);
+    const records = new Map(this.options.session?.lazyDisplay ? this.sessionStore?.getTimings().map(r => [r.id, r] as const) : this.timingRecords);
+    for (const record of this.timingRecords.values()) records.set(record.id, record);
     if (this.queryTiming) {
       for (const record of [this.queryTiming.snapshot(), ...this.queryTiming.toolSnapshots()]) records.set(record.id, record);
     }
     return [...records.values()].map(record => ({ ...record }));
   }
+
+  getRegisteredImageBlock(imageId: string): Extract<MessageBlock, { type: "image" }> | undefined {
+    const entry = this.imageStore?.snapshot().images.find(image => image.imageId === imageId);
+    if (!entry?.storagePath) return undefined;
+    return { type: "image", data: "", imageId, mimeType: entry.mimeType,
+      storage: { path: entry.storagePath, format: entry.storageFormat ?? "base64", contentHash: entry.contentHash } };
+  }
+
+  getDisplayPage(before?: number, limit?: number) { return this.sessionStore?.getDisplayPage(before, limit); }
+  getDisplayCount(): number { return this.sessionStore?.getDisplayCount() ?? this.history.length + this.displayOnlyMessages.length; }
+  getDemoMode(): string | undefined {
+    return this.sessionStore ? this.sessionStore.getDemoMode() : this.displayOnlyMessages.find(m => typeof m.metadata?.demoMode === "string")?.metadata?.demoMode as string | undefined;
+  }
+  getLastCompactOffset(): number { return this.sessionStore?.getLastCompactOffset() ?? -1; }
 
   getDisplayEntries(): SessionDisplayEntry[] {
     return this.sessionStore?.getDisplayEntries() ?? [...this.history, ...this.displayOnlyMessages].map((message) => ({ type: "message" as const, message: cloneMessage(message) }));
@@ -1000,6 +1030,7 @@ export class QueryEngine {
       rootDir: this.options.session.rootDir,
       resume: options.resume,
       toolResultThresholdChars: this.options.session.toolResultThresholdChars,
+      lazyDisplay: this.options.session.lazyDisplay,
     });
     this.modelSelectionCleared = this.modelSelectionCleared || this.sessionStore.getModelSelectionCleared();
     if (this.modelSelectionCleared) { this.currentModel = undefined; this.sessionStore.recordModelSelectionCleared(true); }
@@ -1019,7 +1050,7 @@ export class QueryEngine {
       ?? normalizePositiveInteger(this.options.contextWindowTokensOverride);
     this.queryTiming = undefined;
     this.timingRecords.clear();
-    for (const record of this.sessionStore.getTimings()) this.timingRecords.set(record.id, record);
+    if (!this.options.session.lazyDisplay) for (const record of this.sessionStore.getTimings()) this.timingRecords.set(record.id, record);
     this.notifySessionTitleChange(this.sessionStore.snapshot());
   }
 

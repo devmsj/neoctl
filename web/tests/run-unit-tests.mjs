@@ -55,6 +55,7 @@ const files = [
   'tool-activity.test.mjs',
   'terminal-ansi.test.mjs',
   'transcript-follow.test.mjs',
+  'transcript-history.test.mjs',
   'transcript-lookup.test.mjs',
   'model-tests.test.mjs',
   'upload-progress.test.mjs',

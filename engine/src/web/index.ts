@@ -298,6 +298,7 @@ interface UiLine {
   files?: DisplayFileAttachment[];
   connectPreviousTool?: boolean;
   id: number;
+  historyOffset?: number;
   kind: "system" | "user" | "assistant" | "thinking" | "tool" | "error" | "meta";
   text: string;
   messageId?: string;
@@ -651,6 +652,7 @@ export async function createWebRuntime(options: CreateWebRuntimeOptions = {}): P
     onCwdTransitionConsumed: options.onCwdTransitionConsumed,
     session: {
       enabled: process.env.AGENT_SESSION_TRANSCRIPT !== "0",
+      lazyDisplay: true,
       sessionId: options.sessionId ?? process.env.AGENT_SESSION_ID,
       rootDir: options.sessionRootDir ?? process.env.AGENT_SESSION_DIR,
       resume: options.resume ?? parseResumeFlag(process.env.AGENT_SESSION_RESUME),
@@ -1076,6 +1078,8 @@ export class WebRepl {
   private activeAbortController: AbortController | undefined;
   private interruptArmed = false;
   private lines: UiLine[];
+  private readonly historyMessages = new Map<string, Message>();
+  private historyPage?: { before: number; hasMore: boolean; epoch: string };
   private status: UiStatus;
   private busy = false;
   private compactingSession?: QueryEngine;
@@ -1103,7 +1107,7 @@ export class WebRepl {
     const cached = this.demoStatus.get(engine);
     if (cached?.key === key) return cached.active || this.demoSessions.has(engine);
     if (cached) this.demoSessions.delete(engine);
-    const active = engine.getDisplayEntries().some(entry => entry.type === "message" && entry.message.metadata?.demoMode === DEMO_MARKER);
+    const active = engine.getDemoMode ? engine.getDemoMode() === DEMO_MARKER : engine.getDisplayEntries().some(entry => entry.type === "message" && entry.message.metadata?.demoMode === DEMO_MARKER);
     this.demoStatus.set(engine, { key, active });
     if (active) this.demoSessions.set(engine, null);
     return active;
@@ -1113,7 +1117,7 @@ export class WebRepl {
     const engine = this.runtime.engine;
     if (!expectedSessionId || expectedSessionId !== engine.snapshot().session?.sessionId) return actionFailure("SESSION_MISMATCH", "会话已切换");
     if (this.demoStarting || this.isDemo() || this.busy || this.foregroundRun || this.stoppingRun || this.queuedInput !== undefined
-      || this.backgroundTaskCount || engine.getDisplayEntries().length || this.lines.some(line => line.kind !== "system")) {
+      || this.backgroundTaskCount || (engine.getDisplayCount?.() ?? engine.getDisplayEntries().length) || this.lines.some(line => line.kind !== "system")) {
       return actionFailure("DEMO_REQUIRES_EMPTY_SESSION", "仅空闲的空会话可以进入演示模式");
     }
     // Reserve synchronously before any await: double clicks and concurrent submits cannot start a second run.
@@ -1169,7 +1173,7 @@ export class WebRepl {
   constructor(private runtime: WebRuntime, private readonly demoOptions: { wait?: DemoWait } = {}) {
     observeModelSettings(this.settingsListener);
     const lineId = { current: 0 };
-    this.lines = initialLines(runtime, lineId);
+    this.lines = this.initialHistory(runtime, lineId);
     this.lineId = lineId.current;
     this.status = initialStatus(runtime);
     runtime.taskStore.subscribe(() => {
@@ -1181,6 +1185,35 @@ export class WebRepl {
     });
     runtime.execProcessManager.subscribeOutput((delta) => this.queueTerminalOutput(delta));
     runtime.engine.onSessionTitleChange(() => this.broadcastSync());
+  }
+
+  private rememberHistory(page: import("../session/session-store.js").SessionDisplayPage): void {
+    for (const entry of page.entries) if (entry.type === "message") {
+      this.historyMessages.delete(entry.message.id);
+      this.historyMessages.set(entry.message.id, entry.message);
+    }
+    while (this.historyMessages.size > 1000) this.historyMessages.delete(this.historyMessages.keys().next().value!);
+  }
+
+  private initialHistory(runtime: WebRuntime, lineId: { current: number }): UiLine[] {
+    this.historyMessages.clear();
+    const page = runtime.engine.getDisplayPage?.();
+    this.historyPage = page ? { before: page.before, hasMore: page.hasMore, epoch: page.epoch } : undefined;
+    if (!page) return initialLines(runtime, lineId);
+    this.rememberHistory(page);
+    const lines = restoredHistoryLines(runtime, page).map((line, i) => ({ ...line, id: i + 1 }));
+    if (runtime.envNotice) lines.unshift({ id: 0, kind: "system", text: runtime.envNotice, title: "Config" });
+    lineId.current = lines.length;
+    return lines;
+  }
+
+  history(before: number, epoch: string) {
+    if (!this.historyPage || epoch !== this.historyPage.epoch) throw new Error("History changed; refresh session");
+    const page = this.runtime.engine.getDisplayPage(before);
+    if (!page || page.epoch !== epoch) throw new Error("History changed; refresh session");
+    this.rememberHistory(page);
+    const lines = restoredHistoryLines(this.runtime, page).map((line, i) => ({ ...line, id: `history:${before}:${i}` }));
+    return { sessionId: this.currentSessionId(), lines, before: page.before, hasMore: page.hasMore, epoch };
   }
 
   subscribe(res: ServerResponse, clientInfo?: WebClientInfoPayload): void {
@@ -1259,6 +1292,7 @@ export class WebRepl {
       pendingSessionSettings.reasoning = engineSnapshot.reasoning;
     }
     return {
+      history: this.historyPage,
       lines: this.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
       status: this.timedStatus(),
       busy: this.runControl().canResume ? false : this.busy,
@@ -1627,7 +1661,7 @@ export class WebRepl {
     this.status = initialStatus(this.runtime, metrics);
     const lineId = { current: 0 };
     this.previousTurnToolId = undefined;
-    this.lines = initialLines(this.runtime, lineId);
+    this.lines = this.initialHistory(this.runtime, lineId);
     this.lineId = lineId.current;
     this.assistantLineId = undefined;
     this.thinkingLineId = undefined;
@@ -1727,6 +1761,8 @@ export class WebRepl {
   }
 
   fileAttachment(messageId: string, index: number): DisplayFileAttachment | undefined {
+    const cached = this.historyMessages.get(messageId);
+    if (cached) return messageFileAttachments(cached)[index];
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type === "message" && entry.message.id === messageId) return messageFileAttachments(entry.message)[index];
     }
@@ -1735,6 +1771,8 @@ export class WebRepl {
 
   imagePayload(messageId: string, blockIndex: number): { body: Buffer; mimeType: string } | undefined {
     if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
+    const cached = this.historyMessages.get(messageId)?.blocks[blockIndex];
+    if (cached?.type === "image") return imagePayloadForBlock(cached);
     let block: Extract<MessageBlock, { type: "image" }> | undefined;
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type !== "message" || entry.message.id !== messageId) continue;
@@ -1747,6 +1785,10 @@ export class WebRepl {
 
   imagePayloadById(imageId: string): { body: Buffer; mimeType: string } | undefined {
     if (!imageId) return undefined;
+    if (this.runtime.engine.getRegisteredImageBlock) {
+      const block = this.runtime.engine.getRegisteredImageBlock(imageId);
+      if (block) return imagePayloadForBlock(block);
+    }
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type !== "message") continue;
       const block = entry.message.blocks.find((candidate): candidate is Extract<MessageBlock, { type: "image" }> => candidate.type === "image" && candidate.imageId === imageId);
@@ -2427,6 +2469,14 @@ export class WebRepl {
   }
 
   private handleEvent(event: AgentEvent): void {
+    if (event.type === "retrying" && event.resetOutput) {
+      const drafts = new Set([this.assistantLineId, this.thinkingLineId, this.finalizedThinkingLineId, ...this.liveToolLineIds.values()]);
+      this.lines = this.lines.filter(line => !drafts.has(line.id));
+      this.assistantLineId = undefined;
+      this.thinkingLineId = undefined;
+      this.finalizedThinkingLineId = undefined;
+      this.liveToolLineIds.clear();
+    }
     // Model lifecycle defines membership only. The frontend owns the fixed
     // two-second playback and must not be interrupted by the next request.
     if (event.type === "state" && event.phase === "calling_model") this.previousTurnToolId = undefined;
@@ -2762,7 +2812,7 @@ export class WebRepl {
       let attachedDisplay = false;
       for await (const event of stream) {
         if (!attachedDisplay && attachments.length && !continuationOnly && this.runtime.engine === engine) {
-          const stored = [...engine.getDisplayEntries()].reverse().find(entry => entry.type === "message" && entry.message.role === "user" && !entry.message.isMeta);
+          const stored = [...(engine.getDisplayPage?.()?.entries ?? engine.getDisplayEntries())].reverse().find(entry => entry.type === "message" && entry.message.role === "user" && !entry.message.isMeta);
           const optimistic = this.lines.find(line => line.messageId === optimisticMessageId);
           if (stored?.type === "message" && optimistic) {
             this.replaceLine(optimistic.id, { messageId: stored.message.id, files: messageFileAttachments(stored.message) });
@@ -3081,6 +3131,14 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const image = repl.queuedImage(queuedImageMatch[1]!);
       return image ? sendImage(res, image, req) : sendJson(res, { error: "图片不可用" }, 404);
     }
+    if (req.method === "GET" && url.pathname === "/api/history") {
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        if (url.searchParams.get("sessionId") !== repl.currentSessionId() || !url.searchParams.has("before")) throw new Error("History session changed; refresh session");
+        return sendJson(res, repl.history(Number(url.searchParams.get("before")), url.searchParams.get("epoch") ?? ""));
+      }
+      catch (error) { return sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 409); }
+    }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     const workspaceRepl = repl as WebRepl & {
@@ -3384,10 +3442,12 @@ export function restoreWebHistoryLines(runtime: Pick<WebRuntime, "engine">): Arr
   return restoredHistoryLines(runtime).map((line) => ({ ...line }));
 }
 
-function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine, "id">[] {
+function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">, page?: import("../session/session-store.js").SessionDisplayPage): Omit<UiLine, "id">[] {
   const lines: Omit<UiLine, "id">[] = [];
   const historyToolLineIndexes = new Map<string, number>();
+  let historyOffset: number | undefined;
   const append = (line: Omit<UiLine, "id">) => {
+    if (historyOffset !== undefined) line.historyOffset = historyOffset;
     if (line.toolUseId && line.titleStatus && historyToolLineIndexes.has(line.toolUseId)) {
       const index = historyToolLineIndexes.get(line.toolUseId)!;
       const started = lines[index];
@@ -3399,13 +3459,13 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     return lines.length;
   };
   const toolTimings = new Map<string, TimingRecord[]>();
-  for (const record of runtime.engine.getTimingRecords?.() ?? []) {
+  for (const record of page?.timings ?? runtime.engine.getTimingRecords?.() ?? []) {
     if (record.kind !== "tool" || !record.toolUseId) continue;
     const matches = toolTimings.get(record.toolUseId) ?? [];
     matches.push(record);
     toolTimings.set(record.toolUseId, matches);
   }
-  const entries = runtime.engine.getDisplayEntries();
+  const entries = page?.entries ?? runtime.engine.getDisplayEntries();
   let lastCompactionIndex = -1;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     if (entries[index].type === "compact") {
@@ -3414,6 +3474,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
     }
   }
   for (const [entryIndex, entry] of entries.entries()) {
+    historyOffset = page?.offsets[entryIndex];
     if (entry.type === "message") {
       if(entry.message.metadata?.loadedImages === true && typeof entry.message.metadata.sourceToolUseId === "string"){renderObservedImages(entry.message,append);continue;}
       renderMessage(entry.message, append, undefined, {
@@ -3424,7 +3485,7 @@ function restoredHistoryLines(runtime: Pick<WebRuntime, "engine">): Omit<UiLine,
       continue;
     }
     const report = entry.report ?? legacyCompactionReport(entry.reason);
-    append(compactionLine(report, entry.createdAt, entryIndex === lastCompactionIndex));
+    append(compactionLine(report, entry.createdAt, page ? historyOffset === runtime.engine.getLastCompactOffset() : entryIndex === lastCompactionIndex));
   }
   // Legacy histories can reuse call IDs. Ambiguous associations stay unknown.
   for (const line of lines) {
@@ -3595,7 +3656,7 @@ function reduceStatus(status: UiStatus, event: AgentEvent): UiStatus {
   if (event.type === "thinking.delta") return { ...status, retryCooldownUntil: undefined, phase: "thinking", modelOutput: { kind: "thinking" }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.text), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.started") return { ...status, retryCooldownUntil: undefined, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name }, activityTick: status.activityTick + 1 };
   if (event.type === "tool_call.delta") return { ...status, phase: "calling_model", modelOutput: { kind: "tool_call", callId: event.callId, name: event.name ?? (status.modelOutput?.kind === "tool_call" && status.modelOutput.callId === event.callId ? status.modelOutput.name : undefined) }, streamedOutputTokens: status.streamedOutputTokens + estimateTokens(event.argumentsDelta), outputTokenUpdatedAt: Date.now(), activityTick: status.activityTick + 1 };
-  if (event.type === "retrying") return { ...status, phase: status.phase === "compacting" ? "compacting" : "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
+  if (event.type === "retrying") return { ...status, ...(event.resetOutput ? { compactionText: undefined, streamedOutputTokens: 0, usage: undefined } : {}), phase: status.phase === "compacting" ? "compacting" : "calling_model", modelOutput: undefined, detail: `retrying in ${(event.delayMs / 1000).toFixed(1)}s`, retryCooldownUntil: Date.now() + event.delayMs, activityTick: status.activityTick + 1 };
   if (event.type === "tool.started") return { ...status, phase: "running_tools", modelOutput: undefined, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.progress") return { ...status, phase: "running_tools", detail: event.progress.message || status.detail, currentTool: { id: event.toolUse.id, name: event.toolUse.name, input: event.toolUse.input, startedAt: status.currentTool?.id === event.toolUse.id ? status.currentTool.startedAt : Date.now() }, activityTick: status.activityTick + 1 };
   if (event.type === "tool.result.available" || event.type === "tool.finished" || event.type === "tool.batch.completed") return { ...status, currentTool: "toolUse" in event && status.currentTool?.id === event.toolUse.id ? undefined : status.currentTool, activityTick: status.activityTick + 1 };

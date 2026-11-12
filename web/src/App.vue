@@ -1,5 +1,6 @@
 <script setup>
 import "./rows-history.css"
+import { createTranscriptHistory } from "./transcript-history.mjs"
 import "./appearance.css"
 import AppearanceSettings from "./components/AppearanceSettings.vue"
 import { createAppearanceController } from "./appearance-controller.mjs"
@@ -433,6 +434,78 @@ const memoryHoverIndex = ref(-1)
 let es
 let toastTimer
 const transcriptFollow = createTranscriptFollow({ getElement: () => transcript.value })
+const historyStatus = ref({ hasMore: false, loading: false, error: '' })
+const transcriptHistory = createTranscriptHistory({
+  changed: value => { historyStatus.value = value },
+  fetchPage: async ({ sessionId, before, epoch, signal }) => {
+    const url = new URL(runtimeUrl('/api/history'), location.href)
+    url.searchParams.set('sessionId', sessionId)
+    url.searchParams.set('before', String(before)); url.searchParams.set('epoch', epoch)
+    const response = await fetch(url, { signal })
+    const body = await response.json()
+    if (!response.ok || body.error) throw new Error(body.error || '加载历史失败')
+    return body
+  },
+})
+let historyInserting = false
+async function loadEarlierHistory() {
+  if (historyInserting || !historyStatus.value.hasMore) return
+  historyInserting = true
+  const sessionId = state.session?.sessionId
+  try {
+    const rows = await transcriptHistory.take()
+    if (state.session?.sessionId !== sessionId) return
+    if (!rows.length) {
+      if (historyStatus.value.hasMore && !historyStatus.value.error) requestAnimationFrame(() => loadEarlierHistory())
+      return
+    }
+    const scroller = transcript.value
+    if (!scroller) return
+    const anchor = messageVirtualizer.value.getVirtualItems().find(item => item.end > scroller.scrollTop)
+    const anchorId = anchor ? visibleLines.value[anchor.index]?.id : undefined
+    const delta = anchor ? scroller.scrollTop - anchor.start : 0
+    const anchorElement = [...scroller.querySelectorAll('.virtual-message-row')].find(row => row.dataset.lineId === String(anchorId))
+    const anchorY = anchorElement?.getBoundingClientRect().top
+    const wasFollowing = transcriptFollow.following
+    let interrupted = false
+    const interruptAnchor = () => { interrupted = true }
+    for (const event of ['wheel', 'touchmove', 'keydown', 'pointerdown']) scroller.addEventListener(event, interruptAnchor, { passive: true })
+    pendingMessageResizes.value++
+    try {
+      runtimeLines.replace([...rows, ...state.lines])
+      syncMessageImagePreviewsFromLines(rows)
+      await nextTick()
+      if (!wasFollowing && anchorId !== undefined) {
+        const index = visibleLines.value.findIndex(line => line.id === anchorId)
+        if (index >= 0) {
+          const target = messageVirtualizer.value.getOffsetForIndex(index, 'start')
+          if (target) scroller.scrollTop = target[0] + delta
+          // Prepending exposes unmeasured rows. Retain the actual reading position after
+          // Vue layout and ResizeObserver have replaced their estimates (not only before).
+          for (let frame = 0; frame < 4; frame++) {
+            await new Promise(resolve => requestAnimationFrame(resolve))
+            if (interrupted || state.session?.sessionId !== sessionId || anchorY === undefined) break
+            const row = [...scroller.querySelectorAll('.virtual-message-row')].find(row => row.dataset.lineId === String(anchorId))
+            if (row) scroller.scrollTop += row.getBoundingClientRect().top - anchorY
+          }
+        }
+      } else if (wasFollowing) scheduleTranscriptScrollBottom()
+    } finally {
+      pendingMessageResizes.value--
+      for (const event of ['wheel', 'touchmove', 'keydown', 'pointerdown']) scroller.removeEventListener(event, interruptAnchor)
+    }
+    void transcriptHistory.prefetch().then(() => {
+      const el = transcript.value
+      if (el && el.scrollHeight <= el.clientHeight + 1 && historyStatus.value.hasMore && !historyStatus.value.error) void loadEarlierHistory()
+    })
+  } finally { historyInserting = false }
+}
+function onTranscriptHistoryScroll() {
+  const el = transcript.value
+  if (!el || !historyStatus.value.hasMore || transcriptFollow.following) return
+  if (el.scrollTop < el.clientHeight * 5) void transcriptHistory.prefetch()
+  if (el.scrollTop < el.clientHeight * 2) void loadEarlierHistory()
+}
 let syncRaf = 0
 let lineTextRaf = 0
 let pendingSyncPayload
@@ -877,6 +950,7 @@ onBeforeUnmount(() => {
   clearInterval(runningStatusTimer); runningStatusVersion++; runningStatusController?.abort()
   if (es) es.close()
   transcriptFollow.dispose()
+  transcriptHistory.reset()
   if (syncRaf) cancelAnimationFrame(syncRaf)
   resetLineTextScheduler()
   pendingSyncPayload = undefined
@@ -1428,7 +1502,13 @@ function applySync(payload) {
     state.messageImagePreviews = state.messageImagePreviews.filter((item) => item.sessionId === incomingSessionId)
     state.attachmentCounter = 0
   }
-  runtimeLines.replace(incomingSessionId === previousSessionId ? reconcileActivitySnapshot(payload.lines || [], state.lines) : (payload.lines || []))
+  const snapshotLines = transcriptHistory.sync(incomingSessionId, payload.history, payload.lines || [])
+  runtimeLines.replace(incomingSessionId === previousSessionId ? reconcileActivitySnapshot(snapshotLines, state.lines) : snapshotLines)
+  void transcriptHistory.prefetch().then(async () => {
+    await nextTick()
+    const el = transcript.value
+    if (el && el.scrollHeight <= el.clientHeight + 1 && historyStatus.value.hasMore && !historyStatus.value.error) void loadEarlierHistory()
+  })
   if (state.toolDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.toolDetailLineId))) closeToolDetail()
   if (state.compactionDetailLineId !== undefined && !state.lines.some((line) => String(line.id) === String(state.compactionDetailLineId))) closeCompactionDetail()
   syncMessageImagePreviewsFromLines(state.lines)
@@ -5009,7 +5089,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" class="transcript" :class="{'rows-transcript':historyView==='rows'}" tabindex="0" aria-label="对话记录">
+          <div ref="transcript" @scroll.passive="onTranscriptHistoryScroll" class="transcript" :class="{'rows-transcript':historyView==='rows'}" tabindex="0" aria-label="对话记录">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <ChromeIcon name="context" /><strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
@@ -5029,6 +5109,7 @@ function createMobileSession() {
               </div>
             </section>
 
+            <div v-if="historyStatus.error" class="history-retry" role="status"><button type="button" @click="loadEarlierHistory">历史加载失败，点击重试</button></div>
             <div ref="messageList" class="virtual-message-list" :class="{'rows-history':historyView==='rows'}" :style="{ height: `${virtualMessageTotalHeight}px` }">
             <ToolTurnConnector v-if="historyView==='rows'" :connections="turnConnections" :host="messageList" />
             <template v-for="virtualRow in virtualMessageRows" :key="virtualRow.key">

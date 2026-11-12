@@ -326,7 +326,7 @@ async function* normalizeAnthropicStreamEvents(stream: ReadableStream<Uint8Array
       break;
     }
   }
-  if (!stopped) protocolError("Claude stream closed before message_stop");
+  if (!stopped) throw new ModelAPIError({ provider: "anthropic", category: "network", message: "Claude stream closed before message_stop" });
 }
 
 function completionEvent(reason: string, usage: ModelUsage): ModelStreamEvent {

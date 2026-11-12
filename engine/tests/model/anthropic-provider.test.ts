@@ -238,11 +238,15 @@ test("HTTP retry before output, no retries for auth or context overflow", async 
   }
 });
 
-test("stream errors after visible output are not retried", async () => {
+test("stream errors after visible output retry with the existing delay", async () => {
   let calls = 0;
-  const local = await server((_req, res) => { calls++; res.setHeader("Content-Type", "text/event-stream"); res.end(encode([...frames().slice(0, 4), { type: "error", error: { type: "overloaded_error", message: "busy" } }])); });
-  try { await assert.rejects(collect(new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "key" }).stream(request())), /busy/); assert.equal(calls, 1); }
-  finally { await local.close(); }
+  const local = await server((_req, res) => { calls++; res.setHeader("Content-Type", "text/event-stream"); res.end(encode(calls === 1 ? [...frames().slice(0, 4), { type: "error", error: { type: "overloaded_error", message: "busy" } }] : frames())); });
+  try {
+    const events = await collect(new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "key" }).stream(request()));
+    assert.equal(calls, 2);
+    const retry = events.find(e => e.type === "retrying");
+    assert.ok(retry?.type === "retrying"); assert.equal(retry.delayMs, 5000); assert.equal(retry.resetOutput, true);
+  } finally { await local.close(); }
 });
 
 test("cancellation remains connected after SSE headers and does not retry", async () => {

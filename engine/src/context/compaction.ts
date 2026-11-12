@@ -198,7 +198,10 @@ export class ModelDrivenCompactor implements Compactor {
         compact: true,
       },
     }), options.abortSignal)) {
-      if (event.type === "retrying") options.onRetry?.(event);
+      if (event.type === "retrying") {
+        if (event.resetOutput) { streamedText = ""; finalAssistantText = ""; completed = false; progress.streamed = false; }
+        options.onRetry?.(event);
+      }
       if (event.type === "assistant_delta") { streamedText += event.text; progress.streamed = true; options.onCompactionDelta?.(event.text); }
       if (event.type === "assistant_message") {
         finalAssistantText = extractText(event.message).trim() || finalAssistantText;

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { transcriptLines, reverseTranscriptLines, readResumeCache, writeResumeCache, transcriptStamp } from "./transcript-reader.js";
 import { readTranscriptSummary, forgetTranscriptSummary } from "./session-summary.js";
 import { isExecutionState, type ExecutionState } from "../core/execution-state.js";
 import { isTimingRecord, restoredTiming, type TimingRecord } from "../core/query-timing.js";
@@ -48,6 +49,8 @@ export interface SessionStoreOptions {
   rootDir?: string;
   resume?: boolean;
   toolResultThresholdChars?: number;
+  /** Keep archival display bodies on disk; model context is always restored in full. */
+  lazyDisplay?: boolean;
 }
 
 export interface SessionListOptions {
@@ -102,6 +105,15 @@ export interface SessionStoreSnapshot {
   windowId: string;
 }
 
+export interface SessionDisplayPage {
+  entries: SessionDisplayEntry[];
+  offsets: number[];
+  timings: TimingRecord[];
+  before: number;
+  hasMore: boolean;
+  epoch: string;
+}
+
 export interface SessionTitleState {
   title?: string;
   kind?: SessionTitleKind;
@@ -115,6 +127,15 @@ export class SessionStore {
   readonly transcriptPath: string;
   readonly toolResultMemory: ToolResultMemory;
   private writeFailed = false;
+  private readonly lazyDisplay: boolean;
+  private displayStart = 0;
+  private displayCount = 0;
+  private demoMode?: string;
+  private lastCompactOffset = -1;
+  private cacheSourceStamp?: string;
+  private cacheInvalid = false;
+  private cacheTimer?: ReturnType<typeof setTimeout>;
+  private cacheWrite: Promise<void> = Promise.resolve();
   private updatedAt?: string;
   private createdAt?: string;
   private execution?: ExecutionState;
@@ -141,6 +162,11 @@ export class SessionStore {
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
+    this.lazyDisplay = options.lazyDisplay === true;
+    this.displayStart = loaded.displayStart;
+    this.displayCount = loaded.displayCount;
+    this.demoMode = loaded.demoMode;
+    this.lastCompactOffset = loaded.lastCompactOffset;
     this.sessionId = sessionId;
     this.sessionDir = path.join(resolveSessionRoot(options), sessionId);
     this.transcriptPath = path.join(this.sessionDir, "transcript.jsonl");
@@ -182,13 +208,15 @@ export class SessionStore {
     checkSessionPaths(sessionDir);
     const transcriptPath = path.join(sessionDir, "transcript.jsonl");
     const loaded = options.resume
-      ? await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true })
+      ? await loadTranscript(transcriptPath, options.agentId, { repairUnterminatedTail: true, lazyDisplay: options.lazyDisplay })
       : createEmptyLoadedTranscript();
     await fsp.mkdir(sessionDir, { recursive: true });
     checkSessionPaths(sessionDir);
     const store = new SessionStore(options, sessionId, loaded);
     // Read once on open, never stat the transcript on streaming snapshots.
     const transcriptStat = await fsp.stat(transcriptPath).catch(() => undefined);
+    store.cacheSourceStamp = loaded.sourceStamp;
+    store.cacheInvalid = options.resume ? loaded.sourceStamp !== (transcriptStat && transcriptStamp(transcriptStat)) : !!transcriptStat?.size;
     store.updatedAt = transcriptStat?.mtime.toISOString();
     store.createdAt = (transcriptStat ?? await fsp.stat(sessionDir)).birthtime.toISOString();
     return store;
@@ -250,7 +278,51 @@ export class SessionStore {
   }
 
   getDisplayEntries(): SessionDisplayEntry[] {
-    return this.displayEntries.map(cloneDisplayEntry);
+    if (!this.lazyDisplay) return this.displayEntries.map(cloneDisplayEntry);
+    const entries: SessionDisplayEntry[] = [];
+    const size = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath).size : 0;
+    if (size) for (const line of reverseTranscriptLines(this.transcriptPath, size, this.displayStart)) {
+      if (!line.text.trim()) continue;
+      const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
+      if (entry.agentId !== this.agentId) continue;
+      const display = displayEntry(entry);
+      if (display) entries.push(display);
+    }
+    return entries.reverse();
+  }
+
+  getDisplayCount(): number { return this.displayCount; }
+  getDemoMode(): string | undefined { return this.demoMode; }
+  getLastCompactOffset(): number { return this.lastCompactOffset; }
+
+  /** Pages end at message boundaries. Tool result/use pairs are kept together across a page edge. */
+  getDisplayPage(before?: number, limit = 100, maxBytes = 512 * 1024): SessionDisplayPage {
+    checkSessionPaths(this.sessionDir);
+    const stat = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath) : undefined;
+    const size = stat?.size ?? 0;
+    const epoch = `${stat?.ino ?? 0}:${stat?.birthtimeMs ?? 0}:${this.displayStart}`;
+    let cursor = before ?? size;
+    if (!Number.isSafeInteger(cursor) || cursor < this.displayStart || cursor > size) throw new Error("Invalid history cursor");
+    const entries: SessionDisplayEntry[] = [], offsets: number[] = [], timings = new Map<string, TimingRecord>();
+    const pendingTools = new Set<string>();
+    let bytes = 0, scanned = 0;
+    if (size) for (const line of reverseTranscriptLines(this.transcriptPath, cursor, this.displayStart)) {
+      cursor = line.start; scanned += line.end - line.start;
+      if (!line.text.trim()) continue;
+      const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
+      if (entry.agentId !== this.agentId) continue;
+      if (entry.type === "timing" && isTimingRecord(entry.timing) && !timings.has(entry.timing.id)) timings.set(entry.timing.id, restoredTiming(entry.timing));
+      const display = displayEntry(entry);
+      if (display) {
+        entries.push(display); offsets.push(line.start); bytes += line.end - line.start;
+        if (entry.type === "message") for (const block of entry.message.blocks) {
+          if (block.type === "tool_result") pendingTools.add(block.toolUseId);
+          if (block.type === "tool_use") pendingTools.delete(block.id);
+        }
+      }
+      if (((entries.length >= limit || bytes >= maxBytes) && !pendingTools.size) || (scanned >= 4 * 1024 * 1024 && !pendingTools.size)) break;
+    }
+    return { entries: entries.reverse(), offsets: offsets.reverse(), timings: [...timings.values()], before: cursor, hasMore: cursor > this.displayStart, epoch };
   }
 
   /** Separate transcript facts: never part of resumedMessages or the model context. */
@@ -268,11 +340,19 @@ export class SessionStore {
     const timing = { ...record };
     this.appendEntry({ type: "timing", sessionId: this.sessionId, agentId: this.agentId, timing,
       ...(Number.isSafeInteger(runGeneration) && runGeneration! > 0 ? { runGeneration } : {}) });
-    this.timings.set(timing.id, timing);
+    if (!this.lazyDisplay) this.timings.set(timing.id, timing);
   }
 
   getTimings(): TimingRecord[] {
-    return [...this.timings.values()].map(record => ({ ...record }));
+    if (!this.lazyDisplay) return [...this.timings.values()].map(record => ({ ...record }));
+    const records = new Map<string, TimingRecord>();
+    const size = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath).size : 0;
+    if (size) for (const line of reverseTranscriptLines(this.transcriptPath, size, this.displayStart)) {
+      if (!line.text.trim()) continue;
+      const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
+      if (entry.agentId === this.agentId && entry.type === "timing" && !records.has(entry.timing.id)) records.set(entry.timing.id, restoredTiming(entry.timing));
+    }
+    return [...records.values()].reverse();
   }
 
   recordMessage(message: Message, provenance?: { runGeneration?: number }): void {
@@ -283,7 +363,9 @@ export class SessionStore {
     const run = Number.isSafeInteger(generation) && generation! > 0 ? { runGeneration: generation } : {};
     this.appendEntry({ type: "message", sessionId: this.sessionId, agentId: this.agentId, message: stored, ...run });
     if (stored.metadata?.displayOnly !== true) this.resumedMessages.push(stored);
-    this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
+    this.displayCount++;
+    if (typeof stored.metadata?.demoMode === "string") this.demoMode = stored.metadata.demoMode;
+    if (!this.lazyDisplay) this.displayEntries.push({ type: "message", message: cloneMessage(stored) });
   }
 
   /** @deprecated Prefer recordCompactCheckpoint so replacement history is one durable entry. */
@@ -293,7 +375,8 @@ export class SessionStore {
     this.resumedMessages.length = 0;
     this.contentReplacements.length = 0;
     this.lastCompaction = undefined;
-    this.displayEntries.push({ type: "compact", createdAt });
+    this.displayCount++;
+    if (!this.lazyDisplay) this.displayEntries.push({ type: "compact", createdAt });
   }
 
   recordCompactCheckpoint(messages: readonly Message[], reason?: CompactionReason, report?: CompactionReport): void {
@@ -323,7 +406,8 @@ export class SessionStore {
     this.resumedMessages.push(...replacementMessages.map(cloneMessage));
     this.contentReplacements.length = 0;
     this.lastCompaction = nextReport;
-    this.displayEntries.push({
+    this.displayCount++;
+    if (!this.lazyDisplay) this.displayEntries.push({
       type: "compact",
       createdAt,
       reason,
@@ -444,6 +528,7 @@ export class SessionStore {
     this.resumedMessages.length = 0;
     this.execution = undefined;
     this.displayEntries.length = 0;
+    this.displayCount = 0; this.demoMode = undefined;
     this.timings.clear();
     this.contentReplacements.length = 0;
     this.title = undefined;
@@ -482,6 +567,26 @@ export class SessionStore {
     };
   }
 
+  /** Debounced cache, never a replacement for the fsynced transcript. */
+  async flushResumeCache(): Promise<void> {
+    if (!this.lazyDisplay || this.writeFailed || this.cacheInvalid) return;
+    clearTimeout(this.cacheTimer); this.cacheTimer = undefined;
+    const stat = fs.statSync(this.transcriptPath);
+    if (transcriptStamp(stat) !== this.cacheSourceStamp) { this.cacheInvalid = true; return; }
+    const state = JSON.parse(JSON.stringify({
+      messages: this.resumedMessages, displayEntries: [], replacements: this.contentReplacements,
+      entries: 0, displayStart: this.displayStart, displayCount: this.displayCount, demoMode: this.demoMode,
+      lastCompactOffset: this.lastCompactOffset, execution: this.execution,
+      title: this.title, titleKind: this.titleKind, hasInitialTitle: this.hasInitialTitle, hasTitleRefinement: this.hasTitleRefinement,
+      appPrompt: this.appPrompt, sessionPrompt: this.sessionPrompt, fastMode: this.fastMode,
+      modelSelectionCleared: this.modelSelectionCleared, contextWindowTokens: this.contextWindowTokens,
+      lastCompaction: this.lastCompaction, windowNumber: this.windowNumber, firstWindowId: this.firstWindowId,
+      previousWindowId: this.previousWindowId, windowId: this.windowId,
+    }));
+    this.cacheWrite = this.cacheWrite.catch(() => undefined).then(() => writeResumeCache(this.transcriptPath, this.agentId, state, stat));
+    await this.cacheWrite;
+  }
+
   private appendEntry(entry: SessionTranscriptEntry): void {
     if (this.writeFailed) throw new Error("Session transcript writes disabled after write failure; reopen the session");
     const text = JSON.stringify(entry) + "\n";
@@ -489,20 +594,38 @@ export class SessionStore {
     fs.mkdirSync(this.sessionDir, { recursive: true });
     checkSessionPaths(this.sessionDir);
     let descriptor: number | undefined;
+    let writtenStat: fs.Stats | undefined;
     try {
       descriptor = fs.openSync(this.transcriptPath, "a");
       const stat = fs.fstatSync(descriptor);
       if (!stat.isFile() || stat.nlink > 1) throw new Error("Unsafe session transcript");
+      if (this.cacheSourceStamp ? transcriptStamp(stat) !== this.cacheSourceStamp : stat.size !== 0) this.cacheInvalid = true;
       fs.writeFileSync(descriptor, text, "utf8");
       fs.fsyncSync(descriptor);
+      writtenStat = fs.fstatSync(descriptor);
+      if (writtenStat.size !== stat.size + Buffer.byteLength(text)) this.cacheInvalid = true;
+      this.cacheSourceStamp = transcriptStamp(writtenStat);
       this.updatedAt = new Date().toISOString();
+      if (entry.type === "reset") { this.displayStart = stat.size + Buffer.byteLength(text); this.lastCompactOffset = -1; }
+      if (entry.type === "compact") this.lastCompactOffset = stat.size;
+      if (this.lazyDisplay) {
+        clearTimeout(this.cacheTimer);
+        this.cacheTimer = setTimeout(() => { void this.flushResumeCache().catch(() => undefined); }, 500);
+        this.cacheTimer.unref();
+      }
     } catch (error) {
       // Reopen to repair a partial tail; never turn it into a corrupt complete line.
       this.writeFailed = true;
       throw error;
     } finally {
       if (descriptor !== undefined) {
-        try { fs.closeSync(descriptor); }
+        try {
+          fs.closeSync(descriptor);
+          // Windows publishes last-write timestamps on close. Reject intervening appends/replacement.
+          const closed = fs.statSync(this.transcriptPath);
+          if (!writtenStat || closed.size !== writtenStat.size || closed.ino !== writtenStat.ino || (process.platform !== "win32" && closed.dev !== writtenStat.dev)) this.cacheInvalid = true;
+          this.cacheSourceStamp = transcriptStamp(closed);
+        }
         catch (error) { this.writeFailed = true; throw error; }
       }
     }
@@ -510,6 +633,11 @@ export class SessionStore {
 }
 
 interface LoadedTranscript {
+  sourceStamp?: string;
+  displayStart: number;
+  displayCount: number;
+  demoMode?: string;
+  lastCompactOffset: number;
   execution?: ExecutionState;
   timings: Map<string, TimingRecord>;
   messages: Message[];
@@ -547,17 +675,38 @@ async function findLatestSessionId(options: SessionStoreOptions): Promise<string
 }
 
 interface LoadTranscriptOptions {
+  lazyDisplay?: boolean;
   repairUnterminatedTail?: boolean;
 }
 
 async function loadTranscript(transcriptPath: string, agentId?: string, options: LoadTranscriptOptions = {}): Promise<LoadedTranscript> {
-  const entries = await readDurableTranscriptEntries(transcriptPath, options);
+  const originalStat = await fsp.stat(transcriptPath).catch(() => undefined);
+  if (options.lazyDisplay && agentId) {
+    const cached = await readResumeCache<Omit<LoadedTranscript, "timings">>(transcriptPath, agentId);
+    if (cached && Array.isArray(cached.messages) && Array.isArray(cached.replacements) && Number.isSafeInteger(cached.displayStart) && Number.isSafeInteger(cached.displayCount)) {
+      return { ...cached, sourceStamp: originalStat && transcriptStamp(originalStat), displayEntries: [], timings: new Map() };
+    }
+  }
   const loaded = createEmptyLoadedTranscript();
-
-  for (const entry of entries) {
+  let lineNumber = 0;
+  for await (const line of transcriptLines(transcriptPath)) {
+    lineNumber++;
+    if (!line.text.trim()) continue;
+    let entry: SessionTranscriptEntry;
+    try { entry = parseTranscriptEntry(line.text, transcriptPath, lineNumber); }
+    catch (error) {
+      // Repair only an incomplete last line, never silently discard a corrupt durable record.
+      const handle = await fsp.open(transcriptPath, "r");
+      let complete: boolean;
+      try { const byte = Buffer.alloc(1); await handle.read(byte, 0, 1, line.end - 1); complete = byte[0] === 10; }
+      finally { await handle.close(); }
+      if (complete || !options.repairUnterminatedTail) throw error;
+      await truncateAndSync(transcriptPath, line.start); break;
+    }
     if (agentId && entry.agentId !== agentId) continue;
     loaded.entries += 1;
     if (entry.type === "reset") {
+      loaded.displayStart = line.end; loaded.displayCount = 0; loaded.demoMode = undefined; loaded.lastCompactOffset = -1;
       loaded.execution = undefined;
       loaded.messages.length = 0;
       loaded.displayEntries.length = 0;
@@ -574,6 +723,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       loaded.windowId = undefined;
     }
     if (entry.type === "compact") {
+      loaded.displayCount++; loaded.lastCompactOffset = line.start;
       if (loaded.execution) delete loaded.execution.resumeCompaction;
       loaded.messages.length = 0;
       loaded.replacements.length = 0;
@@ -586,7 +736,7 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
       loaded.lastCompaction = entry.report
         ? cloneCompactionReport(entry.report)
         : boundaryReport ? cloneCompactionReport(boundaryReport) : undefined;
-      loaded.displayEntries.push({
+      if (!options.lazyDisplay) loaded.displayEntries.push({
         type: "compact",
         createdAt: entry.createdAt,
         reason: entry.reason,
@@ -600,12 +750,14 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
     if (entry.type === "execution" && isExecutionState(entry.execution)) loaded.execution = { ...entry.execution };
     if (entry.type === "timing") {
       if (!isTimingRecord(entry.timing)) throw new Error("Invalid persisted timing record");
-      loaded.timings.set(entry.timing.id, { ...entry.timing });
+      if (!options.lazyDisplay) loaded.timings.set(entry.timing.id, { ...entry.timing });
     }
     if (entry.type === "message") {
-      const message = cloneMessage(entry.message);
+      const message = entry.message;
+      loaded.displayCount++;
+      if (typeof message.metadata?.demoMode === "string") loaded.demoMode = message.metadata.demoMode;
       if (message.metadata?.displayOnly !== true) loaded.messages.push(message);
-      loaded.displayEntries.push({ type: "message", message: cloneMessage(message) });
+      if (!options.lazyDisplay) loaded.displayEntries.push({ type: "message", message });
     }
     if (entry.type === "content-replacement") loaded.replacements.push(...entry.replacements);
     if (entry.type === "title") {
@@ -634,54 +786,27 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
     if (entry.type === "model-selection-cleared") loaded.modelSelectionCleared = entry.cleared === true;
     if (entry.type === "context-window" && Number.isInteger(entry.tokens) && entry.tokens > 0) loaded.contextWindowTokens = entry.tokens;
   }
+  // Normalize an otherwise valid unterminated final record before future append.
+  const endStat = await fsp.stat(transcriptPath).catch(() => undefined);
+  if (endStat?.size && options.repairUnterminatedTail) {
+    const handle = await fsp.open(transcriptPath, "r"); const byte = Buffer.alloc(1);
+    try { await handle.read(byte, 0, 1, endStat.size - 1); } finally { await handle.close(); }
+    if (byte[0] !== 10) await appendAndSync(transcriptPath, "\n");
+  }
+  if (options.lazyDisplay && agentId) {
+    const { timings: _timings, ...state } = loaded;
+    await writeResumeCache(transcriptPath, agentId, state, originalStat);
+  }
+  loaded.sourceStamp = originalStat && transcriptStamp(originalStat);
   return loaded;
 }
 
-async function readDurableTranscriptEntries(transcriptPath: string, options: LoadTranscriptOptions): Promise<SessionTranscriptEntry[]> {
-  let payload: Buffer;
-  try {
-    payload = await fsp.readFile(transcriptPath);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return [];
-    throw error;
-  }
-  if (payload.length === 0) return [];
-
-  const endsWithNewline = payload[payload.length - 1] === 0x0a;
-  const finalNewline = payload.lastIndexOf(0x0a);
-  const completePayload = endsWithNewline ? payload : payload.subarray(0, finalNewline + 1);
-  const entries = parseCompleteTranscriptLines(completePayload.toString("utf8"), transcriptPath);
-  if (endsWithNewline) return entries;
-
-  const tailOffset = finalNewline + 1;
-  const tail = payload.subarray(tailOffset).toString("utf8").replace(/\r$/u, "");
-  if (!tail.trim()) {
-    if (options.repairUnterminatedTail) await truncateAndSync(transcriptPath, tailOffset);
-    return entries;
-  }
-
-  let tailEntry: SessionTranscriptEntry;
-  try {
-    tailEntry = parseTranscriptEntry(tail, transcriptPath, entries.length + 1);
-  } catch (error) {
-    if (!options.repairUnterminatedTail) throw error;
-    await truncateAndSync(transcriptPath, tailOffset);
-    return entries;
-  }
-  if (options.repairUnterminatedTail) await appendAndSync(transcriptPath, "\n");
-  entries.push(tailEntry);
-  return entries;
-}
-
-function parseCompleteTranscriptLines(text: string, transcriptPath: string): SessionTranscriptEntry[] {
-  const entries: SessionTranscriptEntry[] = [];
-  const lines = text.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].replace(/\r$/u, "");
-    if (!line.trim()) continue;
-    entries.push(parseTranscriptEntry(line, transcriptPath, index + 1));
-  }
-  return entries;
+function displayEntry(entry: SessionTranscriptEntry): SessionDisplayEntry | undefined {
+  if (entry.type === "message") return { type: "message", message: entry.message };
+  if (entry.type !== "compact") return;
+  const boundary = entry.replacementMessages?.slice().reverse().find(m => m.metadata?.compactBoundary === true);
+  const report = entry.report ?? boundary?.metadata?.compactionReport as CompactionReport | undefined;
+  return { type: "compact", createdAt: entry.createdAt, reason: entry.reason, ...(report ? { report: cloneCompactionReport(report) } : {}) };
 }
 
 function parseTranscriptEntry(line: string, transcriptPath: string, lineNumber: number): SessionTranscriptEntry {
@@ -723,6 +848,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 function createEmptyLoadedTranscript(): LoadedTranscript {
   return {
+    displayStart: 0, displayCount: 0, lastCompactOffset: -1,
     messages: [],
     timings: new Map(),
     displayEntries: [],

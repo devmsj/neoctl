@@ -43,6 +43,7 @@ for (const api of ["chat", "responses"] as const) {
   test(`${api}: text-only stream does not invent tool activity`, async () => {
     const source = transport();
     source.send(api === "chat" ? { choices: [{ delta: { content: "I will edit a file" } }] } : { type: "response.output_text.delta", delta: "I will edit a file" });
+    source.send(api === "chat" ? { choices: [{ delta: {}, finish_reason: "stop" }] } : { type: "response.completed", response: {} });
     source.close();
     const events: ModelStreamEvent[] = [];
     for await (const event of api === "chat" ? normalizeChatStream(source.stream, { model: "test" }) : normalizeResponsesStream(source.stream, { model: "test" })) events.push(event);

@@ -78,6 +78,6 @@ export type AgentEvent =
   | { type: "tool.finished"; toolUse: ToolUseRequest; ok: boolean; index?: number; total?: number }
   | { type: "tool.batch.completed"; total: number; succeeded: number; failed: number }
   | { type: "usage"; usage: ModelUsage; provisional?: boolean }
-  | { type: "retrying"; attempt: number; delayMs: number; error: Error }
+  | { type: "retrying"; attempt: number; delayMs: number; error: Error; resetOutput?: boolean }
   | { type: "terminal"; reason: TerminalReason; detail?: string }
   | { type: "error"; error: Error };

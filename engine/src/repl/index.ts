@@ -1066,6 +1066,13 @@ function InkRepl({ runtime, initialCommandLine }: { runtime: ReplRuntime; initia
   };
 
   const handleEvent = (event: AgentEvent) => {
+    if (event.type === "retrying" && event.resetOutput) {
+      const drafts = new Set([assistantLineId.current, thinkingLineId.current, finalizedThinkingLineId.current]);
+      setLines(current => current.filter(line => !drafts.has(line.id)));
+      assistantLineId.current = undefined;
+      thinkingLineId.current = undefined;
+      finalizedThinkingLineId.current = undefined;
+    }
     setStatus((current) => reduceStatus(current, event));
     if (event.type === "usage" && !event.provisional) runtime.usage.add(event.usage);
     if (event.type === "state") return;

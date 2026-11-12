@@ -1,8 +1,8 @@
 import { estimateTextTokens } from "../core/context-metrics.js";
-import { DEFAULT_MAX_RETRIES, retryDelayMs, waitForRetry } from "./retry-policy.js";
+import { streamWithRetry } from "./retry-runner.js";
 import { anthropicFastModeBeta, isFastModeUnavailable } from "./fast-mode.js";
 import { EnvCredentialProvider, StaticCredentialProvider, type CredentialProvider } from "./credentials.js";
-import { categoryForStatus, ModelAPIError, normalizeUnknownError, parseRetryAfterMs } from "./errors.js";
+import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js";
 import type { ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
 import { anthropicInvalid, buildAnthropicRequest, normalizeAnthropicObject, normalizeAnthropicStream, type AnthropicMapperOptions } from "./anthropic-mapper.js";
@@ -87,23 +87,14 @@ export class AnthropicAdapter implements ProviderAdapter {
     const body = buildAnthropicRequest(request, this.options);
     const credential = await this.credentials.getCredential();
     if (!credential) throw new ModelAPIError({ provider: this.name, category: "auth_unavailable", message: "ANTHROPIC_API_KEY (official or gateway key) is not configured" });
-    const maxRetries = this.options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    for (let attempt = 0; ; attempt++) {
-      let published = false;
-      try {
-        for await (const event of this.attempt(request, body, credential)) {
-          if (!["provider_event", "retrying", "retry"].includes(event.type)) published = true;
-          yield event;
-        }
-        return;
-      } catch (error) {
-        if (request.cancellation?.aborted) throw new ModelAPIError({ provider: this.name, category: "user_abort", message: "Claude request cancelled", retryable: false });
-        const normalized = normalizeUnknownError(error, this.name);
-        if (published || (request.fastMode && isFastModeUnavailable(normalized)) || !normalized.retryable || attempt >= maxRetries) throw normalized;
-        const delayMs = retryDelayMs(attempt + 1, normalized.retryAfterMs);
-        yield { type: "retrying", error: normalized, attempt: attempt + 1, delayMs };
-        await waitForRetry(delayMs, request.cancellation);
-      }
+    try {
+      yield* streamWithRetry(() => this.attempt(request, body, credential), {
+        provider: this.name, maxRetries: this.options.maxRetries, signal: request.cancellation,
+        skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
+      });
+    } catch (error) {
+      if (request.cancellation?.aborted) throw new ModelAPIError({ provider: this.name, category: "user_abort", message: "Claude request cancelled", retryable: false });
+      throw error;
     }
   }
 

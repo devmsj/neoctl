@@ -49,7 +49,7 @@ test("Messages probe reads completed assistant tool blocks, preserves thinking r
       const before: number = calls;
       const result = (await run())[0]!;
       assert.equal(result.ok, false, mode);
-      assert.equal(calls, before + 1, mode + " must not start a continuation");
+      assert.equal(calls, before + (mode === "truncated" ? 6 : 1), mode + " must not start a continuation (truncated transport uses the existing retry budget)");
     }
   } finally {
     server.closeAllConnections(); await new Promise<void>(r => server.close(() => r()));

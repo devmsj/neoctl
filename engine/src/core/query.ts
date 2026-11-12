@@ -344,6 +344,10 @@ async function* queryLoop(
           state = recovery;
           continue;
         }
+        if (incompleteReason) {
+          yield { type: "error", error: new Error(`Model response incomplete: ${incompleteReason}`) };
+          return "model_error";
+        }
         return "completed";
       }
 
@@ -506,7 +510,7 @@ async function* callModelForTurn(
 ): AsyncGenerator<AgentEvent, { terminal?: TerminalReason; output?: ModelTurnOutput; reactiveCompact?: QueryState }, void> {
   const assistantMessages: Message[] = [];
   const toolUses: ToolUseRequest[] = [];
-  const outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
+  let outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
   const thinkingParts: string[] = [];
   const inputStreams = new Map<string, ToolInputStream>();
   let previousResponseId = state.previousResponseId;
@@ -559,6 +563,15 @@ async function* callModelForTurn(
       fastMode: options.fastMode,
       cancellation: options.abortSignal,
     }), options.abortSignal))) {
+      if (event.type === "retrying" && event.resetOutput) {
+        outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
+        assistantMessages.length = 0;
+        toolUses.length = 0;
+        thinkingParts.length = 0;
+        inputStreams.clear();
+        previousResponseId = state.previousResponseId;
+        incompleteReason = undefined;
+      }
       if (event.type === "fast_mode_fallback") {
         options.fastMode = false;
         if (toolContext.options) toolContext.options.fastMode = false;
@@ -782,7 +795,7 @@ async function* handleModelEvent(
   }
 
   if (event.type === "retrying") {
-    yield { type: "retrying", attempt: event.attempt, delayMs: event.delayMs, error: event.error };
+    yield { type: "retrying", attempt: event.attempt, delayMs: event.delayMs, error: event.error, ...(event.resetOutput ? { resetOutput: true } : {}) };
     return {};
   }
 
@@ -790,7 +803,7 @@ async function* handleModelEvent(
     const thinkingMessage = finalizeThinkingMessage(assistantMessages, thinkingParts);
     if (thinkingMessage) yield { type: "message", message: thinkingMessage };
     if (event.usage) yield { type: "usage", usage: event.usage };
-    return { previousResponseId: event.responseId };
+    return { previousResponseId: event.responseId, ...(event.stopReason === "pause_turn" ? { incompleteReason: "pause_turn" } : {}) };
   }
 
   if (event.type === "response_incomplete") {
@@ -799,7 +812,7 @@ async function* handleModelEvent(
     if (event.usage) yield { type: "usage", usage: event.usage };
     if (event.reason === "max_tokens") throw new ModelAPIError({ provider: "anthropic", category: "max_output_tokens", message: "Claude reached max_tokens before completing the response. No incomplete tool call was executed; increase the output limit or split the work into smaller calls.", retryable: false });
     if (event.reason === "model_context_window_exceeded") throw new ModelAPIError({ provider: "anthropic", category: "context_length", message: "Claude model context window exceeded", retryable: false });
-    return { previousResponseId: event.responseId, incompleteReason: event.reason };
+    return { previousResponseId: event.responseId, incompleteReason: event.reason ?? "unknown" };
   }
 
   if (event.type === "error") {
@@ -841,6 +854,7 @@ async function* executeToolsForTurn(
 
   if (options.abortSignal?.aborted) return { terminal: "aborted_tools", messages: [], context };
 
+  const settledMessages: Message[] = [];
   const events = new AsyncEventQueue<RunToolsEvent & { timing?: TimingRecord }>(2048, compactRunToolsQueue);
   const closeOnAbort = () => events.close();
   options.abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
@@ -867,8 +881,13 @@ async function* executeToolsForTurn(
         continue;
       }
       const messages = event.updates.map((update) => update.message);
+      settledMessages.push(...messages);
       yield { type: "tool.result.available", toolUse: event.request, ok: event.ok, messages, index: event.index, total: event.total };
       yield { type: "tool.finished", toolUse: event.request, ok: event.ok, index: event.index, total: event.total };
+      for (const message of messages) {
+        context.appState.appendMessage(message);
+        yield { type: "message", message };
+      }
     }
   } finally {
     options.abortSignal?.removeEventListener("abort", closeOnAbort);
@@ -876,11 +895,6 @@ async function* executeToolsForTurn(
 
   const result = await running;
   if (!result.completed) return { terminal: "aborted_tools", messages: [], context };
-
-  for (const message of result.value.messages) {
-    context.appState.appendMessage(message);
-    yield { type: "message", message };
-  }
 
   const succeeded = toolUses.filter((toolUse) => {
     const resultMessage = result.value.messages.find((message) =>
@@ -890,7 +904,7 @@ async function* executeToolsForTurn(
   }).length;
   yield { type: "tool.batch.completed", total: toolUses.length, succeeded, failed: toolUses.length - succeeded };
 
-  return { messages: result.value.messages, context: result.value.context };
+  return { messages: settledMessages, context: result.value.context };
 }
 
 function maybeRecoverWithoutTools(
@@ -900,11 +914,19 @@ function maybeRecoverWithoutTools(
   previousResponseId: string | undefined,
   options: QueryOptions,
 ): QueryState | undefined {
+  if (incompleteReason === "pause_turn" && state.maxOutputTokensRecoveryCount === 0) {
+    return { ...state, messages: [...state.messages, ...assistantMessages],
+      modelInputMessages: [...state.messages, ...assistantMessages], previousResponseId: undefined,
+      maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount + 1, turnCount: state.turnCount + 1,
+      transition: { reason: "next_turn", detail: "pause_turn" } };
+  }
   if (incompleteReason === "max_output_tokens" && state.maxOutputTokensRecoveryCount === 0) {
     return {
       ...state,
       messages: [...state.messages, ...assistantMessages],
-      modelInputMessages: [createTextMessage("user", "Continue from the exact point where the previous response stopped.")],
+      modelInputMessages: previousResponseId
+        ? [createTextMessage("user", "Continue from the exact point where the previous response stopped.")]
+        : [...state.messages, ...assistantMessages, createTextMessage("user", "Continue from the exact point where the previous response stopped.")],
       previousResponseId,
       maxOutputTokensOverride: Math.max(options.maxOutputTokensOverride ?? 0, 64000),
       maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount + 1,

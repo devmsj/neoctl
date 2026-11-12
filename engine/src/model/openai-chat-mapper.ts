@@ -3,6 +3,7 @@ import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
 import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
+import { ModelAPIError, normalizeUnknownError } from "./errors.js";
 import { withThinkingLifecycle } from "./thinking-lifecycle.js";
 import {
   asNumber,
@@ -72,8 +73,13 @@ async function* normalizeChatStreamEvents(
   const announcedToolCalls = new Set<number>();
   let responseId: string | undefined;
   let usage = undefined as ReturnType<typeof normalizeUsage>;
+  let stopReason: string | undefined;
+  let awaitingRead = true;
 
+  try {
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
+    awaitingRead = false;
+    if (!sse.data || typeof sse.data !== "object" || Array.isArray(sse.data)) throw new ModelAPIError({ provider: "openai", category: "network", message: "Invalid JSON in OpenAI SSE event" });
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
     yield { type: "provider_event", event };
@@ -132,17 +138,26 @@ async function* normalizeChatStreamEvents(
       }
 
       const finishReason = asString(choice.finish_reason);
-      if (finishReason) yield { type: "assistant_text_done" };
+      if (finishReason) { stopReason = finishReason; yield { type: "assistant_text_done" }; }
       if (finishReason === "tool_calls") {
         for (const buffer of toolBuffers.values()) yield { type: "tool_use", toolUse: toToolUse(buffer) };
       }
     }
+    awaitingRead = true;
   }
 
+  } catch (error) {
+    // include_usage arrives after finish_reason. Keep reading for accounting,
+    // but a transport-only failure during this trailer cannot undo completion.
+    const normalized = normalizeUnknownError(error, options.providerName ?? "openai");
+    if (!awaitingRead || !stopReason || !["network", "timeout"].includes(normalized.category)) throw error;
+  }
+  if (!stopReason) throw new ModelAPIError({ provider: options.providerName ?? "openai", category: "network", message: "Chat stream closed before finish_reason" });
   const thinking = thinkingParts.join("").trim();
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
   if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
-  yield { type: "response_completed", responseId, stopReason: "completed", usage };
+  if (stopReason === "length" || stopReason === "content_filter") yield { type: "response_incomplete", reason: stopReason === "length" ? "max_output_tokens" : stopReason, usage };
+  else yield { type: "response_completed", responseId, stopReason, usage };
 }
 
 export function* normalizeChatObject(response: HttpJsonResponse<Record<string, unknown>>): Generator<ModelStreamEvent> {
@@ -150,7 +165,9 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   const responseId = asString(body.id);
   if (responseId) yield { type: "response_started", responseId };
   const choices = Array.isArray(body.choices) ? body.choices : [];
+  let stopReason: string | undefined;
   for (const choice of choices as Record<string, unknown>[]) {
+    stopReason = asString(choice.finish_reason) ?? stopReason;
     const message = choice.message as Record<string, unknown> | undefined;
     const reasoningContent = asString(message?.reasoning_content) ?? asString(message?.reasoning);
     if (reasoningContent) yield { type: "assistant_message", message: createThinkingMessage(reasoningContent) };
@@ -175,7 +192,8 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   }
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
-  yield { type: "response_completed", responseId, stopReason: "completed", usage };
+  if (stopReason === "length" || stopReason === "content_filter") yield { type: "response_incomplete", reason: stopReason === "length" ? "max_output_tokens" : stopReason, usage };
+  else yield { type: "response_completed", responseId, stopReason: stopReason ?? "completed", usage };
 }
 
 // Chat content is public by contract, but compatible servers may explicitly

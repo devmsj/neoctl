@@ -11,27 +11,33 @@ export async function* decodeSSE(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const result = await readWithIdleTimeout(reader, idleTimeoutMs);
-    if (result.done) break;
-    buffer += decoder.decode(result.value, { stream: true });
-
+  try {
     while (true) {
-      const index = firstFrameBoundary(buffer);
-      if (index < 0) break;
-      const frame = buffer.slice(0, index);
-      buffer = buffer.slice(buffer[index] === "\r" ? index + 4 : index + 2);
-      const event = parseFrame(frame);
-      if (!event) continue;
-      if (event.data === "[DONE]") return;
-      yield event;
-    }
-  }
+      const result = await readWithIdleTimeout(reader, idleTimeoutMs);
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
 
-  const tail = buffer.trim();
-  if (tail) {
-    const event = parseFrame(tail);
-    if (event && event.data !== "[DONE]") yield event;
+      while (true) {
+        const index = firstFrameBoundary(buffer);
+        if (index < 0) break;
+        const frame = buffer.slice(0, index);
+        buffer = buffer.slice(buffer[index] === "\r" ? index + 4 : index + 2);
+        const event = parseFrame(frame);
+        if (!event) continue;
+        if (event.data === "[DONE]") return;
+        yield event;
+      }
+    }
+
+    const tail = buffer.trim();
+    if (tail) {
+      const event = parseFrame(tail);
+      if (event && event.data !== "[DONE]") yield event;
+    }
+  } finally {
+    // Do not await a broken provider's cancellation while unwinding an idle read.
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 

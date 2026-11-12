@@ -479,3 +479,16 @@ test('running status and queued image routes retain account authentication and o
  assert.equal((await f.request(route+'?sessionId='+a.session.sessionId,alice)).status,404)
  assert.equal((await f.request(route+'?sessionId='+a.session.sessionId,bob)).status,404)
 })
+
+
+test('history paging uses the authenticated session ownership boundary', async t => {
+  const f = await fixture(t), alice = await f.login('Alice'), bob = await f.login('Bob');
+  const snapshot = await (await f.request('/api/state?tabId=paging', alice)).json();
+  const id = snapshot.session.sessionId;
+  const query = new URLSearchParams({ tabId: 'paging', sessionId: id, before: String(snapshot.history.before), epoch: snapshot.history.epoch });
+  assert.equal((await f.request('/api/history?' + query)).status, 401);
+  assert.equal((await f.request('/api/history?' + query, bob)).status, 404);
+  const response = await f.request('/api/history?' + query, alice);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).sessionId, id);
+});

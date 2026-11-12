@@ -123,6 +123,7 @@ async function* normalizeResponsesStreamEvents(
   }
 
   for await (const sse of decodeSSE(stream, options.streamIdleTimeoutMs ?? 120000)) {
+    if (!sse.data || typeof sse.data !== "object" || Array.isArray(sse.data)) throw new ModelAPIError({ provider: "openai", category: "network", message: "Invalid JSON in OpenAI SSE event" });
     const event = sse.data as Record<string, unknown>;
     const type = asString(event.type ?? sse.event);
     assertNoNativeImageGenerationResponse(event, type);
@@ -233,6 +234,7 @@ async function* normalizeResponsesStreamEvents(
       const usage = normalizeUsage(response?.usage);
       if (usage) yield { type: "usage", usage };
       yield { type: "response_completed", responseId, stopReason: asString(response?.status) ?? "completed", usage };
+      return;
     }
 
     if (type === "response.incomplete") {
@@ -250,16 +252,22 @@ async function* normalizeResponsesStreamEvents(
         reason: asString((response?.incomplete_details as Record<string, unknown> | undefined)?.reason),
         usage,
       };
+      return;
     }
 
+    if (type === "response.failed") {
+      throw normalizeOpenAIStreamError((event.response as Record<string, unknown> | undefined) ?? event);
+    }
     if (type === "error") {
       throw normalizeOpenAIStreamError(event);
     }
   }
+  throw new ModelAPIError({ provider: "openai", category: "network", message: "Responses stream closed before response completion" });
 }
 
 export function* normalizeResponsesObject(response: HttpJsonResponse<Record<string, unknown>>): Generator<ModelStreamEvent> {
   const body = response.body;
+  if (body.status === "failed") throw normalizeOpenAIStreamError(body);
   assertNoNativeImageGenerationResponse(body);
   const responseId = asString(body.id);
   if (responseId) yield { type: "response_started", responseId };

@@ -34,7 +34,7 @@ test("backoff cancellation is immediate and never starts another request", async
   assert.equal(calls, 1); assert(performance.now() - start < 500);
   const second = new AbortController(); const waiting = waitForRetry(60000, second.signal); second.abort(); await assert.rejects(waiting);
 });
-test("do not replay visible output or permanent errors", async () => {
+test("retry partial output within the original budget, but never permanent errors", async () => {
   for (const published of [true, false]) {
     let calls = 0;
     await assert.rejects(async () => {
@@ -44,6 +44,6 @@ test("do not replay visible output or permanent errors", async () => {
         throw published ? transient() : new ModelAPIError({ provider: "openai", category: "invalid_request", message: "bad input" });
       }, { provider: "openai", delayMs: 0 })) {}
     });
-    assert.equal(calls, 1);
+    assert.equal(calls, published ? 6 : 1);
   }
 });

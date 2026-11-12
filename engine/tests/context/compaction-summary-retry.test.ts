@@ -1,3 +1,4 @@
+import { streamWithRetry } from "../../src/model/retry-runner.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ModelDrivenCompactor, withCompactionReport } from "../../src/context/compaction.js";
@@ -124,4 +125,18 @@ test("cancelling a summary still aborts instead of committing a fallback", async
   const controller = new AbortController();
   const { gateway } = scriptedGateway([() => { controller.abort(); return overflow(); }]);
   await assert.rejects(new ModelDrivenCompactor(gateway).manualCompact(windowAfterCheckpoint(), { abortSignal: controller.signal }));
+});
+
+
+test("summary retry discards failed attempt text and retains only the successful checkpoint", async () => {
+  let attempts = 0;
+  const gateway: ModelGateway = { stream() { return streamWithRetry(async function* () {
+    attempts++;
+    yield { type: "assistant_delta", text: attempts === 1 ? "BAD_CHECKPOINT" : "GOOD_CHECKPOINT" };
+    if (attempts === 1) throw new Error("reset");
+    yield { type: "response_completed" };
+  }, { provider: "test", maxRetries: 1, delayMs: 0 }); } };
+  const result = await new ModelDrivenCompactor(gateway).manualCompact(windowAfterCheckpoint());
+  assert.equal(attempts, 2); assert.equal(result.summary, "GOOD_CHECKPOINT");
+  assert(!JSON.stringify(result.messages).includes("BAD_CHECKPOINT"));
 });

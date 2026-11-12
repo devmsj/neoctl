@@ -78,3 +78,26 @@ for (const boundary of [
     } finally { close(); }
   });
 }
+
+
+test("retry reset removes only failed attempt drafts and preserves the existing countdown UI", () => {
+  const { repl, chunks, handle, close } = fixture();
+  try {
+    handle({ type: "message", message: createTextMessage("user", "KEEP_HISTORY") });
+    handle({ type: "assistant.delta", text: "FAILED_DRAFT", displayChannel: "visible" });
+    handle({ type: "thinking.delta", text: "FAILED_THINKING" });
+    handle({ type: "thinking.done" });
+    handle({ type: "tool_call.started", callId: "failed-tool", name: "file_read" });
+    const before = Date.now();
+    handle({ type: "retrying", attempt: 1, delayMs: 5000, error: new Error("reset"), resetOutput: true });
+    const snapshot = repl.snapshot(false);
+    assert.equal(snapshot.lines.length, 1);
+    assert.equal(snapshot.lines[0].text, "KEEP_HISTORY");
+    assert.equal(snapshot.status.detail, "retrying in 5.0s");
+    assert.ok(snapshot.status.retryCooldownUntil! >= before + 5000);
+    const sync = JSON.parse(chunks.at(-1)!.split("data: ")[1]);
+    assert.equal(sync.lines.length, 1);
+    handle({ type: "assistant.delta", text: "SUCCESS", displayChannel: "visible" });
+    assert.equal(repl.snapshot(false).lines.at(-1)?.text, "SUCCESS");
+  } finally { close(); }
+});

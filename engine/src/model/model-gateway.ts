@@ -68,7 +68,7 @@ export type ModelStreamEvent =
   | { type: "response_completed"; responseId?: string; stopReason?: string; usage?: ModelUsage }
   | { type: "response_incomplete"; responseId?: string; reason?: string; usage?: ModelUsage }
   | { type: "usage"; usage: ModelUsage; provisional?: boolean }
-  | { type: "retrying"; error: Error; attempt: number; delayMs: number }
+  | { type: "retrying"; error: Error; attempt: number; delayMs: number; resetOutput?: boolean }
   | { type: "provider_event"; event: unknown }
   | { type: "error"; error: Error }
   | { type: "retry"; reason: string; attempt: number };
