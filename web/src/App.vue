@@ -1878,6 +1878,8 @@ function resetDemoGestureOutside(event) {
 }
 
 async function onRuntimeContextClick() {
+  // Disabled: keep the runtime-context presentation, but do not enter demo on five clicks.
+  /*
   const sessionId = state.session?.sessionId || ''
   const eligible = !adminViewing.value && state.connected && !state.busy && !state.demoMode && !demoStarting.value
     && !composerActionPending.value && !input.value.trim() && !state.attachments.length
@@ -1893,6 +1895,7 @@ async function onRuntimeContextClick() {
   } catch (error) {
     if (state.session?.sessionId === sessionId) notify(error.message || String(error))
   } finally { demoStarting.value = false }
+  */
 }
 
 async function submit() {

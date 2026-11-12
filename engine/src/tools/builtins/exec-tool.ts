@@ -217,7 +217,14 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
           onOutput: (delta) => emitOutputDelta(context, delta),
           abortSignal: context.abortSignal,
         });
-        return { ok: true, output: toToolOutput(result), summary: summarizeExecOutput(result) };
+        // Polls already return incremental output; do not repeat a potentially huge
+        // inline script alongside it. The manager retains the original command.
+        const output = toToolOutput(result);
+        if (!input.chars && !input.signal && result.command.length > 160) {
+          output.command = `${result.command.slice(0, 160)}… [command abbreviated]`;
+          output.command_truncated = true;
+        }
+        return { ok: true, output, summary: summarizeExecOutput(result) };
       } catch (error) {
         return { ok: false, output: { error: error instanceof Error ? error.message : String(error) } };
       }

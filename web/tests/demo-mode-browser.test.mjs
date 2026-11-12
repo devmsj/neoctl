@@ -27,7 +27,7 @@ async function sync(page, snapshot) {
   await page.waitForTimeout(60)
 }
 
-test('five clicks start a scoped backend demo and show only the existing toast; user messages use normal submit', async () => {
+test('five-click demo entry is disabled; ordinary submit and existing demo state still work', async () => {
   const current = observabilitySnapshot({ busy: false, session: { sessionId: 'demo-browser' } })
   const posts = []
   const f = await mount(current, async route => {
@@ -44,11 +44,13 @@ test('five clicks start a scoped backend demo and show only the existing toast; 
     for (let i = 0; i < 4; i++) await title.click()
     assert.equal(posts.length, 0, 'clicking elsewhere breaks the consecutive gesture')
     await title.click()
-    await f.page.waitForFunction(() => document.querySelector('.toast')?.textContent === '已进入演示模式')
-    assert.equal(posts.length, 1)
-    assert.equal(posts[0].url.pathname, '/api/demo')
-    assert.equal(posts[0].url.searchParams.get('sessionId'), 'demo-browser')
-    assert.ok(posts[0].url.searchParams.get('tabId'))
+    for (let i = 0; i < 5; i++) await title.click()
+    await title.focus()
+    for (let i = 0; i < 5; i++) await title.press('Enter')
+    for (let i = 0; i < 5; i++) await title.press('Space')
+    await f.page.waitForTimeout(100)
+    assert.equal(posts.length, 0, 'mouse and keyboard gestures must not POST /api/demo')
+    assert.equal(await f.page.getByText('已进入演示模式', { exact: true }).count(), 0)
     current.demoMode = true; current.busy = true; current.status.phase = 'thinking'
     await sync(f.page, current)
     assert.equal(await f.page.locator('[role="dialog"], .demo-banner, .demo-badge').count(), 0)
@@ -59,7 +61,7 @@ test('five clicks start a scoped backend demo and show only the existing toast; 
     assert.equal(posts.at(-1).body.text, '这条对话只发送')
     assert.ok(!posts.some(post => post.url.pathname === '/api/interrupt' || post.url.pathname === '/api/submit-now'))
     for (let i = 0; i < 5; i++) await title.click()
-    assert.equal(posts.filter(post => post.url.pathname === '/api/demo').length, 1)
+    assert.equal(posts.filter(post => post.url.pathname === '/api/demo').length, 0)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })
