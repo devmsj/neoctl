@@ -1,5 +1,5 @@
-import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS } from "../session/tool-result-memory.js";
-import type { JsonSchema, Tool, ToolDefinition, ToolUseContext } from "./tool.js";
+import { withToolRuntimeInput } from "./runtime-input.js";
+import type { Tool, ToolDefinition, ToolUseContext } from "./tool.js";
 import { resolveToolDescription } from "./tool.js";
 
 /** Tools are available by default; explicit global/session overrides remain authoritative. */
@@ -63,7 +63,7 @@ export class ToolRegistry {
     return this.visibleTools(context, options).map((tool) => ({
       name: tool.name,
       description: resolveToolDescription(tool, context),
-      inputSchema: withToolResultBudgetInput(tool.inputSchema, tool),
+      inputSchema: withToolRuntimeInput(tool.inputSchema, tool),
       strict: false,
     }));
   }
@@ -137,19 +137,4 @@ function compareToolForPromptCache(left: Tool<any>, right: Tool<any>): number {
   const rightMcp = right.metadata.isMcp ? 1 : 0;
   if (leftMcp !== rightMcp) return leftMcp - rightMcp;
   return left.name.localeCompare(right.name);
-}
-
-function withToolResultBudgetInput(schema: JsonSchema, tool: Tool<any>): JsonSchema {
-  if (schema.type !== "object") return schema;
-  const defaultBudget = Math.max(tool.metadata.maxResultSizeChars ?? 0, DEFAULT_TOOL_RESULT_BUDGET_CHARS);
-  return {
-    ...schema,
-    properties: {
-      ...(schema.properties ?? {}),
-      maxResultChars: {
-        type: "number",
-        description: `Override result budget for this call. Default ${defaultBudget}; range 1-${MAX_TOOL_RESULT_BUDGET_CHARS} serialized characters.`,
-      },
-    },
-  };
 }

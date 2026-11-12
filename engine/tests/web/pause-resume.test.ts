@@ -93,7 +93,7 @@ test("stuck tool does not delay pause or continuation and is not replayed", asyn
     metadata: { concurrent: false, readOnly: false, visible: true },
     async execute() { calls++; entered.resolve(); await stuck.promise; return { ok: true, output: "done" }; } });
   const engine = engineFor({ async *stream() {
-    if (turns++ === 0) yield { type: "tool_use", toolUse: { id: "slow-1", name: "slow", input: {} } };
+    if (turns++ === 0) yield { type: "tool_use", toolUse: { id: "slow-1", name: "slow", input: { description: "Test pause during a stuck tool" } } };
     else yield { type: "assistant_message", message: createTextMessage("assistant", "checked") };
   } }, { tools });
   const repl = replFor(engine);

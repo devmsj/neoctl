@@ -20,7 +20,7 @@ export function activityPhase(line) {
 export function activityPurpose(line) {
   const p = line?.activity?.input || {}
   // Explicit model purpose wins; never prepend a tool label or append fallback facts.
-  const purpose = [p.purpose,p.description,...(line?.activity ? [] : [line?.toolDisplay?.purpose])].find(value=>typeof value==='string' && value.trim())
+  const purpose = [p.description,p.purpose,...(line?.activity ? [] : [line?.toolDisplay?.purpose])].find(value=>typeof value==='string' && value.trim())
   if (purpose) return purpose.trim()
   const d = fallbackDescriptor(line?.toolName || '', p)
   if (!d.key.endsWith('.generic')) return fallbackText(d.key, d.params)

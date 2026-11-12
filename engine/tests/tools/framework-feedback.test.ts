@@ -20,7 +20,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const store = new FrameworkFeedbackStore(join(root, "feedback"));
   const tools = new ToolRegistry(); tools.register(createFrameworkFeedbackTool(store));
   const context: ToolUseContext = { agentId: "test", tools, appState: new InMemoryAppState("test"), emit() {} };
-  const submit = (input: unknown) => runToolUse({ id: "call", name: "framework_feedback", input }, context);
+  const submit = (input: unknown) => runToolUse({ id: "call", name: "framework_feedback", input: input && typeof input === "object" && !Array.isArray(input) ? { description: "Report the observed issue", ...input } : input }, context);
   return { root, store, tools, context, submit };
 }
 

@@ -42,20 +42,20 @@ async function main(): Promise<void> {
   const inline = await runToolUse({
     id: "skill_inline",
     name: "skill",
-    input: { skill: "/review-plan", args: "Plan A" },
+    input: { description: "Run the smoke test operation", skill: "/review-plan", args: "Plan A" },
   }, context);
   const fork = await runToolUse({
     id: "skill_fork",
     name: "skill",
-    input: { name: "fork-docs" },
+    input: { description: "Run the smoke test operation", name: "fork-docs" },
   }, context);
   const missing = await runToolUse({
     id: "skill_missing",
     name: "skill",
-    input: { skill: "missing" },
+    input: { description: "Run the smoke test operation", skill: "missing" },
   }, context);
-  const listed = await runToolUse({ id: "skill_list", name: "skill_list", input: {} }, context);
-  const read = await runToolUse({ id: "skill_read", name: "skill_read", input: { name: "review-plan", includeEntrypoint: true } }, context);
+  const listed = await runToolUse({ id: "skill_list", name: "skill_list", input: { description: "Run the smoke test operation" } }, context);
+  const read = await runToolUse({ id: "skill_read", name: "skill_read", input: { description: "Run the smoke test operation", name: "review-plan", includeEntrypoint: true } }, context);
 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-skills-"));
   await fs.mkdir(path.join(root, "summarize"), { recursive: true });
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   const created = await runToolUse({
     id: "skill_create",
     name: "skill_create",
-    input: {
+    input: { description: "Run the smoke test operation",
       skill: {
         name: "generated-review",
         description: "Generated review workflow",
@@ -83,11 +83,11 @@ async function main(): Promise<void> {
   const createdSkill = await fsCatalog.get("generated-review");
 
   const guard = createSkillAwareCanUseTool(catalog);
-  const allowedDecision = await guard({ id: "allowed", name: "plan_update", input: {} }, {
+  const allowedDecision = await guard({ id: "allowed", name: "plan_update", input: { description: "Run the smoke test operation" } }, {
     ...context,
     options: { activeSkill: { name: "review-plan", allowedTools: ["plan_update"] } },
   });
-  const deniedDecision = await guard({ id: "denied", name: "exec", input: {} }, {
+  const deniedDecision = await guard({ id: "denied", name: "exec", input: { description: "Run the smoke test operation" } }, {
     ...context,
     options: { activeSkill: { name: "review-plan", allowedTools: ["plan_update"] } },
   });

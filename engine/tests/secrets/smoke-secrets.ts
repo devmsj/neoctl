@@ -37,11 +37,11 @@ async function main(): Promise<void> {
     emit: () => undefined,
   };
 
-  const secretList = await runToolUse({ id: "secret_list", name: "secret_list", input: {} }, context);
+  const secretList = await runToolUse({ id: "secret_list", name: "secret_list", input: { description: "Run the smoke test operation" } }, context);
   const secretListJson = JSON.stringify(secretList);
   const listToolOk = secretListJson.includes("api_token") && secretListJson.includes('"length":18') && !secretListJson.includes("super-secret-token");
 
-  const request = await runToolUse({ id: "secret_request", name: "secret_request", input: { key: "new_token", reason: "test" } }, context);
+  const request = await runToolUse({ id: "secret_request", name: "secret_request", input: { description: "Run the smoke test operation", key: "new_token", reason: "test" } }, context);
   const requestOk = JSON.stringify(request).includes("new_token") && (await store.info("new_token"))?.status === "empty";
 
   const execResult = await runToolUse({

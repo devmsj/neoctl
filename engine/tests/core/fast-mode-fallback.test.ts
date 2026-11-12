@@ -20,7 +20,7 @@ for (const laterChoice of [undefined, false, true]) test(`fallback persists, too
   const gateway = { async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     requests.push(request);
     if (requests.length === 1) { opened.resolve(); await release.promise; throw new ModelAPIError({ provider: "anthropic", status: 429, category: "rate_limit", message: "Usage credits are required for fast mode." }); }
-    if (requests.length === 2) { yield { type: "tool_use", toolUse: { id: "probe", name: "probe", input: {} } }; yield { type: "response_completed" }; }
+    if (requests.length === 2) { yield { type: "tool_use", toolUse: { id: "probe", name: "probe", input: { description: "Run the test probe" } } }; yield { type: "response_completed" }; }
     else yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
   } };
   const options = { model: "claude-haiku-5-5", tools, modelGateway: gateway, session: { rootDir: dir }, compactor: { async compact(messages: any[]) { return { messages, changed: false }; } } };

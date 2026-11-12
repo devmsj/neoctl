@@ -28,7 +28,7 @@ test("model schema, prompt and execution retain one plugin snapshot; next turn o
   const modelGateway = { async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     requests.push(request);
     assert.equal(f.leases, 1);
-    if (requests.length === 1) { f.disable(); yield { type: "tool_use", toolUse: { id: "call", name: "sample", input: {} } }; }
+    if (requests.length === 1) { f.disable(); yield { type: "tool_use", toolUse: { id: "call", name: "sample", input: { description: "Run the test probe" } } }; }
     else yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
   } };
   for await (const _ of query([createTextMessage("user", "test")], { tools: f.tools, acquireTurnResources: f.acquire, modelGateway, contextManager }, { agentId: "main", maxTurns: 3 })) {}
@@ -56,7 +56,7 @@ test("subagents refresh independently each turn, retain allow/deny policy and ke
   const f = fixture(), requests: ModelRequest[] = [];
   const modelGateway = { async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     requests.push(request);
-    if (requests.length === 1) { f.disable(); yield { type: "tool_use", toolUse: { id: "child-call", name: "sample", input: {} } }; }
+    if (requests.length === 1) { f.disable(); yield { type: "tool_use", toolUse: { id: "child-call", name: "sample", input: { description: "Run the test probe" } } }; }
     else yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
   } };
   const options = { agentId: "child", prompt: "test", agent: { agentType: "custom", description: "test", whenToUse: "test", systemPrompt: "child", tools: ["sample"] },

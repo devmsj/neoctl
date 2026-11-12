@@ -149,7 +149,7 @@ test("all-invalid output, upstream errors, cancellation and invalid config fail 
 
 test("runner schema failures include model and field; no network call", async () => {
   const tools = new ToolRegistry(); tools.register(createOpenAIImageGenerationTool());
-  const messages = await runToolUseToMessages({ id: "invalid", name: "image_create", input: { ...base, n: "2" } }, { ...context, tools });
+  const messages = await runToolUseToMessages({ id: "invalid", name: "image_create", input: { description: "Generate the test image", ...base, n: "2" } }, { ...context, tools });
   const text = JSON.stringify(messages); assert.match(text, /gpt-image-2.5-sunburst/); assert.match(text, /input.n/);
 });
 
@@ -170,7 +170,7 @@ test("alpha channel and pixel opacity survive model-visible runner results", asy
   const tools = new ToolRegistry(); tools.register(createOpenAIImageGenerationTool({ apiKey: "test-key" }));
   for (const sample of byteFixtures) {
     encoded = sample.base64;
-    const messages = await runToolUseToMessages({ id: sample.name, name: "image_create", input: base }, { ...ctx, tools });
+    const messages = await runToolUseToMessages({ id: sample.name, name: "image_create", input: { ...base, description: "Generate the test image" } }, { ...ctx, tools });
     const block = messages.flatMap(m => m.blocks).find(b => b.type === "tool_result");
     assert.ok(block?.type === "tool_result" && block.ok);
     // JSON roundtrip checks the representation actually delivered to the model.
@@ -197,7 +197,7 @@ test("soft input issues pass validation and warnings survive the full runner", a
   const { dir, ctx } = await fixture(); t.after(() => fs.rm(dir, { recursive: true, force: true }));
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ data: [{ b64_json: png }] })));
   const tools = new ToolRegistry(); tools.register(createOpenAIImageGenerationTool({ apiKey: "test-key" }));
-  const messages = await runToolUseToMessages({ id: "soft", name: "image_create", input: { ...base, image: source, outputDir: path.join(dir, "unused"), outputPath: path.join(dir, "hint.png"), maxResultChars: 48000 } }, { ...ctx, tools });
+  const messages = await runToolUseToMessages({ id: "soft", name: "image_create", input: { description: "Generate the test image", ...base, image: source, outputDir: path.join(dir, "unused"), outputPath: path.join(dir, "hint.png"), maxResultChars: 48000 } }, { ...ctx, tools });
   const block = messages.flatMap(m => m.blocks).find(b => b.type === "tool_result");
   assert.ok(block?.type === "tool_result" && block.ok);
   const text = JSON.stringify(messages);
@@ -314,6 +314,6 @@ for (const model of IMAGE_MODELS) for (const quality of IMAGE_QUALITIES) for (co
 
 test("configured model is identified in early schema errors", async () => {
   const tools = new ToolRegistry(); tools.register(createOpenAIImageGenerationTool({ model: "gpt-image-2.5-flare" }));
-  const result = await runToolUseToMessages({ id: "config", name: "image_create", input: { ...base, n: "2" } }, { ...context, tools });
+  const result = await runToolUseToMessages({ id: "config", name: "image_create", input: { description: "Generate the test image", ...base, n: "2" } }, { ...context, tools });
   assert.match(JSON.stringify(result), /gpt-image-2.5-flare/);
 });

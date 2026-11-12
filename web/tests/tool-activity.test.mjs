@@ -83,7 +83,7 @@ test('interrupted lifecycle wins over generic tool failure and listing a file st
 test('explicit model purpose is shown alone throughout each tool lifecycle',()=>{
  for(const toolName of ['file_read','file_list','file_search','file_edit','file_write','terminal_run','terminal_control','plan_update','custom_plugin']) {
   for(const phase of ['generating','queued','running','completed','failed','interrupted']) {
-   const input={purpose:'  核对本次改动  ',description:'其他说明',path:'a.ts',cmd:'echo test',query:'test'};
+   const input={description:'  核对本次改动  ',purpose:'其他说明',path:'a.ts',cmd:'echo test',query:'test'};
    assert.equal(activityPurpose(line(toolName,input,phase,{toolDisplay:{purpose:'旧展示目的',subject:'旧对象'},title:'工具名称'})),'核对本次改动');
    assert.equal(activityPurpose(line(toolName,{...input,purpose:' ',description:'模型填写的目的'},phase)),'模型填写的目的');
   }

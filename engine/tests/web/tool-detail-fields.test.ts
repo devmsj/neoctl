@@ -19,7 +19,7 @@ test('purpose/subject independent; never derive parameters from metadata', () =>
   const f = classify({ toolName: 'read', purpose: 'read /intent offset 99', subject: '/summary', input: { description: 'other intention' } });
   assert.equal(f.purpose.value, 'other intention'); assert.equal(f.purpose.source, 'input'); assert.equal(f.subject.completeness, 'summary'); assert.equal(f.subject.value, '/summary');
   assert.equal(f.object.state, 'not-provided'); assert.equal(param(f, 'offset').state, 'unspecified');
-  assert.equal(classify({ toolName: 'read', input: { purpose: '', description: 'not fallback' } }).purpose.value, '');
+  assert.equal(classify({ toolName: 'read', input: { purpose: '', description: 'primary description' } }).purpose.value, 'primary description');
 });
 test('real absolute result path wins; raw input path retained; Windows/UNC/POSIX', () => {
   for (const path of ['C:\\work\\真实 文件.ts', '\\\\server\\share\\file', '/work/file']) {

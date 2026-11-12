@@ -86,7 +86,7 @@ export class DemoMode implements ModelGateway, QuerySimulation {
 
   private buildScript(): void {
     const b = this.backend;
-    const call = (name: string, input: unknown) => ({ name, input });
+    const call = (name: string, input: unknown) => ({ name, input: { description: "演示工具操作", ...(input as Record<string, unknown>) } });
     const add = (text: string, calls: () => Step["calls"], compactAfter = false) => this.steps.push(() => ({ text, calls: calls().filter(c => this.tools.get(c.name)), compactAfter }));
     const plan = (stage: number) => call("plan_update", { title: "Aurora 项目完善", items: ["检查项目与资料", "完善文件和配图", "交叉验证并交付"].map((description, i) => ({ description, status: i < stage ? "completed" : i === stage ? "in_progress" : "pending" })) });
     for (let round = 0; round < 2; round++) {

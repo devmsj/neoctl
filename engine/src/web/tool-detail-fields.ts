@@ -82,10 +82,10 @@ export function classifyToolDetailFields(source: SanitizedToolFieldsSource): Too
     return absent(key, optional && !!data && completeness === 'complete' ? 'unspecified' : 'not-provided');
   }
   function metadata(key: 'purpose' | 'subject'): DetailField {
+    const description = key === 'purpose' ? field(key, 'input', 'description') : absent(key);
+    if (description.state === 'provided') return description;
     const value = field(key, 'input');
     if (value.state === 'provided') return value;
-    const description = key === 'purpose' ? field(key, 'input', 'description') : value;
-    if (description.state === 'provided') return description;
     if (own(source, key) && source[key] !== undefined) return { key, state: 'provided', value: source[key], source: 'display', sourceKey: key, completeness: 'summary' };
     return value;
   }

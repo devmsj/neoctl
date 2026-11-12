@@ -36,7 +36,7 @@ function fixture(options: Partial<QueryEngineOptions> = {}) {
       requests.push(request);
       if (requests.length === 1) {
         opened.release(); await resume.promise;
-        yield { type: "tool_use", toolUse: { id: "probe1", name: "probe", input: {} } };
+        yield { type: "tool_use", toolUse: { id: "probe1", name: "probe", input: { description: "Run the test probe" } } };
         yield { type: "response_completed", responseId: "resp-first" };
       } else yield { type: "assistant_message", message: createTextMessage("assistant", "finished") };
     } }, ...options,

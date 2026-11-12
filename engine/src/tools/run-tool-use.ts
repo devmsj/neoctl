@@ -1,3 +1,4 @@
+import { withToolRuntimeInput, stripToolRuntimeInput } from "./runtime-input.js";
 import { DEFAULT_OPENAI_IMAGE_MODEL, imageValidationError } from "./builtins/image-capabilities.js";
 import { DEFAULT_TOOL_RESULT_BUDGET_CHARS, MAX_TOOL_RESULT_BUDGET_CHARS, truncateToolText } from "../session/tool-result-memory.js";
 import { createTextMessage, createToolResultMessage, type Message, type ToolUseRequest } from "../types/messages.js";
@@ -63,7 +64,7 @@ export async function runToolUse(
       return [{ message: createToolResultMessage(request, false, { error: decision.reason ?? "Tool use denied" }) }];
     }
 
-    const sanitizedInput = stripToolRuntimeInput(customValidation.value);
+    const sanitizedInput = stripToolRuntimeInput(customValidation.value, tool);
     const result = await callTool(tool, sanitizedInput, contextWithToolUseId, {
       canUseTool: options.canUseTool,
       parentMessage: options.parentMessage,
@@ -117,9 +118,9 @@ function parseAndValidateInput<TInput>(
   context: ToolUseContext,
 ): { ok: true; value: TInput } | { ok: false; message: string } {
   const schemaInput = tool.metadata.ignoreUnknownInputProperties
-    ? stripUnknownInputProperties(input, tool.inputSchema)
+    ? stripUnknownInputProperties(input, withToolRuntimeInput(tool.inputSchema, tool))
     : input;
-  const schemaResult = validateJsonSchema(schemaInput, withToolResultBudgetSchema(tool.inputSchema));
+  const schemaResult = validateJsonSchema(schemaInput, withToolRuntimeInput(tool.inputSchema, tool));
   if (!schemaResult.ok) {
     const hint = tool.metadata.shouldDefer
       ? ` ${buildSchemaNotSentHint(tool.name)}`
@@ -131,8 +132,11 @@ function parseAndValidateInput<TInput>(
     return { ok: false, message: `${schemaResult.message}.${hint}`.trim() };
   }
 
+  const description = (schemaResult.value as Record<string, unknown>).description;
+  if (typeof description !== "string" || !description.trim()) return { ok: false, message: "input.description must be a non-empty string" };
+
   try {
-    const validatedInput = stripToolRuntimeInput(schemaResult.value);
+    const validatedInput = stripToolRuntimeInput(schemaResult.value, tool);
     const value = tool.validate ? tool.validate(validatedInput, context) : (validatedInput as TInput);
     return { ok: true, value };
   } catch (error) {
@@ -210,30 +214,13 @@ function readMaxResultChars(input: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-function stripToolRuntimeInput<TInput>(input: TInput): TInput {
-  if (!input || typeof input !== "object" || Array.isArray(input) || !("maxResultChars" in input)) return input;
-  const { maxResultChars: _maxResultChars, ...rest } = input as Record<string, unknown>;
-  return rest as TInput;
-}
-
 function buildSchemaNotSentHint(toolName: string): string {
   return `If ${toolName} is deferred, select it with ToolSearch before retrying.`;
 }
 
-function withToolResultBudgetSchema(schema: Tool["inputSchema"]): Tool["inputSchema"] {
-  if (schema.type !== "object") return schema;
-  return {
-    ...schema,
-    properties: {
-      ...(schema.properties ?? {}),
-      maxResultChars: { type: "number" },
-    },
-  };
-}
-
 function stripUnknownInputProperties(input: unknown, schema: Tool["inputSchema"]): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  const effectiveSchema = withToolResultBudgetSchema(schema);
+  const effectiveSchema = schema;
   if (effectiveSchema.type !== "object" || !effectiveSchema.properties || effectiveSchema.additionalProperties !== false) return input;
 
   let changed = false;

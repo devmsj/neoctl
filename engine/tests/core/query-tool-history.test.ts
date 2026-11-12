@@ -38,7 +38,7 @@ for (const concurrent of [false, true]) {
     test(`QueryEngine records tools once across history, compaction and resume (concurrent=${concurrent}, count=${count})`, async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), "neo-tool-history-"));
       try {
-        const calls = Array.from({ length: count }, (_, index) => ({ id: `call-${index}`, name: "probe", input: {} }));
+        const calls = Array.from({ length: count }, (_, index) => ({ id: `call-${index}`, name: "probe", input: { description: "Run the test probe" } }));
         const tools = new ToolRegistry();
         let executions = 0;
         tools.register({ name: "probe", description: "In-memory counter only", inputSchema: { type: "object" },
@@ -96,7 +96,7 @@ for (const concurrent of [false, true]) {
 
 test("direct query owns synthetic tool messages even without QueryEngine", async () => {
   const tools = new ToolRegistry();
-  const call = { id: "direct-call", name: "probe", input: {} };
+  const call = { id: "direct-call", name: "probe", input: { description: "Run the test probe" } };
   tools.register({ name: "probe", description: "mock", inputSchema: { type: "object" },
     metadata: { concurrent: false, readOnly: true, visible: true },
     async execute() { return { ok: true, output: "ok" }; },
@@ -109,7 +109,7 @@ test("direct query owns synthetic tool messages even without QueryEngine", async
 });
 
 test("provider assistant tool blocks are persisted once and exported without synthesizing another message", async () => {
-  const call = { id: "native-call", name: "probe", input: {} };
+  const call = { id: "native-call", name: "probe", input: { description: "Run the test probe" } };
   const tools = new ToolRegistry();
   let executions = 0;
   tools.register({ name: "probe", description: "mock", inputSchema: { type: "object" },

@@ -31,7 +31,7 @@ test('retry discards partial text/thinking/tools and executes only the successfu
       yield { type: 'assistant_delta', text: attempts === 1 ? 'BAD_DRAFT' : 'GOOD_DRAFT', displayChannel: 'visible' };
       yield { type: 'thinking_delta', text: attempts === 1 ? 'BAD_THINKING' : 'GOOD_THINKING' };
       yield { type: 'tool_call_started', callId: `t${attempts}`, name: 'probe' };
-      yield { type: 'tool_use', toolUse: { id: `t${attempts}`, name: 'probe', input: {} } };
+      yield { type: 'tool_use', toolUse: { id: `t${attempts}`, name: 'probe', input: { description: "Run the test probe" } } };
       if (attempts === 1) throw new Error('reset');
       yield { type: 'response_completed' };
     }, { provider: 'test', delayMs: 0, maxRetries: 1 });
@@ -53,7 +53,7 @@ test('settled tool is persisted before available event and survives cancellation
       if (ctx.toolUseId === 'slow') await gate;
       return { ok: true, output: ctx.toolUseId };
     } });
-    const gateway: ModelGateway = { async *stream() { for (const id of ['fast', 'slow']) yield { type: 'tool_use', toolUse: { id, name: 'probe', input: {} } }; yield { type: 'response_completed' }; } };
+    const gateway: ModelGateway = { async *stream() { for (const id of ['fast', 'slow']) yield { type: 'tool_use', toolUse: { id, name: 'probe', input: { description: "Run the test probe" } } }; yield { type: 'response_completed' }; } };
     const e = engine(gateway, tools, root), controller = new AbortController();
     const events: AgentEvent[] = [];
     for await (const event of e.sendUserText('test', { abortSignal: controller.signal })) {
@@ -110,7 +110,7 @@ test('parallel settlement order matches persisted history and the next model inp
   let turns = 0; let nextOrder: string[] = [];
   const e = engine({ async *stream(request) {
     if (++turns === 1) {
-      for (const id of ['first', 'second']) yield { type: 'tool_use', toolUse: { id, name: 'probe', input: {} } };
+      for (const id of ['first', 'second']) yield { type: 'tool_use', toolUse: { id, name: 'probe', input: { description: "Run the test probe" } } };
     } else nextOrder = request.messages.flatMap(m => m.blocks).filter(b => b.type === 'tool_result').map(b => b.toolUseId);
     yield { type: 'response_completed' };
   } }, tools);
@@ -125,7 +125,7 @@ test('retry exhaustion preserves last draft as interrupted, never executes buffe
   tools.register({ name: 'probe', description: 'test', inputSchema: { type: 'object' }, metadata: { readOnly: true, concurrent: true, visible: true }, async call() { executed++; return { ok: true, output: 'ok' }; } });
   const e = engine({ stream() { return streamWithRetry(async function* () {
     attempts++; yield { type: 'assistant_delta', text: `LAST_${attempts}`, displayChannel: 'visible' };
-    yield { type: 'tool_use', toolUse: { id: `t${attempts}`, name: 'probe', input: {} } };
+    yield { type: 'tool_use', toolUse: { id: `t${attempts}`, name: 'probe', input: { description: "Run the test probe" } } };
     throw new Error('reset');
   }, { provider: 'test', maxRetries: 2, delayMs: 0 }); } }, tools);
   const events = await drain(e.sendUserText('test'));

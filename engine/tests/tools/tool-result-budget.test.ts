@@ -46,7 +46,7 @@ test("custom renderer and mapped output cannot bypass explicit limits; images re
       ] }) : undefined,
     };
     const context = { agentId: "main", tools: { get: () => tool }, emit() {}, toolResultMemory: persisted ? new FileToolResultMemory({ sessionDir: dir }) : undefined } as unknown as ToolUseContext;
-    const messages = await runToolUseToMessages({ id: `call-${persisted}-${custom}`, name: "test", input: { maxResultChars: 600 } }, context);
+    const messages = await runToolUseToMessages({ id: `call-${persisted}-${custom}`, name: "test", input: { description: "Inspect result budget", maxResultChars: 600 } }, context);
     const block = messages[0]!.blocks[0]!;
     assert.equal(block.type, "tool_result");
     if (block.type !== "tool_result") return;
@@ -66,7 +66,7 @@ test("small output stays structured; Unicode truncation never splits surrogate p
 
 test("explicit large budgets bypass builtin pre-shrinking and remain intact in sessionless context processing", async () => {
   const payload = { entries: Array.from({ length: 500 }, (_, i) => ({ path: `file-${i}-${"x".repeat(80)}`, type: "file" })) };
-  const request = { id: "list", name: "file_list", input: { maxResultChars: 100000 } };
+  const request = { id: "list", name: "file_list", input: { description: "Inspect result budget", maxResultChars: 100000 } };
   assert.equal(listDirectoryTool.mapResult!({ ok: true, output: payload }, request), payload);
   const tool: Tool = { name: "test", description: "test", inputSchema: { type: "object" },
     metadata: { readOnly: true, concurrent: true, visible: true },

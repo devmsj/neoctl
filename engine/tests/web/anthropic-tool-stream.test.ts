@@ -19,11 +19,11 @@ async function until(check: () => boolean) {
   assert.fail("Timed out waiting for streamed preview");
 }
 const cases = [
-  { name: "file_write", input: { path: "probe.txt", content: "first second third" } },
-  { name: "file_edit", input: { path: "probe.txt", oldString: "old", newString: "first second third" } },
-  { name: "terminal_run", input: { cmd: "first second third" } },
-  { name: "plan_update", input: { items: [{ description: "first second third", status: "pending" }] } },
-  { name: "custom_plugin", input: { nested: { arbitrary: "first second third" } } },
+  { name: "file_write", input: { description: "Stream the test operation", path: "probe.txt", content: "first second third" } },
+  { name: "file_edit", input: { description: "Stream the test operation", path: "probe.txt", oldString: "old", newString: "first second third" } },
+  { name: "terminal_run", input: { description: "Stream the test operation", cmd: "first second third" } },
+  { name: "plan_update", input: { description: "Stream the test operation", items: [{ description: "first second third", status: "pending" }] } },
+  { name: "custom_plugin", input: { description: "Stream the test operation", nested: { arbitrary: "first second third" } } },
 ];
 
 for (const ending of ["complete", "max_tokens", "malformed", "disconnect", "abort"] as const) {
@@ -84,7 +84,8 @@ for (const ending of ["complete", "max_tokens", "malformed", "disconnect", "abor
       metadata: { visible: true, readOnly: true, concurrent: true },
       async execute(input) {
         assert.equal(responseStopped, true, "partial JSON must not execute");
-        assert.deepEqual(input, c.input); executions.push(c.name);
+        const { description: _purpose, ...businessInput } = c.input;
+        assert.deepEqual(input, businessInput); executions.push(c.name);
         return { ok: true, output: "recorded" };
       },
     });

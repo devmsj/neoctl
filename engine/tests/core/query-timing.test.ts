@@ -112,8 +112,8 @@ test("tool timing starts at actual serial dispatch, not the legacy all-tools sta
   await drain(query([user], dependencies({ tools, timingClock: c, onTiming: r => records.push(r),
     modelGateway: { async *stream() {
       if (requests++ === 0) {
-        yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: {} } };
-        yield { type: "tool_use", toolUse: { id: "b", name: "probe", input: {} } };
+        yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: { description: "Run the test probe" } } };
+        yield { type: "tool_use", toolUse: { id: "b", name: "probe", input: { description: "Run the test probe" } } };
       } else yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
     } },
   }), { agentId: "test" }));
@@ -133,7 +133,7 @@ test("concurrency limit waiting is queue time rather than execution time", async
     });
     await drain(query([user], dependencies({ tools, timingClock: c, onTiming: r => records.push(r),
       modelGateway: { async *stream() {
-        for (const id of ["a", "b", "c"]) yield { type: "tool_use", toolUse: { id, name: "probe", input: {} } };
+        for (const id of ["a", "b", "c"]) yield { type: "tool_use", toolUse: { id, name: "probe", input: { description: "Run the test probe" } } };
       } },
     }), { agentId: "test", maxTurns: 1 }));
     assert.deepEqual(records.filter(r => r.kind === "tool" && r.status === "finished").map(r => [r.queueMs, r.durationMs]),
@@ -158,8 +158,8 @@ test("parallel tools record actual dispatch and settlement independently", async
   });
   const events = await drain(query([user], dependencies({ tools, timingClock: c, onTiming: r => records.push(r),
     modelGateway: { async *stream() {
-      yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: {} } };
-      yield { type: "tool_use", toolUse: { id: "b", name: "probe", input: {} } };
+      yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: { description: "Run the test probe" } } };
+      yield { type: "tool_use", toolUse: { id: "b", name: "probe", input: { description: "Run the test probe" } } };
     } },
   }), { agentId: "test", maxTurns: 1 }));
   assert.equal(records.filter(r => r.kind === "tool" && r.status === "running").length, 2);
@@ -250,8 +250,8 @@ test("tool rounds and persisted resume keep identical wire bodies and cache keys
               yield { type: "tool_call_started", callId: "call-fixed", name: "probe" };
             }
             yield { type: "assistant_message", message: { ...user, id: "tool-message", role: "assistant",
-              blocks: [{ type: "tool_use", id: "call-fixed", name: "probe", input: {} }] } };
-            yield { type: "tool_use", toolUse: { id: "call-fixed", name: "probe", input: {} } };
+              blocks: [{ type: "tool_use", id: "call-fixed", name: "probe", input: { description: "Run the test probe" } }] } };
+            yield { type: "tool_use", toolUse: { id: "call-fixed", name: "probe", input: { description: "Run the test probe" } } };
           } else yield { type: "assistant_message", message: { ...user, id: "answer-fixed", role: "assistant" } };
         } },
       });
@@ -287,7 +287,7 @@ test("tool settlements are timestamped while the query consumer is paused; cance
       async execute() { await gate; return { ok: true, output: "ok" }; },
     });
     const stream = query([user], dependencies({ tools, timingClock: c, onTiming: r => records.push(r),
-      modelGateway: { async *stream() { yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: {} } }; } },
+      modelGateway: { async *stream() { yield { type: "tool_use", toolUse: { id: "a", name: "probe", input: { description: "Run the test probe" } } }; } },
     }), { agentId: "test", maxTurns: 1, abortSignal: controller.signal });
     for await (const event of { [Symbol.asyncIterator]: () => ({ next: () => stream.next() }) }) {
       if (event.type === "timing.updated" && event.timing.kind === "tool" && event.timing.status === "running") break;
@@ -403,7 +403,7 @@ test('tool generation field changes arrive before ready and actual scheduling',a
   yield {type:'tool_call_started',callId:'early',name:'plan_update'};
   yield {type:'tool_call_delta',callId:'early',name:'plan_update',argumentsDelta:'{"items":[{"description":"Build'};
   yield {type:'tool_call_delta',callId:'early',name:'plan_update',argumentsDelta:' now","status":"pending"}]}'};
-  yield {type:'tool_use',toolUse:{id:'early',name:'plan_update',input:{items:[{description:'Build now',status:'pending'}]}}};
+  yield {type:'tool_use',toolUse:{id:'early',name:'plan_update',input:{description:'Update the test plan',items:[{description:'Build now',status:'pending'}]}}};
  }}}),{agentId:'test',maxTurns:1});
  const events:AgentEvent[]=[];
  for await(const event of stream){

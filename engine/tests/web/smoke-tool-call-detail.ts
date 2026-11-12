@@ -20,7 +20,7 @@ const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'obs01-'));
 let checks = 0;
 const check = (v: unknown) => { assert.ok(v); checks++; };
 try {
- const request = { id: 'call-one', name: 'file_read', input: { path: 'missing.txt', offset: 0, token: 'INPUT_SECRET' } };
+ const request = { id: 'call-one', name: 'file_read', input: { description: "Run the smoke test operation", path: 'missing.txt', offset: 0, token: 'INPUT_SECRET' } };
  const use: Message = { id: 'use-message', role: 'assistant', createdAt: '', blocks: [{ type: 'tool_use', ...request }] };
  const entry = (message: Message) => ({ type: 'message', message });
  const options = { sessionId: 's1', expectedSessionId: 's1', sessionDir: dir, toolUseId: request.id };
@@ -38,10 +38,10 @@ try {
  await fs.writeFile(path.join(dir, 'edit.txt'), 'unchanged');
  const context = { emit: () => {}, agentId: 'test', tools, appState: new InMemoryAppState('test', dir), session: {sessionId:'s1',sessionDir:dir} };
  for (const actual of [
-   {id:'real-read',name:'file_read',input:{path:path.join(dir,'absent.txt')}},
-   {id:'real-edit',name:'file_edit',input:{path:path.join(dir,'edit.txt'),oldString:'NOT_FOUND',newString:'new'}},
-   {id:'real-schema',name:'file_read',input:{path:123}},
-   {id:'real-agent',name:'subagent_message',input:{target:'nonexistent',message:'hello'}}
+   {id:'real-read',name:'file_read',input:{ description: "Run the smoke test operation",path:path.join(dir,'absent.txt')}},
+   {id:'real-edit',name:'file_edit',input:{ description: "Run the smoke test operation",path:path.join(dir,'edit.txt'),oldString:'NOT_FOUND',newString:'new'}},
+   {id:'real-schema',name:'file_read',input:{ description: "Run the smoke test operation",path:123}},
+   {id:'real-agent',name:'subagent_message',input:{ description: "Run the smoke test operation",target:'nonexistent',message:'hello'}}
  ]) {
    const messages = await runToolUseToMessages(actual, context);
    const actualUse: Message = {...use, id:actual.id+'-input', blocks:[{type:'tool_use',...actual}]};

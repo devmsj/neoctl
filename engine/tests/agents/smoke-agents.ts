@@ -99,7 +99,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           toolUse: {
             id: "call_explore_list",
             name: "file_list",
-            input: {},
+            input: { description: "Run the smoke test operation" },
           },
         };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
@@ -111,7 +111,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           toolUse: {
             id: "call_explore_report_final",
             name: "subagent_report",
-            input: {
+            input: { description: "Run the smoke test operation",
               content: [
                 "## Scope",
                 "Map readonly paths.",
@@ -141,7 +141,7 @@ class ParentAndSubagentGateway implements ModelGateway {
           toolUse: {
             id: "call_explore_report_draft",
             name: "subagent_report",
-            input: { content: "## Draft\n- src/agents/agent-definition.ts inspection is in progress.", status: "draft" },
+            input: { description: "Run the smoke test operation", content: "## Draft\n- src/agents/agent-definition.ts inspection is in progress.", status: "draft" },
           },
         };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
@@ -161,8 +161,8 @@ class ParentAndSubagentGateway implements ModelGateway {
             id: `call_worker_${workerToolName}_${this.subagentCalls}`,
             name: workerToolName,
             input: workerToolName === "subagent_report"
-              ? { content: `worker result: ${lastPrompt.slice(0, 24)}`, status: "completed" }
-              : {},
+              ? { description: "Report the worker result", content: `worker result: ${lastPrompt.slice(0, 24)}`, status: "completed" }
+              : { description: "Run the worker command" },
           },
         };
         yield { type: "response_completed", responseId: `sub_${this.subagentCalls}`, stopReason: "tool_calls" };
@@ -296,14 +296,14 @@ async function main(): Promise<void> {
   const output = taskId ? await runToolUse({
     id: "call_task_output",
     name: "subagent_output",
-    input: { task_id: taskId, block: false },
+    input: { description: "Run the smoke test operation", task_id: taskId, block: false },
   }, context) : [];
   const send = await runToolUse({
     id: "call_send",
     name: "subagent_message",
-    input: { target: "bg1", message: "follow up" },
+    input: { description: "Run the smoke test operation", target: "bg1", message: "follow up" },
   }, context);
-  const list = await runToolUse({ id: "call_list", name: "subagent_list", input: {} }, context);
+  const list = await runToolUse({ id: "call_list", name: "subagent_list", input: { description: "Run the smoke test operation" } }, context);
   const memoryCallsBeforeExplore = inheritedToolResultMemoryCalls;
 
   const explore = await runToolUse({

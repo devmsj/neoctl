@@ -261,7 +261,7 @@ test("native adapter completes neo tool loop and signed history survives session
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-anthropic-"));
   let calls = 0, executed = 0;
   const seen: any[] = [];
-  const content = [{ type: "thinking", thinking: "use tool", signature: "sig" }, { type: "tool_use", id: "call_echo", name: "echo", input: { text: "local" } }];
+  const content = [{ type: "thinking", thinking: "use tool", signature: "sig" }, { type: "tool_use", id: "call_echo", name: "echo", input: { description: "Echo the test value", text: "local" } }];
   const local = await server((_req, res, body) => { if (_req.url?.endsWith("/count_tokens")) { res.writeHead(404); res.end("{}"); return; } seen.push(body); res.setHeader("Content-Type", "text/event-stream"); res.end(encode(++calls === 1 ? frames(content, "tool_use") : frames())); });
   try {
     const tools = new ToolRegistry(); tools.register({ ...tool, metadata: { readOnly: true, concurrent: true, visible: true }, async call(input: { text: string }) { executed++; return { ok: true, output: input.text }; } });

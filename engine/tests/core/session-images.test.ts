@@ -219,7 +219,7 @@ test("QueryEngine tool, runtime, transcript and restored catalog share one ident
     compactor: new DeterministicCompactor(),
     modelGateway: { async *stream(request): AsyncIterable<ModelStreamEvent> {
       turn++;
-      if (turn === 1) yield { type: "tool_use", toolUse: { id: "raw", name: "raw_image", input: {} } };
+      if (turn === 1) yield { type: "tool_use", toolUse: { id: "raw", name: "raw_image", input: { description: "Inspect image identity" } } };
       else {
         runtimeBlock = request.messages.flatMap(message => message.blocks).find(block => block.type === "image") as ImageMessageBlock | undefined;
         yield { type: "assistant_message", message: createTextMessage("assistant", "done") };
