@@ -18,7 +18,7 @@ test.after(() => {
   rmSync(home, { recursive: true, force: true });
 });
 const bundled = JSON.parse(readFileSync(new URL("../../src/model/model-metadata.json", import.meta.url), "utf8")) as ModelCatalog;
-const ids = ["claude-fable-5-1", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"];
+const ids = ["claude-fable-5-2", "claude-fable-5-1", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"];
 const efforts = ["low", "medium", "high", "xhigh", "max"];
 
 test("bundled Claude catalog contains only current mainstream official IDs and verified limits", () => {
@@ -28,7 +28,7 @@ test("bundled Claude catalog contains only current mainstream official IDs and v
   for (const m of models) {
     assert.deepEqual(m.modelIds, [m.id]);
     assert.deepEqual(m.protocols, ["anthropic"]);
-    assert.equal(m.contextWindowTokens, 256_000); // neo's configured usage ceiling, not the upstream maximum
+    assert.equal(m.contextWindowTokens, 512_000); // neo's configured usage ceiling, not the upstream maximum
     assert.equal(m.maxOutputTokens, 128_000);
     assert.equal(m.knowledgeCutoff, "2026-06");
     assert.equal(m.imageInput, true);
@@ -56,9 +56,11 @@ test("every advertised Claude effort maps to native parameters without silently 
 test("existing catalogs preserve edits and old entries, append missing defaults, and respect explicit deletions", () => {
   const existing = structuredClone(bundled);
   const opus = existing.models.find(m => m.id === "claude-opus-5-5")!;
+  for (const model of existing.models.filter(m => m.provider === "anthropic")) model.contextWindowTokens = 256_000;
+  opus.contextWindowTokens = 384_000; // preserve a user-customized ceiling
   opus.maxOutputTokens = 4096;
   opus.reasoningEfforts = ["high"];
-  existing.models = existing.models.filter(m => !["claude-haiku-5-5", "claude-sonnet-5-5"].includes(m.id));
+  existing.models = existing.models.filter(m => !["claude-fable-5-2", "claude-haiku-5-5", "claude-sonnet-5-5"].includes(m.id));
   existing.models.push({ id: "claude-legacy-user-entry", provider: "anthropic", modelIds: ["claude-legacy-user-entry"] });
   existing.excludedModelIds = ["claude-sonnet-5-5"];
   existing.sources = { "openai-models": "https://example.invalid/user-owned-source" };
@@ -71,9 +73,20 @@ test("existing catalogs preserve edits and old entries, append missing defaults,
   assert.equal(result.sources?.["claude-models"], bundled.sources?.["claude-models"]);
   assert.equal(result.sources?.["claude-effort"], bundled.sources?.["claude-effort"]);
   assert.equal(result.sources?.["openai-models"], "https://example.invalid/user-owned-source");
+  assert.deepEqual(result.models.find(m => m.id === "claude-fable-5-2"), bundled.models.find(m => m.id === "claude-fable-5-2"));
+  assert.equal(result.models.find(m => m.id === "claude-fable-5-1")?.contextWindowTokens, 512_000);
+  assert.deepEqual(result.models.filter(m => m.provider === "openai"), existing.models.filter(m => m.provider === "openai").sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })));
   assert.ok(result.models.some(m => m.id === "claude-haiku-5-5"));
   assert.ok(result.models.some(m => m.id === "claude-legacy-user-entry"));
   assert.ok(!result.models.some(m => m.id === "claude-sonnet-5-5"));
   const resultIds = result.models.map(m => m.id);
   assert.deepEqual(resultIds, [...resultIds].sort((a, b) => a.localeCompare(b, "en", { numeric: true })));
+  assert.ok(result.appliedMigrations?.includes("claude-context-512k"));
+  // A user choosing 256K after upgrading must not be reset on the next process start.
+  result.models.find(m => m.id === "claude-fable-5-1")!.contextWindowTokens = 256_000;
+  writeFileSync(path.join(home, "model-metadata.json"), JSON.stringify(result));
+  const restarted = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `const {loadModelCatalog}=await import(${JSON.stringify(module)}); console.log(JSON.stringify(loadModelCatalog()))`], { encoding: "utf8", env: { ...process.env } });
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.equal((JSON.parse(restarted.stdout) as ModelCatalog).models.find(m => m.id === "claude-fable-5-1")?.contextWindowTokens, 256_000);
+
 });

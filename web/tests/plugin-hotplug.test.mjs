@@ -29,7 +29,7 @@ test('real web runtime keeps current tools leased and refreshes main/child promp
     requests.push(request);
     if (++calls === 1) {
       await manager.uninstall('sample');
-      yield { type: 'tool_use', toolUse: { id: 'live-call', name: 'sample_tool', input: {} } };
+      yield { type: 'tool_use', toolUse: { id: 'live-call', name: 'sample_tool', input: { description: 'Run the leased sample tool after uninstall' } } };
     } else yield { type: 'assistant_message', message: createTextMessage('assistant', 'done') };
   } } });
   const events = [];

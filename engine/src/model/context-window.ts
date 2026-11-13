@@ -25,6 +25,7 @@ export interface ModelCatalog {
   /** User removals survive bundled-data upgrades and reinstalls. */
   excludedModelIds?: string[];
   removedModelIds?: string[];
+  appliedMigrations?: string[];
   updatedAt?: string;
   notes?: string[];
   sources?: Record<string, string>;
@@ -110,6 +111,20 @@ export function loadModelCatalog(): ModelCatalog {
         if (modelIds.length) catalog.models.push({ ...entry, modelIds });
         changed = true;
       }
+      // One-time upgrade of the old bundled ceiling; preserve custom limits and explicit edits.
+      const migration = "claude-context-512k";
+      if (!catalog.appliedMigrations?.includes(migration)) {
+        for (const entry of bundled.models) {
+          if (entry.provider !== "anthropic" || entry.contextWindowTokens !== 512_000) continue;
+          const existing = catalog.models.find(m => normalizeModelId(m.id) === normalizeModelId(entry.id));
+          if (catalog.excludedModelIds?.some(id => normalizeModelId(id) === normalizeModelId(entry.id))) continue;
+          if (existing?.provider === "anthropic" && existing.contextWindowTokens === 256_000) {
+            existing.contextWindowTokens = entry.contextWindowTokens;
+          }
+        }
+        (catalog.appliedMigrations ??= []).push(migration);
+        changed = true;
+      }
       catalog.models.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
       validateModelCatalog(catalog);
       if (changed || JSON.stringify(catalog) !== before || !catalog.revision) { catalog.revision = randomUUID(); atomicJson(file, catalog); }
@@ -125,7 +140,7 @@ const initializedFiles = new Set<string>();
 let cachedSource = "";
 export function validateModelCatalog(catalog: ModelCatalog): void {
   if (!catalog || !Array.isArray(catalog.models)) throw new Error("模型元数据格式无效。");
-  for (const key of ["excludedModelIds", "removedModelIds"] as const) if (catalog[key] !== undefined && (!Array.isArray(catalog[key]) || catalog[key]!.some(id => typeof id !== "string" || !id.trim()))) throw new Error("模型删除记录无效。");
+  for (const key of ["excludedModelIds", "removedModelIds", "appliedMigrations"] as const) if (catalog[key] !== undefined && (!Array.isArray(catalog[key]) || catalog[key]!.some(id => typeof id !== "string" || !id.trim()))) throw new Error("模型删除记录无效。");
   const owners = new Map<string, ModelMetadata>();
   for (const m of catalog.models) {
     for (const id of [m?.id, ...(Array.isArray(m?.modelIds) ? m.modelIds : [])]) {

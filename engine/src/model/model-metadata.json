@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-11-03",
+  "updatedAt": "2026-11-13",
   "notes": [
     "Bundled metadata for current mainstream Claude models and supported OpenAI models.",
-    "Claude contextWindowTokens is neo's configured 256000-token usage ceiling, not the upstream model maximum or a pricing guarantee.",
+    "Claude contextWindowTokens is neo's configured 512000-token usage ceiling, not the upstream model maximum or a pricing guarantee.",
     "MODEL_CONTEXT_WINDOW_TOKENS or OPENAI_CONTEXT_WINDOW_TOKENS overrides contextWindowTokens at runtime.",
     "Model IDs and aliases are matched case-insensitively. Availability depends on the connected API and account."
   ],
@@ -13,10 +13,11 @@
     "openai-reasoning": "https://developers.openai.com/api/docs/guides/reasoning"
   },
   "models": [
-    {"id": "claude-fable-5-1", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-fable-5-1"], "contextWindowTokens": 256000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
-    {"id": "claude-haiku-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-haiku-5-5"], "contextWindowTokens": 256000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "none disables thinking; other efforts use adaptive thinking."},
-    {"id": "claude-opus-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-opus-5-5"], "contextWindowTokens": 256000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
-    {"id": "claude-sonnet-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-sonnet-5-5"], "contextWindowTokens": 256000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
+    {"id": "claude-fable-5-2", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-fable-5-2"], "contextWindowTokens": 512000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
+    {"id": "claude-fable-5-1", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-fable-5-1"], "contextWindowTokens": 512000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
+    {"id": "claude-haiku-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-haiku-5-5"], "contextWindowTokens": 512000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "none disables thinking; other efforts use adaptive thinking."},
+    {"id": "claude-opus-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-opus-5-5"], "contextWindowTokens": 512000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
+    {"id": "claude-sonnet-5-5", "provider": "anthropic", "protocols": ["anthropic"], "modelIds": ["claude-sonnet-5-5"], "contextWindowTokens": 512000, "maxOutputTokens": 128000, "knowledgeCutoff": "2026-06", "reasoning": true, "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"], "imageInput": true, "source": "claude-models", "notes": "Adaptive thinking; thinking cannot be disabled."},
     {
       "id": "gpt-5.6-sol",
       "provider": "openai",

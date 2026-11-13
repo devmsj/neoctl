@@ -285,13 +285,12 @@ function extractOpenAIResults(response: Record<string, unknown>): WebSearchResul
 
   for (const item of output) {
     if (!isRecord(item) || item.type !== "message") continue;
-    const messageText = extractOpenAIMessageText(item);
     const content = Array.isArray(item.content) ? item.content : [];
     for (const part of content) {
       if (!isRecord(part)) continue;
       const annotations = Array.isArray(part.annotations) ? part.annotations : [];
       for (const annotation of annotations) {
-        const citation = mapOpenAICitation(annotation, messageText);
+        const citation = mapOpenAICitation(annotation, stringFromUntrimmed(part.text) ?? stringFromUntrimmed(part.output_text) ?? "");
         if (citation && !results.has(citation.url)) results.set(citation.url, citation);
       }
     }
@@ -319,7 +318,9 @@ function mapOpenAICitation(annotation: unknown, messageText: string): WebSearchR
   const title = stringFrom(annotation.title) ?? url;
   const start = typeof annotation.start_index === "number" ? annotation.start_index : undefined;
   const end = typeof annotation.end_index === "number" ? annotation.end_index : undefined;
-  const snippet = start !== undefined && end !== undefined ? messageText.slice(Math.max(0, start), Math.max(start, end)).trim() : "";
+  // Citation offsets locate the citation marker, not the source summary. Keep its
+  // surrounding paragraph and use offsets from this exact, untrimmed content part.
+  const snippet = citationParagraph(messageText, start, end);
   return {
     title,
     url,
@@ -327,6 +328,21 @@ function mapOpenAICitation(annotation: unknown, messageText: string): WebSearchR
     text: snippet || messageText || undefined,
     raw: annotation,
   };
+}
+
+function stringFromUntrimmed(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function citationParagraph(text: string, start: number | undefined, end: number | undefined): string {
+  if (start === undefined || end === undefined || !Number.isInteger(start) || !Number.isInteger(end)
+    || start < 0 || end <= start || end > text.length) return text.trim();
+  let from = 0, to = text.length;
+  for (const boundary of text.matchAll(/\r?\n[ \t]*\r?\n/gu)) {
+    if (boundary.index + boundary[0].length <= start) from = boundary.index + boundary[0].length;
+    else if (boundary.index >= end) { to = boundary.index; break; }
+  }
+  return text.slice(from, to).trim();
 }
 
 function openAIErrorMessage(body: Record<string, unknown>): string | undefined {
