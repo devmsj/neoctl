@@ -191,6 +191,63 @@ test('deferred workspace sync does not replay line deltas already in its snapsho
   assert.deepEqual([...lines.values()].filter(line => line.kind === 'assistant').map(line => line.text), [text]);
 });
 
+test('replacement, unmapped and cold-started sessions reserve a workspace instead of projectRoot', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'neo-workspace-unmapped-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspaceRoot = path.join(root, 'workspaces'), registryFile = path.join(root, 'registry.json'), sessionRoot = path.join(root, 'sessions');
+  const inWorkspaceRoot = value => { const rel = path.relative(workspaceRoot, value); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
+  const modelGateway = { async *stream() { throw new Error('must not call model'); } };
+  const tools = new ToolRegistry(), taskStore = new TaskStore();
+  const manager = createWorkspaceRuntimeManager({ projectRoot: root, workspaceRoot, registryFile });
+  const initialCwd = await reserveWorkspace(workspaceRoot);
+  const engine = new QueryEngine({ modelGateway, tools, cwd: initialCwd, session: { rootDir: sessionRoot, resume: false } });
+  await engine.initialize();
+  taskStore.bindSession(engine.snapshot().session.sessionDir);
+  const runtime = { engine, tools, taskStore, execProcessManager: new ExecProcessManager(), usage: new SessionUsageTracker(), initialMetrics: await engine.contextMetrics(), envPath: path.join(root, '.env') };
+  const repl = manager.createRepl(runtime);
+  const first = engine.snapshot().session.sessionId;
+  // Production registers the first session's reserved path, which is what keeps later stamps unique.
+  await new SessionWorkspaceRegistry(registryFile, workspaceRoot).set(first, initialCwd, { materialized: false, cwdHistory: [initialCwd] });
+
+  // Deleting the active session: the replacement gets its own lazy workspace and a registry entry.
+  const deletion = await repl.deleteSession(first);
+  assert.equal(deletion.ok, true);
+  const replacement = deletion.replacementSessionId;
+  assert.ok(replacement && replacement !== first);
+  const replacementCwd = repl.snapshot().cwd;
+  assert.ok(inWorkspaceRoot(replacementCwd), `replacement cwd ${replacementCwd} must live under the workspace root`);
+  assert.notEqual(replacementCwd, initialCwd);
+  await assert.rejects(stat(replacementCwd), { code: 'ENOENT' });
+  // The registry reader caches after its first load; read through a fresh instance each time.
+  const readEntry = (file, id) => new SessionWorkspaceRegistry(file, workspaceRoot).entry(id);
+  assert.deepEqual(await readEntry(registryFile, replacement), { cwd: replacementCwd, workspacePaths: [replacementCwd], materialized: false, cwdHistory: [replacementCwd], cwdNoticePending: false });
+
+  // Resuming a session nobody registered (older/foreign transcript) reserves a workspace too.
+  const foreign = new QueryEngine({ modelGateway, tools, cwd: root, session: { rootDir: sessionRoot, resume: false } });
+  await foreign.initialize();
+  const foreignId = foreign.snapshot().session.sessionId;
+  const resumed = await repl.resumeSession(foreignId);
+  assert.equal(resumed.ok, true);
+  assert.ok(inWorkspaceRoot(resumed.cwd), `resumed cwd ${resumed.cwd} must live under the workspace root`);
+  assert.equal(repl.snapshot().cwd, resumed.cwd);
+  const foreignEntry = await readEntry(registryFile, foreignId);
+  assert.equal(foreignEntry?.cwd, resumed.cwd);
+  assert.equal(foreignEntry?.materialized, false);
+  await assert.rejects(stat(resumed.cwd), { code: 'ENOENT' });
+
+  // Cold start by session id without a mapping (page reload) must not hand out projectRoot either.
+  const seen = [];
+  const cold = createWorkspaceRuntimeManager({ projectRoot: root, workspaceRoot, registryFile: path.join(root, 'cold-registry.json'), createRuntime: async options => { seen.push(options); return { engine: { snapshot: () => ({ session: { sessionId: options.sessionId } }) } }; } });
+  await cold.createRuntime({ sessionId: 'unmapped-session', resume: true });
+  assert.ok(inWorkspaceRoot(seen[0].cwd), `cold-start cwd ${seen[0].cwd} must live under the workspace root`);
+  assert.deepEqual(seen[0].workspacePaths, [seen[0].cwd]);
+  const coldEntry = await readEntry(path.join(root, 'cold-registry.json'), 'unmapped-session');
+  assert.equal(coldEntry?.cwd, seen[0].cwd);
+  assert.equal(coldEntry?.materialized, false);
+  await cold.createRuntime({});
+  assert.equal(seen[1].cwd, root, 'the bare scope keeps projectRoot');
+});
+
 test('workspace locations expose human-friendly roots', async () => {
   const locations = await discoverWorkspaceLocations();
 

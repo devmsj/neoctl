@@ -224,7 +224,8 @@ export function createWorkspaceRuntimeManager(options) {
       try {
         await this.detachRunningForeground('session switch');
         const workspace = await registry.entry(sessionId);
-        const cwd = workspace?.cwd || projectRoot;
+        // An unmapped session must not inherit projectRoot (the data directory): reserve a lazy workspace.
+        const cwd = workspace?.cwd || await reserveWorkspacePath();
         if (workspace && !workspace.materialized) pendingWorkspacePaths.add(cwd);
         this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, sessionId, true, {
           workspacePaths: workspace?.workspacePaths ?? [cwd],
@@ -236,12 +237,31 @@ export function createWorkspaceRuntimeManager(options) {
         const snapshot = this.runtime.engine.snapshot().session;
         if (!snapshot) throw new Error('session transcripts are disabled');
         await Promise.all([this.loadSessionPlugins(snapshot.sessionId), this.loadSessionTools(snapshot.sessionId)]);
+        if (!workspace) await registry.set(snapshot.sessionId, cwd, { materialized: false, cwdHistory: [cwd] });
         await this.refreshSessionView();
         return { ok: true, cwd };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { ok: false, errorCode: 'SESSION_RESUME_FAILED', error: message };
       }
+    }
+
+    async deleteSession(sessionId) {
+      const result = await super.deleteSession(sessionId);
+      if (!result.ok || !result.replacementSessionId) return result;
+      // The base fork inherits the deleted session's cwd and is never registered; give the
+      // replacement its own lazily-created workspace so a later resume cannot fall back to projectRoot.
+      const replacementId = result.replacementSessionId;
+      const cwd = await reserveWorkspacePath();
+      this.runtime.engine = createWorkspaceEngine(this.runtime.engine, cwd, replacementId, true, {
+        onCwdTransitionConsumed: () => markCwdNoticeConsumed(replacementId),
+      });
+      await this.runtime.engine.initialize();
+      registerEngineSync(this);
+      await Promise.all([this.loadSessionPlugins(replacementId), this.loadSessionTools(replacementId)]);
+      await registry.set(replacementId, cwd, { materialized: false, cwdHistory: [cwd] });
+      await this.refreshSessionView();
+      return result;
     }
 
     broadcastSync() {
@@ -268,7 +288,9 @@ export function createWorkspaceRuntimeManager(options) {
         ? await registry.entry(runtimeOptions.sessionId)
         : undefined;
       const mappedCwd = mappedWorkspace?.cwd;
-      const shouldAllocate = !mappedCwd && runtimeOptions.resume === false;
+      // A cold start for a known session id without a mapping must reserve a workspace too; only the
+      // bare scope (no session, no tab) keeps projectRoot.
+      const shouldAllocate = !mappedCwd && (runtimeOptions.resume === false || Boolean(runtimeOptions.sessionId));
       const cwd = mappedCwd || (shouldAllocate ? await reserveWorkspacePath() : projectRoot);
       if (mappedCwd && (!mappedWorkspace.materialized || !await pathExists(mappedCwd))) {
         claimedWorkspacePaths.add(mappedCwd);
