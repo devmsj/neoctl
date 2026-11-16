@@ -42,9 +42,10 @@ test("list facts match recovery across agents, reset, compaction and display-onl
 
 test("unchanged lists do not reread transcripts; changed, recreated and deleted files invalidate", async t => temporary(async rootDir => {
   const file = write(rootDir, [entry("title", { title: "first" })]);
-  const original = fsp.readFile;
+  // Summaries read transcripts through one handle per scan (chunked), so count opens.
+  const original = fsp.open;
   let reads = 0;
-  t.mock.method(fsp, "readFile", ((...args: any[]) => { if (String(args[0]) === file) reads++; return (original as any)(...args); }) as typeof fsp.readFile);
+  t.mock.method(fsp, "open", ((...args: any[]) => { if (String(args[0]) === file) reads++; return (original as any)(...args); }) as typeof fsp.open);
   const first = await SessionStore.list({ rootDir, agentId: "main" });
   first[0]!.title = "caller mutation";
   assert.equal((await SessionStore.list({ rootDir, agentId: "main" }))[0]!.title, "first");
@@ -66,8 +67,8 @@ test("simultaneous lists share one scan, cache remains isolated by root and agen
   const a = path.join(root, "a"), b = path.join(root, "b");
   const file = write(a, [entry("title", { title: "A" }), entry("title", { title: "child" }, "child")]);
   write(b, [entry("title", { title: "B" })]);
-  const original = fsp.readFile; let reads = 0;
-  t.mock.method(fsp, "readFile", (async (...args: any[]) => { if (String(args[0]) === file) { reads++; await new Promise(r => setTimeout(r, 30)); } return (original as any)(...args); }) as typeof fsp.readFile);
+  const original = fsp.open; let reads = 0;
+  t.mock.method(fsp, "open", (async (...args: any[]) => { if (String(args[0]) === file) { reads++; await new Promise(r => setTimeout(r, 30)); } return (original as any)(...args); }) as typeof fsp.open);
   const lists = await Promise.all(Array.from({ length: 4 }, () => SessionStore.list({ rootDir: a, agentId: "main" })));
   assert.ok(lists.every(l => l[0]!.title === "A")); assert.equal(reads, 1);
   assert.equal((await SessionStore.list({ rootDir: b, agentId: "main" }))[0]!.title, "B");

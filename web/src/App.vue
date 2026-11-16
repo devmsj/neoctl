@@ -2528,6 +2528,9 @@ async function deleteSession(sessionOrId) {
   } catch (error) {
     notifyActionError(error, '删除会话失败')
     if (isCurrentSession(sessionId)) connectEvents()
+    // Show the server's truth instead of a stale row (e.g. already deleted elsewhere).
+    quickListRevision.value++
+    if (state.activePanel === 'sessions') void loadSessionPage(sessionPage.value)
   } finally { sessionDeleting.value = false }
 }
 

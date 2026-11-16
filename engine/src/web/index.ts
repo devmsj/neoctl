@@ -72,7 +72,7 @@ import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
 import { validateImageInput } from "../core/image-input.js";
 export { validateImageBytes } from "../core/image-input.js";
-import { resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
+import { describeStoredImageSync, resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
 import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./plan-payload.js";
 import { createWebRuntimeContextPayload, type WebRuntimeContextPayload } from "./runtime-context-protocol.js";
 
@@ -2306,7 +2306,8 @@ export class WebRepl {
   }
 
   private timedStatus(): UiStatus {
-    const records = this.runtime.engine.getTimingRecords?.() ?? [];
+    const engine = this.runtime.engine;
+    const records = (engine.getStatusTimingRecords ? engine.getStatusTimingRecords() : engine.getTimingRecords?.()) ?? [];
     if (records.length === 0) return this.status;
     const queryTiming = records.filter(record => record.kind === "query").at(-1);
     return { ...this.status, queryTiming,
@@ -4030,7 +4031,11 @@ function renderObservedImages(message:Message,append:(line:Omit<UiLine,"id">)=>n
 function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, { type: "image" }>, messageId: string, blockIndex: number): Omit<UiLine, "id"> | undefined {
   const kind = kindForRole(role);
   if (kind === "meta") return undefined;
-  const resolution = resolveImageBlockDataResultSync(block);
+  // Stored images: metadata only. Rendering a history page must not read/decode/hash every payload (served bytes are validated).
+  const full = block.data.trim() ? resolveImageBlockDataResultSync(block) : undefined;
+  const resolution = full
+    ? (full.available ? { available: true as const, sizeBytes: Buffer.from(full.data.replace(/^data:[^;,]+;base64,/iu, ""), "base64").length } : full)
+    : describeStoredImageSync(block.storage);
   return {
     kind,
     text: block.label ?? `[image ${block.mimeType}]`,
@@ -4042,7 +4047,7 @@ function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, {
       mimeType: block.mimeType,
       available: resolution.available,
       error: resolution.available ? undefined : resolution.error,
-      sizeBytes: resolution.available ? Buffer.from(resolution.data.replace(/^data:[^;,]+;base64,/iu, ""), "base64").length : undefined,
+      sizeBytes: resolution.available ? resolution.sizeBytes : undefined,
       blockIndex,
     },
   };

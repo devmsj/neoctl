@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateImageInput } from "./image-input.js";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getNeoctlHome } from "../paths.js";
@@ -40,6 +40,36 @@ export function resolveStoredImageDataResultSync(storage: ImageStorageLike | und
     return { available: false, error: "content-hash-mismatch" };
   }
   return { available: true, data };
+}
+
+/**
+ * History/UI metadata for a stored image without reading, decoding and hashing the whole payload
+ * (files are immutable, content-addressed and verified when written; bytes are fully validated when served).
+ * Non-canonical layouts fall back to the full validation.
+ */
+export function describeStoredImageSync(storage: ImageStorageLike | undefined): { available: true; sizeBytes: number } | Extract<ImageDataResolution, { available: false }> {
+  if (!storage?.path) return { available: false, error: "missing-payload" };
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(storage.path, "r");
+    const size = fstatSync(descriptor).size;
+    if (storage.storedBytes !== undefined && size !== storage.storedBytes) return { available: false, error: "storage-size-mismatch" };
+    const head = Buffer.alloc(Math.min(size, 256)), tail = Buffer.alloc(Math.min(size, 2));
+    readSync(descriptor, head, 0, head.length, 0);
+    readSync(descriptor, tail, 0, tail.length, size - tail.length);
+    const headText = head.toString("latin1"), tailText = tail.toString("latin1");
+    const prefix = /^data:[^;,]+;base64,/iu.exec(headText)?.[0].length ?? 0;
+    const length = size - prefix, padding = tailText.endsWith("==") ? 2 : tailText.endsWith("=") ? 1 : 0;
+    if (length > 0 && length % 4 === 0 && /^[A-Za-z0-9+/]+$/u.test(headText.slice(prefix)) && /^[A-Za-z0-9+/=]+$/u.test(tailText)) {
+      return { available: true, sizeBytes: (length / 4) * 3 - padding };
+    }
+  } catch {
+    return { available: false, error: "storage-unreadable" };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  const full = resolveStoredImageDataResultSync(storage);
+  return full.available ? { available: true, sizeBytes: Buffer.from(full.data.replace(/^data:[^;,]+;base64,/iu, ""), "base64").length } : full;
 }
 
 export function resolveImageBlockDataSync(block: { data: string; storage?: ImageStorageLike }): string | undefined {

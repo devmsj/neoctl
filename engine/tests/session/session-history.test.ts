@@ -6,6 +6,7 @@ import path from "node:path";
 import { SessionStore } from "../../src/session/session-store.js";
 import { reverseTranscriptLines, transcriptLines } from "../../src/session/transcript-reader.js";
 import { createTextMessage } from "../../src/types/messages.js";
+import { QueryTimingState } from "../../src/core/query-timing.js";
 
 async function fixture(run: (root: string) => Promise<void>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-history-"));
@@ -136,4 +137,28 @@ test("flushed cache after compaction and replacement equals an uncached replay",
   assert.equal(warm.snapshot().windowId, full.snapshot().windowId);
   assert.equal(warm.toolResultMemory.state.replacements.get('call'), 'kept');
   assert.equal(warm.getTitle(), full.getTitle());
+}));
+
+test("latest-run timings equal the full scan filtered to the last run, across agents, restore and reset", () => fixture(async rootDir => {
+  const options = { rootDir, agentId: 'main', sessionId: 's', lazyDisplay: true };
+  const store = await SessionStore.open(options);
+  const other = await SessionStore.open({ ...options, agentId: 'other', resume: true });
+  const expected = (s: SessionStore) => { const all = s.getTimings(), run = all.filter(r => r.kind === 'query').at(-1)?.runId; return all.filter(r => r.runId === run); };
+  assert.deepEqual(store.getLatestRunTimings(), []);
+  for (let run = 0; run < 3; run++) {
+    const timing = new QueryTimingState();
+    store.recordTiming(timing.snapshot());
+    for (const id of ['a', 'b']) store.recordTiming(timing.queueTool(id));
+    store.recordMessage(createTextMessage('assistant', `run ${run}`));
+    other.recordTiming(new QueryTimingState().snapshot());
+    store.recordTiming(timing.startTool('b')!); store.recordTiming(timing.startTool('a')!);
+    store.recordTiming(timing.finishTool('b', true)!);
+    if (run < 2) for (const record of timing.finish('completed')) store.recordTiming(record);
+    assert.deepEqual(store.getLatestRunTimings(), expected(store));
+  }
+  const restored = await SessionStore.open({ ...options, resume: true });
+  assert.deepEqual(restored.getLatestRunTimings(), expected(restored));
+  assert.equal(restored.getLatestRunTimings().find(r => r.kind === 'query')?.status, 'interrupted');
+  restored.reset();
+  assert.deepEqual(restored.getLatestRunTimings(), []);
 }));

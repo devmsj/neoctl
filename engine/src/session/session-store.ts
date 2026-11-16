@@ -160,6 +160,7 @@ export class SessionStore {
   private windowId: string;
 
   private readonly timings = new Map<string, TimingRecord>();
+  private latestRunTimings?: { key: string; records: TimingRecord[] };
 
   private constructor(options: SessionStoreOptions, sessionId: string, loaded: LoadedTranscript) {
     this.agentId = options.agentId;
@@ -241,7 +242,10 @@ export class SessionStore {
         const stat = await fsp.lstat(transcriptPath).catch(() => undefined);
         if (!stat) { forgetTranscriptSummary(transcriptPath); continue; }
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error("Unsafe session transcript");
-        const facts = await readTranscriptSummary(transcriptPath, stat, options.agentId);
+        // Deleted while listing: drop that row, never fail the whole list.
+        const facts = await readTranscriptSummary(transcriptPath, stat, options.agentId)
+          .catch((error: unknown) => { if (isNodeError(error) && error.code === "ENOENT") return undefined; throw error; });
+        if (!facts) { forgetTranscriptSummary(transcriptPath); continue; }
         summaries[index] = {
           sessionId, sessionDir, transcriptPath,
           updatedAt: stat.mtime.toISOString(), updatedAtMs: stat.mtimeMs,
@@ -354,6 +358,26 @@ export class SessionStore {
       if (entry.agentId === this.agentId && entry.type === "timing" && !records.has(entry.timing.id)) records.set(entry.timing.id, restoredTiming(entry.timing));
     }
     return [...records.values()].reverse();
+  }
+
+  /** Same records as getTimings() for the latest run only. Runs are contiguous, so scan back to the previous run, never the whole archive. */
+  getLatestRunTimings(): TimingRecord[] {
+    const stat = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath) : undefined;
+    const key = `${stat?.ino ?? 0}:${stat?.size ?? 0}:${stat?.mtimeMs ?? 0}:${this.displayStart}`;
+    if (this.latestRunTimings?.key !== key) {
+      const records = new Map<string, TimingRecord>();
+      let runId: string | undefined;
+      if (stat?.size) for (const line of reverseTranscriptLines(this.transcriptPath, stat.size, this.displayStart)) {
+        if (!line.text.includes("\"timing\"")) continue;
+        const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
+        if (entry.agentId !== this.agentId || entry.type !== "timing") continue;
+        if (runId !== undefined && entry.timing.runId !== runId) break;
+        if (runId === undefined && entry.timing.kind === "query") runId = entry.timing.runId;
+        if (!records.has(entry.timing.id)) records.set(entry.timing.id, restoredTiming(entry.timing));
+      }
+      this.latestRunTimings = { key, records: [...records.values()].filter(record => record.runId === runId).reverse() };
+    }
+    return this.latestRunTimings.records.map(record => ({ ...record }));
   }
 
   recordMessage(message: Message, provenance?: { runGeneration?: number }): void {
@@ -592,8 +616,11 @@ export class SessionStore {
     if (this.writeFailed) throw new Error("Session transcript writes disabled after write failure; reopen the session");
     const text = JSON.stringify(entry) + "\n";
     checkSessionPaths(this.sessionDir);
-    fs.mkdirSync(this.sessionDir, { recursive: true });
-    checkSessionPaths(this.sessionDir);
+    // open() created the directory. A missing directory/transcript means the session was deleted:
+    // late writers (title work of a switched-away engine, timers) must fail, never resurrect it.
+    if (!fs.existsSync(this.sessionDir) || (this.cacheSourceStamp !== undefined && !fs.existsSync(this.transcriptPath))) {
+      throw new Error("Session was deleted");
+    }
     let descriptor: number | undefined;
     let writtenStat: fs.Stats | undefined;
     let beforeStat: fs.Stats | undefined;

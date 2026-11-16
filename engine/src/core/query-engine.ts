@@ -847,6 +847,17 @@ export class QueryEngine {
     return [...records.values()].map(record => ({ ...record }));
   }
 
+  /** Status needs only the latest run. Live records already supersede their persisted copies; never rescan the archive per snapshot. */
+  getStatusTimingRecords(): TimingRecord[] {
+    if (!this.options.session?.lazyDisplay) return this.getTimingRecords();
+    const live = this.timingRecords.size > 0 || this.queryTiming !== undefined;
+    const records = new Map(live ? this.timingRecords : this.sessionStore?.getLatestRunTimings().map(r => [r.id, r] as const));
+    if (this.queryTiming) {
+      for (const record of [this.queryTiming.snapshot(), ...this.queryTiming.toolSnapshots()]) records.set(record.id, record);
+    }
+    return [...records.values()].map(record => ({ ...record }));
+  }
+
   getRegisteredImageBlock(imageId: string): Extract<MessageBlock, { type: "image" }> | undefined {
     const entry = this.imageStore?.snapshot().images.find(image => image.imageId === imageId);
     if (!entry?.storagePath) return undefined;
