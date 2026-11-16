@@ -58,6 +58,8 @@ export interface RunAgentOptions {
   onInitialMessages?: (messages: Message[]) => void;
   /** Resolved absolute cwd for file/exec tools in this subagent session. */
   workspaceCwd?: string;
+  /** Explicit restriction from the main agent; otherwise the child has the parent's tools. */
+  disallowedTools?: readonly string[];
 }
 
 export type RunAgentCompleted =
@@ -103,13 +105,13 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   const dependencies = {
     acquireTurnResources: () => {
       const resources = options.dependencies.acquireTurnResources?.() ?? { tools: options.dependencies.tools, release() {} };
-      try { return { ...resources, tools: resolveAgentTools(settingsBoundary.tools(resources.tools), options.agent) }; }
+      try { return { ...resources, tools: resolveAgentTools(settingsBoundary.tools(resources.tools), options.agent, options.disallowedTools) }; }
       catch (error) { resources.release(); throw error; }
     },
     timingClock: options.dependencies.timingClock,
     onTiming: (record: TimingRecord) => childSession?.recordTiming(record, options.runGeneration),
     modelGateway: options.dependencies.modelGateway,
-    tools: resolveAgentTools(options.dependencies.tools, options.agent),
+    tools: resolveAgentTools(options.dependencies.tools, options.agent, options.disallowedTools),
     contextManager: createAgentContextManager(options),
     compactor: options.dependencies.compactor,
     applyCompaction: (result: CompactionResult) => {
@@ -205,24 +207,21 @@ function isFailedAgentTerminal(reason?: string): boolean {
   return reason === "model_error" || reason === "image_error" || reason === "prompt_too_long";
 }
 
-export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition): ToolRegistry {
-  const registry = new ToolRegistry();
+/**
+ * The child gets the parent's tools: same registrations and enablement. Context-dependent availability
+ * (e.g. image input for the child's model) is decided per child turn, never pre-filtered without a context.
+ * Only explicit restrictions remove tools: the agent definition's and the main agent's disallowed list.
+ */
+export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition, disallowedTools: readonly string[] = []): ToolRegistry {
+  const registry = parentTools.clone();
   const allowed = agent.tools;
   // Scheduling is reserved to the main agent, including custom/wildcard agents.
-  const disallowed = new Set([...(agent.disallowedTools ?? []), "subagent_run", "subagent_resume"]);
-
-  for (const tool of parentTools.list(undefined, { includeDeferred: true }) as Tool[]) {
-    if (disallowed.has(tool.name)) continue;
-    if (allowed && !allowed.includes("*") && !allowed.includes(tool.name)) continue;
-    registry.register(tool);
-    // Preserve explicit parent opt-ins after applying the child allow/deny lists.
-    registry.setEnabled(tool.name, true);
+  const disallowed = new Set([...(agent.disallowedTools ?? []), ...disallowedTools, "subagent_run", "subagent_resume"]);
+  for (const name of registry.names({ includeDisabled: true })) {
+    if (disallowed.has(name) || (allowed && !allowed.includes("*") && !allowed.includes(name))) registry.unregister(name);
   }
-
-  if (!registry.get(AGENT_REPORT_TOOL_NAME)) {
-    registry.register(createAgentReportTool());
-  }
-
+  if (registry.isEnabled(AGENT_REPORT_TOOL_NAME) === undefined) registry.register(createAgentReportTool());
+  else registry.setEnabled(AGENT_REPORT_TOOL_NAME, true);
   return registry;
 }
 

@@ -49,7 +49,6 @@ export const FORK_AGENT: AgentDefinition = {
   agentType: "fork",
   whenToUse: "Fork the current conversation into an isolated worker for scoped parallel work.",
   tools: ["*"],
-  disallowedTools: ["plan_update"],
   model: "inherit",
   permissionMode: "bubble",
   requiresReport: true,
@@ -61,7 +60,6 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   agentType: "general-purpose",
   whenToUse: "General engineering worker for scoped implementation, investigation, or verification tasks.",
   tools: ["*"],
-  disallowedTools: ["plan_update"],
   permissionMode: "inherit",
   requiresReport: true,
   reportRetryTurns: 1,
@@ -75,8 +73,9 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
 export const EXPLORE_AGENT: AgentDefinition = {
   agentType: "explore",
   whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  tools: ["file_list", "file_read", "file_search", "web_search", "terminal_run", "terminal_control", "subagent_report"],
-  disallowedTools: ["file_edit", "file_write", "subagent_run", "plan_update"],
+  // Read-only by explicit restriction only: every other parent tool (e.g. image_inspect) stays available.
+  tools: ["*"],
+  disallowedTools: ["file_edit", "file_write"],
   permissionMode: "readonly",
   requiresReport: true,
   reportRetryTurns: 1,

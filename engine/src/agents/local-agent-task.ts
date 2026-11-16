@@ -77,6 +77,8 @@ export interface LocalAgentTask {
     maxOutputTokensOverride?: number;
     fastMode?: boolean;
     serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
+    /** Explicit tool restriction from the main agent; absent means the same tools as the main agent. */
+    disallowedTools?: string[];
     maxTurns?: number; maxTokens?: number; temperature?: number;
     query?: { maxTurns?: number; maxTokens?: number; temperature?: number };
   };

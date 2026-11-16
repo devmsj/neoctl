@@ -96,6 +96,7 @@ function execution(value: any): LocalAgentTask["executionOptions"] {
   } : undefined;
   return { cwd: typeof value.cwd === "string" ? value.cwd : undefined, model: typeof value.model === "string" ? value.model : undefined,
     fastMode: typeof value.fastMode === "boolean" ? value.fastMode : undefined,
+    disallowedTools: Array.isArray(value.disallowedTools) ? value.disallowedTools.filter((name: unknown) => typeof name === "string") : undefined,
     reasoning, serviceTier: ["auto", "default", "flex", "priority", "fast"].includes(value.serviceTier) ? value.serviceTier : undefined,
     contextWindowTokensOverride: Number.isFinite(value.contextWindowTokensOverride) ? value.contextWindowTokensOverride : undefined,
     maxOutputTokensOverride: Number.isFinite(value.maxOutputTokensOverride) ? value.maxOutputTokensOverride : undefined,

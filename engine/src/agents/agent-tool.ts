@@ -44,6 +44,8 @@ export interface AgentToolInput {
   description?: string;
   subagent_type?: string;
   model?: string;
+  /** Explicit restriction; by default a subagent has the same tools as the main agent. */
+  disallowed_tools?: string[];
   run_in_background?: boolean;
   /** When true with sync mode, allow concurrent execution with other parallel-safe agent calls in the same turn (multiple model streams). */
   parallel?: boolean;
@@ -85,6 +87,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         description: { type: "string", description: "Short task label for progress and task lists." },
         subagent_type: { type: "string", description: "Agent definition to use. Omit for general-purpose or fork mode." },
         model: { type: "string" },
+        disallowed_tools: { type: "array", items: { type: "string" }, description: "Tool names this subagent must not use. By default a subagent has the same tools as the main agent (except subagent scheduling); restrict only by listing names here." },
         run_in_background: { type: "boolean" },
         name: { type: "string", description: "Optional stable name for later subagent_message routing." },
         team_name: { type: "string" },
@@ -420,7 +423,8 @@ async function runAsyncAgentLifecycle(input: {
   if (!ownsRun()) return;
   input.taskStore.markRunning(input.taskId, runGeneration);
   const task = input.taskStore.get(input.taskId);
-  const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context);
+  // Pin the launch-time cwd like sync agents; never follow later parent cwd changes.
+  const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context) ?? task?.executionOptions?.cwd;
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
   const mode = resolveAgentActivityMode(input.input, input.fork, "background");
   activityStore.start({
@@ -603,7 +607,14 @@ function effectiveExecutionOptions(input: AgentToolInput, agent: AgentDefinition
     maxOutputTokensOverride: context.options?.maxOutputTokensOverride,
     serviceTier: context.options?.serviceTier,
     fastMode: context.options?.fastMode,
+    disallowedTools: normalizeToolNames(input.disallowed_tools ?? (input as { disallowedTools?: string[] }).disallowedTools),
   };
+}
+
+function normalizeToolNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = [...new Set(value.filter((name): name is string => typeof name === "string").map(name => name.trim()).filter(Boolean))];
+  return names.length ? names : undefined;
 }
 
 function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string, gateway?: ModelGateway): RunAgentDependencies {
