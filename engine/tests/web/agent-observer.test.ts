@@ -37,7 +37,7 @@ test("a subagent is observed read-only with the main agent's line model, status 
     child.recordMessage(createTextMessage("user", "INSPECT"));
     child.recordMessage(createTextMessage("assistant", "CHILD_HISTORY_REPLY"));
     const activity = new AgentActivityStore();
-    activity.start({ agentId: task.agentId, taskId: task.taskId, agentType: task.agentType, description: task.description, prompt: "INSPECT", mode: "background" });
+    activity.start({ agentId: task.agentId, taskId: task.taskId, agentType: task.agentType!, description: task.description, prompt: "INSPECT", mode: "background" });
     const mainSession = { sessionId: "main", sessionDir };
     const repl = new WebRepl({
       engine: { getTimingRecords: () => [], getDisplayEntries: () => [], snapshot: () => ({ session: mainSession, messages: 0 }), isFastMode: () => false,
@@ -94,7 +94,7 @@ test("a subagent is observed read-only with the main agent's line model, status 
 
     // Completion is reflected; closing the stream releases the observer.
     emit({ type: "terminal", reason: "completed" });
-    taskStore.complete(task.taskId, { agent_id: task.agentId, agent_type: task.agentType, content: "done", total_duration_ms: 1, total_tool_use_count: 0 }, task.runGeneration);
+    taskStore.complete(task.taskId, { agent_id: task.agentId, agent_type: task.agentType!, content: "done", total_duration_ms: 1, total_tool_use_count: 0 }, task.runGeneration);
     (repl as unknown as { broadcastSync(): void }).broadcastSync();
     assert.equal(client.last("sync").busy, false);
     client.response.emit("close");

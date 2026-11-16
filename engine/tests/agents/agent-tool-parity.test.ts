@@ -54,7 +54,7 @@ test("disallowed_tools from the main agent reaches the child request and survive
     } };
     const runtime: AgentToolRuntime = { taskStore: store, modelGateway: gateway, tools: parentTools(), agentActivityStore: new AgentActivityStore(),
       agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]),
-      contextManager: { async build(input) { return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "" } }; } },
+      contextManager: { async build(input) { return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "", platform: process.platform } }; } },
       compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
     };
     const parent = { agentId: "parent", messages: [], appState: new InMemoryAppState("parent", root), session: { sessionId: "parent", sessionDir: root },

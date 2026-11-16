@@ -38,13 +38,12 @@ for (const background of [false, true]) test(`${background ? "async" : "sync"} s
     } };
     const runtime: AgentToolRuntime = { taskStore: store, modelGateway: gateway, tools: new ToolRegistry(), agentActivityStore: new AgentActivityStore(),
       agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]),
-      contextManager: { async build(input) { cwds.push(input.cwd); return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "" } }; } },
+      contextManager: { async build(input) { cwds.push(input.cwd); return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "", platform: process.platform } }; } },
       compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
     };
     const call = createAgentTool(runtime).call!({ prompt: "work", run_in_background: background }, parent, {});
     // The parent moves on before the child's first turn is built.
     await until(() => store.list().some(task => task.status === "running"));
-    appState.setCwd?.(laterCwd);
     (appState as unknown as { snapshot(): { cwd: string } }).snapshot = () => ({ cwd: laterCwd }) as never;
     release();
     const result = await call;
