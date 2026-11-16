@@ -2557,6 +2557,8 @@ export class WebRepl {
       for (const subscriber of this.subscribers) this.send(subscriber, "fast-mode.fallback", { revision: event.revision, sessionId: this.runtime.engine.snapshot().session?.sessionId });
       return;
     }
+    // Every failed attempt shows its reason exactly like the final error line.
+    if (event.type === "retrying") this.append({ kind: "error", text: event.error.message });
     if (event.type === "state" || event.type === "context.metrics" || event.type === "usage" || event.type === "retrying") {
       this.broadcastSync();
       return;
