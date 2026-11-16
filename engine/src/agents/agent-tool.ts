@@ -36,6 +36,7 @@ export const AGENT_TOOL_PROMPT_RULES = [
   "Every delegation must specify the goal, owned files/modules, allowed edits and explicit exclusions, required inputs and interface contracts, dependencies, expected deliverables, and acceptance checks. Use disjoint write scopes; reserve shared-file changes and integration decisions to a named owner or the main agent.",
   "Settle cross-agent interface contracts before parallel implementation. If a dependency is unresolved, assign independent work or have the worker report the blocker to the main agent; do not tell workers to negotiate with each other.",
   "Workers report progress or coordination needs through subagent_report status='draft'; this does not pause execution. For blocking ambiguity, require status='incomplete' with a precise question and completed/untouched scope, then explicitly resume after deciding. Relay updates through subagent_message; queued or delivered is not proof of implementation.",
+  "Following background workers: their reports, tool failures and status changes arrive automatically as compact progress notifications between your turns; tool calls are tallied, not streamed. Use subagent_get for what changed since your last check (wait_ms waits for the next change) instead of re-reading output. Subagents have your tools; pass disallowed_tools only to restrict them.",
   "Avoid vague delegation; give each worker a concrete scope and say whether edits are allowed.",
 ].join("\n");
 

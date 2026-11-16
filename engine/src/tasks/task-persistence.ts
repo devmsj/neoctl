@@ -85,7 +85,26 @@ function timing(value: Pick<LocalAgentTask, "status" | "startedAt" | "completedA
 function progress(value: any, runGeneration: number): any {
   if (!object(value) || typeof value.totalEvents !== "number" || typeof value.totalToolUseCount !== "number") throw new Error("Invalid progress");
   return { visibleText: visibleText(value.visibleText, runGeneration), totalEvents: value.totalEvents, totalToolUseCount: value.totalToolUseCount, lastActivity: value.lastActivity, lastText: value.lastText, currentAction: value.currentAction,
-    steps: Array.isArray(value.steps) ? value.steps.map((s: any) => ({ id: s.id, title: s.title, status: s.status, detail: s.detail, updatedAt: s.updatedAt })) : undefined };
+    steps: Array.isArray(value.steps) ? value.steps.map((s: any) => ({ id: s.id, title: s.title, status: s.status, detail: s.detail, updatedAt: s.updatedAt })) : undefined,
+    journal: journal(value.journal) };
+}
+function tallies(value: any): Record<string, { calls: number; failed: number }> {
+  if (!object(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([, t]: [string, any]) => object(t) && Number.isSafeInteger(t.calls) && Number.isSafeInteger(t.failed))
+    .map(([name, t]: [string, any]) => [name, { calls: t.calls, failed: t.failed }]));
+}
+function journal(value: any) {
+  if (!object(value) || !Number.isSafeInteger(value.seq)) return undefined;
+  const failure = value.lastFailure;
+  return { seq: value.seq, tools: tallies(value.tools),
+    milestones: Array.isArray(value.milestones) ? value.milestones.filter((m: any) => object(m) && Number.isSafeInteger(m.seq) && typeof m.report === "string")
+      .map((m: any) => ({ seq: m.seq, at: m.at, status: m.status === "completed" || m.status === "incomplete" ? m.status : "draft", report: m.report })) : [],
+    lastFailure: object(failure) && Number.isSafeInteger(failure.seq) && typeof failure.tool === "string"
+      ? { seq: failure.seq, at: failure.at, tool: failure.tool, ...(typeof failure.purpose === "string" ? { purpose: failure.purpose } : {}) } : undefined };
+}
+function cursor(value: any): LocalAgentTask["parentCursor"] {
+  if (!object(value) || !Number.isSafeInteger(value.seq) || !Number.isSafeInteger(value.runGeneration)) return undefined;
+  return { runGeneration: value.runGeneration, seq: value.seq, tools: tallies(value.tools), ...(typeof value.status === "string" ? { status: value.status } : {}) };
 }
 function execution(value: any): LocalAgentTask["executionOptions"] {
   if (!object(value)) return undefined;
@@ -113,6 +132,7 @@ export function serializeTask(task: RecoverableTask): object {
       return { message: messages([entry.message])[0], runGeneration: entry.runGeneration };
     }),
     result: result(task.result), error: task.error, notified: task.notified === true, retain: task.retain, runGeneration: task.runGeneration,
+    parentCursor: cursor(task.parentCursor),
     executionOptions: execution(task.executionOptions), names: task.names?.filter((n) => typeof n === "string"),
     messageReceipts: task.messageReceipts?.map((r) => ({ id: r.id, messageId: r.messageId, status: r.status, queuedAt: r.queuedAt, deliveredAt: r.deliveredAt, runGeneration: r.runGeneration })),
     runHistory: task.runHistory?.slice(-8).map((r) => ({ runGeneration: r.runGeneration, status: r.status, result: result(r.result), error: r.error, progress: progress(r.progress, r.runGeneration), ...timing(r), archivedAt: r.archivedAt })),

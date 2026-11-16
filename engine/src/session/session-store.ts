@@ -303,31 +303,7 @@ export class SessionStore {
   /** Pages end at message boundaries. Tool result/use pairs are kept together across a page edge. */
   getDisplayPage(before?: number, limit = 100, maxBytes = 512 * 1024): SessionDisplayPage {
     checkSessionPaths(this.sessionDir);
-    const stat = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath) : undefined;
-    const size = stat?.size ?? 0;
-    const epoch = `${stat?.ino ?? 0}:${stat?.birthtimeMs ?? 0}:${this.displayStart}`;
-    let cursor = before ?? size;
-    if (!Number.isSafeInteger(cursor) || cursor < this.displayStart || cursor > size) throw new Error("Invalid history cursor");
-    const entries: SessionDisplayEntry[] = [], offsets: number[] = [], timings = new Map<string, TimingRecord>();
-    const pendingTools = new Set<string>();
-    let bytes = 0, scanned = 0;
-    if (size) for (const line of reverseTranscriptLines(this.transcriptPath, cursor, this.displayStart)) {
-      cursor = line.start; scanned += line.end - line.start;
-      if (!line.text.trim()) continue;
-      const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
-      if (entry.agentId !== this.agentId) continue;
-      if (entry.type === "timing" && isTimingRecord(entry.timing) && !timings.has(entry.timing.id)) timings.set(entry.timing.id, restoredTiming(entry.timing));
-      const display = displayEntry(entry);
-      if (display) {
-        entries.push(display); offsets.push(line.start); bytes += line.end - line.start;
-        if (entry.type === "message") for (const block of entry.message.blocks) {
-          if (block.type === "tool_result") pendingTools.add(block.toolUseId);
-          if (block.type === "tool_use") pendingTools.delete(block.id);
-        }
-      }
-      if (((entries.length >= limit || bytes >= maxBytes) && !pendingTools.size) || (scanned >= 4 * 1024 * 1024 && !pendingTools.size)) break;
-    }
-    return { entries: entries.reverse(), offsets: offsets.reverse(), timings: [...timings.values()], before: cursor, hasMore: cursor > this.displayStart, epoch };
+    return readDisplayPage(this.transcriptPath, this.agentId, this.displayStart, before, limit, maxBytes);
   }
 
   /** Separate transcript facts: never part of resumedMessages or the model context. */
@@ -365,17 +341,7 @@ export class SessionStore {
     const stat = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath) : undefined;
     const key = `${stat?.ino ?? 0}:${stat?.size ?? 0}:${stat?.mtimeMs ?? 0}:${this.displayStart}`;
     if (this.latestRunTimings?.key !== key) {
-      const records = new Map<string, TimingRecord>();
-      let runId: string | undefined;
-      if (stat?.size) for (const line of reverseTranscriptLines(this.transcriptPath, stat.size, this.displayStart)) {
-        if (!line.text.includes("\"timing\"")) continue;
-        const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
-        if (entry.agentId !== this.agentId || entry.type !== "timing") continue;
-        if (runId !== undefined && entry.timing.runId !== runId) break;
-        if (runId === undefined && entry.timing.kind === "query") runId = entry.timing.runId;
-        if (!records.has(entry.timing.id)) records.set(entry.timing.id, restoredTiming(entry.timing));
-      }
-      this.latestRunTimings = { key, records: [...records.values()].filter(record => record.runId === runId).reverse() };
+      this.latestRunTimings = { key, records: stat?.size ? readLatestRunTimings(this.transcriptPath, this.agentId, this.displayStart, stat.size) : [] };
     }
     return this.latestRunTimings.records.map(record => ({ ...record }));
   }
@@ -830,6 +796,91 @@ async function loadTranscript(transcriptPath: string, agentId?: string, options:
   }
   loaded.sourceStamp = originalStat && transcriptStamp(originalStat);
   return loaded;
+}
+
+/** Pages end at message boundaries. Tool result/use pairs are kept together across a page edge. */
+function readDisplayPage(transcriptPath: string, agentId: string, displayStart: number, before?: number, limit = 100, maxBytes = 512 * 1024): SessionDisplayPage {
+  const stat = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath) : undefined;
+  const size = stat?.size ?? 0;
+  const epoch = `${stat?.ino ?? 0}:${stat?.birthtimeMs ?? 0}:${displayStart}`;
+  let cursor = before ?? size;
+  if (!Number.isSafeInteger(cursor) || cursor < displayStart || cursor > size) throw new Error("Invalid history cursor");
+  const entries: SessionDisplayEntry[] = [], offsets: number[] = [], timings = new Map<string, TimingRecord>();
+  const pendingTools = new Set<string>();
+  let bytes = 0, scanned = 0;
+  if (size) for (const line of reverseTranscriptLines(transcriptPath, cursor, displayStart)) {
+    cursor = line.start; scanned += line.end - line.start;
+    if (!line.text.trim()) continue;
+    const entry = parseTranscriptEntry(line.text, transcriptPath, line.start);
+    if (entry.agentId !== agentId) continue;
+    if (entry.type === "timing" && isTimingRecord(entry.timing) && !timings.has(entry.timing.id)) timings.set(entry.timing.id, restoredTiming(entry.timing));
+    const display = displayEntry(entry);
+    if (display) {
+      entries.push(display); offsets.push(line.start); bytes += line.end - line.start;
+      if (entry.type === "message") for (const block of entry.message.blocks) {
+        if (block.type === "tool_result") pendingTools.add(block.toolUseId);
+        if (block.type === "tool_use") pendingTools.delete(block.id);
+      }
+    }
+    if (((entries.length >= limit || bytes >= maxBytes) && !pendingTools.size) || (scanned >= 4 * 1024 * 1024 && !pendingTools.size)) break;
+  }
+  return { entries: entries.reverse(), offsets: offsets.reverse(), timings: [...timings.values()], before: cursor, hasMore: cursor > displayStart, epoch };
+}
+
+/** Runs are contiguous, so scan back to the previous run, never the whole archive. */
+function readLatestRunTimings(transcriptPath: string, agentId: string, displayStart: number, size: number, restore = true): TimingRecord[] {
+  const records = new Map<string, TimingRecord>();
+  let runId: string | undefined;
+  for (const line of reverseTranscriptLines(transcriptPath, size, displayStart)) {
+    if (!line.text.includes("\"timing\"")) continue;
+    const entry = parseTranscriptEntry(line.text, transcriptPath, line.start);
+    if (entry.agentId !== agentId || entry.type !== "timing") continue;
+    if (runId !== undefined && entry.timing.runId !== runId) break;
+    if (runId === undefined && entry.timing.kind === "query") runId = entry.timing.runId;
+    if (!records.has(entry.timing.id)) records.set(entry.timing.id, restore ? restoredTiming(entry.timing) : { ...entry.timing });
+  }
+  return [...records.values()].filter(record => record.runId === runId).reverse();
+}
+
+/**
+ * Read-only display view of a session transcript (e.g. a subagent's child session) for observers.
+ * Never opens a writer, repairs tails or writes caches; the owning SessionStore stays the only writer.
+ */
+export class SessionTranscriptView {
+  readonly transcriptPath: string;
+  private lastCompact?: { size: number; offset: number };
+  constructor(readonly sessionDir: string, private readonly agentId: string) {
+    this.transcriptPath = path.join(sessionDir, "transcript.jsonl");
+  }
+  getDisplayPage(before?: number, limit = 100, maxBytes = 512 * 1024): SessionDisplayPage {
+    checkSessionPaths(this.sessionDir);
+    return readDisplayPage(this.transcriptPath, this.agentId, 0, before, limit, maxBytes);
+  }
+  getDisplayEntries(): SessionDisplayEntry[] {
+    const entries: SessionDisplayEntry[] = [];
+    for (let page = this.getDisplayPage(); ; page = this.getDisplayPage(page.before)) {
+      entries.unshift(...page.entries);
+      if (!page.hasMore) return entries;
+    }
+  }
+  /** Interrupted runs are restored only when the owner is not running (a live run's records stay live). */
+  getLatestRunTimings(running = false): TimingRecord[] {
+    const size = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath).size : 0;
+    return size ? readLatestRunTimings(this.transcriptPath, this.agentId, 0, size, !running) : [];
+  }
+  getLastCompactOffset(): number {
+    const size = fs.existsSync(this.transcriptPath) ? fs.statSync(this.transcriptPath).size : 0;
+    if (this.lastCompact?.size !== size) {
+      let offset = -1;
+      if (size) for (const line of reverseTranscriptLines(this.transcriptPath, size, 0)) {
+        if (!line.text.includes("\"compact\"")) continue;
+        const entry = parseTranscriptEntry(line.text, this.transcriptPath, line.start);
+        if (entry.agentId === this.agentId && entry.type === "compact") { offset = line.start; break; }
+      }
+      this.lastCompact = { size, offset };
+    }
+    return this.lastCompact.offset;
+  }
 }
 
 function displayEntry(entry: SessionTranscriptEntry): SessionDisplayEntry | undefined {

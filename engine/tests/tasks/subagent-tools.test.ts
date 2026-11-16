@@ -43,11 +43,14 @@ test('running output never mistakes legacy previous result for current completio
   try {
     f.task.status = 'running'; f.task.runGeneration = 2;
     f.task.result = { agent_id: f.task.agentId, agent_type: 'test', content: 'OLD_COMPLETION', total_duration_ms: 1, total_tool_use_count: 0 };
-    f.task.progress.lastText = 'current <progress>';
+    // Running output reports what changed (semantic progress), never a raw tail of streamed text.
+    f.task.progress.lastText = 'RAW_STREAM_TAIL';
+    f.task.progress.currentAction = 'current <progress>';
     const output = await call(createSubagentOutputTool(f.store), { task_id: f.task.id });
     assert.match(String(output.output), /<retrieval_status>not_ready/);
     assert.match(String(output.output), /<run_generation>2/);
     assert.match(String(output.output), /current &lt;progress&gt;/);
+    assert.doesNotMatch(String(output.output), /RAW_STREAM_TAIL/);
     assert.doesNotMatch(String(output.output), /OLD_COMPLETION/);
     const detail = await call(createSubagentGetTool(f.store), { task_id: f.task.id, detail: true });
     assert.equal((detail.output as any).result, undefined);

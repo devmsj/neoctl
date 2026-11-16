@@ -225,8 +225,14 @@ function runtimeUrl(url) {
   const target = new URL(url, window.location.origin)
   target.searchParams.set('tabId', runtimeTabId)
   if (runtimeSessionId) target.searchParams.set('sessionId', runtimeSessionId)
+  // Observing a subagent: its view is read from the same endpoints; input endpoints carry the
+  // marker too so the runtime rejects anything sent from a read-only view.
+  if (agentView.taskId && OBSERVED_VIEW_PATH.test(target.pathname)) target.searchParams.set('observe', agentView.taskId)
   return appUrl(`${target.pathname}${target.search}${target.hash}`)
 }
+const OBSERVED_VIEW_PATH = /^\/(?:events|api\/(?:state|history|submit|submit-now|queue\/[a-z-]+|run\/[a-z-]+))$/
+/** Which agent the transcript shows: '' is the main agent; otherwise a subagent task (read-only). */
+const agentView = reactive({ taskId: '', switching: false, entering: false, menuOpen: false, menuX: 0, menuY: 0 })
 
 function rememberRuntimeSession(session, force = false) {
   const sessionId = session?.sessionId || ''
@@ -244,6 +250,8 @@ const state = reactive({
   coreVersion: '',
   coreEasterEgg: false,
   lines: runtimeLines.lines,
+  /** Set while the transcript shows a subagent (read-only): { taskId, agentId, agentType, description, status }. */
+  observing: undefined,
   status: { phase: 'ready', streamedOutputTokens: 0 },
   appPrompt: { hasActivePrompt: false, activePrompt: undefined },
   runtimeContext: undefined,
@@ -510,6 +518,7 @@ let syncRaf = 0
 let lineTextRaf = 0
 let pendingSyncPayload
 let hasReceivedEventSync = false
+let acceptingObservationFallback = false
 let clockTimer
 let cpaStateTimer
 let memoryStateTimer
@@ -716,7 +725,59 @@ function measureObservationRow(anchor) {
 const transcriptLookup = createTranscriptLookup(() => state.lines)
 const runtimeTaskIndex = computed(()=>indexRuntimeTasks([...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]))
 const activityLines = computed(()=>(state.lines || []).filter(line=>!shouldHideLine(line) || (historyView.value==='rows' && isActivityLine(line) && line.toolName?.startsWith('subagent_'))))
-const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>state.session?.sessionId,line=>runtimeActivitySignal(line,runtimeTaskIndex.value.forLine(line)).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
+// Subagent observation: every agent of the session (running first, then finished), switchable in place.
+const observableAgents = computed(() => {
+  const seen = new Set()
+  return [...(state.backgroundTasks || []), ...(state.agentTaskHistory || [])].filter(task => {
+    if (task?.kind !== 'agent' || !task.taskId || seen.has(task.taskId)) return false
+    seen.add(task.taskId); return true
+  })
+})
+const showAgentSwitch = computed(() => observableAgents.value.length > 0 || !!state.observing)
+/** Identity of what the transcript shows; per-view UI state (observation, signals) is keyed by it. */
+const agentViewKey = computed(() => `${state.session?.sessionId || ''}|${state.observing?.taskId || ''}`)
+const agentSwitchLabel = computed(() => state.observing ? `正在观察子代理：${agentDisplayName(state.observing)}` : '切换观察代理')
+const AGENT_STATUS_LABELS = { pending: '等待中', running: '运行中', completed: '已完成', failed: '失败', killed: '已停止' }
+function agentDisplayName(task) { return task?.description || task?.agentType || '子代理' }
+let agentSwitchTimer, agentEnterTimer
+function toggleAgentMenu(event) {
+  if (agentView.menuOpen) return closeAgentMenu()
+  const rect = event.currentTarget.getBoundingClientRect()
+  agentView.menuX = Math.max(8, Math.min(rect.left, window.innerWidth - 288))
+  agentView.menuY = Math.max(8, window.innerHeight - rect.top + 6)
+  agentView.menuOpen = true
+  document.addEventListener('keydown', agentMenuKeydown, true)
+}
+function agentMenuKeydown(event) {
+  if (event.key !== 'Escape') return
+  event.stopPropagation()
+  closeAgentMenu()
+}
+function closeAgentMenu() {
+  agentView.menuOpen = false
+  document.removeEventListener('keydown', agentMenuKeydown, true)
+}
+function observeAgent(taskId = '') {
+  closeAgentMenu()
+  if (taskId === agentView.taskId) return
+  agentView.taskId = taskId
+  agentView.entering = false
+  agentView.switching = true
+  clearTimeout(agentSwitchTimer)
+  agentSwitchTimer = setTimeout(() => { agentView.switching = false }, 2000)
+  connectEvents()
+}
+function finishAgentViewSwitch() {
+  clearTimeout(agentSwitchTimer)
+  void nextTick(() => requestAnimationFrame(() => {
+    if (!agentView.switching) return
+    agentView.switching = false
+    agentView.entering = true
+    clearTimeout(agentEnterTimer)
+    agentEnterTimer = setTimeout(() => { agentView.entering = false }, 260)
+  }))
+}
+const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>agentViewKey.value,line=>runtimeActivitySignal(line,runtimeTaskIndex.value.forLine(line)).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
 function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
 const observedActivityLine=computed(()=>projectActivityObservation(activityObserved.value))
 const pinnedActivityLine=computed(()=>projectActivityObservation(activityPinnedLine.value))
@@ -949,6 +1010,7 @@ onBeforeUnmount(() => {
   disconnectDesktopFileDrops?.()
   clearInterval(runningStatusTimer); runningStatusVersion++; runningStatusController?.abort()
   if (es) es.close()
+  closeAgentMenu(); clearTimeout(agentSwitchTimer); clearTimeout(agentEnterTimer)
   transcriptFollow.dispose()
   transcriptHistory.reset()
   if (syncRaf) cancelAnimationFrame(syncRaf)
@@ -1201,7 +1263,8 @@ function connectEvents() {
     // snapshots intentionally omit, so it must never be coalesced away.
     if (!hasReceivedEventSync) {
       hasReceivedEventSync = true
-      applyRawSync(event.data)
+      acceptingObservationFallback = source === es
+      try { applyRawSync(event.data) } finally { acceptingObservationFallback = false }
       return
     }
     queueSync(event.data)
@@ -1491,8 +1554,25 @@ function applySync(payload) {
     repairRuntimeSessionBinding()
     return
   }
+  // Views never mix: a snapshot of another agent's view than the one requested is stale, except the
+  // first snapshot of an observing connection that falls back to the main agent (task gone/session switched).
+  const incomingViewTaskId = String(payload.observing?.taskId || '')
+  if (incomingViewTaskId !== agentView.taskId) {
+    if (incomingViewTaskId || !(acceptingObservationFallback || incomingSessionId !== previousSessionId)) return
+    agentView.taskId = ''
+  }
+  const viewChanged = incomingSessionId === previousSessionId && incomingViewTaskId !== String(state.observing?.taskId || '')
   sessionSettingsSyncRevision += 1
-  const shouldFollow = transcriptFollow.following
+  const shouldFollow = transcriptFollow.following || viewChanged
+  if (viewChanged) {
+    // Another agent's line model (its own ids): start clean, like a session switch, but keep session state.
+    closeToolDetail()
+    if (state.compactionDetailLineId !== undefined) closeCompactionDetail()
+    transcriptFollow.reset()
+    resetVirtualMessages()
+    runtimeLines.replace([])
+  }
+  state.observing = payload.observing || undefined
   if (incomingSessionId !== previousSessionId) {
     transcriptFollow.reset()
     resetSessionSettingsUi()
@@ -1503,7 +1583,8 @@ function applySync(payload) {
     state.attachmentCounter = 0
   }
   const snapshotLines = transcriptHistory.sync(incomingSessionId, payload.history, payload.lines || [])
-  runtimeLines.replace(incomingSessionId === previousSessionId ? reconcileActivitySnapshot(snapshotLines, state.lines) : snapshotLines)
+  runtimeLines.replace(incomingSessionId === previousSessionId && !viewChanged ? reconcileActivitySnapshot(snapshotLines, state.lines) : snapshotLines)
+  if (viewChanged) finishAgentViewSwitch()
   void transcriptHistory.prefetch().then(async () => {
     await nextTick()
     const el = transcript.value
@@ -1899,6 +1980,7 @@ async function onRuntimeContextClick() {
 }
 
 async function submit() {
+  if (state.observing) return // a subagent view is read-only
   if (state.runControl.state === 'resuming') return
   if (composerActionPending.value) return
   if (adminViewing.value) return
@@ -1933,6 +2015,7 @@ async function submit() {
 }
 
 async function interruptAndSubmit() {
+  if (state.observing) return
   if (state.demoMode && composerHasDraft.value) return submit()
   if (composerActionPending.value) return
   if (!composerHasDraft.value) {
@@ -1960,7 +2043,7 @@ async function interruptAndSubmit() {
 }
 
 async function toggleRunPause() {
-  if (composerActionPending.value) return
+  if (composerActionPending.value || state.observing) return
   composerActionPending.value = true
   try {
     await postJson(state.runControl.canResume ? '/api/run/continue' : '/api/run/pause', {})
@@ -5095,7 +5178,7 @@ function createMobileSession() {
 
       <section v-if="state.activePanel === 'chat'" class="content-grid chat-grid">
         <div class="chat-panel">
-          <div ref="transcript" @scroll.passive="onTranscriptHistoryScroll" class="transcript" :class="{'rows-transcript':historyView==='rows'}" tabindex="0" aria-label="对话记录">
+          <div ref="transcript" @scroll.passive="onTranscriptHistoryScroll" class="transcript" :class="{'rows-transcript':historyView==='rows','agent-view-switching':agentView.switching,'agent-view-entering':agentView.entering}" tabindex="0" :aria-label="state.observing ? `子代理对话记录（只读）：${agentDisplayName(state.observing)}` : '对话记录'" :aria-busy="agentView.switching">
             <section v-if="state.runtimeContext || state.runtimeContextLoading || state.runtimeContextError" class="runtime-context-bar">
               <div class="runtime-context-bar-title">
                 <ChromeIcon name="context" /><strong data-demo-trigger role="button" tabindex="0" @click="onRuntimeContextClick" @keydown.enter.prevent="onRuntimeContextClick" @keydown.space.prevent="onRuntimeContextClick">运行上下文</strong>
@@ -5379,20 +5462,33 @@ function createMobileSession() {
             <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :completed="state.coreQueryTiming?.outcome === 'completed'" />
+                <template v-if="showAgentSwitch">
+                  <span class="execution-signal-divider" aria-hidden="true"></span>
+                  <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
+                </template>
+              </div>
+            </div>
+            <div v-else-if="showAgentSwitch && !showTranscriptLoading" class="message-loading" role="status">
+              <div class="message-loading-body">
+                <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
               </div>
             </div>
             <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
               <div class="message-loading-body">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" />
                 <span v-if="transcriptElapsedMs !== undefined" class="execution-signal-divider" aria-hidden="true"></span>
-                <button v-if="retrySeconds !== undefined" class="execution-retry" type="button" :disabled="composerActionPending || adminViewing" :aria-label="`取消自动重试（${retrySeconds} 秒）`" :data-tooltip="`${retrySeconds} 秒后自动重试，点击取消`" @click="toggleRunPause()">
+                <button v-if="retrySeconds !== undefined" class="execution-retry" type="button" :disabled="composerActionPending || adminViewing || !!state.observing" :aria-label="`取消自动重试（${retrySeconds} 秒）`" :data-tooltip="`${retrySeconds} 秒后自动重试，点击取消`" @click="toggleRunPause()">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
                   <span class="execution-retry-count" aria-hidden="true">{{ retrySeconds }}</span>
                 </button>
                 <button v-else-if="state.runControl.canResume || state.runControl.state === 'resuming'" class="execution-resume" type="button" :disabled="composerActionPending || adminViewing || state.runControl.state === 'resuming'" :aria-busy="composerActionPending || state.runControl.state === 'resuming'" aria-label="继续执行" data-tooltip="继续执行" @click="state.runControl.canResume && toggleRunPause()">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
                 </button>
-                <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="state.session?.sessionId" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />
+                <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="agentViewKey" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />
+                <template v-if="showAgentSwitch">
+                  <span class="execution-signal-divider" aria-hidden="true"></span>
+                  <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
+                </template>
               </div>
               <!-- 彩色旋转方块暂时停用，保留模板和样式以便恢复。
               <span class="message-loading-emblem" aria-hidden="true">
@@ -5423,18 +5519,19 @@ function createMobileSession() {
             ref="composerForm"
             v-show="controls.composer"
             v-if="!adminViewing"
-            :class="['composer', { 'drop-active': state.composerDropActive }]"
-            @submit.prevent="submit"
-            @dragover="handleComposerDragOver"
+            :class="['composer', { 'drop-active': state.composerDropActive, 'composer-observing': !!state.observing }]"
+            :aria-readonly="state.observing ? 'true' : undefined"
+            @submit.prevent="!state.observing && submit()"
+            @dragover="!state.observing && handleComposerDragOver($event)"
             @dragleave="handleComposerDragLeave"
-            @drop="handleComposerDrop"
+            @drop="state.observing ? $event.preventDefault() : handleComposerDrop($event)"
           >
-            <div v-if="state.appPrompt?.hasActivePrompt" class="composer-app-prompt">
+            <div v-if="state.appPrompt?.hasActivePrompt && !state.observing" class="composer-app-prompt">
               <span class="composer-app-prompt-label" data-tooltip="当前提示词" aria-label="当前提示词"><ChromeIcon name="prompts" /></span>
               <strong>{{ activeAppPromptTitle }}</strong>
               <button type="button" class="mini-button danger chrome-icon-button" data-tooltip="清空当前提示词" aria-label="清空当前提示词" @click="clearAppPrompt"><ChromeIcon name="close" /></button>
             </div>
-            <div v-if="fileAttachments().length" class="attachments file-attachments">
+            <div v-if="fileAttachments().length && !state.observing" class="attachments file-attachments">
               <figure v-for="(item, index) in fileAttachments()" :key="item.label" class="file-attachment">
                 <figcaption>
                   <strong :data-tooltip="item.localReference ? item.absolutePath : undefined">{{ fileAttachmentLabel(item, index) }}</strong>
@@ -5443,7 +5540,7 @@ function createMobileSession() {
                 <button type="button" aria-label="移除附件" data-tooltip="移除附件" @click="removeAttachment(item.label)"><ChromeIcon name="close" /></button>
               </figure>
             </div>
-            <div v-if="imageAttachments().length" class="attachments image-attachments">
+            <div v-if="imageAttachments().length && !state.observing" class="attachments image-attachments">
               <figure v-for="(item, index) in imageAttachments()" :key="item.label" class="image-attachment">
                 <img :src="appUrl(item.previewUrl)" :alt="item.name || `图片 ${index + 1}`" />
                 <figcaption>图片 {{ index + 1 }}</figcaption>
@@ -5451,17 +5548,17 @@ function createMobileSession() {
               </figure>
             </div>
             <input ref="fileInput" type="file" multiple hidden @change="handleFileInputChange" />
-            <textarea ref="composer" v-model="input" placeholder="有什么想做的？" aria-label="消息" @keydown="handleKeydown" @paste="handlePaste" @input="autosize" @compositionend="handleComposerCompositionEnd"></textarea>
+            <textarea v-show="!state.observing" ref="composer" v-model="input" placeholder="有什么想做的？" aria-label="消息" @keydown="handleKeydown" @paste="handlePaste" @input="autosize" @compositionend="handleComposerCompositionEnd"></textarea>
             <div class="composer-footer">
               <div id="composer-session-metrics" class="composer-metrics" aria-label="运行状态指标">
                 <div class="composer-usage" role="group" aria-label="模型与用量">
-                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :data-tooltip="modelName" aria-label="选择模型" @click="openModelModal"><strong>{{ modelName }}</strong></button>
-                <button type="button" class="metric-chip numeric context-window-trigger" data-tooltip="上下文窗口" @click="openContextWindowModal"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
+                <button type="button" class="metric-chip model-chip context-window-trigger model-trigger" :data-tooltip="modelName" :aria-label="state.observing ? `子代理模型 ${modelName}` : '选择模型'" :tabindex="state.observing ? -1 : undefined" @click="!state.observing && openModelModal()"><strong>{{ modelName }}</strong></button>
+                <button type="button" class="metric-chip numeric context-window-trigger" data-tooltip="上下文窗口" :tabindex="state.observing ? -1 : undefined" @click="!state.observing && openContextWindowModal()"><em>上下文</em><strong>{{ composerContextValue }}</strong></button>
                 <span class="metric-chip numeric" data-tooltip="输入 Token"><em>输入</em><strong>{{ composerInputTokens }}</strong></span>
                 <span class="metric-chip numeric" data-tooltip="输出 Token"><em>输出</em><strong>{{ composerOutputTokens }}</strong></span>
                 </div>
               </div>
-              <div class="composer-actions">
+              <div v-show="!state.observing" class="composer-actions">
                 <button type="button" class="workspace-scope-trigger" data-tooltip="工作区范围" aria-label="工作区范围" @click="openWorkspaceScope"><ChromeIcon name="folder" /></button>
                 <button
                   type="button"
@@ -5513,6 +5610,15 @@ function createMobileSession() {
               </div>
             </div>
           </form>
+          <Teleport to="body">
+            <div v-if="agentView.menuOpen" class="agent-switch-backdrop" @pointerdown="closeAgentMenu"></div>
+            <Transition name="agent-switch-menu">
+              <div v-if="agentView.menuOpen" class="agent-switch-menu" role="menu" aria-label="切换观察代理" :style="{ left: `${agentView.menuX}px`, bottom: `${agentView.menuY}px` }">
+                <button type="button" role="menuitemradio" :aria-checked="!state.observing" :class="{ current: !state.observing }" @click="observeAgent('')"><span class="agent-switch-dot main" aria-hidden="true"></span><span class="agent-switch-name">主代理</span><span class="agent-switch-meta">{{ state.observing ? '' : '当前' }}</span></button>
+                <button v-for="task in observableAgents" :key="task.taskId" type="button" role="menuitemradio" :aria-checked="state.observing?.taskId === task.taskId" :class="{ current: state.observing?.taskId === task.taskId }" :data-tooltip="task.agentType" @click="observeAgent(task.taskId)"><span :class="['agent-switch-dot', task.status]" aria-hidden="true"></span><span class="agent-switch-name">{{ agentDisplayName(task) }}</span><span class="agent-switch-meta">{{ AGENT_STATUS_LABELS[task.status] || task.status }}</span></button>
+              </div>
+            </Transition>
+          </Teleport>
         </div>
 
         <aside class="right-panel" :class="{ 'mobile-card-open': mobileCard }" :data-mobile-card="mobileCard" @keydown.esc.stop="closeMobileCard">

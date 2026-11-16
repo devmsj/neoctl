@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { INTERRUPTED_TASK_ERROR, loadTasks, persistTask, type TaskLoadSummary, type RecoverableTask } from "./task-persistence.js";
 import { createTextMessage, type Message } from "../types/messages.js";
+import { advanceParentCursor, formatProgressDelta, progressDelta } from "../agents/progress-journal.js";
 import { agentRunDurationMs, writeLocalAgentTaskOutput, type AgentMessageReceipt, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
 
 export class TaskStore {
@@ -335,10 +336,52 @@ export class TaskStore {
     // Collection is read-only. Commit the acknowledgement before exposing it in
     // memory; a failed atomic write must leave the completion retryable.
     const acknowledged = { ...task, notified: true, updatedAt: new Date().toISOString() };
+    // The completion notification carries the final report: the main agent has now seen this run.
+    advanceParentCursor(acknowledged);
     persistTask(acknowledged);
     task.notified = true;
     task.updatedAt = acknowledged.updatedAt;
+    task.parentCursor = acknowledged.parentCursor;
     this.notify();
+  }
+
+  /**
+   * Running agents with something the main agent should know (a new report or failure), as compact deltas.
+   * Collecting consumes them: each update reaches the main agent once. Plain tool churn is never pushed.
+   */
+  collectProgressUpdates(...scope: [sessionDir?: string]): { taskId: string; agentId: string; content: string }[] {
+    const owner = scope.length ? (scope[0] ? resolve(scope[0]) : undefined) : this.sessionDir;
+    const updates: { taskId: string; agentId: string; content: string }[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.ownerSessionDir !== owner || task.type !== "agent" || this.isTerminal(task)) continue;
+      const delta = progressDelta(task);
+      if (!delta.semantic) continue;
+      advanceParentCursor(task);
+      this.updateProgress(task);
+      updates.push({ taskId: task.taskId, agentId: task.agentId, content: formatProgressDelta(delta) });
+    }
+    return updates;
+  }
+
+  /** Resolve when the task has a semantic update for the main agent (milestone, failure, status) or ends. */
+  waitForProgress(taskId: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<LocalAgentTask | undefined> {
+    const ready = (task: LocalAgentTask | undefined) => !task || this.isTerminal(task) || progressDelta(task).semantic;
+    const existing = this.get(taskId);
+    if (ready(existing) || options.signal?.aborted) return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      let timeout: NodeJS.Timeout | undefined;
+      const done = (task: LocalAgentTask | undefined) => {
+        if (timeout) clearTimeout(timeout);
+        this.waiters.delete(listener);
+        options.signal?.removeEventListener("abort", abort);
+        resolve(task);
+      };
+      const listener = () => { const task = this.get(taskId); if (ready(task)) done(task); };
+      const abort = () => done(this.get(taskId));
+      if (options.timeoutMs) timeout = setTimeout(() => done(this.get(taskId)), Math.max(0, options.timeoutMs));
+      options.signal?.addEventListener("abort", abort, { once: true });
+      this.waiters.add(listener);
+    });
   }
 
   isTerminal(task: LocalAgentTask): boolean {

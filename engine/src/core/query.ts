@@ -135,6 +135,8 @@ export interface QueryDependencies {
 export interface TaskNotificationSource {
   collectUnnotifiedCompletions(sessionDir?: string): { taskId: string; agentId: string; status: string; type: string; content: string }[];
   markNotified(taskId: string): void;
+  /** Semantic progress of running subagents since the main agent last saw it (consumed on collection). */
+  collectProgressUpdates?(sessionDir?: string): { taskId: string; agentId: string; content: string }[];
 }
 
 interface ModelTurnOutput {
@@ -1159,7 +1161,7 @@ function isContextLengthError(error: unknown): boolean {
 function collectTaskNotifications(source?: TaskNotificationSource, sessionDir?: string): Message[] {
   if (!source) return [];
   const completed = source.collectUnnotifiedCompletions(sessionDir);
-  return completed.map((task) => {
+  const completions = completed.map((task) => {
     source.markNotified(task.taskId);
     return createTaskNotificationMessage({
       taskId: task.taskId,
@@ -1169,6 +1171,11 @@ function collectTaskNotifications(source?: TaskNotificationSource, sessionDir?: 
       content: task.content,
     });
   });
+  // Milestones/failures of still-running subagents: compact deltas, each delivered once.
+  const progress = (source.collectProgressUpdates?.(sessionDir) ?? []).map((update) => createTaskNotificationMessage({
+    taskId: update.taskId, agentId: update.agentId, status: "running", type: "progress", content: update.content,
+  }));
+  return [...completions, ...progress];
 }
 
 // Preserve provenance across the existing safety filter's hold-back without

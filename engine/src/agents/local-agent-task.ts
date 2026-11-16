@@ -4,6 +4,7 @@ import { getNeoctlHome } from "../paths.js";
 import type { AgentEvent } from "../types/events.js";
 import type { Message } from "../types/messages.js";
 import type { SecretRedactionRegistry } from "../secrets/secret-types.js";
+import { recordMilestonesFromMessage, recordToolOutcome, type ParentCursor, type ProgressJournal } from "./progress-journal.js";
 
 export type LocalAgentTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
@@ -26,6 +27,8 @@ export interface AgentProgressSnapshot {
   visibleText?: { channel: "visible"; runGeneration: number; text: string; truncated: boolean; redactionVersion?: 1 };
   currentAction?: string;
   steps?: AgentProgressStep[];
+  /** Semantic progress for the main agent: milestones, tool tallies, latest failure. */
+  journal?: ProgressJournal;
 }
 
 /** Delivered means included in a model request, not understood or completed. */
@@ -69,6 +72,8 @@ export interface LocalAgentTask {
   abortController?: AbortController;
   pendingMessages: Message[];
   runGeneration: number;
+  /** What the main agent has already seen of this run's progress journal. */
+  parentCursor?: ParentCursor;
   /** Internal launch settings only; no credentials or parent runtime state. */
   executionOptions?: {
     cwd?: string; model?: string;
@@ -166,6 +171,7 @@ function previewStream(registry?: SecretRedactionRegistry): PreviewStream {
 export function updateProgressFromMessage(task: LocalAgentTask, message: Message): void {
   task.progress.totalEvents += 1;
   task.progress.lastActivity = new Date().toISOString();
+  recordMilestonesFromMessage(task, message);
   const text = message.blocks
     .filter((block): block is { type: "text"; text: string } => block.type === "text")
     .map((block) => block.text)
@@ -239,6 +245,7 @@ export function updateProgressFromEvent(
     upsert(event.toolUse.id, event.progress.message || event.toolUse.name, "running");
   } else if (event.type === "tool.result.available") {
     upsert(event.toolUse.id, event.toolUse.name, event.ok ? "completed" : "failed");
+    recordToolOutcome(task, event.toolUse.name, event.ok, (event.toolUse.input as { description?: unknown } | undefined)?.description);
   } else if (event.type === "state" && event.phase !== "running_tools") {
     task.progress.currentAction = event.detail || event.phase;
   } else if (event.type === "assistant.delta" && safeLegacyDelta) {

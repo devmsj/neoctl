@@ -1,0 +1,62 @@
+/* Observing a subagent in the main transcript: switch entry, menu, view transition, read-only composer. */
+:root[data-theme] .message-loading-body:has(.agent-switch-button) { display: flex; align-items: center; gap: 12px; }
+:root[data-theme] .agent-switch-button { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0 !important; border-radius: var(--appearance-radius, 5px) !important; background: transparent !important; color: inherit; box-shadow: none !important; cursor: pointer; transition: color .15s ease, background-color .15s ease; }
+:root[data-theme] .agent-switch-button:hover,
+:root[data-theme] .agent-switch-button.open { background: var(--chrome-hover) !important; }
+:root[data-theme] .agent-switch-button.observing { color: var(--chrome-accent); }
+.agent-switch-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.agent-switch-button:focus-visible { outline: 1px solid var(--chrome-accent); outline-offset: 3px; }
+
+.agent-switch-backdrop { position: fixed; inset: 0; z-index: 80; }
+.agent-switch-menu {
+  position: fixed; z-index: 81; display: grid; gap: 2px;
+  min-width: 220px; max-width: min(280px, calc(100vw - 16px)); max-height: min(360px, 60vh); overflow: auto;
+  padding: 4px;
+  background: var(--appearance-surface, #fff);
+  border: var(--appearance-border-width, 1px) solid var(--chrome-line-soft, rgba(0, 0, 0, .1));
+  border-radius: calc(var(--appearance-radius, 5px) + 2px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .14);
+  transform-origin: bottom left;
+}
+:root[data-theme] .agent-switch-menu button {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; min-height: 32px; padding: 6px 8px;
+  border: 0 !important; border-radius: var(--appearance-radius, 5px) !important;
+  background: transparent !important; box-shadow: none !important;
+  color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+:root[data-theme] .agent-switch-menu button:hover,
+:root[data-theme] .agent-switch-menu button:focus-visible { background: var(--chrome-hover) !important; outline: none; }
+:root[data-theme] .agent-switch-menu button.current { color: var(--chrome-accent); }
+.agent-switch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-switch-meta { font-size: 12px; opacity: .6; }
+.agent-switch-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .35; }
+.agent-switch-dot.main { opacity: .75; }
+.agent-switch-dot.running,
+.agent-switch-dot.pending { opacity: 1; background: var(--chrome-accent); animation: agent-switch-pulse 1.4s ease-in-out infinite; }
+.agent-switch-dot.failed,
+.agent-switch-dot.killed { opacity: .9; background: #d0533f; }
+@keyframes agent-switch-pulse { 50% { opacity: .35; } }
+.agent-switch-menu-enter-active,
+.agent-switch-menu-leave-active { transition: opacity .14s ease, transform .14s ease; }
+.agent-switch-menu-enter-from,
+.agent-switch-menu-leave-to { opacity: 0; transform: translateY(4px) scale(.98); }
+
+/* The other agent's view replaces the transcript with a short cross-fade (opacity only: no layout or containing-block change). */
+.transcript.agent-view-switching { opacity: .4; transition: opacity .12s ease; }
+.transcript.agent-view-entering { animation: agent-view-enter .24s ease both; }
+@keyframes agent-view-enter { from { opacity: .4; } to { opacity: 1; } }
+
+/* Read-only subagent view: no input box, the same status row. */
+:root[data-theme] .composer.composer-observing .context-window-trigger { cursor: default; }
+/* Without the writing surface the footer is the whole box: no separator above it. */
+:root[data-theme] .composer.composer-observing .composer-footer { margin-top: 0; padding-top: 0; border-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript.agent-view-switching,
+  .agent-switch-menu-enter-active,
+  .agent-switch-menu-leave-active { transition: none; }
+  .transcript.agent-view-entering,
+  .agent-switch-dot.running,
+  .agent-switch-dot.pending { animation: none; }
+}

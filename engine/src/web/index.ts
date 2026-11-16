@@ -53,6 +53,9 @@ import { planTool } from "../tools/builtins/plan-tool.js";
 import { createOpenAIImageGenerationTool } from "../tools/builtins/image-generation-tool.js";
 import { createLoadImageTool } from "../tools/builtins/image-loader-tool.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../agents/agent-tool.js";
+import { globalAgentActivityStore } from "../agents/agent-activity.js";
+import { SessionTranscriptView } from "../session/session-store.js";
+import { buildContextMetrics } from "../core/context-metrics.js";
 import { createSubagentTools, type SubagentResumeHandler } from "../tasks/subagent-tools.js";
 import { TaskStore } from "../tasks/task-store.js";
 import type { TaskNotificationSource } from "../core/query.js";
@@ -498,6 +501,15 @@ interface WebSubscriber {
   needsRuntimeContext: boolean;
   pendingClientReload?: WebClientReloadPayload;
   pendingFastModeFallback?: { revision: number; sessionId?: string };
+  /** Read-only subagent view: lines/status/history come from this observer, everything else from the owner. */
+  observer?: AgentObserver;
+}
+
+/** Renders one subagent exactly like the main agent: the same WebRepl line model, fed by child events. */
+interface AgentObserver {
+  taskId: string;
+  agentId: string;
+  repl: WebRepl;
 }
 
 interface WebBackgroundSessionRun {
@@ -881,6 +893,9 @@ export function createTaskNotificationSource(taskStore: TaskStore): TaskNotifica
     markNotified(taskId: string) {
       taskStore.markNotified(taskId);
     },
+    collectProgressUpdates(sessionDir?: string) {
+      return taskStore.collectProgressUpdates(sessionDir);
+    },
   };
 }
 
@@ -1207,7 +1222,12 @@ export class WebRepl {
     return lines;
   }
 
-  history(before: number, epoch: string) {
+  history(before: number, epoch: string, observeTaskId?: string): { sessionId: string | undefined; lines: Array<Omit<UiLine, "id"> & { id: string }>; before: number; hasMore: boolean; epoch: string } {
+    if (observeTaskId) {
+      const observer = this.observers.get(observeTaskId);
+      if (!observer) throw new Error("History changed; refresh session");
+      return observer.repl.history(before, epoch);
+    }
     if (!this.historyPage || epoch !== this.historyPage.epoch) throw new Error("History changed; refresh session");
     const page = this.runtime.engine.getDisplayPage(before);
     if (!page || page.epoch !== epoch) throw new Error("History changed; refresh session");
@@ -1216,9 +1236,11 @@ export class WebRepl {
     return { sessionId: this.currentSessionId(), lines, before: page.before, hasMore: page.hasMore, epoch };
   }
 
-  subscribe(res: ServerResponse, clientInfo?: WebClientInfoPayload): void {
-    const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false, needsRuntimeContext: false };
+  subscribe(res: ServerResponse, clientInfo?: WebClientInfoPayload, observeTaskId?: string): void {
+    const observer = observeTaskId ? this.observerFor(observeTaskId) : undefined;
+    const subscriber: WebSubscriber = { response: res, blocked: false, needsSync: false, needsRuntimeContext: false, observer };
     this.subscribers.add(subscriber);
+    observer?.repl.subscribers.add(subscriber);
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -1229,7 +1251,143 @@ export class WebRepl {
     this.sendSubscriberSnapshot(subscriber, this.snapshot(true));
     this.publishRuntimeContext([subscriber]);
     reqKeepAlive(res);
-    res.on("close", () => this.subscribers.delete(subscriber));
+    res.on("close", () => {
+      this.subscribers.delete(subscriber);
+      if (observer) this.releaseObserver(observer, subscriber);
+    });
+  }
+
+  // ---- Read-only subagent observation ----
+  private readonly observers = new Map<string, AgentObserver>();
+  private stopAgentEvents?: () => void;
+
+  private agentTask(taskId: string) {
+    return sessionAgentTasks(this.runtime).find(task => task.taskId === taskId);
+  }
+
+  /** A second WebRepl renders the child: history from its own transcript (read-only), live lines from its events. */
+  private observerFor(taskId: string): AgentObserver | undefined {
+    const existing = this.observers.get(taskId);
+    if (existing) return existing;
+    const main = this.runtime;
+    const task = this.agentTask(taskId);
+    const session = main.engine.snapshot().session;
+    if (!task || !session?.sessionDir) return undefined;
+    const view = new SessionTranscriptView(path.join(session.sessionDir, "subagents", task.agentId), task.agentId);
+    const activityStore = main.agentRuntime?.agentActivityStore ?? globalAgentActivityStore;
+    const running = () => { const current = this.agentTask(taskId); return !!current && !main.taskStore.isTerminal(current); };
+    const execution = task.executionOptions ?? {};
+    // The child's own timing events (whole current run) when this process ran it; otherwise its transcript.
+    // Running records are re-timed from their wall-clock start so the client clock never jumps back.
+    const timings = () => {
+      const live = activityStore.liveState(task.agentId)?.timings;
+      return (live?.size ? [...live.values()] : view.getLatestRunTimings(running())).map(record => record.status === "running" && record.startedAt
+        ? { ...record, elapsedMs: Math.max(record.elapsedMs ?? 0, Date.now() - Date.parse(record.startedAt)) } : { ...record });
+    };
+    const engine = {
+      snapshot: () => {
+        const snapshot = main.engine.snapshot();
+        return { ...snapshot, messages: this.agentTask(taskId)?.messages.length ?? 0, session: snapshot.session && { ...snapshot.session, sessionDir: view.sessionDir } };
+      },
+      redactDisplayValue: <T,>(value: T): T => main.engine.redactDisplayValue(value),
+      getDisplayPage: (before?: number, limit?: number) => view.getDisplayPage(before, limit),
+      getDisplayEntries: () => view.getDisplayEntries(),
+      getLastCompactOffset: () => view.getLastCompactOffset(),
+      getStatusTimingRecords: timings,
+      getTimingRecords: timings,
+      getRegisteredImageBlock: () => undefined,
+      refreshModelConfigurationIfIdle: () => undefined,
+      onSessionTitleChange: () => () => undefined,
+      isFastMode: () => execution.fastMode === true,
+      getAppPrompt: () => main.engine.getAppPrompt(),
+      getPendingSessionSettings: () => ({}),
+      getDemoMode: () => undefined,
+      getDisplayCount: () => 0,
+    };
+    let initialMetrics = main.initialMetrics;
+    try {
+      initialMetrics = buildContextMetrics({ model: execution.model, contextWindowTokensOverride: execution.contextWindowTokensOverride, messages: task.messages ?? [], systemPrompt: "", tools: [] });
+    } catch { /* keep the owner metrics shape */ }
+    const runtime = {
+      ...main, engine, initialMetrics, envNotice: undefined, usage: new SessionUsageTracker(),
+      taskStore: { subscribe: () => () => undefined, isTerminal: (value: Parameters<typeof main.taskStore.isTerminal>[0]) => main.taskStore.isTerminal(value), list: () => [] },
+      execProcessManager: { subscribe: () => () => undefined, subscribeOutput: () => () => undefined, list: () => [], isBackgroundRunning: () => false },
+    } as unknown as WebRuntime;
+    const repl = new WebRepl(runtime);
+    const lastUsage = task.result?.usage;
+    if (lastUsage) repl.status = { ...repl.status, usage: lastUsage };
+    // Attached mid-run: the transcript holds every durable message; replay the in-flight remainder
+    // (partial text, thinking, running tools) and the latest status inputs, so nothing is skipped.
+    // A finished run keeps its last real context/usage figures for the status row.
+    const liveState = activityStore.liveState(task.agentId);
+    if (liveState) {
+      const inFlight = running() ? [liveState.state, ...liveState.tail] : [];
+      for (const event of [liveState.metrics, liveState.usage, ...inFlight]) if (event) repl.handleEvent(event);
+      repl.discardPendingDeltaOperations(); // no subscriber yet: the first snapshot already contains them
+    }
+    const observer: AgentObserver = { taskId, agentId: task.agentId, repl };
+    repl.snapshot = (includeCatalog = false) => this.observedSnapshot(observer, this.snapshot(includeCatalog));
+    this.observers.set(taskId, observer);
+    this.stopAgentEvents ??= activityStore.onEvent((agentId, event) => {
+      for (const candidate of this.observers.values()) if (candidate.agentId === agentId) this.feedObserver(candidate, event);
+    });
+    return observer;
+  }
+
+  private feedObserver(observer: AgentObserver, event: AgentEvent): void {
+    const repl = observer.repl;
+    repl.handleEvent(event);
+    if (event.type === "terminal") {
+      repl.status = { ...repl.status, phase: "ready", detail: undefined, retryCooldownUntil: undefined, activityTick: repl.status.activityTick + 1 };
+      repl.broadcastSync();
+    }
+  }
+
+  /** Owner snapshot (session, tasks, settings) with the observed agent's view. Never writable. */
+  private observedSnapshot(observer: AgentObserver, base: ReturnType<WebRepl["snapshot"]>) {
+    const task = this.agentTask(observer.taskId);
+    const repl = observer.repl;
+    const execution = task?.executionOptions ?? {};
+    const running = !!task && !this.runtime.taskStore.isTerminal(task);
+    const model = execution.model ?? base.modelSettings.model;
+    return {
+      ...base,
+      history: repl.historyPage,
+      lines: repl.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
+      status: repl.timedStatus(),
+      busy: running,
+      runControl: { ...base.runControl, state: running ? "running" : "idle", canPause: false, canResume: false, reason: undefined, timer: undefined },
+      queuedInput: undefined,
+      queuedAttachments: [],
+      pendingSessionSettings: {},
+      modelSettings: { model, reasoning: execution.reasoning ?? undefined, imageInput: findModelMetadata(model || "")?.imageInput },
+      fastMode: execution.fastMode === true,
+      observing: { taskId: observer.taskId, agentId: observer.agentId, agentType: task?.agentType, description: task?.description, status: task?.status },
+    };
+  }
+
+  private releaseObserver(observer: AgentObserver, subscriber: WebSubscriber): void {
+    observer.repl.subscribers.delete(subscriber);
+    if (observer.repl.subscribers.size || this.observers.get(observer.taskId) !== observer) return;
+    this.observers.delete(observer.taskId);
+    observer.repl.discardPendingDeltaOperations();
+    if (!this.observers.size) { this.stopAgentEvents?.(); this.stopAgentEvents = undefined; }
+  }
+
+  /** Session switch: observed tasks belong to the old session. Clients reconnect and fall back to the owner view. */
+  private disposeObservers(): void {
+    const observers = [...this.observers.values()];
+    this.observers.clear();
+    this.stopAgentEvents?.(); this.stopAgentEvents = undefined;
+    for (const observer of observers) {
+      observer.repl.discardPendingDeltaOperations();
+      for (const subscriber of observer.repl.subscribers) subscriber.response.end();
+    }
+  }
+
+  stateFor(observeTaskId?: string) {
+    const observer = observeTaskId ? this.observers.get(observeTaskId) : undefined;
+    return observer ? this.observedSnapshot(observer, this.snapshot(true)) : this.snapshot(true);
   }
 
   get backgroundTaskCount(): number {
@@ -1242,7 +1400,13 @@ export class WebRepl {
     return subscribers.length;
   }
 
-  async toolCallDetail(sessionId: string, toolUseId: string, messageId?: string) {
+  async toolCallDetail(sessionId: string, toolUseId: string, messageId?: string, observeTaskId?: string) {
+    const observer = observeTaskId ? this.observers.get(observeTaskId) : undefined;
+    if (observeTaskId) return observer ? observer.repl.toolCallDetailFor(sessionId, toolUseId, messageId) : undefined;
+    return this.toolCallDetailFor(sessionId, toolUseId, messageId);
+  }
+
+  private async toolCallDetailFor(sessionId: string, toolUseId: string, messageId?: string) {
     const session = this.runtime.engine.snapshot().session;
     const detail = await readToolCallDetail({ sessionId: session?.sessionId ?? "", expectedSessionId: sessionId, sessionDir: session?.sessionDir, toolUseId, messageId, redact: value => this.runtime.engine.redactDisplayValue(value), entries: this.runtime.engine.getDisplayEntries() });
     return detail ? this.runtime.engine.redactDisplayValue({ ...detail, fields: toolDetailFieldsFromDetail(detail) }) : undefined;
@@ -1656,6 +1820,7 @@ export class WebRepl {
   }
 
   private async refreshSessionView(publish = true): Promise<void> {
+    this.disposeObservers();
     const metrics = await this.runtime.engine.contextMetrics();
     this.runtime.usage.reset();
     this.status = initialStatus(this.runtime, metrics);
@@ -1763,6 +1928,10 @@ export class WebRepl {
   fileAttachment(messageId: string, index: number): DisplayFileAttachment | undefined {
     const cached = this.historyMessages.get(messageId);
     if (cached) return messageFileAttachments(cached)[index];
+    for (const observer of this.observers.values()) {
+      const found = observer.repl.fileAttachment(messageId, index);
+      if (found) return found;
+    }
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type === "message" && entry.message.id === messageId) return messageFileAttachments(entry.message)[index];
     }
@@ -1773,6 +1942,10 @@ export class WebRepl {
     if (!messageId || !Number.isInteger(blockIndex) || blockIndex < 0) return undefined;
     const cached = this.historyMessages.get(messageId)?.blocks[blockIndex];
     if (cached?.type === "image") return imagePayloadForBlock(cached);
+    for (const observer of this.observers.values()) {
+      const found = observer.repl.imagePayload(messageId, blockIndex);
+      if (found) return found;
+    }
     let block: Extract<MessageBlock, { type: "image" }> | undefined;
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type !== "message" || entry.message.id !== messageId) continue;
@@ -1788,6 +1961,14 @@ export class WebRepl {
     if (this.runtime.engine.getRegisteredImageBlock) {
       const block = this.runtime.engine.getRegisteredImageBlock(imageId);
       if (block) return imagePayloadForBlock(block);
+    }
+    for (const message of this.historyMessages.values()) {
+      const block = message.blocks.find((candidate): candidate is Extract<MessageBlock, { type: "image" }> => candidate.type === "image" && candidate.imageId === imageId);
+      if (block) return imagePayloadForBlock(block);
+    }
+    for (const observer of this.observers.values()) {
+      const found = observer.repl.imagePayloadById(imageId);
+      if (found) return found;
     }
     for (const entry of this.runtime.engine.getDisplayEntries()) {
       if (entry.type !== "message") continue;
@@ -2899,6 +3080,12 @@ export class WebRepl {
   }
 
   private send(subscriber: WebSubscriber, event: string, data: unknown): void {
+    const observer = subscriber.observer;
+    if (observer && observer.repl !== this && (event === "delta" || event === "sync")) {
+      // The owner's line deltas belong to the owner view; its syncs carry the observed view instead.
+      if (event === "sync") observer.repl.sendSubscriberSnapshot(subscriber, this.observedSnapshot(observer, data as ReturnType<WebRepl["snapshot"]>));
+      return;
+    }
     if (subscriber.blocked) {
       if (event === "client.reload") subscriber.pendingClientReload = data as WebClientReloadPayload;
       else if (event === "fast-mode.fallback") subscriber.pendingFastModeFallback = data as WebSubscriber["pendingFastModeFallback"];
@@ -2997,6 +3184,7 @@ export class WebRepl {
       status: this.timedStatus(),
     };
     for (const subscriber of this.subscribers) {
+      if (subscriber.observer && subscriber.observer.repl !== this) continue;
       const offset = subscriber.snapshotDeltaOffset ?? 0;
       subscriber.snapshotDeltaOffset = undefined;
       // Text appends are not idempotent: skip operations its own snapshot already contains.
@@ -3009,7 +3197,7 @@ export class WebRepl {
     this.pendingDeltaTimer = undefined;
     this.pendingDeltaOperations = [];
     this.pendingDeltaStatus = false;
-    for (const subscriber of this.subscribers) subscriber.snapshotDeltaOffset = undefined;
+    for (const subscriber of this.subscribers) if (!subscriber.observer || subscriber.observer.repl === this) subscriber.snapshotDeltaOffset = undefined;
   }
 
   /** Snapshot for one subscriber; it already includes every currently queued delta operation. */
@@ -3105,10 +3293,13 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       return sendJson(res, await router.deleteSession(scope, String(body.sessionId ?? "")));
     }
     const repl = await router.get(scope);
-    if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo());
+    const observeTaskId = optionalSearchParam(url, "observe");
+    // Observing a subagent is read-only: nothing may be written to the owner session through that view.
+    if (observeTaskId && req.method !== "GET") return sendJson(res, { error: "观察子代理时为只读" }, 409);
+    if (req.method === "GET" && url.pathname === "/events") return repl.subscribe(res, router.clientInfo(), observeTaskId);
     if (req.method === "GET" && url.pathname === "/api/tool-call-detail") {
       res.setHeader("Cache-Control", "no-store");
-      const detail = await repl.toolCallDetail(url.searchParams.get("sessionId") ?? "", url.searchParams.get("toolUseId") ?? "", url.searchParams.get("messageId") ?? undefined);
+      const detail = await repl.toolCallDetail(url.searchParams.get("sessionId") ?? "", url.searchParams.get("toolUseId") ?? "", url.searchParams.get("messageId") ?? undefined, observeTaskId);
       if (!detail) return sendJson(res, { error: "调用详情不可获取或无权访问" }, 404);
       return sendJson(res, detail);
     }
@@ -3138,11 +3329,11 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       res.setHeader("Cache-Control", "no-store");
       try {
         if (url.searchParams.get("sessionId") !== repl.currentSessionId() || !url.searchParams.has("before")) throw new Error("History session changed; refresh session");
-        return sendJson(res, repl.history(Number(url.searchParams.get("before")), url.searchParams.get("epoch") ?? ""));
+        return sendJson(res, repl.history(Number(url.searchParams.get("before")), url.searchParams.get("epoch") ?? "", observeTaskId));
       }
       catch (error) { return sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 409); }
     }
-    if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.snapshot(true));
+    if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, repl.stateFor(observeTaskId));
     if (req.method === "GET" && url.pathname === "/api/runtime-context") return sendJson(res, await repl.runtimeContext());
     const workspaceRepl = repl as WebRepl & {
       workspaceScope?: () => unknown;

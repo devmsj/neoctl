@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { isForkChildContext } from "../agents/agent-definition.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
 import type { LocalAgentTask } from "../agents/local-agent-task.js";
+import { advanceParentCursor, formatProgressDelta, progressDelta } from "../agents/progress-journal.js";
 import { globalTaskStore, isTerminalStatus, type TaskStore } from "./task-store.js";
 
 // Scope comes from the calling query, never from the foreground UI. Child session
@@ -24,6 +25,7 @@ export interface SubagentIdInput {
 
 export interface SubagentGetInput extends SubagentIdInput {
   detail?: boolean;
+  wait_ms?: number;
 }
 
 export interface SubagentMessageInput {
@@ -79,7 +81,7 @@ export function createSubagentOutputTool(taskStore: TaskStore = globalTaskStore)
       const latest = taskStore.getInSession(input.task_id, callerSessionDir(context));
       if (!latest) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
       if (!taskStore.isTerminal(latest)) {
-        return { ok: true, output: formatSubagentOutput(latest, "not_ready") };
+        return { ok: true, output: formatSubagentOutput(latest, "not_ready", readProgress(taskStore, latest, context)) };
       }
 
       taskStore.markNotified(latest.taskId);
@@ -101,7 +103,13 @@ export function createSubagentListTool(taskStore: TaskStore = globalTaskStore): 
       return {};
     },
     async call(_input, context) {
-      return { ok: true, output: { tasks: taskStore.listInSession(callerSessionDir(context)).map(taskSummary) } };
+      // Overview only: flags pending updates without consuming them (subagent_get reads them).
+      return { ok: true, output: { tasks: taskStore.listInSession(callerSessionDir(context)).map(task => {
+        const delta = progressDelta(task);
+        return { task_id: task.taskId, agent_id: task.agentId, status: task.status, description: task.description, run_generation: task.runGeneration ?? 1,
+          has_updates: delta.changed, has_new_report: delta.milestones.length > 0, has_new_failure: !!delta.failure,
+          total_tool_calls: task.progress.totalToolUseCount, requires_resume: isTerminalStatus(task.status) && task.pendingMessages.length > 0 };
+      }) } };
     },
   };
 }
@@ -109,10 +117,14 @@ export function createSubagentListTool(taskStore: TaskStore = globalTaskStore): 
 export function createSubagentGetTool(taskStore: TaskStore = globalTaskStore): Tool<SubagentGetInput> {
   return {
     name: "subagent_get",
-    description: "Get a compact current-run status, progress and message delivery summary. Use detail=true for full prompt, progress and result; use subagent_output to read the current result. Delivered messages are not proof of implementation.",
+    description: "Get what changed in a subagent since your last check: its own progress reports, tool activity counts (with failures) and status. Repeated checks never repeat old content. wait_ms waits for the next milestone, failure or status change instead of polling. Use detail=true for full prompt, progress and result; use subagent_output to read the final result. Delivered messages are not proof of implementation.",
     inputSchema: {
       type: "object",
-      properties: { task_id: { type: "string" }, detail: { type: "boolean", description: "Include full task details; defaults to false." } },
+      properties: {
+        task_id: { type: "string" },
+        detail: { type: "boolean", description: "Include full task details; defaults to false." },
+        wait_ms: { type: "number", description: "Wait up to this long for the next meaningful change (report, failure, status) before answering." },
+      },
       required: ["task_id"],
       additionalProperties: false,
     },
@@ -123,8 +135,14 @@ export function createSubagentGetTool(taskStore: TaskStore = globalTaskStore): T
       return value;
     },
     async call(input, context) {
-      const task = taskStore.getInSession(input.task_id, callerSessionDir(context));
-      return task ? { ok: true, output: input.detail ? taskDetail(task) : taskSummary(task) } : { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
+      let task = taskStore.getInSession(input.task_id, callerSessionDir(context));
+      if (!task) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
+      if (!input.detail && Number.isFinite(input.wait_ms) && input.wait_ms! > 0) {
+        await taskStore.waitForProgress(task.taskId, { timeoutMs: Math.min(input.wait_ms!, 600_000), signal: context.abortSignal });
+        task = taskStore.getInSession(input.task_id, callerSessionDir(context)) ?? task;
+      }
+      if (input.detail) return { ok: true, output: taskDetail(task) };
+      return { ok: true, output: taskSummary(task, readProgress(taskStore, task, context)) };
     },
   };
 }
@@ -242,11 +260,22 @@ export function createSubagentResumeTool(taskStore: TaskStore = globalTaskStore,
   };
 }
 
-function formatSubagentOutput(task: LocalAgentTask, retrievalStatus: "ready" | "not_ready"): string {
+/** Only the main agent's reads consume progress; a subagent inspecting tasks never hides updates from it. */
+function readProgress(taskStore: TaskStore, task: LocalAgentTask, context: ToolUseContext): string {
+  const delta = progressDelta(task);
+  if (!context.isSubagent) {
+    advanceParentCursor(task);
+    taskStore.updateProgress(task);
+  }
+  return formatProgressDelta(delta);
+}
+
+function formatSubagentOutput(task: LocalAgentTask, retrievalStatus: "ready" | "not_ready", progress?: string): string {
   // A resumed task can carry legacy state; never surface an old result as current progress.
+  // Not ready: what changed since the last check, never a raw tail of streamed text.
   const output = retrievalStatus === "ready"
     ? task.result?.content ?? task.error ?? task.progress.lastText ?? ""
-    : task.progress.lastText?.slice(-1000) ?? "";
+    : progress ?? "";
   return [
     `<retrieval_status>${retrievalStatus}</retrieval_status>`,
     `<task_id>${task.taskId}</task_id>`,
@@ -261,7 +290,7 @@ function formatSubagentOutput(task: LocalAgentTask, retrievalStatus: "ready" | "
   ].filter(Boolean).join("\n");
 }
 
-function taskSummary(task: LocalAgentTask): Record<string, unknown> {
+function taskSummary(task: LocalAgentTask, sinceLastCheck?: string): Record<string, unknown> {
   return {
     task_id: task.taskId,
     agent_id: task.agentId,
@@ -289,8 +318,7 @@ function taskSummary(task: LocalAgentTask): Record<string, unknown> {
     })),
     progress: {
       last_activity: task.progress.lastActivity,
-      current_action: task.progress.currentAction?.slice(0, 200),
-      last_text: task.progress.lastText?.slice(-600),
+      since_last_check: sinceLastCheck,
       total_tool_use_count: task.progress.totalToolUseCount,
     },
     error: isTerminalStatus(task.status) ? task.error?.slice(0, 500) : undefined,

@@ -1,5 +1,6 @@
 import type { ModelUsage } from "../model/model-gateway.js";
 import type { AgentEvent } from "../types/events.js";
+import type { TimingRecord } from "../core/query-timing.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { AgentToolResult } from "./local-agent-task.js";
 
@@ -59,6 +60,27 @@ export interface StartAgentActivityInput {
   model?: string;
 }
 
+export interface AgentLiveState {
+  /** Events after the last durable message of the current run, in order. */
+  tail: AgentEvent[];
+  /** Latest phase, even when it preceded the last durable message. */
+  state?: Extract<AgentEvent, { type: "state" }>;
+  usage?: Extract<AgentEvent, { type: "usage" }>;
+  metrics?: Extract<AgentEvent, { type: "context.metrics" }>;
+  timings: Map<string, TimingRecord>;
+}
+
+const MAX_LIVE_TAIL = 2000;
+
+/** Merge adjacent streaming fragments so a long in-flight message stays a handful of events. */
+function coalesce(last: AgentEvent, next: AgentEvent): AgentEvent | undefined {
+  if (last.type === "assistant.delta" && next.type === "assistant.delta" && last.displayChannel === next.displayChannel) return { ...last, text: last.text + next.text };
+  if (last.type === "thinking.delta" && next.type === "thinking.delta") return { ...last, text: last.text + next.text };
+  if (last.type === "context.compaction.delta" && next.type === "context.compaction.delta") return { ...last, text: last.text + next.text };
+  if (last.type === "tool_call.delta" && next.type === "tool_call.delta" && last.callId === next.callId) return { ...last, argumentsDelta: last.argumentsDelta + next.argumentsDelta };
+  return undefined;
+}
+
 const MAX_TIMELINE_ENTRIES = 80;
 const PREVIEW_LIMIT = 260;
 
@@ -69,6 +91,42 @@ export class AgentActivityStore {
   subscribe(listener: () => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  private readonly eventListeners = new Set<(agentId: string, event: AgentEvent) => void>();
+  /** Raw child events in order, for read-only observers rendering a subagent like the main agent. */
+  onEvent(listener: (agentId: string, event: AgentEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  private readonly liveStates = new Map<string, AgentLiveState>();
+  /**
+   * What an observer attaching mid-run needs to render the run exactly as if it had watched from the
+   * start: the events since the last durable message (the transcript holds everything before it) and
+   * the latest status-row inputs. Bounded by one in-flight message; text deltas are coalesced.
+   */
+  liveState(agentId: string): AgentLiveState | undefined {
+    return this.liveStates.get(agentId);
+  }
+
+  private recordLive(agentId: string, event: AgentEvent): void {
+    const state: AgentLiveState = this.liveStates.get(agentId) ?? { tail: [], timings: new Map() };
+    this.liveStates.set(agentId, state);
+    if (event.type === "message" || event.type === "terminal") { state.tail = []; return; }
+    if (event.type === "state") state.state = event;
+    if (event.type === "usage") { state.usage = event; return; }
+    if (event.type === "context.metrics") { state.metrics = event; return; }
+    if (event.type === "timing.updated") { state.timings.set(event.timing.id, { ...event.timing }); return; }
+    if (event.type === "fast-mode.fallback") return;
+    const last = state.tail.at(-1);
+    if (last && coalesce(last, event)) { state.tail[state.tail.length - 1] = coalesce(last, event)!; return; }
+    state.tail.push(event);
+    if (state.tail.length > MAX_LIVE_TAIL) {
+      // Keep starts/results/text; long-running tool progress chatter is what gets thinned.
+      const index = state.tail.findIndex(candidate => candidate.type === "tool.progress");
+      state.tail.splice(index >= 0 ? index : 0, 1);
+    }
   }
 
   list(): AgentActivity[] {
@@ -106,12 +164,17 @@ export class AgentActivityStore {
       error: undefined,
     };
     this.activities.set(input.agentId, activity);
+    this.liveStates.delete(input.agentId); // a new run starts with no live tail or status inputs
     this.push(activity, { kind: "status", title: "started", detail: input.description, status: "running" });
     this.notify();
     return activity;
   }
 
   recordEvent(agentId: string, event: AgentEvent): void {
+    this.recordLive(agentId, event);
+    for (const listener of this.eventListeners) {
+      try { listener(agentId, event); } catch { /* an observer must never break the child run */ }
+    }
     const activity = this.activities.get(agentId);
     if (!activity) return;
     activity.totalEvents += 1;

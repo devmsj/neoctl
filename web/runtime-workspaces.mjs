@@ -52,7 +52,7 @@ export function createWorkspaceRuntimeManager(options) {
     syncScheduled = false;
     scopeMutation = Promise.resolve();
 
-    subscribe(res) {
+    subscribe(res, _clientInfo, observeTaskId) {
       if (this.subscribers.size >= maxSubscribers) {
         res.writeHead(503, {
           'Content-Type': 'text/plain; charset=utf-8',
@@ -62,7 +62,7 @@ export function createWorkspaceRuntimeManager(options) {
         res.end('too many live viewers for this session');
         return;
       }
-      super.subscribe(res);
+      super.subscribe(res, undefined, observeTaskId);
     }
 
     snapshot(includeCatalog = false) {

@@ -20,6 +20,7 @@ import './workspace-layout.css'
 import './attachments.css'
 import './select-chrome.css'
 import './window-material.css'
+import './agent-observation.css'
 import { isDesktop } from './local-resources.mjs'
 document.documentElement.dataset.desktop = String(isDesktop())
 
