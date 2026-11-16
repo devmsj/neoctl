@@ -29,6 +29,7 @@ export interface WriteStdinToolInput {
   chars: string;
   signal?: "interrupt" | "terminate" | "kill";
   yield_time_ms: number;
+  max_output_chars?: number;
 }
 
 export interface ExecToolRuntime {
@@ -48,7 +49,7 @@ export function createExecTool(runtime: ExecToolRuntime): Tool<ExecToolInput> {
         workdir: { type: "string", description: "Working directory. Defaults to the current agent cwd." },
         timeout_ms: { type: "integer", description: "Maximum wait before a foreground command is stopped. Once yielded as a background terminal, it runs until exit or explicit stop. Defaults to 600000." },
         yield_time_ms: { type: "integer", description: "Wait before yielding a running session. Defaults to 10000; range 0-30000." },
-        max_output_chars: { type: "integer", description: "Maximum unread characters retained per output stream. Defaults to 40000." },
+        max_output_chars: { type: "integer", description: "Maximum unread characters retained per output stream; range 1000-200000. Defaults to 40000." },
         shell: {
           type: "string",
           enum: ["auto", "powershell", "cmd", "bash", "sh"],
@@ -163,6 +164,7 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
         chars: { type: "string", description: "Exact characters to write. Use an empty string to poll output." },
         signal: { type: "string", enum: ["interrupt", "terminate", "kill"], description: "Optional process control signal." },
         yield_time_ms: { type: "integer", description: "Wait before returning output. Defaults to 250 after input and 5000 when polling." },
+        max_output_chars: { type: "integer", description: "Maximum unread characters retained per output stream; range 1000-200000. Omit to keep the current session limit (initially set by terminal_run). Changes apply to buffered and future output; already omitted output cannot be recovered by raising the limit." },
       },
       required: ["session_id"],
       additionalProperties: false,
@@ -183,6 +185,7 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
         session_id: record.session_id ?? "",
         chars,
         signal: record.signal,
+        max_output_chars: record.max_output_chars,
         yield_time_ms: record.yield_time_ms ?? (chars || record.signal ? 250 : 5_000),
       };
     },
@@ -190,6 +193,9 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
       if (!input.session_id.trim()) return { ok: false, message: "write_stdin.session_id is required" };
       if (!Number.isInteger(input.yield_time_ms) || input.yield_time_ms < 0 || input.yield_time_ms > 300_000) {
         return { ok: false, message: "write_stdin.yield_time_ms must be between 0 and 300000" };
+      }
+      if (input.max_output_chars !== undefined && (!Number.isInteger(input.max_output_chars) || input.max_output_chars < 1_000 || input.max_output_chars > 200_000)) {
+        return { ok: false, message: "terminal_control.max_output_chars must be between 1000 and 200000" };
       }
       if (input.signal && !["interrupt", "terminate", "kill"].includes(input.signal)) {
         return { ok: false, message: "write_stdin.signal is invalid" };
@@ -214,6 +220,7 @@ export function createWriteStdinTool(processManager: ExecProcessManager): Tool<W
           chars: input.chars,
           signal: input.signal,
           yieldTimeMs: input.yield_time_ms,
+          maxOutputChars: input.max_output_chars,
           onOutput: (delta) => emitOutputDelta(context, delta),
           abortSignal: context.abortSignal,
         });

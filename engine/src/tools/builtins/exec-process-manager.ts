@@ -113,6 +113,8 @@ export interface ExecProcessResult {
 }
 
 export interface ExecProcessInteraction {
+  /** Omit to preserve the session retention limit; never affects the full output store. */
+  maxOutputChars?: number;
   ownerId?: string;
   chars?: string;
   signal?: "interrupt" | "terminate" | "kill";
@@ -274,6 +276,10 @@ export class ExecProcessManager {
       throw new Error(`Terminal session ${sessionId} does not belong to the current session`);
     }
 
+    if (interaction.maxOutputChars !== undefined && (!Number.isInteger(interaction.maxOutputChars) || interaction.maxOutputChars < 1_000 || interaction.maxOutputChars > 200_000)) {
+      throw new Error("maxOutputChars must be between 1000 and 200000");
+    }
+
     let release!: () => void;
     const previous = session.interactionTail;
     session.interactionTail = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
@@ -281,6 +287,10 @@ export class ExecProcessManager {
 
     if (interaction.onOutput) session.subscribers.add(interaction.onOutput);
     try {
+      if (interaction.maxOutputChars !== undefined) {
+        session.stdout.resize(interaction.maxOutputChars);
+        session.stderr.resize(interaction.maxOutputChars);
+      }
       if (interaction.signal) {
         this.signal(session, interaction.signal);
       } else if (interaction.chars) {
@@ -667,7 +677,21 @@ class TextWindow {
   private startByte = 0;
   private endByte = 0;
 
-  constructor(private readonly capacity: number) {}
+  constructor(private capacity: number) {}
+
+  resize(capacity: number): void {
+    if (this.capacity === capacity) return;
+    this.capacity = capacity;
+    // Keep an existing omission gap: joining head/tail would invent contiguous byte ranges.
+    if (this.observed > this.head.length + this.tail.length) {
+      this.head = this.head.slice(0, Math.floor(capacity / 2)).replace(/[\uD800-\uDBFF]$/, "");
+      this.tail = this.tail.slice(-Math.ceil(capacity / 2)).replace(/^[\uDC00-\uDFFF]/, "");
+    } else if (this.head.length + this.tail.length > capacity) {
+      const combined = this.head + this.tail;
+      this.head = combined.slice(0, Math.floor(capacity / 2)).replace(/[\uD800-\uDBFF]$/, "");
+      this.tail = combined.slice(-Math.ceil(capacity / 2)).replace(/^[\uDC00-\uDFFF]/, "");
+    }
+  }
 
   push(text: string): void {
     const wasTruncated = this.observed > this.head.length + this.tail.length;
