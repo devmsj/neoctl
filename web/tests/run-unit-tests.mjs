@@ -20,6 +20,7 @@ const files = [
   'artifacts.test.mjs',
   'chunk-uploads.test.mjs',
   'composer-presentation.test.mjs',
+  'composer-drafts.test.mjs',
   'composer-drop.test.mjs',
   'desktop-file-drop.test.mjs',
   'demo-trigger.test.mjs',

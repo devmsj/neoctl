@@ -16,6 +16,7 @@ import { useToolObservation, hasUnansweredToolActivity } from "./use-tool-observ
 import { createRuntimeLines, indexRuntimeTasks } from './runtime-lines.mjs'
 import { createTranscriptLookup } from './transcript-lookup.mjs'
 import { composerRunAction } from './run-control.mjs'
+import { createComposerDrafts, composerDraftKey, PENDING_NEW_SESSION } from './composer-drafts.mjs'
 import { executionLabel } from './execution-label.mjs'
 import { retrySecondsRemaining } from './retry-countdown.mjs'
 import './retry-countdown.css'
@@ -369,6 +370,18 @@ const state = reactive({
 })
 
 const input = ref('')
+// Unsent text/attachments follow their session; swapped only on user-initiated session switches.
+const composerDrafts = createComposerDrafts()
+function currentComposerDraftKey() {
+  return composerDraftKey(state.session?.sessionId, adminViewing.value ? authState.adminOwnerUsername : '')
+}
+function switchComposerDraft(key) {
+  const next = composerDrafts.switchTo(key, { text: input.value, attachments: state.attachments })
+  if (!next) return
+  input.value = next.text
+  state.attachments = next.attachments
+  void nextTick(() => { if (next.text) autosize(); else resetComposerHeight() })
+}
 const sessionSearch = ref('')
 const sessionPage = ref(1)
 const quickListRevision = ref(0)
@@ -950,17 +963,19 @@ onMounted(async () => {
     getTarget: () => composerForm.value,
     onHover: (active) => { state.composerDropActive = active; state.composerDropMode = active ? 'files' : 'prompt' },
     onFiles: async (files) => {
+      const isImage = file => file.kind !== 'directory' && (file.mimeType?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name))
+      // Synchronous items first, so a session switch during image reads cannot move them to another session.
       for (const file of files) {
-        if (file.kind === 'directory') {
-          input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + file.absolutePath
-          continue
-        }
-        if (file.mimeType?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) {
+        if (file.kind === 'directory') input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + file.absolutePath
+        else if (!isImage(file)) state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
+      }
+      for (const file of files) {
+        if (isImage(file)) {
           const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(file.absolutePath))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
           const response = await appFetch(runtimeUrl('/api/local-images/' + encoded))
           if (!response.ok) throw new Error(file.name + '：图片内容无法读取')
           await uploadFiles([new File([await response.blob()], file.name, { type: response.headers.get('Content-Type') || '' })])
-        } else state.attachments.push({ ...file, localReference: true, label: `[file#${++state.attachmentCounter}]` })
+        }
       }
       await nextTick()
       autosize()
@@ -1991,6 +2006,7 @@ async function submit() {
   const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file' && attachment.absolutePath)
   const submitText = textWithAttachmentLabels(text, imageAttachments)
   cacheMessageImagePreviews(imageAttachments, submitText)
+  const draftOwner = composerDrafts.owner
   input.value = ''
   state.attachments = []
   resetComposerHeight()
@@ -2004,7 +2020,9 @@ async function submit() {
     const body = await res.json()
     if (!res.ok || body?.error) throw new Error(body.error || `submit ${res.status}`)
   } catch (error) {
-    if (!input.value && !state.attachments.length) {
+    // Restore into the session it was typed in; the user may have switched while sending.
+    if (!composerDrafts.isLive(draftOwner)) composerDrafts.stashIfEmpty(draftOwner, { text, attachments })
+    else if (!input.value && !state.attachments.length) {
       input.value = text
       state.attachments = attachments
     }
@@ -2452,6 +2470,7 @@ async function resumeSession(sessionOrId, { quick = false } = {}) {
     runtimeSessionId = sessionId
     allowRuntimeSessionChange = false
     sessionStorage.setItem(RUNTIME_SESSION_ID_KEY, sessionId)
+    switchComposerDraft(key)
     applySync(snapshot)
     state.activePanel = 'chat'
     connectEvents()
@@ -2510,6 +2529,8 @@ async function newSession() {
   if (adminViewing.value) return
   sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
   resetSessionSettingsUi()
+  const previousDraftKey = composerDrafts.owner
+  switchComposerDraft(PENDING_NEW_SESSION)
   const previousTabId = runtimeTabId
   const previousSessionId = runtimeSessionId
   disconnectRuntimeEvents()
@@ -2528,6 +2549,7 @@ async function newSession() {
     connectEvents()
   } else {
     const restored = await restoreRuntimeBinding(previousTabId, previousSessionId)
+    if (restored && previousDraftKey !== null) switchComposerDraft(previousDraftKey)
     notify(restored ? '新建会话失败，已恢复原会话' : '新建会话失败，运行时连接已断开')
   }
   state.sessionResumeLoading = false
@@ -2562,6 +2584,8 @@ function openSessionContext(event, session) {
   }
 }
 watch(() => state.activePanel, () => { sessionContextTarget.value = null })
+// First load, or a new session receiving its id: bind the live composer without swapping its content.
+watch(() => state.session?.sessionId, () => composerDrafts.adopt(currentComposerDraftKey()), { immediate: true })
 
 async function replaceDeletedSession() {
   disconnectRuntimeEvents()
@@ -2574,6 +2598,7 @@ async function openReplacementSession(sessionId) {
   sessionOpenVersion++; sessionOpenController?.abort(); quickPendingKey.value = ''
   disconnectRuntimeEvents()
   rememberRuntimeSession({ sessionId }, true)
+  switchComposerDraft(composerDraftKey(sessionId))
   state.sessionResumeLoading = true
   state.activePanel = 'chat'
   try { await fetchState({ silent: true }); quickListRevision.value++; connectEvents() }
@@ -2599,6 +2624,8 @@ async function deleteSession(sessionOrId) {
     const current = isCurrentSession(sessionId)
     if (current) disconnectRuntimeEvents()
     const result = await postJson('/api/sessions/delete', { sessionId })
+    // Unsent content goes away with its session.
+    if (composerDrafts.release(composerDraftKey(sessionId))) { input.value = ''; state.attachments = []; resetComposerHeight() }
     if (current) {
       if (result.replacementSessionId) await openReplacementSession(result.replacementSessionId)
       else {
@@ -4390,6 +4417,7 @@ async function handleFileInputChange(event) {
 async function uploadFiles(files) {
   if (!files.length || state.uploadingFiles) return
   state.uploadingFiles = true
+  const draftOwner = composerDrafts.owner
   const progress = createUploadProgress(files, (value) => { state.uploadProgress = value })
   const uploadUrl = runtimeUrl('/api/uploads')
   try {
@@ -4429,7 +4457,8 @@ async function uploadFiles(files) {
       })
       progress.complete(index)
     }
-    state.attachments.push(...uploaded)
+    // Attachments belong to the session they were added in, even if the user switched meanwhile.
+    if (!composerDrafts.appendAttachments(draftOwner, uploaded)) state.attachments.push(...uploaded)
     progress.succeed()
     if (compressionRates.length) setTimeout(() => notify(compressionToastText(compressionRates)), 0)
     notify(`已上传 ${uploaded.length} 个附件`)
