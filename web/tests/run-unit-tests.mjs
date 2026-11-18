@@ -25,6 +25,7 @@ const files = [
   'desktop-file-drop.test.mjs',
   'demo-trigger.test.mjs',
   'core-timing.test.mjs',
+  'core-runtime-resolution.test.mjs',
   'cpa-quota.test.mjs',
   'image-original-dimensions.test.mjs',
   'interrupt-regression.test.mjs',

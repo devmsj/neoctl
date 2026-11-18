@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 const webRoot = path.dirname(fileURLToPath(import.meta.url));
 const source = resolveCoreSource();
@@ -53,7 +54,7 @@ async function importCore(specifier) {
 async function readCoreVersion() {
   const packageFile = source === 'local'
     ? path.join(localEngineRoot, 'package.json')
-    : path.join(webRoot, 'node_modules', 'neoctl', 'package.json');
+    : createRequire(import.meta.url).resolve('neoctl/package.json');
   const value = JSON.parse(await readFile(packageFile, 'utf8'));
   return String(value.version || 'unknown');
 }
