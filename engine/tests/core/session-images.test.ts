@@ -355,3 +355,54 @@ test("migration persists old inline payloads and does not swallow a corrupt midd
   await fs.writeFile(path.join(broken, "transcript.jsonl"), record + "\nBAD\n" + record);
   await assert.rejects(SessionImageStore.open(broken), /Corrupt session transcript/);
 });
+
+
+test("unchanged historical image performs no catalog rename; changed latest pointer still commits", async t => {
+  const dir = await temporary(t);
+  const store = await SessionImageStore.open(dir);
+  const first = await store.persistMessage(imageMessage("first"));
+  await store.persistMessage(imageMessage("second", { data: other }));
+  const rename = fs.rename;
+  let commits = 0;
+  t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => { if (String(args[1]).endsWith("image-resources.json")) commits++; return rename(...args); });
+  await store.persistMessage(first, { touch: false });
+  assert.equal(commits, 0);
+  await store.persistMessage(first);
+  assert.equal(commits, 1);
+  await store.persistMessage(first);
+  assert.equal(commits, 1);
+});
+
+test("Windows transient catalog replacement retries atomically and permanent denial rolls back", { skip: process.platform !== "win32" }, async t => {
+  const dir = await temporary(t);
+  const store = await SessionImageStore.open(dir);
+  await store.persistMessage(imageMessage("first"));
+  const file = path.join(dir, "image-resources.json");
+  const before = await fs.readFile(file, "utf8");
+  const rename = fs.rename;
+  let attempts = 0, permanent = false;
+  t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    if (String(args[1]) === file) {
+      attempts++;
+      if (permanent || attempts < 3) {
+        assert.equal(await fs.readFile(file, "utf8"), before);
+        throw Object.assign(new Error("simulated sharing violation"), { code: "EPERM" });
+      }
+    }
+    return rename(...args);
+  });
+  await store.persistMessage(imageMessage("second", { data: other }));
+  assert.equal(attempts, 3);
+  const committed = await fs.readFile(file, "utf8");
+  // Reset the mock to verify bounded retries and preservation after a permanent error.
+  permanent = true; attempts = 0;
+  t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    if (String(args[1]) === file) { attempts++; throw Object.assign(new Error("permanent denial"), { code: "EPERM" }); }
+    return rename(...args);
+  });
+  await assert.rejects(store.persistMessage(imageMessage("third")), /permanent denial/);
+  assert.equal(attempts, 4);
+  assert.equal(await fs.readFile(file, "utf8"), committed);
+  assert.equal(store.snapshot().images.length, 2);
+  assert.equal((await fs.readdir(dir)).some(name => name.endsWith(".tmp")), false);
+});

@@ -1,3 +1,5 @@
+import { projectToolHistory } from "./tool-history.js";
+import { requiresAnthropicThinking } from "./reasoning-switch.js";
 import { createHash } from "node:crypto";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 import { splitSystemPromptPrefix } from "../context/prompts.js";
@@ -30,6 +32,7 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
 }
 
 export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions): Block {
+  request = { ...request, messages: projectToolHistory(request.messages) };
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
   const maxTokens = request.maxOutputTokens ?? options.defaultMaxOutputTokens ?? metadata?.maxOutputTokens ?? 64000;
@@ -168,7 +171,7 @@ function configureThinking(body: Block, request: ModelRequest, options: Anthropi
   const metadata = findModelMetadata(model);
   if (effort && metadata?.provider === "anthropic" && metadata.reasoningEfforts && !metadata.reasoningEfforts.includes(effort)) anthropicInvalid(`Claude model ${model} does not support effort '${effort}'`);
   const adaptive = /claude-(?:opus-4-[678]|sonnet-4-6|(?:opus|sonnet|haiku|fable|mythos)-5|mythos-preview)/i.test(model);
-  const alwaysOn = /claude-(?:opus-5-5|sonnet-5-5|fable-5|mythos-5|mythos-preview)/i.test(model);
+  const alwaysOn = requiresAnthropicThinking(model);
   const disabled = reasoning === null || effort === "none";
   if (disabled) {
     if (alwaysOn) anthropicInvalid(`Thinking cannot be disabled on ${model}`);

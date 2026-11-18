@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveModelReasoningUpdate, requiresAnthropicThinking } from "../model/reasoning-switch.js";
 import { trackSettingsGateway } from "../model/settings-sync.js";
 import { observeModelSettings } from "../model/settings-sync.js";
 import { modelProtocols } from "../model/context-window.js";
@@ -25,7 +26,7 @@ import os from "node:os";
 import { messageFileAttachments, type DisplayFileAttachment } from "./file-attachments.js";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { dockerEnabled } from "../execution/docker.js";
+import { dockerEnabled, executionCwd } from "../execution/docker.js";
 import { executionFs } from "../execution/filesystem.js";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -74,6 +75,7 @@ import { toolDetailFieldsFromDetail } from "./tool-detail-fields.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
 import { validateImageInput } from "../core/image-input.js";
+import { imageContextWarning } from "../core/image-context-limit.js";
 export { validateImageBytes } from "../core/image-input.js";
 import { describeStoredImageSync, resolveImageBlockDataResultSync, resolveImageBlockDataSync } from "../core/image-storage.js";
 import { isWebPlanPayload, serializeWebPlanPayload, webPlanBodyTitle } from "./plan-payload.js";
@@ -1164,7 +1166,7 @@ export class WebRepl {
     if (!text.trim() && attachments.length === 0) return { ok: true };
     const previous = this.demoMessageQueues.get(engine) ?? Promise.resolve();
     const pending = previous.catch(() => undefined).then(async () => {
-      const payload = buildWebPromptPayload(text, attachments);
+      const payload = await buildWebPromptPayload(text, attachments, engine.getWorkspacePaths()[0] ?? process.cwd());
       const message = createTextMessage("user", payload.text);
       if (payload.blocks) message.blocks = payload.blocks;
       const stored = await engine.recordDisplayMessage(message);
@@ -2970,7 +2972,7 @@ export class WebRepl {
       return;
     }
 
-    const promptPayload = buildWebPromptPayload(command.text, attachments);
+    const promptPayload = await buildWebPromptPayload(command.text, attachments, this.runtime.engine.getWorkspacePaths()[0] ?? process.cwd());
     const optimisticMessageId = `web-user-${this.lineId + 1}`;
     if (!continuationOnly) this.append({ kind: "user", text: promptPayload.displayText, messageId: optimisticMessageId });
     const optimisticImageIds = (promptPayload.blocks ?? [])
@@ -3698,7 +3700,7 @@ async function resetStatus(runtime: WebRuntime): Promise<UiStatus> {
   return initialStatus(runtime, await runtime.engine.contextMetrics());
 }
 
-function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[]): { text: string; displayText: string; blocks?: MessageBlock[] } {
+export async function buildWebPromptPayload(displayText: string, attachments: readonly WebAttachmentPayload[], cwd: string): Promise<{ text: string; displayText: string; blocks?: MessageBlock[] }> {
   const candidateAttachments = attachments.filter((attachment): attachment is WebImageAttachmentPayload => attachment.kind === "image" && displayText.includes(attachment.label));
   const labels = new Set<string>();
   const imageIds = new Set<string>();
@@ -3708,8 +3710,24 @@ function buildWebPromptPayload(displayText: string, attachments: readonly WebAtt
     labels.add(attachment.label);
     imageIds.add(attachment.imageId);
   }
+  const blocked = new Map<string, string>();
+  const files = attachments.filter((attachment): attachment is WebFileAttachmentPayload => attachment.kind === "file");
+  for (const attachment of candidateAttachments) {
+    const warning = imageContextWarning(attachment.data);
+    if (!warning) continue;
+    const image = validateImageInput(attachment.data);
+    const bytes = Buffer.from(image.data, "base64");
+    const paths = dockerEnabled() ? path.posix : path;
+    const directory = paths.join(executionCwd(cwd), ".neo-attachments");
+    const name = `${createHash("sha256").update(bytes).digest("hex")}.${image.mimeType.split("/")[1]}`;
+    const absolutePath = paths.resolve(directory, name);
+    await executionFs.mkdir(directory, { recursive: true });
+    await executionFs.writeFile(absolutePath, bytes);
+    files.push({ kind: "file", name, absolutePath, mimeType: image.mimeType, size: bytes.length });
+    blocked.set(attachment.imageId, `${attachment.label} [System image notice] ${warning} Original image file: ${JSON.stringify(absolutePath)}`);
+  }
   const activeAttachments = candidateAttachments;
-  const fileManifest = buildWebFileAttachmentManifest(attachments.filter((attachment): attachment is WebFileAttachmentPayload => attachment.kind === "file"));
+  const fileManifest = buildWebFileAttachmentManifest(files);
   if (activeAttachments.length === 0) {
     const text = [displayText, fileManifest].filter(Boolean).join("\n\n");
     return { text, displayText };
@@ -3723,7 +3741,9 @@ function buildWebPromptPayload(displayText: string, attachments: readonly WebAtt
       break;
     }
     pushTextBlock(blocks, displayText.slice(cursor, next.index));
-    blocks.push({ type: "image", imageId: next.attachment.imageId, mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
+    const notice = blocked.get(next.attachment.imageId);
+    if (notice) pushTextBlock(blocks, notice);
+    else blocks.push({ type: "image", imageId: next.attachment.imageId, mimeType: next.attachment.mimeType, data: next.attachment.data, label: next.attachment.label });
     cursor = next.index + next.attachment.label.length;
   }
   pushTextBlock(blocks, fileManifest ? `\n\n${fileManifest}` : "");
@@ -3918,13 +3938,6 @@ async function handleModelCommand(command: Extract<ReturnType<typeof parseReplCo
   return systemLine(changed ? `${settings}\nSaved to ${runtime.envPath}` : settings);
 }
 
-function resolveModelReasoningUpdate(value: ModelReasoningArgument | undefined, current: ReasoningConfig | null | undefined, modelId: string | undefined, modelChanged: boolean): { reasoning: ReasoningConfig | null | undefined; update: boolean } {
-  if (value === "off") return { reasoning: null, update: true };
-  if (value === "default") return { reasoning: undefined, update: true };
-  if (value !== undefined) return { reasoning: { effort: value as ReasoningEffort }, update: true };
-  if (modelChanged && current?.effort && !reasoningEffortsForModel(modelId)?.includes(current.effort)) return { reasoning: undefined, update: true };
-  return { reasoning: current, update: false };
-}
 
 async function persistModelCommandSettings(runtime: WebRuntime, command: Extract<ReturnType<typeof parseReplCommand>, { type: "model" }>, reasoningUpdate: { reasoning: ReasoningConfig | null | undefined; update: boolean }): Promise<{ providerChanged: boolean }> {
   const currentProvider = currentModelProvider();
@@ -4125,6 +4138,7 @@ function applyEnvUpdatesToProcess(updates: Record<string, string | undefined>): 
 }
 
 function validateModelReasoningArgument(modelId: string | undefined, reasoning: ModelReasoningArgument | undefined): string | undefined {
+  if (reasoning === "off" && requiresAnthropicThinking(modelId)) return `Thinking cannot be disabled on ${modelId}`;
   if (!reasoning || reasoning === "default" || reasoning === "off") return undefined;
   if (!modelId) return `Cannot set reasoning effort '${reasoning}' without a configured model. Choose a model first.`;
   const efforts = reasoningEffortsForModel(modelId);

@@ -154,6 +154,7 @@ export class SessionImageStore {
           ...(message.metadata?.imageRetention ? {} : { imageTtlTurns: 4 }),
         },
       };
+      const before = JSON.stringify({ ...this.registry, latestImageId: this.latestImageId });
       const next = { images: this.registry.images.map(entry => ({ ...entry })) };
       for (const [index, block] of normalized.blocks.entries()) {
         if (block.type !== "image") continue;
@@ -176,7 +177,7 @@ export class SessionImageStore {
         if (options.touch !== false || !this.latestImageId) this.latestImageId = block.imageId;
       }
       this.registry = next;
-      await this.save();
+      if (JSON.stringify({ ...next, latestImageId: this.latestImageId }) !== before) await this.save();
       return normalized;
     });
   }
@@ -186,7 +187,10 @@ export class SessionImageStore {
     return this.exclusive(async () => {
       const contentHash = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
       const existing = this.registry.images.find(entry => entry.sourcePath === sourcePath && entry.contentHash === contentHash);
-      if (existing && loadImageData(existing)) { this.latestImageId = existing.imageId; await this.save(); return blockFromEntry(existing); }
+      if (existing && loadImageData(existing)) {
+        if (this.latestImageId !== existing.imageId) { this.latestImageId = existing.imageId; await this.save(); }
+        return blockFromEntry(existing);
+      }
       const imageId = existing?.imageId ?? `image_${randomUUID()}`;
       const [block] = await persistMessageImages([{ type: "image", imageId, data, mimeType, label }], { sessionDir: this.sessionDir, agentId: this.agentId });
       if (block.type !== "image") throw new Error("Expected image payload");
@@ -211,7 +215,15 @@ export class SessionImageStore {
       const handle = await fs.open(temporary, "wx");
       try { await handle.writeFile(JSON.stringify({ version: 1, ...this.registry, latestImageId: this.latestImageId }), "utf8"); await handle.sync(); }
       finally { await handle.close(); }
-      await fs.rename(temporary, filename);
+      for (let attempt = 0; ; attempt++) {
+        try { await fs.rename(temporary, filename); break; }
+        catch (error) {
+          // Windows readers/security scanners can briefly deny replacement.
+          // Keep atomic rename and never remove the committed catalog.
+          if (process.platform !== "win32" || attempt >= 3 || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+          await delay(25 * (attempt + 1));
+        }
+      }
       // The rename is the commit point. A later stat failure must not roll back a committed catalog.
       this.catalogStamp = undefined;
     } finally { await fs.rm(temporary, { force: true }).catch(() => undefined); }

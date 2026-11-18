@@ -1,3 +1,4 @@
+import { projectToolHistory } from "./tool-history.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { ToolDefinition } from "../tools/tool.js";
 import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
@@ -17,6 +18,7 @@ export interface BuildResponsesInputOptions {
 }
 
 export function buildResponsesInput(messages: readonly Message[], options: BuildResponsesInputOptions = {}): unknown[] {
+  messages = projectToolHistory(messages);
   const input: unknown[] = [];
   const pairs = collectToolPairs(messages);
 
@@ -53,6 +55,7 @@ export function buildResponsesInput(messages: readonly Message[], options: Build
 }
 
 export function buildChatMessages(request: ModelRequest): unknown[] {
+  request = { ...request, messages: projectToolHistory(request.messages) };
   const messages: unknown[] = [];
   const pairs = collectToolPairs(request.messages);
   const instructions = request.instructions ?? request.systemPrompt;

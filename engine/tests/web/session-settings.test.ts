@@ -331,3 +331,26 @@ test("idle compact failure clears its in-flight state and permits a retry", asyn
   f.setUpdate(async () => ({ deferred: false }));
   assert.equal((await f.repl.compactSession()).ok, true);
 });
+
+
+test("model switch clears inherited off/summary incompatible with Claude; explicit off is rejected", async t => {
+  const savedProvider = process.env.MODEL_PROVIDER;
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  process.env.MODEL_PROVIDER = "anthropic";
+  process.env.ANTHROPIC_API_KEY = "test-only";
+  const f = fixture(t);
+  t.after(() => {
+    if (savedProvider === undefined) delete process.env.MODEL_PROVIDER; else process.env.MODEL_PROVIDER = savedProvider;
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedKey;
+  });
+  for (const reasoning of [null, { effort: "high", summary: "auto" }]) {
+    f.engine.getModelSettings = (() => ({ model: "gpt-5.6-sol", reasoning })) as typeof f.engine.getModelSettings;
+    const result = await f.repl.setSessionModel("claude-opus-5-5", undefined);
+    assert.equal(result.ok, true);
+    assert.deepEqual(f.calls.at(-1), { model: "claude-opus-5-5", reasoning: reasoning === null ? undefined : { effort: "high" } });
+  }
+  const count = f.calls.length;
+  const rejected = await f.repl.setSessionModel("claude-opus-5-5", "off");
+  assert.equal(rejected.ok, false);
+  assert.equal(f.calls.length, count);
+});

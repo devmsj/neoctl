@@ -2,6 +2,7 @@ import { executionReadFileSync as readFileSync, executionStatSync as statSync } 
 import { dockerEnabled, executionCwd } from "../../execution/docker.js";
 import path from "node:path";
 import { validateImageInput, validateImageBytes } from "../../core/image-input.js";
+import { imageContextWarning } from "../../core/image-context-limit.js";
 import { supportsImageInput } from "../../model/context-window.js";
 import { getContextImageStore, imageRegistryForContext, resolveContextImage } from "../../core/session-images.js";
 import { resolveImageRefResult, formatImageRegistryForContext, loadImageData } from "../../core/image-registry.js";
@@ -36,6 +37,7 @@ interface LoadedImageInfo {
 export interface LoadImageToolOutput {
   loadedImages: LoadedImageInfo[];
   failedRefs: string[];
+  warnings?: string[];
   prompt?: string;
   retention?: ImageRetention;
   ttlTurns?: number;
@@ -92,7 +94,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       "Use mode=list (no imageRefs required) to discover persistent session image IDs with offset/limit pagination. Inspect results return reusable IDs; retention only controls pixel visibility. Load one or more images into the current context for direct visual inspection by the model. " +
       "Supports two sources: (1) conversation history images via ids (img_1), labels, or numeric refs; " +
       "(2) external files via absolute or relative file paths (e.g. ./screenshot.png, C:\\images\\photo.jpg). " +
-      "Supported model formats: PNG, JPEG, GIF, WebP. Convert BMP/SVG to PNG first. Actual content is validated regardless of extension. Max file size: 20MB. " +
+      "Supported model formats: PNG, JPEG, GIF, WebP. Convert BMP/SVG to PNG first. Actual content is validated regardless of extension. Max file size: 20MB. Both image edges must be <= 3000 pixels; oversized images are skipped with a warning. " +
       "The loaded images become visible to you in the next message. " +
       "This tool is available only when the current model supports image input.",
     inputSchema: {
@@ -187,6 +189,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       }
       const loadedImages: LoadedImageInfo[] = [];
       const failedRefs: string[] = [];
+      const warnings: string[] = [];
       const imageBlocks: MessageBlock[] = [];
 
       for (const ref of input.imageRefs ?? []) {
@@ -204,6 +207,8 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
           let validated: ReturnType<typeof validateImageInput>;
           try { validated = validateImageInput(base64); }
           catch (error) { failedRefs.push(`${ref} (${String(error)})`); continue; }
+          const warning = imageContextWarning(validated.data);
+          if (warning) { warnings.push(`${ref}: ${warning}`); continue; }
           const rawBase64 = validated.data;
           imageBlocks.push({
             type: "image",
@@ -234,6 +239,8 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
             failedRefs.push(`${ref} (${result.error})`);
             continue;
           }
+          const warning = imageContextWarning(result.base64);
+          if (warning) { warnings.push(`${ref}: ${warning}`); continue; }
           const resolvedPath = path.resolve(externalPath);
           let block: Extract<MessageBlock, { type: "image" }>;
           try { block = await imageStore.importFile(result.base64, result.mimeType, resolvedPath, result.label); }
@@ -249,6 +256,9 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
         failedRefs.push(ref);
       }
 
+      if (loadedImages.length === 0 && warnings.length > 0) {
+        return { ok: true, output: { loadedImages, failedRefs, warnings } satisfies LoadImageToolOutput };
+      }
       if (loadedImages.length === 0) {
         const available = formatImageRegistryForContext(registry);
         return {
@@ -286,6 +296,7 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       const output: LoadImageToolOutput = {
         loadedImages,
         failedRefs,
+        warnings,
         prompt: input.prompt,
         retention,
         ttlTurns,
@@ -306,9 +317,10 @@ export function createLoadImageTool(): Tool<LoadImageToolInput> {
       const output = result.output as LoadImageToolOutput;
       const text = result.ok
         ? [
-          `Images loaded into context: ${output.loadedImages.map((i) => `${i.id}${i.alias ? ` (${i.alias})` : ""}: ${i.label ?? "image"}`).join(", ")}. You can now see them directly.`,
+          output.loadedImages.length ? `Images loaded into context: ${output.loadedImages.map((i) => `${i.id}${i.alias ? ` (${i.alias})` : ""}: ${i.label ?? "image"}`).join(", ")}. You can now see them directly.` : "No image pixels were loaded into context.",
           output.prompt ? `Assistant-supplied analysis context (tool argument, not a user request): ${JSON.stringify(output.prompt)}` : "",
           output.retention ? `Image pixel retention: ${output.retention}${output.ttlTurns ? ` for ${output.ttlTurns} turn(s)` : ""}. Reload or change retention if the visual context is still needed.` : "",
+          ...(output.warnings ?? []),
           output.failedRefs.length > 0 ? `Failed: ${output.failedRefs.join(", ")}` : "",
         ].filter(Boolean).join("\n")
         : `Failed to load images: ${JSON.stringify(result.output)}`;

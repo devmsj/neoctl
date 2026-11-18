@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveModelReasoningUpdate, requiresAnthropicThinking } from "../model/reasoning-switch.js";
 import { trackSettingsGateway } from "../model/settings-sync.js";
 import { ModelSettingsStore } from "../model/settings-store.js";
 import { registerCompositionTools, createCompositionGateway } from "../model/composition-runtime.js";
@@ -3042,20 +3043,6 @@ async function handleModelCommand(
   return systemLine(changed ? `${settings}\nSaved to ${runtime.envPath}` : settings);
 }
 
-function resolveModelReasoningUpdate(
-  value: ModelReasoningArgument | undefined,
-  current: ReasoningConfig | null | undefined,
-  modelId: string | undefined,
-  modelChanged: boolean,
-): { reasoning: ReasoningConfig | null | undefined; update: boolean } {
-  if (value === "off") return { reasoning: null, update: true };
-  if (value === "default") return { reasoning: undefined, update: true };
-  if (value !== undefined) return { reasoning: { effort: value as ReasoningEffort }, update: true };
-  if (modelChanged && current?.effort && !reasoningEffortsForModel(modelId)?.includes(current.effort)) {
-    return { reasoning: undefined, update: true };
-  }
-  return { reasoning: current, update: false };
-}
 
 async function persistModelCommandSettings(
   runtime: ReplRuntime,
@@ -3115,6 +3102,7 @@ function applyEnvUpdatesToProcess(updates: Record<string, string | undefined>): 
 }
 
 function validateModelReasoningArgument(modelId: string | undefined, reasoning: ModelReasoningArgument | undefined): string | undefined {
+  if (reasoning === "off" && requiresAnthropicThinking(modelId)) return `Thinking cannot be disabled on ${modelId}`;
   if (!reasoning || reasoning === "default" || reasoning === "off") return undefined;
   if (!modelId) return `Cannot set reasoning effort '${reasoning}' without a configured model. Choose a model first.`;
   const efforts = reasoningEffortsForModel(modelId);

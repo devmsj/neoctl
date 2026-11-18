@@ -41,6 +41,43 @@
 :root[data-theme] .settings-page .plugin-toggle input { min-height: 0; }
 :root[data-theme] .settings-page .plugin-uninstall { grid-column: 3; justify-self: end; }
 :root[data-theme] .settings-page .plugin-toggle input:focus-visible + span { outline: 2px solid var(--chrome-accent); outline-offset: 3px; box-shadow: none; }
+/* Subpages share one header rhythm: appearance matches .settings-page-head. */
+:root[data-theme] .settings-page .appearance-head { min-height: 32px; gap: 12px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line); }
+:root[data-theme] .settings-page .appearance-head h2 { color: var(--chrome-strong); }
+:root[data-theme] .settings-page .appearance-head > button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 6px !important; }
+:root[data-theme] .settings-page .appearance-head > button:not(.appearance-apply) { color: var(--chrome-muted) !important; }
+:root[data-theme] .settings-page .appearance-head > button:not(.appearance-apply):hover:not(:disabled) { color: var(--chrome-text) !important; }
+:root[data-theme] .settings-page .appearance-design-name input { box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px; }
+/* Icon-only toolbar buttons use the shared 32px icon metrics. */
+:root[data-theme] .settings-page :is(.prompt-config-actions > button.mini-button, button.page-icon-button) {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px;
+  width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 6px !important;
+  border: var(--appearance-border-width, 1px) solid transparent !important; color: var(--chrome-muted) !important;
+}
+:root[data-theme] .settings-page :is(.prompt-config-actions > button.mini-button, button.page-icon-button):hover:not(:disabled) { color: var(--chrome-text) !important; }
+/* Text fields: one height, padding and type size on pages and in model dialogs. */
+:root[data-theme] :is(.settings-page, .config-modal) input:is([type='text'], [type='password'], [type='number'], [type='search'], :not([type])):not(.transfer-search):not(.neo-select *):not(.appearance-editor *) {
+  box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px; font-size: calc(12px * var(--appearance-ui-scale, 1)); line-height: 1.5;
+}
+:root[data-theme] .config-modal textarea { box-sizing: border-box; padding: 8px 10px; font-size: calc(12px * var(--appearance-ui-scale, 1)); line-height: 1.6; }
+:root[data-theme] .config-modal .settings-field > span { font-weight: 400; color: var(--chrome-muted); font-size: calc(12px * var(--appearance-ui-scale, 1)); }
+/* Model dialogs: icon buttons and destructive actions match the page controls. */
+:root[data-theme] .config-modal button.icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px;
+  width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 6px !important;
+  border: var(--appearance-border-width, 1px) solid transparent !important; background: transparent !important; color: var(--chrome-muted) !important;
+}
+:root[data-theme] .config-modal button.icon:hover:not(:disabled) { background: var(--chrome-hover) !important; color: var(--chrome-text) !important; }
+:root[data-theme] .config-modal button.icon.danger-icon { color: var(--chrome-danger) !important; }
+:root[data-theme] .config-modal .modal-body > p { margin: 0; font-size: calc(13px * var(--appearance-ui-scale, 1)); line-height: 1.7; }
+:root[data-theme] .config-modal .modal-body details > summary { color: var(--chrome-muted) !important; font-weight: 400 !important; font-size: calc(12px * var(--appearance-ui-scale, 1)); }
+:root[data-theme] .config-modal .modal-body details > summary:hover { color: var(--chrome-text) !important; }
+/* Feedback cards reuse the settings card head: a single divider, same insets. */
+:root[data-theme] .settings-page .feedback-item .settings-card-head { border: 0 !important; border-bottom: var(--appearance-border-width, 1px) solid var(--chrome-line-soft) !important; border-radius: 0 !important; box-shadow: none !important; }
+:root[data-theme] .settings-page .feedback-item p { padding: 14px; }
+:root[data-theme] .settings-page .feedback-item .feedback-item-actions { margin-left: auto; }
+:root[data-theme] .config-modal .test-row button.test-activity-row:disabled { opacity: 1 !important; }
+:root[data-theme] .config-modal button.danger { min-height: 34px; padding: 6px 12px; font-size: calc(12px * var(--appearance-ui-scale, 1)); }
 @media (max-width: 820px) {
   :root[data-theme] .settings-page .plugin-settings-list { grid-template-columns: minmax(0, 1fr); }
   :root[data-theme] .settings-page .settings-field-grid { grid-template-columns: minmax(0, 1fr); }

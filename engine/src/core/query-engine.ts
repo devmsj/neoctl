@@ -1,3 +1,4 @@
+import { inheritedModelReasoning } from "../model/reasoning-switch.js";
 import { registerSettingsConsumer, settingsGatewayConnections } from "../model/settings-sync.js";
 import { loadModelCatalog, type ModelCatalog } from "../model/context-window.js";
 import { resolve } from "node:path";
@@ -635,6 +636,13 @@ export class QueryEngine {
     if (Object.hasOwn(patch, "sessionPrompt")) this.activeSessionPrompt = patch.sessionPrompt ?? null;
     if (Object.hasOwn(patch, "model") && patch.model !== this.currentModel) {
       this.restoreModelConfiguration();
+      if (!Object.hasOwn(patch, "reasoning")) {
+        const reasoning = inheritedModelReasoning(this.currentReasoning, patch.model);
+        if (!sameReasoningConfig(reasoning, this.currentReasoning)) {
+          this.currentReasoning = cloneReasoningConfig(reasoning);
+          changed.reasoning = cloneReasoningConfig(reasoning);
+        }
+      }
       this.currentModel = patch.model;
       changed.model = patch.model;
     }
@@ -676,7 +684,9 @@ export class QueryEngine {
 
   setModel(model: string | undefined, reasoning?: ReasoningConfig | null, updateReasoning = false): void {
     this.restoreModelConfiguration();
-    this.currentModel = model?.trim() || undefined;
+    const nextModel = model?.trim() || undefined;
+    if (!updateReasoning && nextModel !== this.currentModel) this.currentReasoning = inheritedModelReasoning(this.currentReasoning, nextModel);
+    this.currentModel = nextModel;
     if (updateReasoning) this.currentReasoning = reasoning === null ? null : cloneReasoningConfig(reasoning);
   }
 

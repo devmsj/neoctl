@@ -38,7 +38,7 @@ export interface PatchHunk {
 export const editTool: Tool<EditToolInput> = {
   name: "file_edit",
   description:
-    "Modify a text file by replacing oldString with newString. oldString must match uniquely unless replaceAll is true; LF/CRLF line-ending differences and straight/curly quote differences are tolerated. Use oldString='' only to create a new file.",
+    "Modify a text file by replacing oldString with newString. oldString must match uniquely unless replaceAll is true; LF/CRLF line-ending differences and straight/curly quote differences are tolerated. Use oldString='' only to create a new file. Split large changes into smaller, targeted edits to stay within the output limit per tool call; do not submit large replacements in a single call.",
   inputSchema: {
     type: "object",
     properties: {
@@ -159,7 +159,7 @@ export const editTool: Tool<EditToolInput> = {
 
 export const writeTool: Tool<WriteToolInput> = {
   name: "file_write",
-  description: "Create or overwrite a text file with the provided full content.",
+  description: "Create or overwrite a text file with the provided full content. Write large files in chunks to stay within the output limit per tool call: write an initial portion, then use file_edit to add the remaining content incrementally.",
   inputSchema: {
     type: "object",
     properties: {
