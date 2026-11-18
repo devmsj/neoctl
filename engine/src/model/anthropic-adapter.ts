@@ -1,4 +1,7 @@
 import { estimateTextTokens } from "../core/context-metrics.js";
+import { resolveImageBlockDataLengthSync } from "../core/image-storage.js";
+import { jsonBody } from "./json-body.js";
+import { PayloadRefs, withPayloadRefs } from "../core/image-payload-refs.js";
 import { streamWithRetry } from "./retry-runner.js";
 import { anthropicFastModeBeta, isFastModeUnavailable } from "./fast-mode.js";
 import { EnvCredentialProvider, StaticCredentialProvider, type CredentialProvider } from "./credentials.js";
@@ -6,6 +9,17 @@ import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js
 import type { ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
 import { anthropicInvalid, buildAnthropicRequest, normalizeAnthropicObject, normalizeAnthropicStream, type AnthropicMapperOptions } from "./anthropic-mapper.js";
+
+/** Above this many base64 image bytes, remote count_tokens is skipped in favor of the local estimate. */
+export const COUNT_TOKENS_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function imagePayloadBytes(request: ModelRequest): number {
+  let total = 0;
+  for (const message of request.messages) for (const block of message.blocks) {
+    if (block.type === "image") total += resolveImageBlockDataLengthSync(block);
+  }
+  return total;
+}
 
 export interface AnthropicAdapterOptions extends AnthropicMapperOptions {
   apiKey?: string;
@@ -38,7 +52,8 @@ export class AnthropicAdapter implements ProviderAdapter {
   /** One fixed compromise for every model using this protocol. */
   estimateInputTokens(request: ModelRequest): number | undefined {
     try {
-      const body = buildAnthropicRequest(request, this.options);
+      // Images are counted at a fixed cost, so their payloads are never read or decoded here.
+      const body = buildAnthropicRequest(request, this.options, { imagePayloads: false });
       const parts: string[] = [];
       let imageTokens = 0;
       const collect = (block: Record<string, unknown>) => {
@@ -59,18 +74,22 @@ export class AnthropicAdapter implements ProviderAdapter {
   /** Optional optimization: a counting failure must never fail a conversation. */
   async countInputTokens(request: ModelRequest): Promise<number | undefined> {
     if (this.countingUnsupported || request.cancellation?.aborted) return undefined;
+    // Counting large image payloads would build and upload a second full-size body every turn
+    // (an aborted upload still drains the whole body); the local estimate covers that case.
+    if (imagePayloadBytes(request) > COUNT_TOKENS_MAX_IMAGE_BYTES) return undefined;
     const controller = new AbortController();
     const cancel = () => controller.abort();
     request.cancellation?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(cancel, 1500);
     try {
-      const mapped = buildAnthropicRequest(request, this.options);
+      const refs = new PayloadRefs();
+      const mapped = withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options));
       const body = Object.fromEntries(["model", "messages", "system", "tools", "tool_choice", "thinking", "output_config"].filter(key => mapped[key] !== undefined).map(key => [key, mapped[key]]));
       const credential = await this.credentials.getCredential();
       if (!credential || controller.signal.aborted) return undefined;
       const response = await fetch(`${this.url}/count_tokens`, {
         method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "neoctl/anthropic", "x-api-key": credential, "anthropic-version": this.options.apiVersion ?? "2023-06-01" },
-        body: JSON.stringify(body), signal: controller.signal,
+        body: await jsonBody(body, refs), signal: controller.signal,
       });
       if (!response.ok) {
         if ([404, 405, 501].includes(response.status)) this.countingUnsupported = true;
@@ -84,7 +103,9 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async *stream(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
-    const body = buildAnthropicRequest(request, this.options);
+    // Serialize once; retries reuse the Blob. Stored images stay on disk and are streamed during upload.
+    const refs = new PayloadRefs();
+    const body = await jsonBody(withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options)), refs);
     const credential = await this.credentials.getCredential();
     if (!credential) throw new ModelAPIError({ provider: this.name, category: "auth_unavailable", message: "ANTHROPIC_API_KEY (official or gateway key) is not configured" });
     try {
@@ -98,7 +119,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
   }
 
-  private async *attempt(request: ModelRequest, body: Record<string, unknown>, credential: string): AsyncGenerator<ModelStreamEvent> {
+  private async *attempt(request: ModelRequest, body: Blob, credential: string): AsyncGenerator<ModelStreamEvent> {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     if (request.cancellation?.aborted) cancel();
@@ -110,7 +131,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       const response = await fetch(this.url, {
         method: "POST",
         headers: { ...(beta ? { "anthropic-beta": beta } : {}), "Content-Type": "application/json", Accept: request.stream === false ? "application/json" : "text/event-stream", "User-Agent": "neoctl/anthropic", "x-api-key": credential, "anthropic-version": this.options.apiVersion ?? "2023-06-01" },
-        body: JSON.stringify(body), signal: controller.signal,
+        body, signal: controller.signal,
       });
       if (request.stream !== false && response.ok && timer) clearTimeout(timer);
       if (!response.ok) {

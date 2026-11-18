@@ -3,8 +3,7 @@ import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js
 import type { ToolDefinition } from "../tools/tool.js";
 import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
-import { validateImageInput } from "../core/image-input.js";
-import { resolveImageBlockDataSync } from "../core/image-storage.js";
+import { resolveModelImageSync } from "../core/image-storage.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 
 export interface ToolBuffer {
@@ -268,13 +267,13 @@ function imageStorageText(block: { imageId?: string; label?: string; storage?: {
 }
 
 function imageDataUrl(block: { mimeType: string; data: string; storage?: { path: string; format: string } }): string {
-  const data = resolveImageBlockDataSync(block);
-  if (!data) return "";
   // Historical invalid images must not poison subsequent requests. Valid bytes stay unchanged.
   try {
-    const actual = validateImageInput(data);
-    if (data.startsWith("data:")) return data.replace(/^data:[^;,]+;/iu, `data:${actual.mimeType};`);
-    return `data:${actual.mimeType};base64,${data}`;
+    const image = resolveModelImageSync(block);
+    if (!image) return "";
+    const data = image.raw;
+    if (data.startsWith("data:")) return data.replace(/^data:[^;,]+;/iu, `data:${image.mimeType};`);
+    return `data:${image.mimeType};base64,${data}`;
   } catch { return ""; }
 }
 

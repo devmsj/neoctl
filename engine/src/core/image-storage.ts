@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateImageInput } from "./image-input.js";
+import { activePayloadRefs } from "./image-payload-refs.js";
 import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -92,6 +93,61 @@ export function resolveImageBlockDataResultSync(block: { data: string; storage?:
     return { available: false, error: "content-hash-mismatch" };
   }
   return { available: true, data: inline };
+}
+
+export type ModelImage = { raw: string; data: string; mimeType: string };
+// Canonical stored payloads verified once per process: key -> MIME type. No payload bytes are retained.
+const verifiedStoredImages = new Map<string, string>();
+const inlineModelImages = new WeakMap<object, { source: string; image: ModelImage }>();
+
+/**
+ * Resolve and validate an image block for a model request. Stored payloads are content-addressed and
+ * immutable, so a payload is fully decoded/verified once (keyed by path, hash, size and mtime); later
+ * request builds only re-read the file instead of re-decoding, re-encoding and re-hashing it.
+ * Throws like validateImageInput for invalid payloads; returns undefined when no payload is available.
+ */
+export function resolveModelImageSync(block: { data: string; storage?: ImageStorageLike }): ModelImage | undefined {
+  const inline = inlineModelImages.get(block);
+  if (inline && inline.source === block.data) return inline.image;
+  const key = storedImageKey(block);
+  const mimeType = key ? verifiedStoredImages.get(key) : undefined;
+  const refs = activePayloadRefs();
+  if (key && mimeType && refs) {
+    const marker = refs.marker(block.storage!.path, block.storage!.storedBytes!);
+    return { raw: marker, data: marker, mimeType };
+  }
+  if (key && mimeType) {
+    try {
+      const raw = readFileSync(block.storage!.path, "utf8");
+      if (raw.length === block.storage!.storedBytes) return { raw, data: raw, mimeType };
+    } catch { /* Fall back to full validation below. */ }
+    verifiedStoredImages.delete(key);
+  }
+  const raw = resolveImageBlockDataSync(block);
+  if (!raw) return undefined;
+  const validated = validateImageInput(raw);
+  const image = { raw, data: validated.data, mimeType: validated.mimeType };
+  if (key && validated.data === raw) {
+    if (verifiedStoredImages.size >= 4096) verifiedStoredImages.delete(verifiedStoredImages.keys().next().value!);
+    verifiedStoredImages.set(key, validated.mimeType);
+    if (refs) {
+      const marker = refs.marker(block.storage!.path, block.storage!.storedBytes!);
+      return { raw: marker, data: marker, mimeType: validated.mimeType };
+    }
+  }
+  if (block.data) inlineModelImages.set(block, { source: block.data, image });
+  return image;
+}
+
+function storedImageKey(block: { data: string; storage?: ImageStorageLike }): string | undefined {
+  const storage = block.storage;
+  if (block.data.trim() || !storage?.path || !storage.contentHash || storage.storedBytes === undefined) return undefined;
+  try {
+    const stat = statSync(storage.path);
+    return `${storage.path}\u0000${storage.contentHash}\u0000${storage.storedBytes}\u0000${stat.size}\u0000${stat.mtimeMs}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveImageBlockDataLengthSync(block: { data: string; storage?: ImageStorageLike }): number {

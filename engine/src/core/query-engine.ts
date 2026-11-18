@@ -22,6 +22,7 @@ import type { Message, MessageBlock } from "../types/messages.js";
 import { createSystemInitMessage, createTextMessage } from "../types/messages.js";
 import { buildContextMetrics } from "./context-metrics.js";
 import { ContextTokenCalibration } from "./context-token-calibration.js";
+import { jsonClone } from "./json-clone.js";
 import { applyRuntimeContextForPromptCache, applyToolResultBudget, ensureToolResultPairing, getMessagesAfterCompactBoundary } from "./message-pipeline.js";
 import { abortableWork } from "./abortable-stream.js";
 import type { CompactionStarted } from "./compaction-progress.js";
@@ -1259,5 +1260,5 @@ function normalizePositiveInteger(value: number | undefined): number | undefined
 }
 
 function cloneMessage(message: Message): Message {
-  return JSON.parse(JSON.stringify(message)) as Message;
+  return jsonClone(message);
 }

@@ -4,6 +4,7 @@ import { EnvCredentialProvider, StaticCredentialProvider } from "./credentials.j
 import type { OpenAIEndpointPreference } from "./config.js";
 import { ModelAPIError, normalizeUnknownError } from "./errors.js";
 import { HttpTransport } from "./http-transport.js";
+import { PayloadRefs, withPayloadRefs } from "../core/image-payload-refs.js";
 import { supportsImageInput } from "./context-window.js";
 import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
 import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
@@ -91,7 +92,8 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
   }
 
   private async *streamResponses(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
-    const body = buildResponsesRequest(request, this.options);
+    const payloadRefs = new PayloadRefs();
+    const body = withPayloadRefs(payloadRefs, () => buildResponsesRequest(request, this.options));
     const headers = await this.authHeaders();
     const timeoutMs = request.timeoutMs ?? this.options.timeoutMs ?? 120000;
 
@@ -101,6 +103,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
         url: `${this.baseUrl}/v1/responses`,
         headers,
         body: { ...body, stream: true },
+        payloadRefs,
         timeoutMs,
         signal: request.cancellation,
       });
@@ -113,6 +116,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
       url: `${this.baseUrl}/v1/responses`,
       headers,
       body: { ...body, stream: false },
+      payloadRefs,
       timeoutMs,
       signal: request.cancellation,
     });
@@ -120,7 +124,8 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
   }
 
   private async *streamChat(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
-    const body = buildChatRequest(request, this.options);
+    const payloadRefs = new PayloadRefs();
+    const body = withPayloadRefs(payloadRefs, () => buildChatRequest(request, this.options));
     const headers = await this.authHeaders();
     const timeoutMs = request.timeoutMs ?? this.options.timeoutMs ?? 120000;
 
@@ -133,6 +138,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
         url: `${this.baseUrl}/v1/chat/completions`,
         headers,
         body: { ...body, stream: true, stream_options: { include_usage: true, ...streamOptions } },
+        payloadRefs,
         timeoutMs,
         signal: request.cancellation,
       });
@@ -145,6 +151,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
       url: `${this.baseUrl}/v1/chat/completions`,
       headers,
       body: { ...body, stream: false },
+      payloadRefs,
       timeoutMs,
       signal: request.cancellation,
     });

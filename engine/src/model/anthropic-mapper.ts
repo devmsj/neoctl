@@ -3,8 +3,7 @@ import { requiresAnthropicThinking } from "./reasoning-switch.js";
 import { createHash } from "node:crypto";
 import { createTextMessage, type Message, type MessageBlock } from "../types/messages.js";
 import { splitSystemPromptPrefix } from "../context/prompts.js";
-import { resolveImageBlockDataSync } from "../core/image-storage.js";
-import { validateImageInput } from "../core/image-input.js";
+import { resolveModelImageSync } from "../core/image-storage.js";
 import { ModelAPIError } from "./errors.js";
 import type { ModelRequest, ModelStreamEvent, ModelUsage, ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
@@ -31,7 +30,8 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
   return createHash("sha256").update(JSON.stringify(blocks.filter(b => b.type !== "thinking"))).digest("hex");
 }
 
-export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions): Block {
+/** imagePayloads=false maps images to empty placeholders for local estimation (no disk reads or decoding). */
+export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions, build: { imagePayloads?: boolean } = {}): Block {
   request = { ...request, messages: projectToolHistory(request.messages) };
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
@@ -86,9 +86,9 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
       for (const b of message.blocks) {
         if (b.type === "text" && b.text.trim()) content.push({ type: "text", text: b.text });
         else if (b.type === "image" && role === "user") {
-          const data = resolveImageBlockDataSync(b);
-          if (!data) anthropicInvalid("Claude image data is missing");
-          const image = validateImageInput(data);
+          if (build.imagePayloads === false) { content.push({ type: "image", source: { type: "base64", media_type: b.mimeType, data: "" } }); continue; }
+          const image = resolveModelImageSync(b);
+          if (!image) anthropicInvalid("Claude image data is missing");
           content.push({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } });
         } else if (b.type === "tool_use" && role === "assistant" && paired.has(b.id)) {
           if (!record(b.input)) anthropicInvalid(`Tool input for ${b.name} must be a JSON object`);

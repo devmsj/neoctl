@@ -1,10 +1,14 @@
 import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js";
+import { jsonBody } from "./json-body.js";
+import type { PayloadRefs } from "../core/image-payload-refs.js";
 
 export interface HttpJsonRequest {
   method: "GET" | "POST";
   url: string;
   headers?: Record<string, string>;
   body?: unknown;
+  /** Required when `body` was mapped inside withPayloadRefs(); resolves stored image references. */
+  payloadRefs?: PayloadRefs;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -61,7 +65,7 @@ export class HttpTransport {
           "User-Agent": "agent-scaffold/0.1.0",
           ...request.headers,
         },
-        body: request.body === undefined ? undefined : JSON.stringify(request.body),
+        body: request.body === undefined ? undefined : await jsonBody(request.body, request.payloadRefs),
         signal: controller.signal,
       });
     } finally {

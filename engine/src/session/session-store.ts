@@ -12,6 +12,7 @@ import type { CompactionReason, CompactionReport } from "../context/compaction.j
 import type { AppPromptValue } from "../app/app-prompt.js";
 import { validateSessionPromptState, type SessionPromptState } from "../core/session-settings-prompt.js";
 import type { Message } from "../types/messages.js";
+import { jsonClone } from "../core/json-clone.js";
 import { getNeoctlHome } from "../paths.js";
 import { FileToolResultMemory, type ContentReplacementRecord, type ToolResultMemory } from "./tool-result-memory.js";
 
@@ -953,7 +954,7 @@ function createSessionId(): string {
 }
 
 function cloneMessage(message: Message): Message {
-  return JSON.parse(JSON.stringify(message)) as Message;
+  return jsonClone(message);
 }
 
 function cloneCompactionReport(report: CompactionReport): CompactionReport {
