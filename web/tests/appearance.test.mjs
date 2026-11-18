@@ -137,7 +137,7 @@ test('production and development mount appearance after isolation and before pro
     assert.match(source, /createAppearanceRoute\(createAppearanceStore\(path.join\(dataRoot, 'appearance'\), \{ validateImage: validateImageBytes \}\)\)/)
     const isolation = source.indexOf('if (await isolation.route(req, res, url)) return;')
     const appearance = source.indexOf('if (await appearanceRoute(req, res, url)) return;')
-    const proxy = source.indexOf(file === 'server.mjs' ? 'return proxy(req, res);' : 'return proxyToRuntime(req, res, url);')
+    const proxy = source.search(file === 'server.mjs' ? /return\s+(?:await\s+)?proxy\(req, res\);/ : /return\s+(?:await\s+)?proxyToRuntime\(req, res, url\);/)
     assert.ok(isolation >= 0 && appearance > isolation && proxy > appearance, file)
   }
 })

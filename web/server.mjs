@@ -205,10 +205,12 @@ async function routeRequest(req, res) {
       return sendJson(res, { ok: true, file });
     }
     if (shouldProxy(url.pathname)) {
-      return proxy(req, res);
+      return await proxy(req, res);
     }
     return serveStatic(res, url);
   } catch (error) {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
     sendJson(res, { errorCode: 'WEB_REQUEST_FAILED', error: error instanceof Error ? error.message : String(error) }, 500);
   }
 }
@@ -257,12 +259,15 @@ async function proxy(req, res) {
     }
     if (!res.writableEnded) res.end();
   } catch (error) {
-    const isTerminatedSocket =
-      error?.name === 'TypeError' &&
-      error?.message === 'terminated' &&
-      error?.cause?.code === 'UND_ERR_SOCKET';
-    if (error?.name === 'AbortError' || isTerminatedSocket || res.destroyed) return;
-    throw error;
+    if (res.destroyed || res.writableEnded) return;
+    // A partial HTTP/SSE response cannot be replaced with JSON. Close just this response so
+    // the client detects truncation (and EventSource can reconnect), without killing the process.
+    if (res.headersSent) { res.destroy(); return; }
+    sendJson(res, {
+      errorCode: 'RUNTIME_UNAVAILABLE',
+      error: 'Runtime connection failed',
+      cause: String(error?.cause?.code || error?.code || error?.name || 'UNKNOWN'),
+    }, 502);
   }
 }
 

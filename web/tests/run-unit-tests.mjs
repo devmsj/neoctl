@@ -52,6 +52,7 @@ const files = [
   'runtime-workspaces.test.mjs',
   'workspace-scope.test.mjs',
   'server-startup.test.mjs',
+  'proxy-failure.test.mjs',
   'tool-settings.test.mjs',
   'tool-guidance.test.mjs',
   'tool-activity.test.mjs',

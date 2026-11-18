@@ -127,6 +127,7 @@ const ACTION_ERROR_MESSAGES = {
   SESSION_RUNNING: '运行中的会话不能删除，请等待运行结束',
   SESSION_NOT_FOUND: '会话不存在或已被删除',
   SESSION_RESUME_FAILED: '打开会话失败',
+  RUNTIME_UNAVAILABLE: '核心连接暂时不可用，请稍后重试',
   SESSION_CREATE_FAILED: '新建会话失败',
   SESSION_DELETE_FAILED: '删除会话失败',
   PLUGIN_UPDATE_BLOCKED: '模型回答期间不能修改会话插件',
