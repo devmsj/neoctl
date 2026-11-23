@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentTool, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
 import { AgentActivityStore } from "../../src/agents/agent-activity.js";
-import { EXPLORE_AGENT, GENERAL_PURPOSE_AGENT, StaticAgentCatalog } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { resolveAgentTools } from "../../src/core/run-agent.js";
 import { TaskStore } from "../../src/tasks/task-store.js";
 import { InMemoryAppState } from "../../src/app/app-state.js";
@@ -37,8 +37,19 @@ test("a subagent has exactly the parent's tools; only explicit lists restrict th
   assert.equal(child.isEnabled("subagent_run"), undefined, "scheduling stays with the main agent");
   const restricted = resolveAgentTools(parentTools(), GENERAL_PURPOSE_AGENT, ["image_inspect", "file_write"]);
   assert.deepEqual(visible(restricted, "vision-model"), ["file_edit", "file_read", "plan_update", "subagent_list", "subagent_report"]);
-  const explore = resolveAgentTools(parentTools(), EXPLORE_AGENT);
-  assert.deepEqual(visible(explore, "vision-model"), ["file_read", "image_inspect", "plan_update", "subagent_list", "subagent_report"], "explore removes only its explicit write tools");
+});
+
+test("disallowed_tools is the only tool control and is validated against the main agent's tools", async () => {
+  const store = new TaskStore();
+  const runtime = { taskStore: store, tools: parentTools() } as unknown as AgentToolRuntime;
+  const parent = { agentId: "parent", messages: [], appState: new InMemoryAppState("parent", process.cwd()) } as unknown as ToolUseContext;
+  const unknown = await createAgentTool(runtime).call!({ prompt: "x", disallowed_tools: ["file_edit", "ghost"] }, parent, {});
+  assert.equal(unknown.ok, false);
+  assert.match(JSON.stringify(unknown.output), /Unknown tool name\(s\) in disallowed_tools: ghost/);
+  assert.equal(store.list().length, 0, "no task is created for rejected tool control");
+  const schema = createAgentTool(runtime).inputSchema as { properties: Record<string, unknown> };
+  assert.equal("tools" in schema.properties, false, "no allowlist: the main agent blocks, it does not list");
+  assert.throws(() => createAgentTool(runtime).validate!({ prompt: "x", mode: "explore" } as never, parent), /mode must be sync, background or fork/);
 });
 
 test("disallowed_tools from the main agent reaches the child request and survives persistence", async () => {
@@ -53,7 +64,7 @@ test("disallowed_tools from the main agent reaches the child request and survive
       yield { type: "response_completed", stopReason: "completed" };
     } };
     const runtime: AgentToolRuntime = { taskStore: store, modelGateway: gateway, tools: parentTools(), agentActivityStore: new AgentActivityStore(),
-      agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]),
+      agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: false },
       contextManager: { async build(input) { return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "", platform: process.platform } }; } },
       compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
     };

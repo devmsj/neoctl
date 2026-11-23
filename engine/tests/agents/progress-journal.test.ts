@@ -53,6 +53,47 @@ test('ordinary tool churn is tallied, never pushed; reports and failures are pus
   } finally { f.cleanup(); }
 });
 
+test('child loop states (model stream opened, turn started) never reach the main agent', async () => {
+  const f = fixture();
+  try {
+    for (const detail of ['turn 2 started (tool_results)', 'messages prepared for model', 'model stream opened (some-model)']) {
+      updateProgressFromEvent(f.task, { type: 'state', phase: 'calling_model', detail } as any, f.task.runGeneration);
+    }
+    updateProgressFromMessage(f.task, report('milestone'));
+    f.store.updateProgress(f.task);
+    const [update] = f.store.collectProgressUpdates(f.dir);
+    assert.doesNotMatch(update.content, /model stream opened|messages prepared|turn 2 started|current:/);
+    const quiet = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
+    assert.equal(quiet.since_last_check, 'No change since your last check (status: running).');
+  } finally { f.cleanup(); }
+});
+
+test('status check shows what the subagent is doing now and its latest report, not loop internals', async () => {
+  const f = fixture();
+  try {
+    updateProgressFromMessage(f.task, report('Step 1 done; running tests'));
+    f.store.updateProgress(f.task);
+    const first = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
+    assert.match(first.since_last_check, /Step 1 done/);
+    assert.equal(first.latest_report, undefined, 'a new report is shown once, in since_last_check');
+
+    const toolUse = { id: 'run-1', name: 'terminal_run', input: { description: 'Run unit tests' } };
+    updateProgressFromEvent(f.task, { type: 'tool.started', toolUse } as any, f.task.runGeneration);
+    const now = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
+    assert.equal(now.working_on, 'terminal_run: Run unit tests');
+    assert.match(now.elapsed, /^\d+s$/);
+    assert.deepEqual({ status: now.latest_report.status, content: now.latest_report.content, displaySource: now.latest_report.displaySource },
+      { status: 'draft', content: 'Step 1 done; running tests', displaySource: 'agent_report' }, 'already-seen report stays visible as current state');
+    const listed = (await createSubagentListTool(f.store).call!({}, f.ctx(), {})).output as any;
+    assert.equal(listed.tasks[0].working_on, 'terminal_run: Run unit tests');
+
+    updateProgressFromEvent(f.task, { type: 'tool.result.available', toolUse, ok: true } as any, f.task.runGeneration);
+    const after = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
+    assert.equal(after.working_on, undefined, 'finished tools are no longer "now"');
+    assert.ok(JSON.stringify(after).length < 600, 'compact');
+  } finally { f.cleanup(); }
+});
+
 test('main-agent reads consume; subagent reads and list never hide updates', async () => {
   const f = fixture();
   try {
@@ -61,11 +102,11 @@ test('main-agent reads consume; subagent reads and list never hide updates', asy
     const list = (await createSubagentListTool(f.store).call!({}, f.ctx(), {})).output as any;
     assert.equal(list.tasks[0].has_new_report, true);
     const peek = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(true), {})).output as any;
-    assert.match(peek.progress.since_last_check, /milestone A/);
+    assert.match(peek.since_last_check, /milestone A/);
     const read = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
-    assert.match(read.progress.since_last_check, /milestone A/);
+    assert.match(read.since_last_check, /milestone A/);
     const again = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId }, f.ctx(), {})).output as any;
-    assert.match(again.progress.since_last_check, /No change since your last check/);
+    assert.match(again.since_last_check, /No change since your last check/);
     assert.deepEqual(f.store.collectProgressUpdates(f.dir), [], 'an explicit read already delivered it');
   } finally { f.cleanup(); }
 });
@@ -78,12 +119,12 @@ test('wait_ms resolves on the next milestone instead of polling, and on timeout'
     setTimeout(() => { toolResult(f.task, 'file_read', true); f.store.updateProgress(f.task); }, 20);
     setTimeout(() => { updateProgressFromMessage(f.task, report('woke')); f.store.updateProgress(f.task); }, 60);
     const output = (await pending).output as any;
-    assert.match(output.progress.since_last_check, /woke/);
+    assert.match(output.since_last_check, /woke/);
     assert.ok(Date.now() - started < 2000);
     const idle = Date.now();
     const timedOut = (await createSubagentGetTool(f.store).call!({ task_id: f.task.taskId, wait_ms: 50 }, f.ctx(), {})).output as any;
     assert.ok(Date.now() - idle >= 40);
-    assert.match(timedOut.progress.since_last_check, /No change/);
+    assert.match(timedOut.since_last_check, /No change/);
   } finally { f.cleanup(); }
 });
 

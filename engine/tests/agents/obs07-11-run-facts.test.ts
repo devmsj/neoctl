@@ -7,7 +7,7 @@ import { TaskStore } from "../../src/tasks/task-store.js";
 import { agentRunDurationMs, createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type AgentToolResult } from "../../src/agents/local-agent-task.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
 import { AgentActivityStore } from "../../src/agents/agent-activity.js";
-import { GENERAL_PURPOSE_AGENT, StaticAgentCatalog } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { InMemoryAppState } from "../../src/app/app-state.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { finalizeAgentTool } from "../../src/core/run-agent.js";
@@ -132,7 +132,7 @@ function runtime(root: string, store: TaskStore, gateway: ModelGateway): { rt: A
   return {
     parent: { agentId: "parent", messages: [], appState: new InMemoryAppState("parent", root), session: { sessionId: "parent", sessionDir: root } } as unknown as ToolUseContext,
     rt: { modelGateway: gateway, tools: new ToolRegistry(), taskStore: store, agentActivityStore: new AgentActivityStore(),
-      agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false, reportRetryTurns: 0 }]),
+      agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: false, reportRetryTurns: 0 },
       contextManager: { async build() { return { systemPrompt: "test", promptSections: [], userContext: { currentDate: "2026-09-07" }, systemContext: { cwd: root, platform: process.platform } }; } },
       compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
     },

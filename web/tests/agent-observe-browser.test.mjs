@@ -96,6 +96,7 @@ async function fixture(t, { tasks = [agentTask('task-a', 'running', '检查样�
   await page.getByText('MAIN_LINE_30', { exact: true }).waitFor()
   return { page, clients, requests, views,
     push(observe, event, data) { for (const c of clients) if (c.observe === observe) c.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) },
+    sync(observe = '') { this.push(observe, 'sync', snapshot(observe)) },
   }
 }
 const switchButton = page => page.locator('.agent-switch-button')
@@ -120,13 +121,20 @@ test('observe a subagent in place: read-only, same status row, live stream, smoo
   assert.equal(await switchButton(page).count(), 1, 'one icon-only entry next to timing/tools')
   assert.equal((await switchButton(page).innerText()).trim(), '', 'icon only')
   assert.match(await metricsText(page), /main-model/)
+  const activeNode = () => switchButton(page).locator('.agent-tree-icon').getAttribute('data-active')
+  assert.equal(await activeNode(), 'main', 'the icon shows the main agent is in view')
 
-  // Menu lists main + both subagents with status.
+  // Menu lists main + both subagents; status is an icon, not text.
   await switchButton(page).click()
   const menu = page.locator('.agent-switch-menu')
   await menu.waitFor()
-  assert.match(await menu.innerText(), /主代理[\s\S]*检查样式实现[\s\S]*运行中[\s\S]*核对测试覆盖[\s\S]*已完成/)
-  if (shots) await page.screenshot({ path: join(shots, 'menu-desktop.png') })
+  const menuText = await menu.innerText()
+  assert.match(menuText, /主代理[\s\S]*检查样式实现[\s\S]*核对测试覆盖/)
+  assert.doesNotMatch(menuText, /当前|运行中|已完成/)
+  assert.equal(await menu.locator('button').nth(1).locator('.loading-ring, .task-status-icon').count() > 0, true, 'running status icon')
+  assert.equal(await menu.locator('button').nth(2).locator('.task-state-check').count(), 1, 'completed status icon')
+  const zoom = async name => { await sleep(250); const b = await switchButton(page).boundingBox(); await page.screenshot({ path: join(shots, name), clip: { x: b.x - 40, y: b.y - 150, width: 380, height: 200 } }) }
+  if (shots) { await zoom('menu-main-zoom.png'); await page.screenshot({ path: join(shots, 'menu-desktop.png') }) }
   await page.keyboard.press('Escape')
   await until(async () => await menu.count() === 0, 'Escape closes the menu')
 
@@ -137,6 +145,8 @@ test('observe a subagent in place: read-only, same status row, live stream, smoo
   await page.getByText('CHILD_A_LINE_12', { exact: true }).waitFor()
   const switchMs = Date.now() - started
   assert.equal(await page.getByText('MAIN_LINE_30', { exact: true }).count(), 0, 'views never mix')
+  assert.equal(await activeNode(), 'sub', 'the icon shows a subagent is in view')
+  assert.match(await switchButton(page).getAttribute('class'), /observing/)
   assert.equal(await composer.isVisible(), false, 'no input box while observing')
   assert.equal(await page.locator('form.composer .composer-actions').isVisible(), false)
   const observed = await metricsText(page)
@@ -145,7 +155,11 @@ test('observe a subagent in place: read-only, same status row, live stream, smoo
   await until(async () => (await page.locator('.transcript').getAttribute('class')).match(/agent-view-(switching|entering)/) === null, 'switch animation settles')
   const frames = await page.evaluate(() => window.__frames)
   const longFrames = frames.filter(ms => ms > 50)
-  if (shots) await page.screenshot({ path: join(shots, 'observing-desktop.png') })
+  if (shots) {
+    await page.screenshot({ path: join(shots, 'observing-desktop.png') })
+    await switchButton(page).click(); await menu.waitFor(); await zoom('menu-sub-zoom.png')
+    await page.keyboard.press('Escape'); await until(async () => await menu.count() === 0, 'closed')
+  }
 
   // Read-only: model/context chips do not open editors.
   assert.equal(await page.locator('.model-chip').evaluate(el => getComputedStyle(el).opacity), '1', 'same status row, not dimmed')
@@ -181,6 +195,44 @@ test('observe a subagent in place: read-only, same status row, live stream, smoo
   if (shots) await page.screenshot({ path: join(shots, 'menu-narrow.png') })
   console.log(JSON.stringify({ switchMs, frames: frames.length, longFrames, maxFrame: Math.max(...frames).toFixed(1) }))
   assert.ok(longFrames.length <= 2, `switch should not jank: ${JSON.stringify(longFrames)}`)
+})
+
+test('streaming never interrupts the agent menu: one stable entry, rows keep their order, menu stays on the entry', { timeout: 60000 }, async t => {
+  // task-b runs, task-a is done: the list is [b, a]; b finishing would reorder it to [a, b].
+  const tasks = [agentTask('task-a', 'completed', '检查样式实现'), agentTask('task-b', 'running', '核对测试覆盖')]
+  const f = await fixture(t, { tasks }), { page } = f
+  await switchButton(page).evaluate(el => { window.__agentSwitch = el })
+  await switchButton(page).click()
+  const menu = page.locator('.agent-switch-menu')
+  await menu.waitFor()
+  const rows = () => menu.locator('button .agent-switch-name').allInnerTexts()
+  assert.deepEqual(await rows(), ['主代理', '核对测试覆盖', '检查样式实现'])
+  await menu.locator('button').nth(1).hover()
+
+  // The main run starts streaming (status row changes branch), output arrives, the subagent finishes, the run ends.
+  f.views[''].busy = true; f.sync('')
+  await page.locator('.message-loading .execution-signal').waitFor()
+  for (let i = 0; i < 20; i++) {
+    f.push('', 'delta', { sessionId: 'S', operations: [{ type: 'line.append', line: { id: 100 + i, kind: 'assistant', text: `MAIN_STREAM_${i}` } }] })
+    await sleep(25)
+  }
+  await page.getByText('MAIN_STREAM_19', { exact: true }).waitFor()
+  tasks[1].status = 'completed'; f.sync('')
+  await until(async () => await menu.locator('button').nth(1).locator('.task-state-check').count() === 1, 'status updates in place')
+  f.views[''].busy = false; f.sync('')
+  await sleep(200)
+
+  assert.equal(await menu.isVisible(), true, 'menu still open')
+  assert.equal(await page.evaluate(() => window.__agentSwitch.isConnected && document.querySelectorAll('.agent-switch-button').length === 1), true, 'the entry was never re-created')
+  assert.deepEqual(await rows(), ['主代理', '核对测试覆盖', '检查样式实现'], 'rows keep their order while open')
+  const [menuBox, buttonBox] = [await menu.boundingBox(), await switchButton(page).boundingBox()]
+  assert.ok(Math.abs(menuBox.y + menuBox.height + 6 - buttonBox.y) <= 2, `menu stays on the entry: ${JSON.stringify({ menuBox, buttonBox })}`)
+  if (shots) await page.screenshot({ path: join(shots, 'menu-after-stream.png') })
+
+  // The row clicked after all that still switches the view.
+  await menu.locator('button').filter({ hasText: '核对测试覆盖' }).click()
+  await page.getByText('CHILD_B_LINE_6', { exact: true }).waitFor()
+  await until(async () => await menu.count() === 0, 'picking closes the menu')
 })
 
 test('background tasks list only the viewed agent\'s own work: no subagents; observing shows the subagent\'s terminals', { timeout: 60000 }, async t => {

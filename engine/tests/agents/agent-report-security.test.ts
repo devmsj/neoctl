@@ -6,7 +6,7 @@ import path from "node:path";
 import { TaskStore } from "../../src/tasks/task-store.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
 import { AgentActivityStore } from "../../src/agents/agent-activity.js";
-import { GENERAL_PURPOSE_AGENT, StaticAgentCatalog } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { InMemoryAppState } from "../../src/app/app-state.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { finalizeAgentTool } from "../../src/core/run-agent.js";
@@ -24,7 +24,7 @@ async function fixture(gateway: ModelGateway, reportRetryTurns = 0) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "neo-report-security-")));
   const store = new TaskStore(); store.bindSession(root);
   const rt: AgentToolRuntime = { modelGateway: gateway, tools: new ToolRegistry(), taskStore: store, agentActivityStore: new AgentActivityStore(),
-    agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: true, reportRetryTurns }]),
+    agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: true, reportRetryTurns },
     contextManager: { async build() { return { systemPrompt: "synthetic", promptSections: [], userContext: { currentDate: "2026-09-07" }, systemContext: { cwd: root, platform: process.platform } }; } },
     compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
   };

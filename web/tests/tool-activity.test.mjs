@@ -74,6 +74,20 @@ test('report text cannot fabricate lifecycle and final authorized report wins ov
  const source=line('subagent_get',{},'completed',{observation:{taskId:'a',runGeneration:2}});
  assert.equal(agentObservation(source,[{taskId:'a',runGeneration:2,progress:{visibleText:{channel:'visible',redactionVersion:1,runGeneration:2,text:'old'}},result:{content:'final'}}]).observation.content,'final');
 });
+test('pinning a subagent row shows what it reported to the main agent, in order, then the final result',async()=>{
+ const {agentObservation}=await import('../src/tool-activity.mjs');
+ const {runtimeActivitySignal}=await import('../src/tool-runtime-observation.mjs');
+ const row=line('subagent_run',{},'running',{observation:{task_id:'a',run_generation:1}});
+ const running={taskId:'a',runGeneration:1,status:'running',reports:[{status:'draft',report:'Step 1 done'},{status:'draft',report:'Step 2 done'}],progress:{visibleText:{channel:'visible',redactionVersion:1,runGeneration:1,text:'streamed chatter'}}};
+ const pinned=agentObservation(row,[running]).observation;
+ assert.equal(pinned.content,'Step 1 done\n\nStep 2 done','reports win over streamed text');
+ assert.equal(pinned.displaySource,'agent_report');
+ assert.equal(activityContent({...row,observation:pinned}).text,'Step 1 done\n\nStep 2 done');
+ const done={...running,status:'completed',reports:[...running.reports,{status:'completed',report:'All done'}],result:{content:'All done'}};
+ assert.equal(agentObservation(row,[done]).observation.content,'Step 1 done\n\nStep 2 done\n\nAll done','final report is not repeated');
+ assert.equal(agentObservation(row,[{...running,status:'failed',result:{content:'partial'}}]).observation.content,'Step 1 done\n\nStep 2 done\n\npartial');
+ assert.notDeepEqual(runtimeActivitySignal(row,[running]),runtimeActivitySignal(row,[{...running,reports:running.reports.slice(0,1)}]),'a new report refreshes the pinned view');
+});
 
 test('interrupted lifecycle wins over generic tool failure and listing a file stays structural',()=>{
  assert.equal(activityPhase(line('file_write',{},'interrupted',{titleStatus:'failure'})),'interrupted');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveAgentTools } from '../../src/core/run-agent.js';
-import { GENERAL_PURPOSE_AGENT, FORK_AGENT, EXPLORE_AGENT } from '../../src/agents/agent-definition.js';
+import { GENERAL_PURPOSE_AGENT, FORK_AGENT } from '../../src/agents/agent-definition.js';
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from '../../src/agents/agent-tool.js';
 import { createSubagentResumeTool } from '../../src/tasks/subagent-tools.js';
 import { TaskStore } from '../../src/tasks/task-store.js';
@@ -14,7 +14,7 @@ test('all child agent definitions exclude run/resume, even explicit or wildcard 
   parent.register(createSubagentResumeTool());
   parent.setEnabled("subagent_run", true);
   parent.setEnabled("subagent_resume", true);
-  for (const agent of [GENERAL_PURPOSE_AGENT, FORK_AGENT, EXPLORE_AGENT, { ...GENERAL_PURPOSE_AGENT, tools: ['*'], disallowedTools: [] }, { ...GENERAL_PURPOSE_AGENT, tools: ['subagent_run', 'subagent_resume'] }]) {
+  for (const agent of [GENERAL_PURPOSE_AGENT, FORK_AGENT, { ...GENERAL_PURPOSE_AGENT, tools: ['*'], disallowedTools: [] }, { ...GENERAL_PURPOSE_AGENT, tools: ['subagent_run', 'subagent_resume'] }]) {
     const child = resolveAgentTools(parent, agent);
     assert.equal(child.get('subagent_run'), undefined);
     assert.equal(child.get('subagent_resume'), undefined);
@@ -28,8 +28,8 @@ test('runtime rejects nested delegation in every mode and resume before launchin
   const store = new TaskStore();
   const runtime = { taskStore: store } as AgentToolRuntime;
   const context = { isSubagent: true, agentId: 'child', messages: [] } as unknown as ToolUseContext;
-  for (const mode of [undefined, 'sync', 'background', 'fork', 'explore'] as const) {
-    const result = await createAgentTool(runtime).call!({ prompt: 'nested', mode, subagent_type: 'general-purpose' }, context, {});
+  for (const mode of [undefined, 'sync', 'background', 'fork'] as const) {
+    const result = await createAgentTool(runtime).call!({ prompt: 'nested', mode }, context, {});
     assert.equal(result.ok, false);
     assert.match(JSON.stringify(result.output), /cannot delegate/);
   }

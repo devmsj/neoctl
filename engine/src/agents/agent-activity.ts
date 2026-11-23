@@ -4,7 +4,7 @@ import type { TimingRecord } from "../core/query-timing.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { AgentToolResult } from "./local-agent-task.js";
 
-export type AgentActivityMode = "sync" | "background" | "fork" | "explore";
+export type AgentActivityMode = "sync" | "background" | "fork";
 export type AgentActivityStatus = "pending" | "running" | "completed" | "failed" | "killed";
 export type AgentTimelineEntryKind = "text" | "thinking" | "tool_start" | "tool_result" | "status" | "error";
 
@@ -180,9 +180,9 @@ export class AgentActivityStore {
     activity.totalEvents += 1;
     activity.updatedAt = new Date().toISOString();
 
-    if (event.type === "state") {
-      this.push(activity, { kind: "status", title: event.phase, detail: event.detail, status: "running" }, false);
-    } else if (event.type === "message") {
+    // Loop states ("model stream opened", "turn N started") only drive the live status row (recordLive),
+    // never timeline entries that would push out real activity.
+    if (event.type === "message") {
       this.recordMessageBlocks(activity, event.message);
     } else if (event.type === "tool.started") {
       this.recordToolStarted(activity, event.toolUse);

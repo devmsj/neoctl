@@ -44,6 +44,16 @@ test('protocol XML preserves fixed task/run header, not report/error body', asyn
   assert.ok(!JSON.stringify(d).includes(hidden));
   const data = JSON.parse(d.result.text); assert.equal(data.task_id, 'task-safe'); assert.equal(String(data.run_generation), '3');
 });
+test('compact XML header (no task_type, optional inbox tags) keeps the same parsed identity', async () => {
+  for (const extra of ['', '<pending_messages>2</pending_messages>\n<requires_resume>true</requires_resume>\n']) {
+    const xml = `<retrieval_status>ready</retrieval_status>\n<task_id>task-safe</task_id>\n<status>completed</status>\n<run_generation>3</run_generation>\n${extra}<agent_id>agent-safe</agent_id>\n<output>${hidden}</output>`;
+    const d = await detail('subagent_output', xml);
+    assert.ok(!JSON.stringify(d).includes(hidden));
+    const data = JSON.parse(d.result.text);
+    assert.equal(data.task_id, 'task-safe'); assert.equal(String(data.run_generation), '3'); assert.equal(data.agent_id, 'agent-safe');
+    assert.equal(data.requires_resume, extra !== '');
+  }
+});
 test('valid provenance is local to content, not siblings/previous generation', async () => {
   for (const displaySource of ['agent_report', 'visible_text']) {
     const d = await detail('subagent_get', { task_id: 'task-safe', run_generation: 3, content: hidden, result: { displaySource, content: 'PUBLIC REPORT', status: 'incomplete', message: hidden }, run_history: [{ result: { content: hidden } }] });

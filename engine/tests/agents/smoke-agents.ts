@@ -11,7 +11,7 @@ import { runToolUse } from "../../src/tools/run-tool-use.js";
 import type { Tool, ToolUseContext } from "../../src/tools/tool.js";
 import { createTextMessage } from "../../src/types/messages.js";
 import { createAgentTool } from "../../src/agents/agent-tool.js";
-import { StaticAgentCatalog, EXPLORE_AGENT, GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { createSubagentTools } from "../../src/tasks/subagent-tools.js";
 import { TaskStore } from "../../src/tasks/task-store.js";
 
@@ -214,14 +214,14 @@ async function main(): Promise<void> {
     modelGateway: gateway,
     tools,
     taskStore,
-    agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]),
   }));
   // This smoke explicitly exercises delegation, which is disabled by default.
   for (const name of tools.names({ includeDisabled: true })) tools.setEnabled(name, true);
-  const exploreToolNames = new Set(resolveAgentTools(tools, EXPLORE_AGENT).names());
+  // Read-only work is now plain tool control from the main agent (no separate agent kind).
+  const exploreToolNames = new Set(resolveAgentTools(tools, GENERAL_PURPOSE_AGENT, ["file_edit", "file_write"]).names());
   const exploreToolsOk =
     ["file_list", "file_read", "file_search", "web_search", "terminal_run", "terminal_control", "subagent_report"].every((name) => exploreToolNames.has(name)) &&
-    ["file_edit", "file_write", "subagent_run", "plan_update", "smoke_passthrough"].every((name) => !exploreToolNames.has(name));
+    ["file_edit", "file_write", "subagent_run"].every((name) => !exploreToolNames.has(name));
 
   process.env.AGENT_SESSION_TITLE_DELAY_MS = "0";
   const engine = new QueryEngine({ modelGateway: gateway, tools, maxTurns: 4, session: { rootDir: sessionRoot } });
@@ -309,25 +309,26 @@ async function main(): Promise<void> {
   const explore = await runToolUse({
     id: "call_agent_explore",
     name: "subagent_run",
-    input: { prompt: "map readonly paths", description: "explore worker", mode: "explore" },
+    input: { prompt: "map readonly paths", description: "explore worker", disallowed_tools: ["file_edit", "file_write"] },
   }, context);
   const exploreResult = explore.flatMap((update) => update.message.blocks).find((block) => block.type === "tool_result");
   const exploreOutput = exploreResult?.type === "tool_result" && typeof exploreResult.output === "object" && exploreResult.output
-    ? exploreResult.output as { agent_type?: string; status?: string; content?: string; total_tool_use_count?: number }
+    ? exploreResult.output as { task_id?: string; status?: string; content?: string }
     : undefined;
+  const exploreTask = exploreOutput?.task_id ? taskStore.get(exploreOutput.task_id) : undefined;
   const exploreContent = exploreOutput?.content ?? "";
   const exploreReportOk =
     countMarkdownSections(exploreContent) >= 3 &&
     hasListItem(exploreContent) &&
     hasLikelyFilePath(exploreContent);
   const exploreNoProgressOnly = !/(?:接下来|继续读取|继续探索|I will continue|next I will)/i.test(exploreContent);
-  const exploreDraftDidNotEndRun = (exploreOutput?.total_tool_use_count ?? 0) >= 3;
+  const exploreDraftDidNotEndRun = (exploreTask?.progress.totalToolUseCount ?? 0) >= 3;
   const exploreInheritedToolResultMemory = inheritedToolResultMemoryCalls > memoryCallsBeforeExplore;
   const exploreOk =
     exploreResult?.type === "tool_result" &&
     exploreResult.ok === true &&
     exploreOutput?.status === "completed" &&
-    exploreOutput.agent_type === EXPLORE_AGENT.agentType &&
+    exploreTask?.executionOptions?.disallowedTools?.includes("file_edit") === true &&
     gateway.reportRecoveryPrompts === 1 &&
     gateway.forcedReportToolChoices >= 1 &&
     exploreInheritedToolResultMemory &&
@@ -337,8 +338,8 @@ async function main(): Promise<void> {
 
   const missingReport = finalizeAgentTool({
     agentId: "explore_missing_report",
-    agentType: EXPLORE_AGENT.agentType,
-    agent: EXPLORE_AGENT,
+    agentType: GENERAL_PURPOSE_AGENT.agentType,
+    agent: GENERAL_PURPOSE_AGENT,
     messages: [createTextMessage("assistant", "I will continue checking files.")],
     durationMs: 0,
     totalToolUseCount: 1,
@@ -346,7 +347,7 @@ async function main(): Promise<void> {
   const missingReportOk =
     missingReport.status === "incomplete" &&
     missingReport.content.includes("Subagent ended without a final subagent_report") &&
-    missingReport.content.includes("## Partial output");
+    missingReport.content.includes("Treat the output below as partial");
 
   const task = taskId ? taskStore.get(taskId) : undefined;
   const outputText = JSON.stringify(output.map((update) => update.message.blocks));

@@ -5,7 +5,7 @@ import path from "node:path";
 import { DefaultContextManager } from "../../src/context/context-manager.js";
 import { TaskStore } from "../../src/tasks/task-store.js";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
-import { StaticAgentCatalog, GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { InMemoryAppState } from "../../src/app/app-state.js";
 import type { ToolUseContext } from "../../src/tools/tool.js";
@@ -46,7 +46,7 @@ try {
   tools.register({ name: "echo", description: "fake", inputSchema: { type: "object" }, metadata: { readOnly: true, concurrent: true, visible: true }, validate: () => ({}), async call() { return { ok: true, output: "paired" }; } });
   const seenCwds: (string | undefined)[] = [];
   const baseContextManager = new DefaultContextManager();
-  const runtime: AgentToolRuntime = { contextManager: { async build(input) { seenCwds.push(input.cwd); return baseContextManager.build(input); } }, modelGateway: gateway, tools, taskStore: store, agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]) };
+  const runtime: AgentToolRuntime = { contextManager: { async build(input) { seenCwds.push(input.cwd); return baseContextManager.build(input); } }, modelGateway: gateway, tools, taskStore: store, agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: false } };
   const launched = await createAgentTool(runtime).call!({ prompt: "original-directive", run_in_background: true, cwd: "child", model: "fake-model" }, context, {});
   assert.equal(launched.ok, true);
   await until(() => requests.length === 1);
@@ -154,7 +154,7 @@ try {
     }
     yield { type: "response_completed", stopReason: reportCalls === 2 ? "completed" : "tool_calls" };
   } };
-  const reportRuntime: AgentToolRuntime = { ...runtime, taskStore: reportStore, modelGateway: reportGateway, agentCatalog: new StaticAgentCatalog([GENERAL_PURPOSE_AGENT]) };
+  const reportRuntime: AgentToolRuntime = { ...runtime, taskStore: reportStore, modelGateway: reportGateway, agent: GENERAL_PURPOSE_AGENT };
   await createAgentTool(reportRuntime).call!({ prompt: "report-required", run_in_background: true }, context, {});
   const reportTask = reportStore.list()[0];
   reportTask.outputFile = path.join(root, "report.txt");

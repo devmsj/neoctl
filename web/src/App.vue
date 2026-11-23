@@ -44,6 +44,7 @@ import TextContextMenu from './components/TextContextMenu.vue'
 import SystemNotice from './components/SystemNotice.vue'
 import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
+import AgentTreeIcon from './components/AgentTreeIcon.vue'
 import RightPanel from './components/RightPanel.vue'
 import { stableComputed } from './stable-view.mjs'
 import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
@@ -597,6 +598,7 @@ const exactPhaseLabel = computed(() => {
 
 const active = computed(() => !state.runControl.canResume && state.runControl.state !== 'resuming' && isActivePhase(state.status?.phase))
 const showTranscriptLoading = computed(() => active.value || state.busy || state.runControl.canResume || state.runControl.state === 'resuming' || state.sessionResumeLoading || state.compactSaving)
+const showFinishedClock = computed(() => !showTranscriptLoading.value && !state.busy && state.coreQueryTiming?.status === 'finished' && !!formatDuration(transcriptElapsedMs.value))
 const retrySeconds = computed(() => retrySecondsRemaining(state.status?.retryCooldownUntil, state.clockTick, { connected: state.connected, paused: state.runControl.canResume, busy: state.busy || active.value }))
 const transcriptLoadingLabel = computed(() => executionLabel({
   loading: state.sessionResumeLoading, runState: state.runControl.state, phase: state.status?.phase,
@@ -774,25 +776,52 @@ const observableAgents = computed(() => {
 const showAgentSwitch = computed(() => observableAgents.value.length > 0 || !!state.observing)
 /** Identity of what the transcript shows; per-view UI state (observation, signals) is keyed by it. */
 const agentViewKey = computed(() => `${state.session?.sessionId || ''}|${state.observing?.taskId || ''}`)
-const agentSwitchLabel = computed(() => state.observing ? `正在观察子代理：${agentDisplayName(state.observing)}` : '切换观察代理')
-const AGENT_STATUS_LABELS = { pending: '等待中', running: '运行中', completed: '已完成', failed: '失败', killed: '已停止' }
+const agentSwitchLabel = computed(() => state.observing ? `正在观察子代理：${agentDisplayName(state.observing)}` : '正在观察主代理')
 function agentDisplayName(task) { return task?.description || task?.agentType || '子代理' }
-let agentSwitchTimer, agentEnterTimer
-function toggleAgentMenu(event) {
+// While the menu is open its rows keep the order they had when it opened (a task finishing moves it
+// from the running list to history), and syncs that change nothing it shows do not re-render it.
+let agentMenuOrder = []
+const agentMenuItems = stableComputed(() => {
+  const items = observableAgents.value.map(({ taskId, description, agentType, status }) => ({ taskId, description, agentType, status }))
+  if (!agentView.menuOpen) return items
+  const rank = new Map(agentMenuOrder.map((taskId, index) => [taskId, index]))
+  return items.sort((a, b) => (rank.get(a.taskId) ?? Infinity) - (rank.get(b.taskId) ?? Infinity))
+})
+const agentSwitchButton = ref(null), agentSwitchMenu = ref(null)
+let agentSwitchTimer, agentEnterTimer, agentMenuFrame = 0
+function toggleAgentMenu() {
   if (agentView.menuOpen) return closeAgentMenu()
-  const rect = event.currentTarget.getBoundingClientRect()
-  agentView.menuX = Math.max(8, Math.min(rect.left, window.innerWidth - 288))
-  agentView.menuY = Math.max(8, window.innerHeight - rect.top + 6)
+  agentMenuOrder = observableAgents.value.map(task => task.taskId)
   agentView.menuOpen = true
+  placeAgentMenu()
   document.addEventListener('keydown', agentMenuKeydown, true)
+}
+// The switch sits in the streaming transcript. The backdrop blocks user scrolling while the menu is
+// open, so the entry only moves with the run's output (auto-follow may lag a frame or two): the
+// menu follows it and stays inside the window instead of closing.
+function placeAgentMenu() {
+  agentMenuFrame = 0
+  if (!agentView.menuOpen) return
+  const button = agentSwitchButton.value
+  if (!button?.isConnected) return closeAgentMenu()
+  const rect = button.getBoundingClientRect()
+  const width = agentSwitchMenu.value?.offsetWidth || 220, height = agentSwitchMenu.value?.offsetHeight || 0
+  const x = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))
+  const y = Math.max(8, Math.min(window.innerHeight - rect.top + 6, window.innerHeight - height - 8))
+  if (x !== agentView.menuX) agentView.menuX = x
+  if (y !== agentView.menuY) agentView.menuY = y
+  agentMenuFrame = requestAnimationFrame(placeAgentMenu)
 }
 function agentMenuKeydown(event) {
   if (event.key !== 'Escape') return
   event.stopPropagation()
   closeAgentMenu()
+  agentSwitchButton.value?.focus({ preventScroll: true })
 }
 function closeAgentMenu() {
   agentView.menuOpen = false
+  if (agentMenuFrame) cancelAnimationFrame(agentMenuFrame)
+  agentMenuFrame = 0
   document.removeEventListener('keydown', agentMenuKeydown, true)
 }
 function observeAgent(taskId = '') {
@@ -5464,22 +5493,11 @@ function createMobileSession() {
               <ToolObservation @height="measureObservationRow(activityPinnedAnchor)" :render-text="renderLine" v-if="pinnedActivityLine" variant="pinned" :line="pinnedActivityLine" :terminal-revision="terminalOutputRevisions.get(pinnedActivityLine?.observation?.session_id || pinnedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="viewTerminalOwnerId" :images="observationImages(activityPinnedLine)" :paused="activityPaused" />
             </Teleport>
             <ToolObservation v-if="compactionObservation" class="compaction-observation" variant="main" :line="compactionObservation" :owner-session-id="state.session?.sessionId" :paused="activityPaused" />
-            <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">
+            <!-- One persistent status row: the run state on the left changes while streaming, the agent switch on the right stays mounted. -->
+            <div v-if="showTranscriptLoading || showFinishedClock || showAgentSwitch" class="message-loading" role="status" :aria-live="showTranscriptLoading ? 'polite' : undefined">
               <div class="message-loading-body">
-                <ElapsedClock :elapsed-ms="transcriptElapsedMs" :completed="state.coreQueryTiming?.outcome === 'completed'" />
-                <template v-if="showAgentSwitch">
-                  <span class="execution-signal-divider" aria-hidden="true"></span>
-                  <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
-                </template>
-              </div>
-            </div>
-            <div v-else-if="showAgentSwitch && !showTranscriptLoading" class="message-loading" role="status">
-              <div class="message-loading-body">
-                <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
-              </div>
-            </div>
-            <div v-if="showTranscriptLoading" class="message-loading" role="status" aria-live="polite">
-              <div class="message-loading-body">
+                <ElapsedClock v-if="!showTranscriptLoading && showFinishedClock" :elapsed-ms="transcriptElapsedMs" :completed="state.coreQueryTiming?.outcome === 'completed'" />
+                <template v-if="showTranscriptLoading">
                 <ElapsedClock :elapsed-ms="transcriptElapsedMs" :show-zero="true" />
                 <span v-if="transcriptElapsedMs !== undefined" class="execution-signal-divider" aria-hidden="true"></span>
                 <button v-if="retrySeconds !== undefined" class="execution-retry" type="button" :disabled="composerActionPending || adminViewing || !!state.observing" :aria-label="`取消自动重试（${retrySeconds} 秒）`" :data-tooltip="`${retrySeconds} 秒后自动重试，点击取消`" @click="toggleRunPause()">
@@ -5490,10 +5508,9 @@ function createMobileSession() {
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 4 10 6-10 6Z" /></svg>
                 </button>
                 <ExecutionSignal v-else :mode="transcriptSignal.mode" :tools="transcriptSignal.tools" :wait-started-at="state.status?.responseWaitStartedAt" :session-key="agentViewKey" :paused="!state.connected || transcriptSignal.mode === 'paused'" :label="transcriptLoadingLabel" />
-                <template v-if="showAgentSwitch">
-                  <span class="execution-signal-divider" aria-hidden="true"></span>
-                  <button type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="2.6" /><path d="M2.8 16c.4-2.6 2-4 4.2-4s3.8 1.4 4.2 4" /><circle cx="14.2" cy="8.2" r="2" /><path d="M13 12.2c.4-.1.8-.2 1.2-.2 1.7 0 3 1.1 3.3 3.2" /></svg></button>
                 </template>
+                <span v-if="showAgentSwitch && (showTranscriptLoading || showFinishedClock)" class="execution-signal-divider" aria-hidden="true"></span>
+                <button v-if="showAgentSwitch" ref="agentSwitchButton" type="button" :class="['agent-switch-button', { observing: !!state.observing, open: agentView.menuOpen }]" aria-haspopup="menu" :aria-expanded="agentView.menuOpen" :aria-label="agentSwitchLabel" :data-tooltip="agentSwitchLabel" @click.stop="toggleAgentMenu"><AgentTreeIcon :active="state.observing ? 'sub' : 'main'" /></button>
               </div>
               <!-- 彩色旋转方块暂时停用，保留模板和样式以便恢复。
               <span class="message-loading-emblem" aria-hidden="true">
@@ -5618,9 +5635,9 @@ function createMobileSession() {
           <Teleport to="body">
             <div v-if="agentView.menuOpen" class="agent-switch-backdrop" @pointerdown="closeAgentMenu"></div>
             <Transition name="agent-switch-menu">
-              <div v-if="agentView.menuOpen" class="agent-switch-menu" role="menu" aria-label="切换观察代理" :style="{ left: `${agentView.menuX}px`, bottom: `${agentView.menuY}px` }">
-                <button type="button" role="menuitemradio" :aria-checked="!state.observing" :class="{ current: !state.observing }" @click="observeAgent('')"><span class="agent-switch-dot main" aria-hidden="true"></span><span class="agent-switch-name">主代理</span><span class="agent-switch-meta">{{ state.observing ? '' : '当前' }}</span></button>
-                <button v-for="task in observableAgents" :key="task.taskId" type="button" role="menuitemradio" :aria-checked="state.observing?.taskId === task.taskId" :class="{ current: state.observing?.taskId === task.taskId }" :data-tooltip="task.agentType" @click="observeAgent(task.taskId)"><span :class="['agent-switch-dot', task.status]" aria-hidden="true"></span><span class="agent-switch-name">{{ agentDisplayName(task) }}</span><span class="agent-switch-meta">{{ AGENT_STATUS_LABELS[task.status] || task.status }}</span></button>
+              <div v-if="agentView.menuOpen" ref="agentSwitchMenu" class="session-context-menu agent-switch-menu" role="menu" aria-label="切换观察代理" :style="{ left: `${agentView.menuX}px`, bottom: `${agentView.menuY}px` }">
+                <button type="button" role="menuitemradio" :aria-checked="!state.observing" :class="{ current: !state.observing }" @click="observeAgent('')"><AgentTreeIcon active="main" /><span class="agent-switch-name">主代理</span></button>
+                <button v-for="task in agentMenuItems" :key="task.taskId" type="button" role="menuitemradio" :aria-checked="state.observing?.taskId === task.taskId" :class="{ current: state.observing?.taskId === task.taskId }" @click="observeAgent(task.taskId)"><TaskStatusIcon :status="task.status" /><span class="agent-switch-name">{{ agentDisplayName(task) }}</span></button>
               </div>
             </Transition>
           </Teleport>

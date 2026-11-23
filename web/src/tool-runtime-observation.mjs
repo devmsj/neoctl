@@ -37,7 +37,7 @@ export function runtimeActivitySignal(line,tasks=[]) {
   if(['subagent_run','subagent_get','subagent_output','subagent_resume'].includes(line.toolName)) {
     const id=r.task_id||r.taskId||p.task_id,generation=r.run_generation??r.runGeneration
     const task=tasks.find(t=>t.taskId===id&&t.runGeneration===generation)
-    if(task)return [task.status,task.progress?.visibleText?.text,task.result?.content]
+    if(task)return [task.status,task.progress?.visibleText?.text,task.result?.content,task.reports?.length??0]
   }
   return []
 }

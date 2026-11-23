@@ -51,7 +51,7 @@ const specs: Readonly<Record<string, { category: FieldCategory; object: string; 
   file_edit: { category: 'file-change', object: 'path', required: ['path', 'oldString', 'newString'], optional: ['replaceAll'] },
   file_search: { category: 'file-search', object: 'query', required: ['query'], optional: ['path', 'glob', 'caseMode', 'fixedStrings', 'includeHidden', 'contextLines', 'maxResults', 'maxColumns'] },
   web_search: { category: 'web-search', object: 'query', required: ['query'], optional: ['provider', 'numResults', 'includeDomains', 'excludeDomains', 'startPublishedDate', 'endPublishedDate'] },
-  subagent_run: { category: 'subagent', object: 'task_id', required: ['prompt'], optional: ['description', 'subagent_type', 'model', 'run_in_background', 'name', 'team_name', 'mode', 'isolation', 'cwd', 'parallel'] },
+  subagent_run: { category: 'subagent', object: 'task_id', required: ['prompt'], optional: ['description', 'model', 'disallowed_tools', 'run_in_background', 'name', 'mode', 'cwd', 'parallel'] },
   subagent_get: { category: 'subagent', object: 'task_id', required: ['task_id'], optional: ['detail'] },
   subagent_output: { category: 'subagent', object: 'task_id', required: ['task_id'], optional: ['block', 'timeout_ms'] },
   subagent_stop: { category: 'subagent', object: 'task_id', required: ['task_id'], optional: [] },

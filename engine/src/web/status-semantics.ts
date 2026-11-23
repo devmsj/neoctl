@@ -20,10 +20,11 @@ export function callStatus(line: any) {
 export function subagentHeader(output: unknown): Record<string, any> {
   if (output && typeof output === 'object' && !Array.isArray(output)) return output as Record<string, any>;
   if (typeof output !== 'string') return {};
-  const match = /^\s*<retrieval_status>([^<>]*)<\/retrieval_status>\s*<task_id>([^<>]*)<\/task_id>\s*<task_type>([^<>]*)<\/task_type>\s*<status>([^<>]*)<\/status>\s*<run_generation>([^<>]*)<\/run_generation>\s*<pending_messages>([^<>]*)<\/pending_messages>\s*<requires_resume>(true|false)<\/requires_resume>\s*<agent_id>([^<>]*)<\/agent_id>\s*<output>/.exec(output);
+  // task_type/pending_messages/requires_resume are optional: older outputs always carried them, current ones only when meaningful.
+  const match = /^\s*<retrieval_status>([^<>]*)<\/retrieval_status>\s*<task_id>([^<>]*)<\/task_id>\s*(?:<task_type>([^<>]*)<\/task_type>\s*)?<status>([^<>]*)<\/status>\s*<run_generation>([^<>]*)<\/run_generation>\s*(?:<pending_messages>([^<>]*)<\/pending_messages>\s*)?(?:<requires_resume>(true|false)<\/requires_resume>\s*)?<agent_id>([^<>]*)<\/agent_id>\s*<output>/.exec(output);
   if (!match) return {};
   const keys = ['retrieval_status', 'task_id', 'task_type', 'status', 'run_generation', 'pending_messages', 'requires_resume', 'agent_id'];
-  const data: Record<string, any> = Object.fromEntries(keys.map((key, i) => [key, match[i + 1]]));
+  const data: Record<string, any> = Object.fromEntries(keys.map((key, i) => [key, match[i + 1]]).filter(([, value]) => value !== undefined));
   data.requires_resume = data.requires_resume === 'true';
   return data;
 }

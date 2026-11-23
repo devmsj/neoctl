@@ -71,45 +71,9 @@ export const GENERAL_PURPOSE_AGENT: AgentDefinition = {
   ].join("\n"),
 };
 
-export const EXPLORE_AGENT: AgentDefinition = {
-  agentType: "explore",
-  whenToUse: "Fast read-only codebase exploration: locate files, trace symbols, summarize architecture, and report findings without modifying anything.",
-  // Read-only by explicit restriction only: every other parent tool (e.g. image_inspect) stays available.
-  tools: ["*"],
-  disallowedTools: ["file_edit", "file_write"],
-  permissionMode: "readonly",
-  requiresReport: true,
-  reportRetryTurns: 1,
-  buildSystemPrompt: () => [
-    "You are a read-only codebase exploration subagent.",
-    "Use read-only tools to inspect the assigned scope; do not edit files or spawn agents.",
-    "End with subagent_report status='completed' or status='incomplete'.",
-    "Report files inspected, findings with file-path evidence, risks/unknowns, and next steps.",
-  ].join("\n"),
-};
-
-export interface AgentCatalog {
-  resolve(agentType?: string): AgentDefinition;
-  list(): AgentDefinition[];
-}
-
-export class StaticAgentCatalog implements AgentCatalog {
-  private readonly definitions = new Map<string, AgentDefinition>();
-
-  constructor(definitions: readonly AgentDefinition[] = [GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]) {
-    for (const definition of definitions) this.definitions.set(definition.agentType, definition);
-  }
-
-  resolve(agentType?: string): AgentDefinition {
-    if (!agentType) return this.definitions.get(GENERAL_PURPOSE_AGENT.agentType) ?? GENERAL_PURPOSE_AGENT;
-    const definition = this.definitions.get(agentType);
-    if (!definition) throw new Error(`Unknown agent type: ${agentType}`);
-    return definition;
-  }
-
-  list(): AgentDefinition[] {
-    return [...this.definitions.values()].sort((left, right) => left.agentType.localeCompare(right.agentType));
-  }
+/** Agent kind for a task: one worker kind, plus fork (same worker, inherits the parent conversation). */
+export function agentForTask(agentType: string | undefined, worker: AgentDefinition = GENERAL_PURPOSE_AGENT): AgentDefinition {
+  return agentType === FORK_AGENT.agentType ? FORK_AGENT : worker;
 }
 
 export function isForkChildContext(context: ToolUseContext): boolean {

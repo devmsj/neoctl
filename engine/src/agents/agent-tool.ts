@@ -7,15 +7,11 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { finalizeAgentTool, runAgent, type RunAgentDependencies } from "../core/run-agent.js";
 import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type AgentToolResult, type LocalAgentTask } from "./local-agent-task.js";
 import {
-  EXPLORE_AGENT,
   FORK_AGENT,
   GENERAL_PURPOSE_AGENT,
-  StaticAgentCatalog,
+  agentForTask,
   isForkChildContext,
-  type AgentCatalog,
   type AgentDefinition,
-  type AgentIsolation,
-  type AgentPermissionMode,
 } from "./agent-definition.js";
 import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
 import { globalAgentActivityStore, type AgentActivityStore } from "./agent-activity.js";
@@ -25,35 +21,25 @@ import { AGENT_REPORT_TOOL_NAME } from "./agent-report-tool.js";
 export const AGENT_TOOL_NAME = "subagent_run";
 
 export const AGENT_TOOL_PROMPT_RULES = [
-  "Fresh agents do not inherit conversation context; prompts must include goal, relevant files, constraints, and expected output.",
-  "Fork agents inherit parent context and should receive a scoped directive, not a full background briefing.",
-  "Background agents return an output file and task notification; do not fabricate results before the task completes.",
-  "Use mode=explore for read-only codebase reconnaissance: file discovery, symbol tracing, architecture summaries, and implementation planning. Explore agents can inspect with terminal_run but cannot use file_edit/file_write or spawn subagents.",
-  "To run multiple subagents truly in parallel in one model turn: set parallel=true (sync but concurrent), or run_in_background/mode=background (fire-and-forget with task_id). Without those, subagents run one after another and wall time stacks.",
-  "Subagents are bounded by max turns (see agent definitions / AGENT_SUBAGENT_MAX_TURNS) and optional wall time (AGENT_SUBAGENT_WALL_TIMEOUT_MS) so they cannot run indefinitely.",
-  "Launch independent agents in the same model turn when parallel work is useful.",
-  "Subagents cannot communicate directly with sibling agents, even when given their names or IDs. Never ask a worker to contact, message, query, or coordinate directly with another worker; the main agent must relay all cross-agent questions, decisions, and interface changes.",
-  "Every delegation must specify the goal, owned files/modules, allowed edits and explicit exclusions, required inputs and interface contracts, dependencies, expected deliverables, and acceptance checks. Use disjoint write scopes; reserve shared-file changes and integration decisions to a named owner or the main agent.",
-  "Settle cross-agent interface contracts before parallel implementation. If a dependency is unresolved, assign independent work or have the worker report the blocker to the main agent; do not tell workers to negotiate with each other.",
-  "Workers report progress or coordination needs through subagent_report status='draft'; this does not pause execution. For blocking ambiguity, require status='incomplete' with a precise question and completed/untouched scope, then explicitly resume after deciding. Relay updates through subagent_message; queued or delivered is not proof of implementation.",
-  "Following background workers: their reports, tool failures and status changes arrive automatically as compact progress notifications between your turns; tool calls are tallied, not streamed. Use subagent_get for what changed since your last check (wait_ms waits for the next change) instead of re-reading output. Subagents have your tools; pass disallowed_tools only to restrict them.",
-  "Avoid vague delegation; give each worker a concrete scope and say whether edits are allowed.",
+  "Fresh agents do not inherit conversation context; the prompt must state goal, relevant files, constraints, allowed edits and expected output. mode=fork inherits your conversation, so give it a scoped directive only.",
+  "Tools: a subagent has your tools; block the ones it must not use with disallowed_tools (e.g. [\"file_edit\",\"file_write\"] for read-only work). Unknown names are rejected. subagent_report is always available; subagent_run/subagent_resume never are.",
+  "Concurrency: parallel=true runs several sync calls of one turn concurrently; run_in_background (or mode=background) returns a task_id immediately. Otherwise calls run one after another. Each run has a wall-clock limit (AGENT_SUBAGENT_WALL_TIMEOUT_MS, default 10 min).",
+  "Subagents cannot reach sibling agents; you relay every cross-agent question, decision and interface change. Give workers disjoint write scopes and settle shared contracts first.",
+  "Workers report through subagent_report: draft for progress (does not pause), incomplete for a blocking question (ends the run; decide, then subagent_resume). Send additions with subagent_message; queued or delivered is not proof of implementation.",
+  "Background workers' reports, tool failures and completions are added to your context as task notifications before your next model request (including ones that arrived while you were idle); you are not woken for them. Use subagent_get for a worker's current state and what changed since your last check (wait_ms waits for the next change); never fabricate results before completion.",
 ].join("\n");
 
 export interface AgentToolInput {
   prompt: string;
   description?: string;
-  subagent_type?: string;
   model?: string;
-  /** Explicit restriction; by default a subagent has the same tools as the main agent. */
+  /** The main agent's only tool control: block these. By default a subagent has the main agent's tools. */
   disallowed_tools?: string[];
   run_in_background?: boolean;
   /** When true with sync mode, allow concurrent execution with other parallel-safe agent calls in the same turn (multiple model streams). */
   parallel?: boolean;
   name?: string;
-  team_name?: string;
-  mode?: AgentPermissionMode | "sync" | "background" | "fork" | "explore";
-  isolation?: AgentIsolation;
+  mode?: "sync" | "background" | "fork";
   /** Working directory for this subagent's tools (resolved against parent cwd when relative). */
   cwd?: string;
 }
@@ -68,7 +54,8 @@ export interface AgentToolRuntime {
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   taskStore?: TaskStore;
-  agentCatalog?: AgentCatalog;
+  /** Worker definition override (tests/embedders). There is one worker kind; fork reuses it with parent context. */
+  agent?: AgentDefinition;
   agentActivityStore?: AgentActivityStore;
 }
 
@@ -78,7 +65,6 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
     searchHint: "delegate work to a subagent",
     description: [
       "Delegate a scoped task with a clear goal, file boundaries and acceptance checks. Subagents cannot delegate further; coordinate through the main agent.",
-      "Use parallel=true when issuing multiple agent calls in one turn so they run concurrently; otherwise they execute sequentially.",
       AGENT_TOOL_PROMPT_RULES,
     ].join("\n"),
     inputSchema: {
@@ -86,14 +72,11 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       properties: {
         prompt: { type: "string", description: "Complete task instructions for the child agent." },
         description: { type: "string", description: "Short task label for progress and task lists." },
-        subagent_type: { type: "string", description: "Agent definition to use. Omit for general-purpose or fork mode." },
         model: { type: "string" },
-        disallowed_tools: { type: "array", items: { type: "string" }, description: "Tool names this subagent must not use. By default a subagent has the same tools as the main agent (except subagent scheduling); restrict only by listing names here." },
+        disallowed_tools: { type: "array", items: { type: "string" }, description: "Your tools this subagent must not use. Omit to give it all of your tools." },
         run_in_background: { type: "boolean" },
         name: { type: "string", description: "Optional stable name for later subagent_message routing." },
-        team_name: { type: "string" },
-        mode: { type: "string", description: "Execution/special mode: sync, background, fork, explore, or permission aliases." },
-        isolation: { type: "string", enum: ["shared", "worktree", "remote"] },
+        mode: { type: "string", enum: ["sync", "background", "fork"], description: "sync (default), background, or fork (background, inherits your conversation)." },
         cwd: { type: "string", description: "Working directory for child tools (list/read/exec); resolved against parent cwd if relative." },
         parallel: { type: "boolean", description: "Set true when launching multiple independent agents in the same turn so they run concurrently." },
       },
@@ -103,18 +86,21 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
     outputSchema: {
       type: "object",
       properties: {
-        status: { type: "string", enum: ["completed", "async_launched"] },
-        agent_id: { type: "string" },
+        status: { type: "string", enum: ["completed", "incomplete", "async_launched"] },
+        task_id: { type: "string" },
       },
     },
     metadata: { readOnly: false, concurrent: true, visible: true, requiresApproval: false, searchHint: "delegate subagent work" },
     validate(input: unknown): AgentToolInput {
       const value = input as AgentToolInput;
       if (!value.prompt?.trim()) throw new Error("agent.prompt is required");
+      const blocked = value.disallowed_tools;
+      if (blocked !== undefined && (!Array.isArray(blocked) || blocked.some((name) => typeof name !== "string"))) throw new Error("disallowed_tools must be an array of tool names");
+      if (value.mode !== undefined && !["sync", "background", "fork"].includes(value.mode)) throw new Error("mode must be sync, background or fork");
       return value;
     },
     isConcurrencySafe(input) {
-      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.mode === "explore" || input.parallel === true);
+      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.parallel === true);
     },
     async call(input, context, options) {
       if (!runtime) {
@@ -123,28 +109,14 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       if (context.isSubagent || isForkChildContext(context)) {
         return { ok: false, output: { error: "Subagents cannot delegate additional agents; ask the main agent to coordinate." } };
       }
+      const toolError = checkToolNames(input, context, runtime);
+      if (toolError) return { ok: false, output: { error: toolError } };
 
-      const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
       const fork = input.mode === "fork";
-      const explore = input.mode === "explore";
-      const agent = fork ? FORK_AGENT : catalog.resolve(explore ? EXPLORE_AGENT.agentType : input.subagent_type);
+      const agent = fork ? FORK_AGENT : runtime.agent ?? GENERAL_PURPOSE_AGENT;
       const description = input.description ?? input.prompt.slice(0, 80);
       const background = Boolean(input.run_in_background || input.mode === "background" || fork || agent.background);
       const agentId = makeAgentId(input.name ?? agent.agentType);
-
-      if (input.team_name && input.name) {
-        return {
-          ok: true,
-          output: {
-            status: "async_launched",
-            agent_id: agentId,
-            team_name: input.team_name,
-            name: input.name,
-            description,
-            message: "Teammate routing is represented as a named background agent in this scaffold.",
-          },
-        };
-      }
 
       if (background) {
         return launchAsyncAgent({ input, context, options, runtime, agent, fork, agentId, description });
@@ -182,7 +154,7 @@ async function runSyncAgent(input: {
     if (current?.runGeneration === runGeneration && current.status === "killed") {
       activityStore.fail(input.agentId, current.error ?? "Task stopped", "killed");
     }
-    return { ok: false, output: { status: "cancelled", task_id: task.taskId, agent_id: input.agentId, description: input.description, error: "Task stopped or superseded" } };
+    return { ok: false, output: { status: "cancelled", task_id: task.taskId, agent_id: input.agentId, error: "Task stopped or superseded" } };
   };
   const onParentAbort = () => abortController.abort(input.context.abortSignal?.reason);
   input.context.abortSignal?.addEventListener("abort", onParentAbort, { once: true });
@@ -196,7 +168,7 @@ async function runSyncAgent(input: {
     agentType: input.agent.agentType,
     description: input.description,
     prompt: input.input.prompt,
-    mode: resolveAgentActivityMode(input.input, input.fork, "sync"),
+    mode: resolveAgentActivityMode(input.fork, "sync"),
     cwd: workspaceCwd,
     model: input.input.model,
   });
@@ -266,22 +238,18 @@ async function runSyncAgent(input: {
       taskStore.kill(task.taskId, completed.value.terminalReason, partial, runGeneration);
       if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
       activityStore.fail(input.agentId, completed.value.terminalReason, "killed");
-      return { ok: false, output: { ...partial, status: "cancelled", report_status: partial?.status, error: completed.value.terminalReason, description: input.description, task_id: task.taskId } };
+      return { ok: false, output: agentRunOutput("cancelled", task, partial, completed.value.terminalReason) };
     }
     if (completed.value.status === "failed") {
       taskStore.fail(task.taskId, completed.value.terminalReason, partial, runGeneration);
       if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
       activityStore.fail(input.agentId, completed.value.terminalReason);
-      return { ok: false, output: { ...partial, status: "failed", report_status: partial?.status, error: completed.value.terminalReason, description: input.description, task_id: task.taskId } };
+      return { ok: false, output: agentRunOutput("failed", task, partial, completed.value.terminalReason) };
     }
     taskStore.complete(task.taskId, result, runGeneration);
     if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
     activityStore.complete(input.agentId, result);
-    return {
-      ok: true,
-      output: { status: "completed", description: input.description, ...result, task_id: task.taskId },
-      newMessages: [createTextMessage("progress", `Subagent ${input.agentId} completed: ${input.description}`)],
-    };
+    return { ok: true, output: agentRunOutput(result.status ?? "completed", task, result) };
   } catch (error) {
     if (!ownsRun()) return cancelled();
     const message = error instanceof Error ? error.message : String(error);
@@ -294,10 +262,7 @@ async function runSyncAgent(input: {
     taskStore.fail(task.taskId, message, undefined, runGeneration);
     if (taskStore.get(task.taskId)?.runGeneration !== runGeneration) return cancelled();
     activityStore.fail(input.agentId, message);
-    return {
-      ok: false,
-      output: { status: "failed", task_id: task.taskId, agent_id: input.agentId, error: message, description: input.description },
-    };
+    return { ok: false, output: agentRunOutput("failed", task, undefined, message) };
   } finally {
     input.context.abortSignal?.removeEventListener("abort", onParentAbort);
     wall?.dispose();
@@ -330,11 +295,8 @@ function emitSyncAgentEvent(
   }
   if (event.type === "tool.result.available") {
     emit({ toolName: AGENT_TOOL_NAME, message: childToolPurpose(event.toolUse), channel: "item", operation: "upsert", key: childKey("summary", event.toolUse.id), phase: event.ok ? "tool_completed" : "tool_failed", data: { agent_id: agentId, child_event: event } });
-    return;
   }
-  if (event.type === "state" && event.phase !== "running_tools") {
-    emit({ toolName: AGENT_TOOL_NAME, message: event.detail || event.phase, channel: "state", operation: "replace", key: `${agentId}:agent:state`, phase: event.phase, data: { agent_id: agentId } });
-  }
+  // Child loop states ("model stream opened", "turn N started", ...) are internal: not forwarded.
 }
 
 function childProgressData(data: unknown, agentId: string, childEvent: import("../types/events.js").AgentEvent): unknown {
@@ -386,18 +348,20 @@ function launchAsyncAgent(input: {
     if (current?.runGeneration === runGeneration && !taskStore.isTerminal(current)) taskStore.fail(taskId, error instanceof Error ? error.message : String(error), undefined, runGeneration);
   });
 
+  // The main agent just wrote the prompt: echo only what it needs to follow the task.
+  return { ok: true, output: { status: "async_launched", task_id: taskId, agent_id: input.agentId, run_generation: task.runGeneration } };
+}
+
+/** What the main agent receives from a sync run: the report and the ids to follow up, nothing else.
+ * displaySource/run_generation are kept for the UI's report provenance and generation matching. */
+function agentRunOutput(status: string, task: LocalAgentTask, result?: AgentToolResult, error?: string): Record<string, unknown> {
   return {
-    ok: true,
-    output: {
-      status: "async_launched",
-      agent_id: input.agentId,
-      task_id: taskId,
-      run_generation: task.runGeneration,
-      description: input.description,
-      prompt: input.input.prompt,
-      output_file: task.outputFile,
-      can_read_output_file: true,
-    },
+    status,
+    task_id: task.taskId,
+    agent_id: task.agentId,
+    run_generation: task.runGeneration,
+    ...(result?.content ? { displaySource: result.displaySource, content: result.content } : {}),
+    ...(error ? { error } : {}),
   };
 }
 
@@ -427,7 +391,7 @@ async function runAsyncAgentLifecycle(input: {
   // Pin the launch-time cwd like sync agents; never follow later parent cwd changes.
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context) ?? task?.executionOptions?.cwd;
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
-  const mode = resolveAgentActivityMode(input.input, input.fork, "background");
+  const mode = resolveAgentActivityMode(input.fork, "background");
   activityStore.start({
     agentId: input.agentId,
     taskId: input.taskId,
@@ -569,11 +533,14 @@ export function resumeAgentTask(
   if (task.type !== "agent") return Promise.resolve({ ok: false, error: `Only agent tasks can be resumed` });
   if (task.ownerSessionDir && path.resolve(parentContext.session?.sessionDir ?? "") !== task.ownerSessionDir) return Promise.resolve({ ok: false, error: "Resume the owning main session before resuming this agent." });
 
-  const catalog = runtime.agentCatalog ?? new StaticAgentCatalog([GENERAL_PURPOSE_AGENT, EXPLORE_AGENT]);
-  const agent = catalog.resolve(task.agentType);
+  const agent = agentForTask(task.agentType, runtime.agent);
   const abortController = new AbortController();
 
   if (!taskStore.isTerminal(task)) return Promise.resolve({ ok: false, error: "Only terminal agent tasks can be resumed" });
+  // Tasks persisted by the former read-only "explore" kind keep their restriction as explicit blocking.
+  if (task.agentType === "explore" && !task.executionOptions?.disallowedTools) {
+    task.executionOptions = { ...task.executionOptions, disallowedTools: ["file_edit", "file_write"] };
+  }
   taskStore.prepareResume(taskId, abortController);
   const runGeneration = task.runGeneration;
 
@@ -618,6 +585,13 @@ function normalizeToolNames(value: unknown): string[] | undefined {
   return names.length ? names : undefined;
 }
 
+/** Blocking is the main agent's tool control: reject unknown names instead of silently blocking nothing. */
+function checkToolNames(input: AgentToolInput, context: ToolUseContext, runtime: AgentToolRuntime): string | undefined {
+  const known = (name: string) => Boolean(context.tools?.get(name) ?? runtime.tools.get(name));
+  const unknown = (normalizeToolNames(input.disallowed_tools) ?? []).filter((name) => !known(name));
+  return unknown.length ? `Unknown tool name(s) in disallowed_tools: ${unknown.join(", ")}. Use names from your own tool list.` : undefined;
+}
+
 function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string, gateway?: ModelGateway): RunAgentDependencies {
   return {
     modelGateway: gateway ?? runtime.modelGateway,
@@ -629,10 +603,8 @@ function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string
   };
 }
 
-function resolveAgentActivityMode(input: AgentToolInput, fork: boolean, fallback: "sync" | "background") {
-  if (input.mode === "explore" || input.subagent_type === EXPLORE_AGENT.agentType) return "explore";
-  if (fork) return "fork";
-  return fallback;
+function resolveAgentActivityMode(fork: boolean, fallback: "sync" | "background") {
+  return fork ? "fork" : fallback;
 }
 
 function makeAgentId(prefix: string): string {

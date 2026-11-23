@@ -79,14 +79,17 @@ export interface TaskNotificationPayload {
   status: string;
   type?: string;
   content: string;
+  /** Final report completeness ("completed" | "incomplete"); a completed task can carry an incomplete report. */
+  reportStatus?: string;
 }
 
 export function createTaskNotificationMessage(payload: TaskNotificationPayload): Message {
   const typeAttribute = payload.type ? ` type="${payload.type}"` : "";
+  const reportAttribute = payload.reportStatus ? ` report_status="${payload.reportStatus}"` : "";
   return {
     ...createTextMessage(
       "user",
-      `<task-notification task_id="${payload.taskId}" agent_id="${payload.agentId}" status="${payload.status}"${typeAttribute}>\n${payload.content}\n</task-notification>`,
+      `<task-notification task_id="${payload.taskId}" agent_id="${payload.agentId}" status="${payload.status}"${typeAttribute}${reportAttribute}>\n${payload.content}\n</task-notification>`,
     ),
     isMeta: true,
     metadata: {
@@ -96,6 +99,7 @@ export function createTaskNotificationMessage(payload: TaskNotificationPayload):
         agentId: payload.agentId,
         status: payload.status,
         type: payload.type,
+        ...(payload.reportStatus ? { reportStatus: payload.reportStatus } : {}),
       },
     },
   };

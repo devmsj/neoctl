@@ -133,7 +133,7 @@ export interface QueryDependencies {
 }
 
 export interface TaskNotificationSource {
-  collectUnnotifiedCompletions(sessionDir?: string): { taskId: string; agentId: string; status: string; type: string; content: string }[];
+  collectUnnotifiedCompletions(sessionDir?: string): { taskId: string; agentId: string; status: string; type: string; content: string; reportStatus?: string }[];
   markNotified(taskId: string): void;
   /** Semantic progress of running subagents since the main agent last saw it (consumed on collection). */
   collectProgressUpdates?(sessionDir?: string): { taskId: string; agentId: string; content: string }[];
@@ -357,12 +357,8 @@ async function* queryLoop(
       if (toolResult.terminal) return toolResult.terminal;
       toolContext = toolResult.context;
 
-      const taskNotifications = collectTaskNotifications(dependencies.taskNotificationSource, dependencies.session?.sessionDir);
-      for (const notification of taskNotifications) {
-        yield { type: "message", message: notification };
-      }
-
-      const allToolResults = [...toolResult.messages, ...taskNotifications];
+      // Subagent notifications are injected right before the next model request (callModelForTurn).
+      const allToolResults = toolResult.messages;
       state = buildNextTurnState(state, {
         assistantMessages,
         toolResults: allToolResults,
@@ -536,9 +532,12 @@ async function* callModelForTurn(
       state.messages = [...state.messages, ...pending];
       if (state.modelInputMessages) state.modelInputMessages = [...state.modelInputMessages, ...pending];
     }
+    // Subagent notifications (completions and new reports/failures) that arrived since the last request,
+    // including while the main agent was idle. Never a wake-up: they ride on the next request of a run.
+    const notifications = collectTaskNotifications(dependencies.taskNotificationSource, dependencies.session?.sessionDir);
     // Persist before sending: later requests must replay these exact values in
     // the same positions, including across tool rounds, pause and session reload.
-    const runtimeMessages = [...contextUpdates, createRuntimeTimeMessage(dependencies.runtimeNow?.())];
+    const runtimeMessages = [...contextUpdates, ...notifications, createRuntimeTimeMessage(dependencies.runtimeNow?.())];
     for (const message of runtimeMessages) {
       modelMessages.push(message);
       state.messages = [...state.messages, message];
@@ -1169,6 +1168,7 @@ function collectTaskNotifications(source?: TaskNotificationSource, sessionDir?: 
       status: task.status,
       type: task.type,
       content: task.content,
+      reportStatus: task.reportStatus,
     });
   });
   // Milestones/failures of still-running subagents: compact deltas, each delivered once.

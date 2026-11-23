@@ -75,7 +75,14 @@ export function agentObservation(line,tasks=[]) {
   const generation=line.observation?.run_generation??line.observation?.runGeneration
   // Never replace an old invocation with the output of a later resumed run.
   if(!Number.isSafeInteger(Number(generation))||Number(generation)!==task.runGeneration)return line
-  if(task.result?.availability!=='unavailable'&&typeof task.result?.content==='string')return {...line,observation:{...line.observation,displaySource:'agent_report',content:task.result.content}}
+  const result=task.result?.availability!=='unavailable'&&typeof task.result?.content==='string'?task.result.content:undefined
+  // What the subagent reported to the main agent (subagent_report), in order; the final result closes it.
+  const reports=(Array.isArray(task.reports)?task.reports:[]).map(r=>typeof r?.report==='string'?r.report.trim():'').filter(Boolean)
+  if(reports.length){
+    if(result&&result.trim()!==reports.at(-1))reports.push(result.trim())
+    return {...line,observation:{...line.observation,displaySource:'agent_report',content:reports.join('\n\n')}}
+  }
+  if(result!==undefined)return {...line,observation:{...line.observation,displaySource:'agent_report',content:result}}
   const visible=task.progress?.visibleText
   if(visible?.channel==='visible'&&visible.redactionVersion===1&&visible.runGeneration===task.runGeneration&&typeof visible.text==='string')return {...line,observation:{...line.observation,displaySource:'visible_text',content:visible.text}}
   return line

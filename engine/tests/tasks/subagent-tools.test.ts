@@ -26,15 +26,18 @@ test('default get/list are bounded and omit full prompt/result/usage; detail rem
     const get = await call(createSubagentGetTool(f.store), { task_id: f.task.id });
     const summary = get.output as Record<string, any>;
     assert.equal(summary.run_generation, 1);
-    assert.equal(summary.result_available, true);
+    assert.equal(summary.result_status, 'completed');
     assert.equal(summary.prompt, undefined);
     assert.equal(summary.result, undefined);
-    assert.ok(JSON.stringify(summary).length < 2500);
+    for (const noise of ['output_file', 'updated_at', 'progress', 'message_delivery', 'previous_runs', 'description']) assert.equal(noise in summary, false, noise);
+    assert.ok(JSON.stringify(summary).length < 400);
     const list = await call(createSubagentListTool(f.store), {});
-    assert.ok(JSON.stringify(list.output).length < 2600);
+    assert.ok(JSON.stringify(list.output).length < 300);
     const detail = await call(createSubagentGetTool(f.store), { task_id: f.task.id, detail: true });
     assert.equal((detail.output as any).result.content, f.task.result.content);
     assert.equal((detail.output as any).prompt, f.task.prompt);
+    assert.equal(JSON.stringify(detail.output).includes('USAGE'), false, 'detail carries the report, not usage/stream state');
+    assert.equal(JSON.stringify(detail.output).includes('xxxxxxxxxx'), false);
   } finally { f.cleanup(); }
 });
 
@@ -49,7 +52,7 @@ test('running output never mistakes legacy previous result for current completio
     const output = await call(createSubagentOutputTool(f.store), { task_id: f.task.id });
     assert.match(String(output.output), /<retrieval_status>not_ready/);
     assert.match(String(output.output), /<run_generation>2/);
-    assert.match(String(output.output), /current &lt;progress&gt;/);
+    assert.doesNotMatch(String(output.output), /current &lt;progress&gt;|<task_type>|<pending_messages>|<requires_resume>/, 'internal state and default tags are not sent');
     assert.doesNotMatch(String(output.output), /RAW_STREAM_TAIL/);
     assert.doesNotMatch(String(output.output), /OLD_COMPLETION/);
     const detail = await call(createSubagentGetTool(f.store), { task_id: f.task.id, detail: true });
@@ -67,20 +70,17 @@ test('pending tasks are queued, terminal tasks explicitly require resume, never 
       const output = result.output as any;
       const terminal = ['completed', 'failed', 'killed'].includes(status);
       assert.equal(output.status, terminal ? 'queued_for_resume' : 'queued');
-      assert.equal(output.requires_resume, terminal);
-      assert.equal(output.delivery_status, 'queued');
+      assert.equal(output.requires_resume ?? false, terminal);
       assert.equal(typeof output.message_id, 'string');
-      assert.ok(output.queued_at);
-      assert.match(output.note, /not proof of implementation/);
+      assert.equal('note' in output || 'queued_at' in output, false, 'the tool description carries the meaning; results do not repeat it');
     }
     assert.equal(f.task.pendingMessages.length, 5);
     f.task.status = 'running';
     f.store.deliverPendingMessages(f.task.id, f.task.runGeneration);
     const summary = (await call(createSubagentGetTool(f.store), { task_id: f.task.id })).output as any;
-    assert.equal(summary.message_delivery.queued, 0);
-    assert.equal(summary.message_delivery.delivered_this_run_retained, 5);
-    assert.equal(summary.message_delivery.recent.length, 5);
-    assert.equal(summary.message_delivery.recent[0].status, 'delivered');
+    assert.equal(summary.pending_messages, undefined);
+    assert.equal(summary.messages.length, 5);
+    assert.ok(summary.messages.every((message: any) => message.status === 'delivered'));
     assert.equal(JSON.stringify(summary).includes('extra requirement'), false);
   } finally { f.cleanup(); }
 });

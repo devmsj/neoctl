@@ -9,7 +9,7 @@ import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
 import { createTextMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
-import { buildForkChildPrompt, buildSubagentSystemPrompt, EXPLORE_AGENT, FORK_AGENT } from "../agents/agent-definition.js";
+import { buildForkChildPrompt, buildSubagentSystemPrompt, FORK_AGENT } from "../agents/agent-definition.js";
 import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { SessionStore } from "../session/session-store.js";
@@ -58,7 +58,7 @@ export interface RunAgentOptions {
   onInitialMessages?: (messages: Message[]) => void;
   /** Resolved absolute cwd for file/exec tools in this subagent session. */
   workspaceCwd?: string;
-  /** Explicit restriction from the main agent; otherwise the child has the parent's tools. */
+  /** Tools the main agent blocked; otherwise the child has the parent's tools. */
   disallowedTools?: readonly string[];
 }
 
@@ -210,7 +210,8 @@ function isFailedAgentTerminal(reason?: string): boolean {
 /**
  * The child gets the parent's tools: same registrations and enablement. Context-dependent availability
  * (e.g. image input for the child's model) is decided per child turn, never pre-filtered without a context.
- * Only explicit restrictions remove tools: the agent definition's and the main agent's disallowed list.
+ * Only explicit restrictions remove tools: the agent definition's lists and the tools the main agent
+ * blocked (disallowedTools). subagent_report is always added.
  */
 export function resolveAgentTools(parentTools: ToolRegistry, agent: AgentDefinition, disallowedTools: readonly string[] = []): ToolRegistry {
   const registry = parentTools.clone();
@@ -238,9 +239,6 @@ export function finalizeAgentTool(input: {
   const latestDraft = report ? undefined : extractLatestAgentReport(input.messages, input.agent?.reportToolName);
   const content = report?.report ?? latestDraft?.report ?? extractFinalText(input.messages);
   const totalToolUseCount = input.totalToolUseCount ?? countToolUses(input.messages);
-  const validationError = !report && input.agentType === EXPLORE_AGENT.agentType
-    ? validateExploreFinalText(content, totalToolUseCount)
-    : undefined;
   const requiresReport = input.agent?.requiresReport === true;
   const missingRequiredReport = requiresReport && !report;
 
@@ -248,11 +246,7 @@ export function finalizeAgentTool(input: {
     agent_id: input.agentId,
     agent_type: input.agentType,
     displaySource: report || latestDraft ? "agent_report" : content ? "visible_text" : undefined,
-    content: missingRequiredReport
-      ? formatMissingRequiredReportResult(content)
-      : validationError
-        ? formatIncompleteExploreResult(validationError, content)
-        : content,
+    content: missingRequiredReport ? formatMissingRequiredReportResult(content) : content,
     status: missingRequiredReport || (!report && input.messages.some(message => message.metadata?.streamedPartial === true)) ? "incomplete" : report?.status === "completed" || report?.status === "incomplete" ? report.status : undefined,
     total_duration_ms: input.durationMs,
     total_tokens: input.usage?.totalTokens,
@@ -262,7 +256,7 @@ export function finalizeAgentTool(input: {
 }
 
 function shouldAppendAgentPrompt(agent: AgentDefinition): boolean {
-  return agent.agentType === FORK_AGENT.agentType || agent.agentType === EXPLORE_AGENT.agentType;
+  return agent.agentType === FORK_AGENT.agentType;
 }
 
 function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
@@ -327,14 +321,14 @@ function buildReportRequiredReminder(): string {
   return [
     "REQUIRED FINALIZATION:",
     "",
-    "You reached the end of your subagent run without submitting a final agent_report.",
-    "Only agent_report content is visible to the parent as your report.",
-    "You must now call agent_report with status='completed' or status='incomplete'.",
+    `You reached the end of your subagent run without submitting a final ${AGENT_REPORT_TOOL_NAME}.`,
+    `Only ${AGENT_REPORT_TOOL_NAME} content is visible to the parent as your report.`,
+    `You must now call ${AGENT_REPORT_TOOL_NAME} with status='completed' or status='incomplete'.`,
     "Do not continue investigating.",
-    "Do not call any other tool unless agent_report is unavailable.",
+    `Do not call any other tool unless ${AGENT_REPORT_TOOL_NAME} is unavailable.`,
     "Do not respond with normal assistant text.",
     "",
-    "If your work is incomplete, blocked, or you would otherwise ask the parent a question, call agent_report with status='incomplete' and explain exactly what is blocking completion plus what was and was not done.",
+    `If your work is incomplete, blocked, or you would otherwise ask the parent a question, call ${AGENT_REPORT_TOOL_NAME} with status='incomplete' and explain exactly what is blocking completion plus what was and was not done.`,
   ].join("\n");
 }
 
@@ -380,73 +374,11 @@ function extractLatestAgentReport(
   return undefined;
 }
 
-function validateExploreFinalText(content: string, toolUseCount: number): string | undefined {
-  const text = content.trim();
-  if (!text) return "Explore agent returned empty content.";
-  if (toolUseCount === 0) return "Explore agent completed without using any read-only inspection tools.";
-  if (isProgressOnlyExploreText(text)) return "Explore agent returned progress-only text instead of a final report.";
-
-  if (countMarkdownSections(text) < 3) {
-    return "Explore agent final report is not structured with enough markdown sections.";
-  }
-  if (!hasListItem(text)) {
-    return "Explore agent final report is missing list-based details.";
-  }
-  if (!hasLikelyFilePath(text)) {
-    return "Explore agent final report is missing file path evidence.";
-  }
-
-  return undefined;
-}
-
-function countMarkdownSections(text: string): number {
-  return text.match(/(?:^|\n)#{2,6}\s+\S/g)?.length ?? 0;
-}
-
-function hasListItem(text: string): boolean {
-  return /(?:^|\n)\s*[-*]\s+\S/.test(text);
-}
-
-function hasLikelyFilePath(text: string): boolean {
-  return /(?:^|\n)\s*[-*]\s+(?:[A-Za-z]:)?[^\n:]{0,160}(?:[\\/][^\n:]+|\.[A-Za-z0-9]{1,12})(?::|\s+-|\s+—|\s+–|\s|$)/.test(text);
-}
-
-function isProgressOnlyExploreText(text: string): boolean {
-  const progressPatterns = [
-    /接下来/,
-    /继续(?:读取|探索|检查|补齐)/,
-    /我(?:会|将)继续/,
-    /先补齐/,
-    /I\s+will\s+continue/i,
-    /next\s+I\s+will/i,
-    /I\s+have\s+started/i,
-    /continu(?:e|ing)\s+(?:to|with)/i,
-  ];
-  return progressPatterns.some((pattern) => pattern.test(text));
-}
-
-function formatIncompleteExploreResult(error: string, content: string): string {
-  const lastOutput = content.trim() || "<empty>";
-  return [
-    `INCOMPLETE: ${error}`,
-    "",
-    "Last assistant output:",
-    lastOutput,
-  ].join("\n");
-}
-
 function formatMissingRequiredReportResult(content: string): string {
-  const lastOutput = content.trim() || "<empty>";
   return [
-    "INCOMPLETE: Subagent ended without a final subagent_report.",
+    "INCOMPLETE: Subagent ended without a final subagent_report, even after the finalization turn. Treat the output below as partial.",
     "",
-    "## Protocol diagnostic",
-    "- This agent is configured with requiresReport=true.",
-    "- No final agent_report tool result was submitted, even after the runtime finalization turn.",
-    "- The parent should treat this as an incomplete partial report, not a completed result.",
-    "",
-    "## Partial output",
-    lastOutput,
+    content.trim() || "<empty>",
   ].join("\n");
 }
 

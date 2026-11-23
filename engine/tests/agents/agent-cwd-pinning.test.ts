@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentTool, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
 import { AgentActivityStore } from "../../src/agents/agent-activity.js";
-import { GENERAL_PURPOSE_AGENT, StaticAgentCatalog } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { TaskStore } from "../../src/tasks/task-store.js";
 import { InMemoryAppState } from "../../src/app/app-state.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
@@ -37,7 +37,7 @@ for (const background of [false, true]) test(`${background ? "async" : "sync"} s
       yield { type: "response_completed", stopReason: "completed" };
     } };
     const runtime: AgentToolRuntime = { taskStore: store, modelGateway: gateway, tools: new ToolRegistry(), agentActivityStore: new AgentActivityStore(),
-      agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]),
+      agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: false },
       contextManager: { async build(input) { cwds.push(input.cwd); return { systemPrompt: "test", promptSections: [], userContext: {}, systemContext: { cwd: input.cwd ?? "", platform: process.platform } }; } },
       compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
     };

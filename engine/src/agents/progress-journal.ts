@@ -27,14 +27,13 @@ export interface ProgressDelta {
   milestones: ProgressMilestone[];
   tools: Array<{ name: string; calls: number; failed: number }>;
   failure?: ProgressJournal["lastFailure"];
-  currentAction?: string;
   totalToolCalls: number;
   /** Something the main agent should know about (new milestone, failure or status change). */
   semantic: boolean;
   changed: boolean;
 }
 
-interface JournalHost { progress: { journal?: ProgressJournal; currentAction?: string; totalToolUseCount: number } }
+interface JournalHost { progress: { journal?: ProgressJournal; totalToolUseCount: number } }
 interface CursorHost extends JournalHost { status: string; runGeneration: number; parentCursor?: ParentCursor }
 
 /** Milestones are authored, rare and small; keep a generous entry history (never a character cut). */
@@ -94,7 +93,7 @@ export function progressDelta(host: CursorHost): ProgressDelta {
   const failure = journal.lastFailure && journal.lastFailure.seq > cursor.seq ? journal.lastFailure : undefined;
   const statusChanged = cursor.status !== undefined && cursor.status !== host.status;
   const semantic = milestones.length > 0 || !!failure || statusChanged;
-  return { status: host.status, statusChanged, milestones, tools, failure, currentAction: host.progress.currentAction,
+  return { status: host.status, statusChanged, milestones, tools, failure,
     totalToolCalls: host.progress.totalToolUseCount, semantic, changed: semantic || tools.length > 0 };
 }
 
@@ -105,15 +104,15 @@ export function advanceParentCursor(host: CursorHost): void {
     tools: Object.fromEntries(Object.entries(journal.tools).map(([name, tally]) => [name, { ...tally }])) };
 }
 
-/** Compact, line-oriented text for the main agent's context. */
+/** Compact, line-oriented text for the main agent's context. Runtime loop states (model calls,
+ * turn boundaries) are internal and never included. */
 export function formatProgressDelta(delta: ProgressDelta): string {
-  if (!delta.changed) return `No change since your last check (status: ${delta.status}${delta.currentAction ? `; current: ${delta.currentAction}` : ""}).`;
+  if (!delta.changed) return `No change since your last check (status: ${delta.status}).`;
   const lines = [`status: ${delta.status}${delta.statusChanged ? " (changed)" : ""}`];
   for (const milestone of delta.milestones) lines.push(`report (${milestone.status}): ${milestone.report}`);
   if (delta.tools.length) {
     lines.push(`tools since last check: ${delta.tools.map(tool => `${tool.name}×${tool.calls}${tool.failed ? ` (${tool.failed} failed)` : ""}`).join(", ")} — ${delta.totalToolCalls} total`);
   }
   if (delta.failure) lines.push(`latest failure: ${delta.failure.tool}${delta.failure.purpose ? ` — ${delta.failure.purpose}` : ""}`);
-  if (delta.currentAction && delta.status === "running") lines.push(`current: ${delta.currentAction}`);
   return lines.join("\n");
 }

@@ -26,6 +26,8 @@ export interface AgentProgressSnapshot {
   /** Bounded live delta preview only; transcript is authoritative for full text. */
   visibleText?: { channel: "visible"; runGeneration: number; text: string; truncated: boolean; redactionVersion?: 1 };
   currentAction?: string;
+  /** Runtime only (never persisted): tools executing right now, with the purpose the subagent stated. */
+  activeTools?: Record<string, { name: string; purpose?: string }>;
   steps?: AgentProgressStep[];
   /** Semantic progress for the main agent: milestones, tool tallies, latest failure. */
   journal?: ProgressJournal;
@@ -82,7 +84,7 @@ export interface LocalAgentTask {
     maxOutputTokensOverride?: number;
     fastMode?: boolean;
     serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
-    /** Explicit tool restriction from the main agent; absent means the same tools as the main agent. */
+    /** Tools the main agent blocked; absent means the same tools as the main agent. */
     disallowedTools?: string[];
     maxTurns?: number; maxTokens?: number; temperature?: number;
     query?: { maxTurns?: number; maxTokens?: number; temperature?: number };
@@ -238,20 +240,31 @@ export function updateProgressFromEvent(
     task.progress.steps = steps.slice(-24);
     task.progress.currentAction = title;
   };
+  if (event.type === "terminal") task.progress.activeTools = undefined;
   if (event.type === "tool.started") {
     task.progress.totalToolUseCount += 1;
     upsert(event.toolUse.id, event.toolUse.name, "running");
+    const purpose = (event.toolUse.input as { description?: unknown } | undefined)?.description;
+    task.progress.activeTools = { ...task.progress.activeTools,
+      [event.toolUse.id]: { name: event.toolUse.name, ...(typeof purpose === "string" && purpose.trim() ? { purpose: purpose.trim() } : {}) } };
+  } else if (event.type === "tool.finished") {
+    finishActiveTool(task, event.toolUse.id);
   } else if (event.type === "tool.progress") {
     upsert(event.toolUse.id, event.progress.message || event.toolUse.name, "running");
   } else if (event.type === "tool.result.available") {
+    finishActiveTool(task, event.toolUse.id);
     upsert(event.toolUse.id, event.toolUse.name, event.ok ? "completed" : "failed");
     recordToolOutcome(task, event.toolUse.name, event.ok, (event.toolUse.input as { description?: unknown } | undefined)?.description);
-  } else if (event.type === "state" && event.phase !== "running_tools") {
-    task.progress.currentAction = event.detail || event.phase;
   } else if (event.type === "assistant.delta" && safeLegacyDelta) {
     task.progress.lastText = `${task.progress.lastText ?? ""}${safeLegacyDelta}`.slice(-1000);
   }
   task.updatedAt = now;
+}
+
+function finishActiveTool(task: LocalAgentTask, toolUseId: string): void {
+  if (!task.progress.activeTools?.[toolUseId]) return;
+  const { [toolUseId]: _done, ...rest } = task.progress.activeTools;
+  task.progress.activeTools = Object.keys(rest).length ? rest : undefined;
 }
 
 export function writeLocalAgentTaskOutput(task: LocalAgentTask): void {

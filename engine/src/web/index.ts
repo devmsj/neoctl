@@ -890,6 +890,7 @@ export function createTaskNotificationSource(taskStore: TaskStore): TaskNotifica
         status: task.status,
         type: task.type,
         content: task.result?.content ?? task.error ?? "",
+        reportStatus: task.result?.status,
       }));
     },
     markNotified(taskId: string) {
@@ -2366,6 +2367,8 @@ export class WebRepl {
       agentType: task.agentType, type: task.type, status: task.status,
       description: task.description, runGeneration: task.runGeneration ?? 1,
       progress: { visibleText: task.progress.visibleText?.channel === "visible" && task.progress.visibleText.redactionVersion === 1 && task.progress.visibleText.runGeneration === task.runGeneration ? this.runtime.engine.redactDisplayValue(task.progress.visibleText) : undefined, lastActivity: task.progress.lastActivity, currentAction: task.progress.currentAction, totalToolUseCount: task.progress.totalToolUseCount, steps: task.progress.steps?.slice(-8).map((step) => ({ id: step.id, title: step.title, status: step.status })) },
+      // What this run's subagent sent the main agent (subagent_report), in order; the journal resets per generation.
+      reports: (task.progress.journal?.milestones ?? []).map((milestone) => ({ status: milestone.status, report: safeText(milestone.report)!, at: milestone.at })),
       pendingMessageCount: task.pendingMessages.length,
       deliveredRetainedThisRun: task.messageReceipts?.filter((receipt) => receipt.status === "delivered" && receipt.runGeneration === task.runGeneration).length,
       messageReceipts: (task.messageReceipts ?? []).slice(-20).map(({ id, status, queuedAt, deliveredAt, runGeneration }) => ({ id, status, queuedAt, deliveredAt, runGeneration })),
@@ -4630,7 +4633,7 @@ function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
     pushToolFact(facts, "用途", data.reason);
   } else if (toolName === "subagent_run") {
     pushToolFact(facts, "任务", data.description ?? data.prompt);
-    pushToolFact(facts, "类型", data.subagent_type ?? data.mode);
+    pushToolFact(facts, "模式", data.mode);
   }
   return normalizeToolDisplay({ subject, purpose, facts, previews });
 }

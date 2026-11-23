@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { isForkChildContext } from "../agents/agent-definition.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
-import type { LocalAgentTask } from "../agents/local-agent-task.js";
+import { agentRunDurationMs, type LocalAgentTask } from "../agents/local-agent-task.js";
 import { advanceParentCursor, formatProgressDelta, progressDelta } from "../agents/progress-journal.js";
 import { globalTaskStore, isTerminalStatus, type TaskStore } from "./task-store.js";
 
@@ -81,7 +81,7 @@ export function createSubagentOutputTool(taskStore: TaskStore = globalTaskStore)
       const latest = taskStore.getInSession(input.task_id, callerSessionDir(context));
       if (!latest) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
       if (!taskStore.isTerminal(latest)) {
-        return { ok: true, output: formatSubagentOutput(latest, "not_ready", readProgress(taskStore, latest, context)) };
+        return { ok: true, output: formatSubagentOutput(latest, "not_ready", readProgress(taskStore, latest, context).text) };
       }
 
       taskStore.markNotified(latest.taskId);
@@ -96,7 +96,7 @@ export function createSubagentOutputTool(taskStore: TaskStore = globalTaskStore)
 export function createSubagentListTool(taskStore: TaskStore = globalTaskStore): Tool<Record<string, never>> {
   return {
     name: "subagent_list",
-    description: "List known background tasks and their current status.",
+    description: "List this session's subagents: status, elapsed time, the tool each is running now, and whether a new report or failure is waiting (read it with subagent_get).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     metadata: { readOnly: true, concurrent: true, visible: true, searchHint: "list background tasks" },
     validate() {
@@ -104,11 +104,13 @@ export function createSubagentListTool(taskStore: TaskStore = globalTaskStore): 
     },
     async call(_input, context) {
       // Overview only: flags pending updates without consuming them (subagent_get reads them).
+      // Flags appear only when true; description identifies the task for the main agent and the UI list.
       return { ok: true, output: { tasks: taskStore.listInSession(callerSessionDir(context)).map(task => {
         const delta = progressDelta(task);
-        return { task_id: task.taskId, agent_id: task.agentId, status: task.status, description: task.description, run_generation: task.runGeneration ?? 1,
-          has_updates: delta.changed, has_new_report: delta.milestones.length > 0, has_new_failure: !!delta.failure,
-          total_tool_calls: task.progress.totalToolUseCount, requires_resume: isTerminalStatus(task.status) && task.pendingMessages.length > 0 };
+        return compact({ task_id: task.taskId, agent_id: task.agentId, status: task.status, description: task.description,
+          run_generation: runGenerationIfResumed(task), elapsed: formatElapsed(agentRunDurationMs(task)),
+          working_on: task.status === "running" ? workingOn(task) : undefined, has_new_report: delta.milestones.length > 0 || undefined,
+          has_new_failure: !!delta.failure || undefined, requires_resume: requiresResume(task) || undefined });
       }) } };
     },
   };
@@ -117,7 +119,7 @@ export function createSubagentListTool(taskStore: TaskStore = globalTaskStore): 
 export function createSubagentGetTool(taskStore: TaskStore = globalTaskStore): Tool<SubagentGetInput> {
   return {
     name: "subagent_get",
-    description: "Get what changed in a subagent since your last check: its own progress reports, tool activity counts (with failures) and status. Repeated checks never repeat old content. wait_ms waits for the next milestone, failure or status change instead of polling. Use detail=true for full prompt, progress and result; use subagent_output to read the final result. Delivered messages are not proof of implementation.",
+    description: "Check a subagent's current state: status, elapsed time, the tool it is running now, its latest report, and what changed since your last check (new reports, tool counts, failures; never repeated). wait_ms waits for the next report, failure or status change instead of polling. detail=true adds the prompt, all reports and results; subagent_output reads the final result. Delivered messages are not proof of implementation.",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,7 +167,8 @@ export function createSubagentStopTool(taskStore: TaskStore = globalTaskStore): 
       const task = taskStore.getInSession(input.task_id, callerSessionDir(context));
       if (!task) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
       if (!isTerminalStatus(task.status)) taskStore.kill(input.task_id, "Stopped by subagent_stop");
-      return { ok: true, output: taskDetail(taskStore.getInSession(input.task_id, callerSessionDir(context)) ?? task) };
+      const latest = taskStore.getInSession(input.task_id, callerSessionDir(context)) ?? task;
+      return { ok: true, output: compact({ task_id: latest.taskId, agent_id: latest.agentId, status: latest.status, description: latest.description, run_generation: latest.runGeneration }) };
     },
   };
 }
@@ -190,20 +193,17 @@ export function createSubagentMessageTool(taskStore: TaskStore = globalTaskStore
     async call(input, context) {
       const queued = taskStore.queueMessageInSession(input.target, input.message, callerSessionDir(context));
       if (!queued.ok) return { ok: false, output: { status: "failed", error: queued.error } };
+      const terminal = isTerminalStatus(queued.task.status);
       return {
         ok: true,
-        output: {
-          status: isTerminalStatus(queued.task.status) ? "queued_for_resume" : "queued",
-          requires_resume: isTerminalStatus(queued.task.status),
-          delivery_status: "queued",
+        output: compact({
+          status: terminal ? "queued_for_resume" : "queued",
+          requires_resume: terminal || undefined,
           message_id: queued.receipt.id,
-          queued_at: queued.receipt.queuedAt,
-          run_generation: queued.task.runGeneration,
-          note: "Queued only; delivery to model context is not proof of implementation.",
-          agent_id: queued.task.agentId,
           task_id: queued.task.taskId,
+          agent_id: queued.task.agentId,
           pending_messages: queued.task.pendingMessages.length,
-        },
+        }),
       };
     },
   };
@@ -250,10 +250,9 @@ export function createSubagentResumeTool(taskStore: TaskStore = globalTaskStore,
         ok: true,
         output: {
           status: "resumed",
-          run_generation: taskStore.getInSession(input.task_id, callerSessionDir(context))?.runGeneration,
           task_id: task.taskId,
           agent_id: task.agentId,
-          directive: input.directive ?? "(continue)",
+          run_generation: taskStore.getInSession(input.task_id, callerSessionDir(context))?.runGeneration,
         },
       };
     },
@@ -261,86 +260,106 @@ export function createSubagentResumeTool(taskStore: TaskStore = globalTaskStore,
 }
 
 /** Only the main agent's reads consume progress; a subagent inspecting tasks never hides updates from it. */
-function readProgress(taskStore: TaskStore, task: LocalAgentTask, context: ToolUseContext): string {
+function readProgress(taskStore: TaskStore, task: LocalAgentTask, context: ToolUseContext): { text: string; newReports: boolean } {
   const delta = progressDelta(task);
   if (!context.isSubagent) {
     advanceParentCursor(task);
     taskStore.updateProgress(task);
   }
-  return formatProgressDelta(delta);
+  return { text: formatProgressDelta(delta), newReports: delta.milestones.length > 0 };
 }
 
 function formatSubagentOutput(task: LocalAgentTask, retrievalStatus: "ready" | "not_ready", progress?: string): string {
-  // A resumed task can carry legacy state; never surface an old result as current progress.
-  // Not ready: what changed since the last check, never a raw tail of streamed text.
-  const output = retrievalStatus === "ready"
-    ? task.result?.content ?? task.error ?? task.progress.lastText ?? ""
-    : progress ?? "";
+  // Ready: only the authorized result (the report) or the error; never a raw tail of streamed text.
+  // Not ready: what changed since the last check.
+  const output = retrievalStatus === "ready" ? task.result?.content ?? task.error ?? "" : progress ?? "";
+  // Header order is parsed by the UI (status-semantics subagentHeader); optional tags only when meaningful.
   return [
     `<retrieval_status>${retrievalStatus}</retrieval_status>`,
     `<task_id>${task.taskId}</task_id>`,
-    `<task_type>${task.type}</task_type>`,
     `<status>${task.status}</status>`,
     `<run_generation>${task.runGeneration ?? 1}</run_generation>`,
-    `<pending_messages>${task.pendingMessages.length}</pending_messages>`,
-    `<requires_resume>${isTerminalStatus(task.status) && task.pendingMessages.length > 0}</requires_resume>`,
+    task.pendingMessages.length ? `<pending_messages>${task.pendingMessages.length}</pending_messages>` : undefined,
+    requiresResume(task) ? "<requires_resume>true</requires_resume>" : undefined,
     `<agent_id>${task.agentId}</agent_id>`,
     `<output>${escapeXml(output)}</output>`,
-    retrievalStatus === "ready" && task.error ? `<error>${escapeXml(task.error)}</error>` : undefined,
+    retrievalStatus === "ready" && task.result?.content && task.error ? `<error>${escapeXml(task.error)}</error>` : undefined,
   ].filter(Boolean).join("\n");
 }
 
-function taskSummary(task: LocalAgentTask, sinceLastCheck?: string): Record<string, unknown> {
-  return {
+/** The subagent's current state for the main agent: status, elapsed, what it is doing now, its latest
+ * own report, and what changed since the last check. Empty/default fields are omitted, not sent. */
+function taskSummary(task: LocalAgentTask, sinceLastCheck?: { text: string; newReports: boolean }): Record<string, unknown> {
+  const terminal = isTerminalStatus(task.status);
+  const receipts = task.messageReceipts ?? [];
+  const latest = task.progress.journal?.milestones.at(-1);
+  return compact({
     task_id: task.taskId,
     agent_id: task.agentId,
     status: task.status,
-    description: task.description.slice(0, 300),
-    output_file: task.outputFile,
-    updated_at: task.updatedAt,
-    run_generation: task.runGeneration ?? 1,
-    pending_messages: task.pendingMessages.length,
-    requires_resume: isTerminalStatus(task.status) && task.pendingMessages.length > 0,
-    result_available: isTerminalStatus(task.status) && !!task.result,
-    result_status: isTerminalStatus(task.status) ? task.result?.status : undefined,
-    message_delivery: {
-      queued: task.pendingMessages.length,
-      delivered_this_run_retained: (task.messageReceipts ?? []).filter((receipt) => receipt.status === "delivered" && receipt.runGeneration === task.runGeneration).length,
-      recent: (task.messageReceipts ?? []).slice(-5).map((receipt) => ({
-        message_id: receipt.id, status: receipt.status, queued_at: receipt.queuedAt,
-        delivered_at: receipt.deliveredAt, run_generation: receipt.runGeneration,
-      })),
-      meaning: "Delivered to model context, not proof of implementation.",
-    },
-    previous_runs: (task.runHistory ?? []).slice(-5).map((run) => ({
-      run_generation: run.runGeneration, status: run.status, completed_at: run.completedAt,
-      result_available: !!run.result,
-    })),
-    progress: {
-      last_activity: task.progress.lastActivity,
-      since_last_check: sinceLastCheck,
-      total_tool_use_count: task.progress.totalToolUseCount,
-    },
-    error: isTerminalStatus(task.status) ? task.error?.slice(0, 500) : undefined,
-  };
+    run_generation: task.runGeneration ?? 1, // the UI matches observations to this generation
+    elapsed: formatElapsed(agentRunDurationMs(task)),
+    working_on: task.status === "running" ? workingOn(task) : undefined,
+    // The latest report is current state; when it is new it already appears in since_last_check.
+    latest_report: latest && !sinceLastCheck?.newReports
+      ? { displaySource: "agent_report", status: latest.status, content: latest.report, reported: formatAgo(latest.at) } : undefined,
+    since_last_check: sinceLastCheck?.text,
+    result_status: terminal ? task.result?.status ?? (task.result ? "completed" : undefined) : undefined,
+    error: terminal ? task.error?.slice(0, 500) : undefined,
+    pending_messages: task.pendingMessages.length || undefined,
+    requires_resume: requiresResume(task) || undefined,
+    messages: receipts.length ? receipts.slice(-5).map((receipt) => ({ message_id: receipt.id, status: receipt.status })) : undefined,
+  });
 }
 
+/** Explicit detail: the task's own record (prompt, reports, results), never raw streaming state. */
 function taskDetail(task: LocalAgentTask): Record<string, unknown> {
-  return {
+  const terminal = isTerminalStatus(task.status);
+  return compact({
     ...taskSummary(task),
+    latest_report: undefined, // all reports follow
+    description: task.description,
     prompt: task.prompt,
-    message_receipts: task.messageReceipts ?? [],
-    run_history: (task.runHistory ?? []).map((run) => ({
-      run_generation: run.runGeneration, status: run.status, completed_at: run.completedAt,
-      archived_at: run.archivedAt, result: run.result ? { content: run.result.content, status: run.result.status } : undefined,
-      error: run.error,
-    })),
-    progress: task.progress,
-    result: isTerminalStatus(task.status) ? task.result : undefined,
-    error: isTerminalStatus(task.status) ? task.error : undefined,
-    notified: task.notified,
-    pending_messages: task.pendingMessages.length,
-  };
+    reports: task.progress.journal?.milestones.map((milestone) => ({ status: milestone.status, report: milestone.report })),
+    result: terminal && task.result ? { status: task.result.status, content: task.result.content } : undefined,
+    previous_runs: task.runHistory?.length ? task.runHistory.map((run) => compact({
+      run_generation: run.runGeneration, status: run.status,
+      result: run.result ? { status: run.result.status, content: run.result.content } : undefined, error: run.error,
+    })) : undefined,
+  });
+}
+
+/** Tools executing right now, as "tool: purpose" (the purpose the subagent itself stated). */
+function workingOn(task: LocalAgentTask): string | undefined {
+  const active = Object.values(task.progress.activeTools ?? {});
+  return active.length ? active.map((tool) => tool.purpose ? `${tool.name}: ${tool.purpose}` : tool.name).join("; ") : undefined;
+}
+
+function formatElapsed(ms: number | undefined): string | undefined {
+  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return undefined;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function formatAgo(at: string | undefined): string | undefined {
+  const time = at ? Date.parse(at) : NaN;
+  const elapsed = Number.isFinite(time) ? formatElapsed(Math.max(0, Date.now() - time)) : undefined;
+  return elapsed ? `${elapsed} ago` : undefined;
+}
+
+function runGenerationIfResumed(task: LocalAgentTask): number | undefined {
+  return (task.runGeneration ?? 1) > 1 ? task.runGeneration : undefined;
+}
+
+function requiresResume(task: LocalAgentTask): boolean {
+  return isTerminalStatus(task.status) && task.pendingMessages.length > 0;
+}
+
+function compact<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as Partial<T>;
 }
 
 function escapeXml(value: string): string {

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentTool, resumeAgentTask, type AgentToolRuntime } from "../../src/agents/agent-tool.js";
 import { AgentActivityStore } from "../../src/agents/agent-activity.js";
-import { GENERAL_PURPOSE_AGENT, StaticAgentCatalog } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT } from "../../src/agents/agent-definition.js";
 import { TaskStore } from "../../src/tasks/task-store.js";
 import { createSubagentStopTool } from "../../src/tasks/subagent-tools.js";
 import { SessionStore } from "../../src/session/session-store.js";
@@ -30,7 +30,7 @@ function context(root: string): ToolUseContext {
 }
 function runtime(store: TaskStore, gateway: ModelGateway): AgentToolRuntime {
   return { taskStore: store, modelGateway: gateway, tools: new ToolRegistry(), agentActivityStore: new AgentActivityStore(),
-    agentCatalog: new StaticAgentCatalog([{ ...GENERAL_PURPOSE_AGENT, requiresReport: false }]),
+    agent: { ...GENERAL_PURPOSE_AGENT, requiresReport: false },
     contextManager: { async build(input) { return { systemPrompt: "fake-model test", promptSections: [], userContext: { currentDate: "2026-09-06" }, systemContext: { cwd: input.cwd ?? process.cwd(), platform: process.platform } }; } },
     compactor: { async compact(messages) { return { messages: [...messages], changed: false }; } },
   };
