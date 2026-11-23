@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
 const part = text => ({ state:'complete', text, offset:0, totalChars:text.length, hasMore:false })
-test('task chrome: status icons, history, terminal/agent details, focus, themes and mobile', async () => {
+test('task chrome: status icons, history, terminal details (no subagents), focus, themes and mobile', async () => {
  const terminal={kind:'terminal',sessionId:'term-review',ownerSessionId:'obs-session',description:'运行项目测试',command:'npm run test',cwd:'D:\\workspace\\project',status:'running',startedAt:new Date().toISOString()}
  const agent={kind:'agent',taskId:'agent-review',agentId:'child',runGeneration:1,description:'检查文档与示例命令'.repeat(8),status:'completed',durationMs:10000}
  const failed={...terminal,sessionId:'failed-run',description:'检查失败记录',status:'failed'}
@@ -26,7 +26,9 @@ test('task chrome: status icons, history, terminal/agent details, focus, themes 
   await entry.waitFor()
   assert.equal(await entry.locator('.task-status-icon').getAttribute('aria-label'),'运行中')
   await page.locator('.background-task-history > summary').click()
-  assert.equal(await page.locator('.background-task-history-item').count(),2)
+  // Subagents are reached via the agent switch; only terminals are background tasks.
+  assert.equal(await page.locator('.background-task-history-item').count(),1)
+  assert.equal(await page.locator('.right-panel').getByText('检查文档与示例命令',{exact:false}).count(),0)
   assert.equal(await page.locator('.background-task-summary-status').count(),0)
   await entry.click()
   const modal=page.getByRole('dialog',{name:'后台任务',exact:true})
@@ -41,11 +43,10 @@ test('task chrome: status icons, history, terminal/agent details, focus, themes 
    assert.equal(await modal.locator('.background-task-index-item.active').evaluate(el=>getComputedStyle(el).boxShadow),'none')
    await page.screenshot({path:join(tmpdir(),`neo-tasks-${theme}.png`)})
   }
-  const agentButton=modal.locator('.background-task-index-item').filter({hasText:'检查文档与示例命令'})
-  await agentButton.click()
-  await modal.locator('.agent-parent-message h2').waitFor()
-  assert.deepEqual(await modal.locator('.agent-parent-message header strong').allTextContents(),['委派','回复'])
-  assert.equal(await agentButton.getAttribute('aria-current'),'true')
+  assert.equal(await modal.locator('.background-task-index-item').filter({hasText:'检查文档与示例命令'}).count(),0,'no subagent in the task index')
+  const failedButton=modal.locator('.background-task-index-item').filter({hasText:'检查失败记录'})
+  await failedButton.click()
+  assert.equal(await failedButton.getAttribute('aria-current'),'true')
   for(const width of [1440,390]){
    await page.setViewportSize({width,height:844})
    assert.ok(await modal.evaluate(el=>el.scrollWidth<=el.clientWidth+1))

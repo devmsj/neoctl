@@ -4,9 +4,11 @@ import { createObservabilityBrowser, observabilitySnapshot } from './observabili
 
 test('right panel is its own component: quota rotation, memory hover and task details still work', async () => {
   const now = new Date().toISOString()
-  const task = { kind: 'agent', taskId: 'task_rp', agentId: 'agent_rp', description: 'Right panel task', status: 'running', createdAt: now, progress: {} }
-  const done = { ...task, taskId: 'task_done', agentId: 'agent_done', description: 'Finished task', status: 'completed', completedAt: now }
-  const snapshot = observabilitySnapshot({ backgroundTasks: [task], backgroundTaskCount: 1, agentTaskHistory: [done] })
+  const agent = { kind: 'agent', taskId: 'task_rp', agentId: 'agent_rp', description: 'Subagent not listed', status: 'running', createdAt: now, progress: {} }
+  const task = { kind: 'terminal', taskId: 'terminal:run_rp', type: '终端', ownerSessionId: 'obs-session', sessionId: 'run_rp', description: 'Right panel task', command: 'npm run dev', status: 'running', createdAt: now }
+  const done = { ...task, taskId: 'terminal:run_done', sessionId: 'run_done', description: 'Finished task', status: 'exited', exitCode: 0, completedAt: now }
+  const finishedAgent = { ...agent, taskId: 'task_old', agentId: 'agent_old', description: 'Finished subagent not listed', status: 'completed', completedAt: now }
+  const snapshot = observabilitySnapshot({ session: { sessionId: 'obs-session', title: 'Right panel' }, backgroundTasks: [agent, task], backgroundTaskCount: 2, agentTaskHistory: [finishedAgent], terminalTaskHistory: [done] })
   const f = await createObservabilityBrowser(snapshot, async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/cpa-quota') { await route.fulfill({ json: { quotas: [{ account: 'alpha@example.com', remainingPercent: 80, resetAt: now }, { account: 'beta@example.com', remainingPercent: 35, resetAt: now }], config: { url: '', hasPassword: false } } }); return true }
@@ -34,12 +36,16 @@ test('right panel is its own component: quota rotation, memory hover and task de
     await p.mouse.move(box.x + 2, box.y + box.height / 2)
     assert.match(await panel.locator('.memory-tooltip strong').innerText(), /100 MB/)
     await p.mouse.move(0, 0); await panel.locator('.memory-tooltip').waitFor({ state: 'detached' })
+    // Subagents are not background tasks (they are reached via the agent switch).
+    assert.doesNotMatch(await panel.locator('.background-task-section').innerText(), /not listed/)
+    assert.equal(await panel.locator('.background-task-count').innerText(), '1')
     // Task entries resolve back to the live task object by key.
     await panel.locator('.background-task-summary').first().click()
     await p.locator('.background-task-detail').waitFor()
     assert.match(await p.locator('.background-task-detail').innerText(), /Right panel task/)
     await p.keyboard.press('Escape'); await p.locator('.background-task-detail').waitFor({ state: 'detached' })
     await panel.locator('summary').filter({ hasText: '最近结束' }).click()
+    assert.deepEqual(await panel.locator('.background-task-history-item strong').allInnerTexts(), ['Finished task'])
     await panel.locator('.background-task-history-item').first().click()
     await p.locator('.background-task-detail').waitFor()
     assert.match(await p.locator('.background-task-detail').innerText(), /Finished task/)

@@ -32,7 +32,11 @@ const agentTask = (taskId, status, description) => ({ kind: 'agent', taskId, age
 const metrics = (model, input, window) => ({ model, estimatedInputTokens: input, estimatedChars: input * 4, messageCount: 4, toolCount: 20, contextWindowTokens: window, contextUsageRatio: input / window })
 const lines = (prefix, count) => Array.from({ length: count }, (_, i) => ({ id: i + 1, kind: i % 2 ? 'assistant' : 'user', text: `${prefix}_LINE_${i + 1}` }))
 
-async function fixture(t, { tasks = [agentTask('task-a', 'running', '检查样式实现'), agentTask('task-b', 'completed', '核对测试覆盖')] } = {}) {
+const terminalTask = (owner, runId, status, description) => ({ kind: 'terminal', taskId: `terminal:${runId}`, type: '终端', ownerSessionId: owner, sessionId: runId, status, description, command: description,
+  createdAt: new Date().toISOString(), ...(status === 'running' ? {} : { completedAt: new Date().toISOString(), exitCode: 0 }) })
+
+// terminals: per view ('' = main), the background terminals owned by that agent.
+async function fixture(t, { tasks = [agentTask('task-a', 'running', '检查样式实现'), agentTask('task-b', 'completed', '核对测试覆盖')], terminals = {} } = {}) {
   const clients = new Set(), requests = [], errors = []
   const views = {
     '': { lines: lines('MAIN', 30), model: 'main-model', metrics: metrics('main-model', 200000, 1000000), usage: { inputTokens: 485000, outputTokens: 0 }, busy: false },
@@ -45,15 +49,19 @@ async function fixture(t, { tasks = [agentTask('task-a', 'running', '检查样�
     return observabilitySnapshot({ session: { sessionId: 'S', title: 'Observe' }, lines: view.lines, busy: view.busy,
       status: { phase: view.busy ? 'calling_model' : 'ready', streamedOutputTokens: 0, metrics: view.metrics, usage: view.usage, activityTick: 1 },
       modelSettings: { model: view.model }, runControl: { state: view.busy ? 'running' : 'idle', canPause: !observe && view.busy, canResume: false },
-      backgroundTasks: tasks.filter(task => task.status === 'running'), agentTaskHistory: tasks.filter(task => task.status !== 'running'), backgroundTaskCount: tasks.filter(task => task.status === 'running').length,
-      ...(task ? { observing: { taskId: task.taskId, agentId: task.agentId, agentType: task.agentType, description: task.description, status: task.status } } : {}) })
+      backgroundTasks: [...tasks.filter(task => task.status === 'running'), ...(terminals['']?.filter(item => item.status === 'running') ?? [])],
+      agentTaskHistory: tasks.filter(task => task.status !== 'running'), backgroundTaskCount: tasks.filter(task => task.status === 'running').length,
+      terminalTaskHistory: terminals['']?.filter(item => item.status !== 'running') ?? [],
+      ...(task ? { observing: { taskId: task.taskId, agentId: task.agentId, agentType: task.agentType, description: task.description, status: task.status },
+        observedBackgroundTasks: terminals[task.taskId]?.filter(item => item.status === 'running') ?? [],
+        observedTerminalTaskHistory: terminals[task.taskId]?.filter(item => item.status !== 'running') ?? [] } : {}) })
   }
   const json = (res, value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)) }
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost'), observe = url.searchParams.get('observe') || ''
       if (url.pathname.startsWith('/api/') || url.pathname === '/events') {
-        requests.push({ method: req.method, path: url.pathname, observe })
+        requests.push({ method: req.method, path: url.pathname, observe, params: Object.fromEntries(url.searchParams) })
         if (req.method !== 'GET') { json(res, { error: observe ? '观察子代理时为只读' : 'no mutation in this fixture' }, observe ? 409 : 405); return }
         if (url.pathname === '/events') {
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
@@ -173,6 +181,56 @@ test('observe a subagent in place: read-only, same status row, live stream, smoo
   if (shots) await page.screenshot({ path: join(shots, 'menu-narrow.png') })
   console.log(JSON.stringify({ switchMs, frames: frames.length, longFrames, maxFrame: Math.max(...frames).toFixed(1) }))
   assert.ok(longFrames.length <= 2, `switch should not jank: ${JSON.stringify(longFrames)}`)
+})
+
+test('background tasks list only the viewed agent\'s own work: no subagents; observing shows the subagent\'s terminals', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { terminals: {
+    '': [terminalTask('S', 'run-main', 'running', 'MAIN_DEV_SERVER'), terminalTask('S', 'run-main-done', 'exited', 'MAIN_BUILD_DONE')],
+    'task-a': [terminalTask('task-a-agent', 'run-child', 'running', 'CHILD_WATCHER'), terminalTask('task-a-agent', 'run-child-done', 'exited', 'CHILD_TESTS_DONE')],
+  } }), { page } = f
+  const panel = page.locator('.right-panel')
+  const panelText = () => panel.locator('.background-task-section').innerText()
+  const historyItems = async () => {
+    const summary = panel.locator('.background-task-history summary')
+    if (!await summary.count()) return []
+    if (await panel.locator('.background-task-history').getAttribute('open') === null) await summary.click()
+    return panel.locator('.background-task-history-item strong').allInnerTexts()
+  }
+
+  // Main view: its own terminals only; running and finished subagents are not background tasks.
+  await panel.locator('.background-task-summary').filter({ hasText: 'MAIN_DEV_SERVER' }).waitFor()
+  let text = await panelText()
+  assert.doesNotMatch(text, /检查样式实现|核对测试覆盖/, 'subagents are reached via the agent switch, not listed')
+  assert.equal(await panel.locator('.background-task-count').innerText(), '1', 'count excludes subagents')
+  assert.deepEqual(await historyItems(), ['MAIN_BUILD_DONE'])
+
+  // Observing a subagent: the panel follows the viewed agent.
+  await pick(page, '检查样式实现')
+  await page.getByText('CHILD_A_LINE_12', { exact: true }).waitFor()
+  await panel.locator('.background-task-summary').filter({ hasText: 'CHILD_WATCHER' }).waitFor()
+  text = await panelText()
+  assert.doesNotMatch(text, /MAIN_DEV_SERVER|MAIN_BUILD_DONE/, "the owner's terminals are not the subagent's")
+  assert.deepEqual(await historyItems(), ['CHILD_TESTS_DONE'])
+
+  // Its terminal detail reads output as the subagent (owner = agent id).
+  await panel.locator('.background-task-summary').filter({ hasText: 'CHILD_WATCHER' }).first().click()
+  await page.locator('.background-task-detail').waitFor()
+  await until(() => f.requests.some(r => r.path === '/api/terminal-output' && r.params.sessionId === 'task-a-agent' && r.params.runId === 'run-child'), 'subagent terminal output is requested with the agent as owner')
+  const index = await page.locator('.background-task-index-item strong').allInnerTexts()
+  assert.deepEqual(index.sort(), ['CHILD_TESTS_DONE', 'CHILD_WATCHER'], "the detail's task index is the subagent's own")
+
+  await page.locator('.background-task-modal .tool-result-modal-close').click()
+  await page.locator('.background-task-detail').waitFor({ state: 'detached' })
+
+  // A subagent with no terminals shows an empty panel.
+  await pick(page, '核对测试覆盖')
+  await page.getByText('CHILD_B_LINE_6', { exact: true }).waitFor()
+  assert.equal(await panel.locator('.background-task-summary').count(), 0)
+  assert.equal(await panel.locator('.background-task-count').count(), 0)
+
+  await pick(page, '主代理')
+  await page.getByText('MAIN_LINE_30', { exact: true }).waitFor()
+  await panel.locator('.background-task-summary').filter({ hasText: 'MAIN_DEV_SERVER' }).waitFor()
 })
 
 test('an observing connection whose task is gone falls back to the main agent', { timeout: 30000 }, async t => {

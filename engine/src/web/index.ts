@@ -1267,6 +1267,18 @@ export class WebRepl {
     return sessionAgentTasks(this.runtime).find(task => task.taskId === taskId);
   }
 
+  /**
+   * A subagent's own terminals are bound to its child session (owner id = agentId,
+   * directory under the owner session's "subagents"). Only agents of the current
+   * session resolve; the id is matched against the task store, never used as a path as-is.
+   */
+  private agentTerminalOwner(agentId: string): { ownerId: string; sessionDir: string } | undefined {
+    const session = this.runtime.engine.snapshot().session;
+    if (!agentId || !session?.sessionDir) return undefined;
+    const task = sessionAgentTasks(this.runtime).find(candidate => candidate.agentId === agentId);
+    return task?.agentId ? { ownerId: task.agentId, sessionDir: path.join(session.sessionDir, "subagents", task.agentId) } : undefined;
+  }
+
   /** A second WebRepl renders the child: history from its own transcript (read-only), live lines from its events. */
   private observerFor(taskId: string): AgentObserver | undefined {
     const existing = this.observers.get(taskId);
@@ -1352,8 +1364,13 @@ export class WebRepl {
     const execution = task?.executionOptions ?? {};
     const running = !!task && !this.runtime.taskStore.isTerminal(task);
     const model = execution.model ?? base.modelSettings.model;
+    // The observed agent's own background work (its terminals), separate from the owner's task lists,
+    // which stay intact for agent switching and owner-level lookups.
+    const owner = this.agentTerminalOwner(observer.agentId);
     return {
       ...base,
+      observedBackgroundTasks: owner ? this.runningTerminalTasks(owner.ownerId) : [],
+      observedTerminalTaskHistory: owner ? this.terminalTaskHistoryFor(owner.ownerId, owner.sessionDir) : [],
       history: repl.historyPage,
       lines: repl.lines.map(line => line.toolError ? { ...line, toolError: this.runtime.engine.redactDisplayValue?.(line.toolError) ?? line.toolError } : line),
       status: repl.timedStatus(),
@@ -1427,12 +1444,15 @@ export class WebRepl {
 
   terminalOutput(sessionId: string, runId: string, stream: string, offset: number, limitBytes: number, tail = false) {
     const session = this.runtime.engine.snapshot().session;
-    if (!session?.sessionDir || !sessionId || sessionId !== session.sessionId || !runId || !["stdout", "stderr"].includes(stream)) return undefined;
+    if (!session?.sessionDir || !sessionId || !runId || !["stdout", "stderr"].includes(stream)) return undefined;
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limitBytes) || limitBytes < 4 || limitBytes > 262144) return undefined;
+    // Owner session, or one of its subagents (terminals bound to the agent's child session).
+    const owner = sessionId === session.sessionId ? { ownerId: session.sessionId, sessionDir: session.sessionDir } : this.agentTerminalOwner(sessionId);
+    if (!owner) return undefined;
     const manager = this.runtime.execProcessManager;
-    const registered = manager.registerOwnerSession(sessionId, session.sessionDir);
+    const registered = manager.registerOwnerSession(owner.ownerId, owner.sessionDir);
     if (!registered.ok) return undefined;
-    const page = manager.readOutput(sessionId, runId, { stream: stream as "stdout" | "stderr", offset, limitBytes, tail });
+    const page = manager.readOutput(owner.ownerId, runId, { stream: stream as "stdout" | "stderr", offset, limitBytes, tail });
     // Cursor addresses stored bytes, not the possibly additionally redacted response length.
     return page.ok ? this.runtime.engine.redactDisplayValue({ sessionId, runId, ...page.value }) : undefined;
   }
@@ -2363,12 +2383,17 @@ export class WebRepl {
   private terminalTaskHistory() {
     const session = this.runtime.engine.snapshot().session;
     if (!session?.sessionId || !session.sessionDir) return [];
+    return this.terminalTaskHistoryFor(session.sessionId, session.sessionDir);
+  }
+
+  /** Backgrounded terminal history of one owner: the session itself or one of its subagents. */
+  private terminalTaskHistoryFor(ownerId: string, sessionDir: string) {
     const manager = this.runtime.execProcessManager;
-    if (!manager.registerOwnerSession?.(session.sessionId, session.sessionDir).ok) return [];
+    if (!manager.registerOwnerSession?.(ownerId, sessionDir).ok) return [];
     const records = [];
     let offset = 0;
     do {
-      const history = manager.listHistory(session.sessionId, { offset, limit: 200 });
+      const history = manager.listHistory(ownerId, { offset, limit: 200 });
       if (!history.ok) break;
       records.push(...history.value.records);
       if (history.value.nextOffset === null) break;
@@ -2378,7 +2403,7 @@ export class WebRepl {
     // background transition belongs in this UI; legacy records are not inferred.
     return records.filter(({ record }) => record.metadata.backgrounded === true).reverse().map(({ record }) => ({
       kind: "terminal" as const, taskId: `terminal:${record.runId}`, type: "终端",
-      ownerSessionId: session.sessionId, sessionId: record.runId,
+      ownerSessionId: ownerId, sessionId: record.runId,
       status: record.lifecycle === "lost" ? "lost" : record.exit?.status ?? "unknown",
       description: record.metadata.description || record.metadata.command || "终端运行",
       command: record.metadata.command, cwd: record.metadata.cwd, shell: record.metadata.shell,
@@ -2396,7 +2421,28 @@ export class WebRepl {
       .filter((task) => !this.runtime.taskStore.isTerminal(task))
       .map((task) => this.agentTaskSnapshot(task));
     const ownerSessionId = this.runtime.engine.snapshot().session?.sessionId;
-    const terminalTasks = (ownerSessionId ? this.runtime.execProcessManager.list(ownerSessionId) : [])
+    const terminalTasks = ownerSessionId ? this.runningTerminalTasks(ownerSessionId) : [];
+    const sessionTasks = [...this.backgroundSessionRuns.values()].map((run) => ({
+      kind: "session" as const,
+      taskId: `session:${run.sessionId}`,
+      type: "会话",
+      status: "running" as const,
+      description: run.title || "未命名会话",
+      createdAt: run.startedAt,
+      sessionId: run.sessionId,
+    }));
+    const createdAtTime = (value: string | number): number => {
+      if (typeof value === "number") return value;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    return [...agentTasks, ...terminalTasks, ...sessionTasks]
+      .sort((left, right) => createdAtTime(right.createdAt) - createdAtTime(left.createdAt));
+  }
+
+  /** Running backgrounded terminals of one owner: the session itself or one of its subagents. */
+  private runningTerminalTasks(ownerSessionId: string) {
+    return this.runtime.execProcessManager.list(ownerSessionId)
       .filter((terminal) => terminal.status === "running" && terminal.backgrounded)
       .map((terminal) => ({
         kind: "terminal" as const,
@@ -2420,22 +2466,6 @@ export class WebRepl {
         outputAvailability: terminal.output_ref.availability,
         outputRevision: terminal.output_ref.streams,
       }));
-    const sessionTasks = [...this.backgroundSessionRuns.values()].map((run) => ({
-      kind: "session" as const,
-      taskId: `session:${run.sessionId}`,
-      type: "会话",
-      status: "running" as const,
-      description: run.title || "未命名会话",
-      createdAt: run.startedAt,
-      sessionId: run.sessionId,
-    }));
-    const createdAtTime = (value: string | number): number => {
-      if (typeof value === "number") return value;
-      const parsed = Date.parse(value);
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
-    return [...agentTasks, ...terminalTasks, ...sessionTasks]
-      .sort((left, right) => createdAtTime(right.createdAt) - createdAtTime(left.createdAt));
   }
 
   private async detachRunningForeground(reason: string): Promise<boolean> {

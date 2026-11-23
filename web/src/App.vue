@@ -294,6 +294,9 @@ const state = reactive({
   backgroundTasks: [],
   agentTaskHistory: [],
   terminalTaskHistory: [],
+  // While observing a subagent: that agent's own background terminals (running / finished).
+  observedBackgroundTasks: [],
+  observedTerminalTaskHistory: [],
   backgroundSessionRunCount: 0,
   runningSessionIds: [],
   session: undefined,
@@ -669,20 +672,27 @@ const currentContextWindowK = computed(() => {
 const composerInputTokens = computed(() => compactNumber(state.composerMetrics.inputTokens.display))
 const composerOutputTokens = computed(() => compactNumber(state.composerMetrics.outputTokens.display))
 const composerRunning = computed(() => !state.runControl.canResume && (active.value || state.busy))
-const backgroundTaskCount = computed(() => state.backgroundTasks.length)
-const backgroundTaskHistory = computed(() => [...state.agentTaskHistory, ...state.terminalTaskHistory].sort((a, b) => {
+// Background tasks belong to the agent being viewed. Subagents are reached through the
+// agent switch, never listed here; observing one shows that agent's own terminals.
+const panelRunningTasks = computed(() => state.observing
+  ? state.observedBackgroundTasks
+  : state.backgroundTasks.filter(task => task.kind !== 'agent'))
+const backgroundTaskCount = computed(() => panelRunningTasks.value.length)
+const backgroundTaskHistory = computed(() => [...(state.observing ? state.observedTerminalTaskHistory : state.terminalTaskHistory)].sort((a, b) => {
   const stamp = task => typeof task.completedAt === 'number' ? task.completedAt : Date.parse(task.completedAt || task.updatedAt || '') || (typeof task.createdAt === 'number' ? task.createdAt : 0)
   return stamp(b) - stamp(a)
 }))
 const allBackgroundTasks = computed(() => {
   const seen = new Set()
-  return [...state.backgroundTasks, ...backgroundTaskHistory.value].filter(task => {
+  return [...panelRunningTasks.value, ...backgroundTaskHistory.value].filter(task => {
     const key = backgroundTaskKey(task)
     if (seen.has(key)) return false
     seen.add(key); return true
   })
 })
-const primaryBackgroundTask = computed(() => state.backgroundTasks[0])
+const primaryBackgroundTask = computed(() => panelRunningTasks.value[0])
+// Terminals in the viewed transcript are owned by that agent: the session, or the observed subagent.
+const viewTerminalOwnerId = computed(() => state.observing ? state.observing.agentId : state.session?.sessionId)
 const queuedDisplayText = computed(() => stripHiddenAttachmentManifest(stripImageOperationHint(stripImageLabels(state.queuedInput || ''))).replace(/\[file#\d+\]/g, ''))
 const queuedImages = computed(() => state.queuedAttachments.filter(item => item.kind === 'image' && item.previewUrl))
 const queuedFiles = computed(() => state.queuedAttachments.filter(item => item.kind === 'file'))
@@ -751,7 +761,7 @@ function measureObservationRow(anchor) {
   messageVirtualizer.value.resizeItem(Number(row.dataset.index),row.offsetHeight)
 }
 const transcriptLookup = createTranscriptLookup(() => state.lines)
-const runtimeTaskIndex = computed(()=>indexRuntimeTasks([...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[])]))
+const runtimeTaskIndex = computed(()=>indexRuntimeTasks([...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.agentTaskHistory||[]),...(state.observedBackgroundTasks||[]),...(state.observedTerminalTaskHistory||[])]))
 const activityLines = computed(()=>(state.lines || []).filter(line=>!shouldHideLine(line) || (historyView.value==='rows' && isActivityLine(line) && line.toolName?.startsWith('subagent_'))))
 // Subagent observation: every agent of the session (running first, then finished), switchable in place.
 const observableAgents = computed(() => {
@@ -806,7 +816,7 @@ function finishAgentViewSwitch() {
   }))
 }
 const { pinned: activityPinned, lastId: activityLastId, observed: activityObserved, pinnedLine: activityPinnedLine, toggle: toggleActivityObservation } = useToolObservation(activityLines,()=>agentViewKey.value,line=>runtimeActivitySignal(line,runtimeTaskIndex.value.forLine(line)).concat(terminalOutputRevisions.get(line.observation?.session_id || line.activity?.input?.session_id)||0))
-function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
+function projectActivityObservation(line){return agentObservation(terminalObservation(line,[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.observedBackgroundTasks||[]),...(state.observedTerminalTaskHistory||[])]),[...(state.backgroundTasks||[]),...(state.agentTaskHistory||[])])}
 const observedActivityLine=computed(()=>projectActivityObservation(activityObserved.value))
 const pinnedActivityLine=computed(()=>projectActivityObservation(activityPinnedLine.value))
 const compactionObservation = computed(() => state.status?.phase === 'compacting' ? { id: `compaction:${state.session?.sessionId}`, kind: 'system', text: state.status.compactionText || '', live: true } : null)
@@ -1599,6 +1609,8 @@ function applySync(payload) {
   if (viewChanged) {
     // Another agent's line model (its own ids): start clean, like a session switch, but keep session state.
     closeToolDetail()
+    // Background tasks are per viewed agent; a detail of the previous agent's task no longer applies.
+    if (state.backgroundTaskDetail) closeBackgroundTaskDetail()
     if (state.compactionDetailLineId !== undefined) closeCompactionDetail()
     transcriptFollow.reset()
     resetVirtualMessages()
@@ -1637,6 +1649,8 @@ function applySync(payload) {
   state.backgroundTasks = payload.backgroundTasks || []
   state.agentTaskHistory = payload.agentTaskHistory || []
   state.terminalTaskHistory = payload.terminalTaskHistory || []
+  state.observedBackgroundTasks = payload.observedBackgroundTasks || []
+  state.observedTerminalTaskHistory = payload.observedTerminalTaskHistory || []
   if (state.backgroundTaskDetail) {
     const currentTask = allBackgroundTasks.value.find((task) => backgroundTaskKey(task) === backgroundTaskKey(state.backgroundTaskDetail))
     if (currentTask) state.backgroundTaskDetail = { ...currentTask }
@@ -4515,7 +4529,7 @@ function mergeMessageImagePreviews(previews) {
 
 function activityTerminalTask(line){
   const id=line.observation?.session_id||line.activity?.input?.session_id
-  return id?[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[])].find(t=>t.kind==='terminal'&&t.sessionId===id):undefined
+  return id?[...(state.backgroundTasks||[]),...(state.terminalTaskHistory||[]),...(state.observedBackgroundTasks||[]),...(state.observedTerminalTaskHistory||[])].find(t=>t.kind==='terminal'&&t.sessionId===id):undefined
 }
 function observationImages(line){
   if(!['image_inspect','image_note'].includes(line?.toolName))return []
@@ -5443,11 +5457,11 @@ function createMobileSession() {
             </div>
             <Teleport v-if="historyView==='rows' && activityAnchor" :to="activityAnchor">
               <Transition name="main-observation" appear><div v-if="showMainObservation" class="observation-presence main-observation-presence"><div class="observation-presence-content">
-              <ToolObservation :render-text="renderLine" variant="main" :line="observedActivityLine" :terminal-revision="terminalOutputRevisions.get(observedActivityLine?.observation?.session_id || observedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="state.session?.sessionId" :images="observationImages(activityObserved)" :paused="activityPaused" @height="activityObservationHeight=$event" />
+              <ToolObservation :render-text="renderLine" variant="main" :line="observedActivityLine" :terminal-revision="terminalOutputRevisions.get(observedActivityLine?.observation?.session_id || observedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="viewTerminalOwnerId" :images="observationImages(activityObserved)" :paused="activityPaused" @height="activityObservationHeight=$event" />
               </div></div></Transition>
             </Teleport>
             <Teleport v-if="historyView==='rows' && activityPinnedAnchor" :to="activityPinnedAnchor">
-              <ToolObservation @height="measureObservationRow(activityPinnedAnchor)" :render-text="renderLine" v-if="pinnedActivityLine" variant="pinned" :line="pinnedActivityLine" :terminal-revision="terminalOutputRevisions.get(pinnedActivityLine?.observation?.session_id || pinnedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="state.session?.sessionId" :images="observationImages(activityPinnedLine)" :paused="activityPaused" />
+              <ToolObservation @height="measureObservationRow(activityPinnedAnchor)" :render-text="renderLine" v-if="pinnedActivityLine" variant="pinned" :line="pinnedActivityLine" :terminal-revision="terminalOutputRevisions.get(pinnedActivityLine?.observation?.session_id || pinnedActivityLine?.activity?.input?.session_id)||0" :owner-session-id="viewTerminalOwnerId" :images="observationImages(activityPinnedLine)" :paused="activityPaused" />
             </Teleport>
             <ToolObservation v-if="compactionObservation" class="compaction-observation" variant="main" :line="compactionObservation" :owner-session-id="state.session?.sessionId" :paused="activityPaused" />
             <div v-if="!showTranscriptLoading && !state.busy && state.coreQueryTiming?.status === 'finished' && formatDuration(transcriptElapsedMs)" class="message-loading" role="status">

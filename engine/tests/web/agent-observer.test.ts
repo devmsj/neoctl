@@ -102,3 +102,68 @@ test("a subagent is observed read-only with the main agent's line model, status 
     assert.equal((repl.stateFor(task.taskId) as { observing?: unknown }).observing, undefined, "released observers fall back to the owner view");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("observing a subagent exposes its own background terminals; terminal output resolves owners strictly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "neo-observe-terminals-"));
+  try {
+    const sessionDir = path.join(root, "main-session");
+    await mkdir(sessionDir, { recursive: true });
+    const taskStore = new TaskStore();
+    taskStore.bindSession(sessionDir);
+    const task = createLocalAgentTask({ taskId: "task_term", agentId: "worker_term", agentType: "general-purpose", description: "build", prompt: "BUILD", abortController: new AbortController() });
+    taskStore.attachTask(task, sessionDir);
+    taskStore.markRunning(task.taskId, task.runGeneration);
+    const activity = new AgentActivityStore();
+    activity.start({ agentId: task.agentId, taskId: task.taskId, agentType: task.agentType!, description: task.description, prompt: "BUILD", mode: "background" });
+    const terminal = (id: string, description: string) => ({ session_id: id, status: "running", backgrounded: true, description, command: description, started_at: "2026-01-01T00:00:00.000Z", output_ref: { availability: "available", streams: {} } });
+    const running: Record<string, unknown[]> = { main: [terminal("run_main", "MAIN_TERMINAL")], [task.agentId]: [terminal("run_child", "CHILD_TERMINAL")] };
+    const history: Record<string, unknown[]> = {
+      main: [],
+      [task.agentId]: [{ record: { runId: "run_child_done", lifecycle: "exited", metadata: { backgrounded: true, description: "CHILD_FINISHED", command: "npm test", startedAt: "2026-01-01T00:00:00.000Z" }, exit: { status: "exited", exitCode: 0, finishedAt: "2026-01-01T00:01:00.000Z" }, availability: "available" } }],
+    };
+    const bindings: Array<[string, string]> = [];
+    const reads: string[] = [];
+    const execProcessManager = {
+      subscribe: () => () => undefined, subscribeOutput: () => () => undefined, isBackgroundRunning: () => false,
+      list: (owner: string) => running[owner] ?? [],
+      registerOwnerSession: (owner: string, dir: string) => { bindings.push([owner, dir]); return { ok: true, value: { records: [], rejected: 0 } }; },
+      listHistory: (owner: string) => ({ ok: true, value: { records: history[owner] ?? [], nextOffset: null } }),
+      readOutput: (owner: string, runId: string) => { reads.push(`${owner}/${runId}`); return { ok: true, value: { stream: "stdout", offset: 0, nextOffset: 5, text: "hello", endOfStoredOutput: true } }; },
+    };
+    const mainSession = { sessionId: "main", sessionDir };
+    const repl = new WebRepl({
+      engine: { getTimingRecords: () => [], getDisplayEntries: () => [], snapshot: () => ({ session: mainSession, messages: 0 }), isFastMode: () => false,
+        getAppPrompt: () => ({ hasActivePrompt: false }), onSessionTitleChange: () => () => undefined, redactDisplayValue: <T,>(value: T) => value },
+      usage: { snapshot: () => ({}), add: () => undefined, reset: () => undefined },
+      taskStore, agentRuntime: { agentActivityStore: activity }, execProcessManager,
+      initialMetrics: { model: "main-model", estimatedInputTokens: 1, estimatedChars: 1, messageCount: 0, toolCount: 0 },
+    } as never);
+
+    // Owner view: unchanged lists, no observed-agent fields.
+    const owner = repl.stateFor() as Record<string, any>;
+    assert.deepEqual(owner.backgroundTasks.filter((item: any) => item.kind === "terminal").map((item: any) => item.description), ["MAIN_TERMINAL"]);
+    assert.ok(owner.backgroundTasks.some((item: any) => item.kind === "agent" && item.taskId === task.taskId), "owner lists keep agents for agent switching");
+    assert.equal(owner.observedBackgroundTasks, undefined);
+
+    // Observed view: the subagent's own terminals, bound to its child session directory.
+    const client = sse();
+    repl.subscribe(client.response as never, undefined, task.taskId);
+    const sync = client.last("sync");
+    assert.equal(sync.observing.agentId, task.agentId);
+    assert.deepEqual(sync.observedBackgroundTasks.map((item: any) => [item.description, item.ownerSessionId]), [["CHILD_TERMINAL", task.agentId]]);
+    assert.deepEqual(sync.observedTerminalTaskHistory.map((item: any) => [item.description, item.ownerSessionId, item.sessionId]), [["CHILD_FINISHED", task.agentId, "run_child_done"]]);
+    assert.ok(sync.backgroundTasks.some((item: any) => item.kind === "agent"), "owner lists stay intact while observing");
+    const childDir = path.join(sessionDir, "subagents", task.agentId);
+    assert.ok(bindings.some(([id, dir]) => id === task.agentId && dir === childDir), "history is read from the agent's child session");
+
+    // Terminal output: owner session or an agent of this session; anything else is rejected before binding.
+    assert.equal(repl.terminalOutput(task.agentId, "run_child", "stdout", 0, 1024)?.text, "hello");
+    assert.equal(repl.terminalOutput("main", "run_main", "stdout", 0, 1024)?.text, "hello");
+    const bound = bindings.length;
+    assert.equal(repl.terminalOutput("../evil", "run_child", "stdout", 0, 1024), undefined);
+    assert.equal(repl.terminalOutput("not_an_agent", "run_child", "stdout", 0, 1024), undefined);
+    assert.equal(bindings.length, bound, "unknown owners never reach the process manager");
+    assert.deepEqual(reads, [`${task.agentId}/run_child`, "main/run_main"]);
+    client.response.emit("close");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
