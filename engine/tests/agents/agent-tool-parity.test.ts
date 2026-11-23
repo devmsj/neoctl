@@ -49,7 +49,7 @@ test("disallowed_tools is the only tool control and is validated against the mai
   assert.equal(store.list().length, 0, "no task is created for rejected tool control");
   const schema = createAgentTool(runtime).inputSchema as { properties: Record<string, unknown> };
   assert.equal("tools" in schema.properties, false, "no allowlist: the main agent blocks, it does not list");
-  assert.throws(() => createAgentTool(runtime).validate!({ prompt: "x", mode: "explore" } as never, parent), /mode must be sync, background or fork/);
+  for (const mode of ["explore", "fork"]) assert.throws(() => createAgentTool(runtime).validate!({ prompt: "x", mode } as never, parent), /mode must be sync or background/);
 });
 
 test("disallowed_tools from the main agent reaches the child request and survives persistence", async () => {

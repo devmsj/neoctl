@@ -2,7 +2,7 @@
 
 ## Delegation boundary
 
-Only the main agent schedules work. All child agents (including custom, fork and wildcard definitions) exclude `subagent_run` and `subagent_resume`; runtime calls from child contexts are also rejected. Reporting and messaging remain available. This is an application-tool policy, not an OS sandbox against arbitrary programs launched through a terminal.
+Only the main agent schedules work. All child agents (including custom and wildcard definitions) exclude `subagent_run` and `subagent_resume`; runtime calls from child contexts are also rejected. Reporting and messaging remain available. This is an application-tool policy, not an OS sandbox against arbitrary programs launched through a terminal.
 
 Keep delegation prompts short: specify the goal, file boundaries and acceptance checks; report cross-boundary needs to the main agent rather than expanding scope.
 

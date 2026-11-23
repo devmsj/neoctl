@@ -205,12 +205,6 @@ test("installed resource plugins use real local stores and every registered tool
     assert.equal(saved.status, 200);
     assert.ok(await saved.json());
   }
-  const repl = new WebRepl(f.runtime);
-  for (const task of f.runtime.taskStore.list()) {
-    const page = await repl.agentContent(f.engine.snapshot().session!.sessionId, 'timeline', { taskId: task.id, runGeneration: task.runGeneration });
-    assert.equal(page?.state, 'complete');
-    assert.ok(page?.items?.some(item => item.kind === 'assistant'));
-  }
 });
 
 test("stopping during startup prevents all simulated responses and leaves no busy reservation", async t => {

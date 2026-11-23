@@ -30,7 +30,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { marked } from './markdown.mjs'
 import { renderMath } from './math-markdown.mjs'
 import TerminalOutputReader from './TerminalOutputReader.vue'
-import AgentExchangeReader from './AgentExchangeReader.vue'
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import ChromeIcon from './components/ChromeIcon.vue'
 import ReasoningSlider from './components/ReasoningSlider.vue'
@@ -60,7 +59,7 @@ import FlipStatusText from './components/FlipStatusText.vue'
 import { createTranscriptFollow } from './transcript-follow.mjs'
 import { formatDuration, receiveTimings, timingElapsedMs, executionElapsedMs } from './core-timing.mjs'
 import CwdTreeNode from './components/CwdTreeNode.vue'
-import { agentTaskResult, agentRunElapsedMs, callStatus } from './agent-task-presentation.mjs'
+import { agentTaskResult, callStatus } from './agent-task-presentation.mjs'
 import { formatModelDisplay } from './composer-presentation.mjs'
 import ExecutionSignal from './components/ExecutionSignal.vue'
 import { executionSignal } from './execution-signal.mjs'
@@ -3014,9 +3013,6 @@ function openToolDetail(line, event) {
   document.body.classList.add('tool-detail-open')
   nextTick(() => document.querySelector('.tool-result-modal-close')?.focus())
 }
-function renderAgentMarkdown(text) {
-  return sanitizeMarkdown(marked.parse(String(text ?? '')))
-}
 function closeToolDetail() {
   state.toolDetailLineId = undefined
   document.body.classList.remove('tool-detail-open')
@@ -3325,10 +3321,6 @@ function backgroundTaskElapsed(task) {
     if (task.status !== 'running') return Number.isFinite(task.durationMs) && task.durationMs >= 0 ? formatDuration(task.durationMs) : ''
     return Number.isFinite(task.createdAt) && task.createdAt <= state.clockTick ? formatDuration(state.clockTick - task.createdAt) : ''
   }
-  if (task?.kind === 'agent') {
-    const duration = agentRunElapsedMs(task, state.clockTick)
-    return duration === undefined ? '' : formatDuration(duration)
-  }
   const raw = task?.createdAt
   const numeric = Number(raw)
   const createdAt = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(raw || ''))
@@ -3338,18 +3330,6 @@ function backgroundTaskElapsed(task) {
 
 function backgroundTaskPrompt(task) {
   return String(task?.prompt || task?.command || '').trim()
-}
-
-function backgroundTaskActivity(task) {
-  return String(task?.progress?.currentAction || '').trim()
-}
-
-function backgroundTaskSteps(task) {
-  return Array.isArray(task?.progress?.steps) ? task.progress.steps : []
-}
-
-function backgroundTaskLiveOutput(task) {
-  return stripAnsi(String(task?.output || ''))
 }
 
 let backgroundTaskTrigger
@@ -6243,15 +6223,11 @@ function createMobileSession() {
 
             </dl>
             <div class="background-task-detail-body">
-              <section v-if="state.backgroundTaskDetail.kind !== 'agent' && backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command-section">
+              <section v-if="backgroundTaskPrompt(state.backgroundTaskDetail)" class="background-task-command-section">
                 <header class="chrome-label"><ChromeIcon name="terminal" /><span>命令</span></header>
                 <pre class="background-task-command" tabindex="0" aria-label="运行命令">{{ backgroundTaskPrompt(state.backgroundTaskDetail) }}</pre>
               </section>
               <TerminalOutputReader v-if="state.backgroundTaskDetail.kind === 'terminal'" :owner-session-id="state.backgroundTaskDetail.ownerSessionId || state.session?.sessionId" :run-id="state.backgroundTaskDetail.sessionId" />
-
-              <div v-if="state.backgroundTaskDetail.kind === 'agent'" style="min-width: 0; width: 100%">
-                <AgentExchangeReader :owner-session-id="state.session?.sessionId" :task="state.backgroundTaskDetail" :render-markdown="renderAgentMarkdown" />
-              </div>
             </div>
           </article>
         </div>

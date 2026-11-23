@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { INTERRUPTED_TASK_ERROR, loadTasks, persistTask, type TaskLoadSummary, type RecoverableTask } from "./task-persistence.js";
-import { createTextMessage, type Message } from "../types/messages.js";
+import { createParentAgentMessage, userDisplayText, type Message } from "../types/messages.js";
 import { advanceParentCursor, formatProgressDelta, progressDelta } from "../agents/progress-journal.js";
 import { agentRunDurationMs, writeLocalAgentTaskOutput, type AgentMessageReceipt, type AgentToolResult, type LocalAgentTask, type LocalAgentTaskStatus } from "../agents/local-agent-task.js";
 
@@ -155,7 +155,7 @@ export class TaskStore {
     if (!task) return { ok: false, error: `No task found for agent: ${agentNameOrId}` };
     if (task.pendingMessages.length >= 256) return { ok: false, error: "Agent inbox is full (256 pending messages); retry after delivery or resume" };
     if (text.length > 16 * 1024) return { ok: false, error: "Agent message exceeds 16384 characters; split it into smaller messages" };
-    const message = createTextMessage("user", text);
+    const message = createParentAgentMessage(text, "message");
     const receipt: AgentMessageReceipt = { id: randomUUID(), messageId: message.id, status: "queued", queuedAt: new Date().toISOString(), runGeneration: task.runGeneration };
     task.pendingMessages.push(message);
     (task.messageReceipts ??= []).push(receipt);
@@ -184,7 +184,8 @@ export class TaskStore {
     let count = 0;
     let characters = 0;
     for (const message of task.pendingMessages) {
-      const size = message.blocks.reduce((total, block) => total + (block.type === "text" ? block.text.length : JSON.stringify(block).length), 0);
+      // Budget what the parent wrote; the fixed source envelope does not count.
+      const size = message.blocks.reduce((total, block) => total + (block.type === "text" ? userDisplayText(message, block.text).length : JSON.stringify(block).length), 0);
       if (characters + size > 32 * 1024) break;
       characters += size;
       count += 1;

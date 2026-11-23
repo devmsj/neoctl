@@ -58,7 +58,10 @@ function messages(value: unknown): Message[] {
         default: throw new Error("Invalid message block");
       }
     });
-    return { id: m.id, role: m.role, createdAt: m.createdAt, blocks } as Message;
+    // Source of a subagent input (parent agent or runtime notice) is part of what the model sees.
+    const source = object(m.metadata) && (m.metadata.agentMessageSource === "parent" || m.metadata.agentMessageSource === "system") && typeof m.metadata.agentMessageKind === "string"
+      ? { metadata: { agentMessageSource: m.metadata.agentMessageSource, agentMessageKind: m.metadata.agentMessageKind } } : {};
+    return { id: m.id, role: m.role, createdAt: m.createdAt, blocks, ...(m.isMeta === true ? { isMeta: true } : {}), ...source } as Message;
   });
 }
 function result(value: any): any {
@@ -121,12 +124,15 @@ function execution(value: any): LocalAgentTask["executionOptions"] {
     maxOutputTokensOverride: Number.isFinite(value.maxOutputTokensOverride) ? value.maxOutputTokensOverride : undefined,
     ...numeric(value), query: object(value.query) ? numeric(value.query) : undefined };
 }
-/** Explicit DTO: never spread a live task/runtime into the on-disk record. */
-export function serializeTask(task: RecoverableTask): object {
+/**
+ * Explicit DTO: never spread a live task/runtime into the on-disk record.
+ * includeMessages=false leaves the context out: the child session transcript is its durable record.
+ */
+export function serializeTask(task: RecoverableTask, options: { includeMessages?: boolean } = {}): object {
   if (!validTaskId(task.id) || task.taskId !== task.id || !validTaskId(task.agentId)) throw new Error("Invalid task identifier");
   return { version: 1, id: task.id, taskId: task.taskId, agentId: task.agentId, agentType: task.agentType,
     type: task.type, status: task.status, description: task.description, prompt: task.prompt,
-    messages: messages(task.messages), pendingMessages: messages(task.pendingMessages), progress: progress(task.progress, task.runGeneration),
+    messages: options.includeMessages === false ? undefined : messages(task.messages ?? []), pendingMessages: messages(task.pendingMessages), progress: progress(task.progress, task.runGeneration),
     deliveryRecoveryMessages: task.deliveryRecoveryMessages?.map((entry) => {
       if (!Number.isSafeInteger(entry.runGeneration) || entry.runGeneration < 1) throw new Error("Invalid delivery generation");
       return { message: messages([entry.message])[0], runGeneration: entry.runGeneration };
@@ -138,9 +144,13 @@ export function serializeTask(task: RecoverableTask): object {
     runHistory: task.runHistory?.slice(-8).map((r) => ({ runGeneration: r.runGeneration, status: r.status, result: result(r.result), error: r.error, progress: progress(r.progress, r.runGeneration), ...timing(r), archivedAt: r.archivedAt })),
     createdAt: task.createdAt, updatedAt: task.updatedAt, ...timing(task) };
 }
+function childTranscriptExists(sessionDir: string, agentId: string): boolean {
+  return validTaskId(agentId) && existsSync(join(resolve(sessionDir), "subagents", agentId, "transcript.jsonl"));
+}
 export function persistTask(task: LocalAgentTask): void {
   if (!task.ownerSessionDir) return;
-  const data = JSON.stringify(serializeTask(task));
+  // The child transcript holds the context; the task record copies it only until that exists (legacy tasks).
+  const data = JSON.stringify(serializeTask(task, { includeMessages: !childTranscriptExists(task.ownerSessionDir, task.agentId) }));
   // Check UTF-8 bytes before creating directories, temp files or replacing snapshots.
   if (Buffer.byteLength(data, "utf8") > MAX_TASK_RECORD_BYTES) throw new Error("Oversized task record");
   const dir = taskDirectory(task.ownerSessionDir, task.agentId, true);
@@ -180,7 +190,9 @@ export function loadTasks(sessionDir: string): { tasks: LocalAgentTask[]; summar
       if (!object(raw) || raw.version !== 1 || raw.agentId !== agentId || !validTaskId(raw.id) || raw.taskId !== raw.id || !statuses.includes(raw.status) || !["agent", "exec", "image"].includes(raw.type) || ![raw.prompt, raw.description, raw.createdAt, raw.updatedAt].every((v) => typeof v === "string") || !Number.isSafeInteger(raw.runGeneration) || raw.runGeneration < 1) throw new Error("Invalid task record");
       if (raw.messageReceipts !== undefined && (!Array.isArray(raw.messageReceipts) || !raw.messageReceipts.every((r: any) => object(r) && typeof r.id === "string" && typeof r.messageId === "string" && ["queued", "delivered"].includes(r.status) && typeof r.queuedAt === "string" && Number.isSafeInteger(r.runGeneration)))) throw new Error("Invalid receipts");
       if (raw.runHistory !== undefined && !Array.isArray(raw.runHistory)) throw new Error("Invalid history");
-      const task = { ...serializeTask(raw as LocalAgentTask), ownerSessionDir: owner, outputFile: join(dir, "output.txt"), notified: raw.notified === true, retain: raw.retain !== false } as LocalAgentTask;
+      // A context copy from older records is kept only when the child transcript does not exist.
+      const legacyContext = Array.isArray(raw.messages) && !existsSync(join(dir, "transcript.jsonl")) ? raw.messages : [];
+      const task = { ...serializeTask({ ...raw, messages: legacyContext } as LocalAgentTask), ownerSessionDir: owner, outputFile: join(dir, "output.txt"), notified: raw.notified === true, retain: raw.retain !== false } as LocalAgentTask;
       if (task.status === "pending" || task.status === "running") {
         task.notified = false;
         task.status = "killed"; task.error = INTERRUPTED_TASK_ERROR;

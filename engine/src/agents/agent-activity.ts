@@ -4,7 +4,7 @@ import type { TimingRecord } from "../core/query-timing.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { AgentToolResult } from "./local-agent-task.js";
 
-export type AgentActivityMode = "sync" | "background" | "fork";
+export type AgentActivityMode = "sync" | "background";
 export type AgentActivityStatus = "pending" | "running" | "completed" | "failed" | "killed";
 export type AgentTimelineEntryKind = "text" | "thinking" | "tool_start" | "tool_result" | "status" | "error";
 

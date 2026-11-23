@@ -67,10 +67,9 @@ import { DefaultContextManager } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import type { NeoPluginResource } from "../plugins/plugin-system.js";
 import type { AgentEvent, ContextMetrics } from "../types/events.js";
-import { createImageId, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
+import { createImageId, userDisplayText, type Message, type MessageBlock, type ToolUseRequest } from "../types/messages.js";
 import { readToolCallDetail, toolErrorText, allowToolDetailRequest, sanitizeAgentToolPayload, redactToolDetail } from "./tool-call-detail.js";
 import { terminalFacts, terminalPreviews, terminalResultText } from "./terminal-presentation.js";
-import { createAgentContentDetailResolver, type AgentContentRequest } from "./agent-content-detail.js";
 import { toolDetailFieldsFromDetail } from "./tool-detail-fields.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
@@ -1079,7 +1078,6 @@ export class WebRepl {
       },
     };
   }
-  private readonly agentContentReader = createAgentContentDetailResolver();
   private readonly subscribers = new Set<WebSubscriber>();
   private eventSequence = 0;
   private pendingDeltaOperations: WebLineOperation[] = [];
@@ -1321,7 +1319,9 @@ export class WebRepl {
     };
     let initialMetrics = main.initialMetrics;
     try {
-      initialMetrics = buildContextMetrics({ model: execution.model, contextWindowTokensOverride: execution.contextWindowTokensOverride, messages: task.messages ?? [], systemPrompt: "", tools: [] });
+      // The live context is in memory while this process runs the agent; otherwise read it from the child transcript.
+      const contextMessages = task.messages?.length ? task.messages : messagesSinceLastCompact(view);
+      initialMetrics = buildContextMetrics({ model: execution.model, contextWindowTokensOverride: execution.contextWindowTokensOverride, messages: contextMessages, systemPrompt: "", tools: [] });
     } catch { /* keep the owner metrics shape */ }
     const runtime = {
       ...main, engine, initialMetrics, envNotice: undefined, usage: new SessionUsageTracker(),
@@ -1430,17 +1430,6 @@ export class WebRepl {
     const session = this.runtime.engine.snapshot().session;
     const detail = await readToolCallDetail({ sessionId: session?.sessionId ?? "", expectedSessionId: sessionId, sessionDir: session?.sessionDir, toolUseId, messageId, redact: value => this.runtime.engine.redactDisplayValue(value), entries: this.runtime.engine.getDisplayEntries() });
     return detail ? this.runtime.engine.redactDisplayValue({ ...detail, fields: toolDetailFieldsFromDetail(detail) }) : undefined;
-  }
-
-  async agentContent(sessionId: string, view: string, request: AgentContentRequest) {
-    const session = this.runtime.engine.snapshot().session;
-    if (!session?.sessionDir || sessionId !== session.sessionId || !["timeline", "delegation", "report", "messages"].includes(view)) return undefined;
-    // Loading/recovery belongs to activateSession, never this read-only route.
-    if (!this.runtime.taskStore.getInSession(request.taskId, session.sessionDir)) return undefined;
-    return this.agentContentReader[view as "timeline" | "delegation" | "report" | "messages"]({
-      ownerSessionId: sessionId, ownerSessionDir: session.sessionDir, taskStore: this.runtime.taskStore,
-      redact: value => this.runtime.engine.redactDisplayValue(value),
-    }, request);
   }
 
   terminalOutput(sessionId: string, runId: string, stream: string, offset: number, limitBytes: number, tail = false) {
@@ -3318,7 +3307,7 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const body = await readJsonBody<{ clearCache?: boolean; reason?: string }>(req);
       return sendJson(res, await router.requestClientReload(body));
     }
-    if (["/api/tool-call-detail", "/api/terminal-output", "/api/agent-content"].includes(url.pathname) && !allowToolDetailRequest(req.headers.origin, req.headers.host, req.headers["sec-fetch-site"] as string | undefined)) {
+    if (["/api/tool-call-detail", "/api/terminal-output"].includes(url.pathname) && !allowToolDetailRequest(req.headers.origin, req.headers.host, req.headers["sec-fetch-site"] as string | undefined)) {
       return sendJson(res, { error: "详情访问被拒绝" }, 403);
     }
     if (req.method === "GET" && url.pathname === "/api/sessions/running") return sendJson(res, { runningSessionIds: await router.runningSessionIds() });
@@ -3337,18 +3326,6 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       const detail = await repl.toolCallDetail(url.searchParams.get("sessionId") ?? "", url.searchParams.get("toolUseId") ?? "", url.searchParams.get("messageId") ?? undefined, observeTaskId);
       if (!detail) return sendJson(res, { error: "调用详情不可获取或无权访问" }, 404);
       return sendJson(res, detail);
-    }
-    if (req.method === "GET" && url.pathname === "/api/agent-content") {
-      res.setHeader("Cache-Control", "no-store");
-      const refresh = url.searchParams.get("refresh");
-      if (refresh !== null && refresh !== "true" && refresh !== "false") return sendJson(res, { error: "代理详情参数无效" }, 404);
-      const page = await repl.agentContent(url.searchParams.get("sessionId") ?? "", url.searchParams.get("view") ?? "timeline", {
-        taskId: url.searchParams.get("taskId") ?? "", runGeneration: Number(url.searchParams.get("runGeneration")),
-        ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
-        ...(url.searchParams.has("pageChars") ? { pageChars: Number(url.searchParams.get("pageChars")) } : {}),
-        ...(url.searchParams.has("refresh") ? { refresh: url.searchParams.get("refresh") === "true" } : {}),
-      });
-      return page ? sendJson(res, page) : sendJson(res, { error: "代理内容不可获取或无权访问" }, 404);
     }
     if (req.method === "GET" && url.pathname === "/api/terminal-output") {
       res.setHeader("Cache-Control", "no-store");
@@ -4212,7 +4189,7 @@ function renderMessage(message: Message, append: (line: Omit<UiLine, "id">) => n
       const kind = kindForRole(message.role);
       if (kind === "meta") continue;
       if (kind === "system") append({ kind, title: titleForRole(message.role), text: block.text, messageId: message.id, previewStyle: "summary" });
-      else append({ kind, text: block.text, messageId: message.id, ...(kind === "user" ? { files: messageFileAttachments(message) } : {}) });
+      else append({ kind, text: kind === "user" ? userDisplayText(message, block.text) : block.text, messageId: message.id, ...(kind === "user" ? { files: messageFileAttachments(message) } : {}) });
       rendered = true;
     } else if (block.type === "image") {
       const line = imageLineForBlock(message.role, block, message.id, blockIndex);
@@ -4291,6 +4268,13 @@ function imageLineForBlock(role: Message["role"], block: Extract<MessageBlock, {
       blockIndex,
     },
   };
+}
+
+/** Messages after the transcript's last compaction: the child's current context, for an estimate only. */
+function messagesSinceLastCompact(view: SessionTranscriptView): Message[] {
+  const entries = view.getDisplayEntries();
+  const start = entries.map((entry) => entry.type).lastIndexOf("compact") + 1;
+  return entries.slice(start).flatMap((entry) => entry.type === "message" ? [entry.message] : []);
 }
 
 function assistantText(message: Message): string | undefined {
@@ -4631,9 +4615,6 @@ function buildToolUseDisplay(toolName: string, input: unknown): UiToolDisplay {
   else if (toolName.startsWith("secret_")) {
     pushToolFact(facts, "密钥", data.key, true);
     pushToolFact(facts, "用途", data.reason);
-  } else if (toolName === "subagent_run") {
-    pushToolFact(facts, "任务", data.description ?? data.prompt);
-    pushToolFact(facts, "模式", data.mode);
   }
   return normalizeToolDisplay({ subject, purpose, facts, previews });
 }

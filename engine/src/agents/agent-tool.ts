@@ -7,10 +7,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { finalizeAgentTool, runAgent, type RunAgentDependencies } from "../core/run-agent.js";
 import { createLocalAgentTask, updateProgressFromEvent, updateProgressFromMessage, type AgentToolResult, type LocalAgentTask } from "./local-agent-task.js";
 import {
-  FORK_AGENT,
   GENERAL_PURPOSE_AGENT,
-  agentForTask,
-  isForkChildContext,
   type AgentDefinition,
 } from "./agent-definition.js";
 import { globalTaskStore, type TaskStore } from "../tasks/task-store.js";
@@ -21,7 +18,7 @@ import { AGENT_REPORT_TOOL_NAME } from "./agent-report-tool.js";
 export const AGENT_TOOL_NAME = "subagent_run";
 
 export const AGENT_TOOL_PROMPT_RULES = [
-  "Fresh agents do not inherit conversation context; the prompt must state goal, relevant files, constraints, allowed edits and expected output. mode=fork inherits your conversation, so give it a scoped directive only.",
+  "Subagents do not inherit your conversation; the prompt must state goal, relevant files, constraints, allowed edits and expected output.",
   "Tools: a subagent has your tools; block the ones it must not use with disallowed_tools (e.g. [\"file_edit\",\"file_write\"] for read-only work). Unknown names are rejected. subagent_report is always available; subagent_run/subagent_resume never are.",
   "Concurrency: parallel=true runs several sync calls of one turn concurrently; run_in_background (or mode=background) returns a task_id immediately. Otherwise calls run one after another. Each run has a wall-clock limit (AGENT_SUBAGENT_WALL_TIMEOUT_MS, default 10 min).",
   "Subagents cannot reach sibling agents; you relay every cross-agent question, decision and interface change. Give workers disjoint write scopes and settle shared contracts first.",
@@ -39,7 +36,7 @@ export interface AgentToolInput {
   /** When true with sync mode, allow concurrent execution with other parallel-safe agent calls in the same turn (multiple model streams). */
   parallel?: boolean;
   name?: string;
-  mode?: "sync" | "background" | "fork";
+  mode?: "sync" | "background";
   /** Working directory for this subagent's tools (resolved against parent cwd when relative). */
   cwd?: string;
 }
@@ -54,7 +51,7 @@ export interface AgentToolRuntime {
   compactor?: Compactor;
   contextBudget?: ContextBudgetOptions;
   taskStore?: TaskStore;
-  /** Worker definition override (tests/embedders). There is one worker kind; fork reuses it with parent context. */
+  /** Worker definition override (tests/embedders). There is one worker kind. */
   agent?: AgentDefinition;
   agentActivityStore?: AgentActivityStore;
 }
@@ -76,7 +73,7 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
         disallowed_tools: { type: "array", items: { type: "string" }, description: "Your tools this subagent must not use. Omit to give it all of your tools." },
         run_in_background: { type: "boolean" },
         name: { type: "string", description: "Optional stable name for later subagent_message routing." },
-        mode: { type: "string", enum: ["sync", "background", "fork"], description: "sync (default), background, or fork (background, inherits your conversation)." },
+        mode: { type: "string", enum: ["sync", "background"], description: "sync (default) or background." },
         cwd: { type: "string", description: "Working directory for child tools (list/read/exec); resolved against parent cwd if relative." },
         parallel: { type: "boolean", description: "Set true when launching multiple independent agents in the same turn so they run concurrently." },
       },
@@ -96,33 +93,32 @@ export function createAgentTool(runtime?: AgentToolRuntime): Tool<AgentToolInput
       if (!value.prompt?.trim()) throw new Error("agent.prompt is required");
       const blocked = value.disallowed_tools;
       if (blocked !== undefined && (!Array.isArray(blocked) || blocked.some((name) => typeof name !== "string"))) throw new Error("disallowed_tools must be an array of tool names");
-      if (value.mode !== undefined && !["sync", "background", "fork"].includes(value.mode)) throw new Error("mode must be sync, background or fork");
+      if (value.mode !== undefined && !["sync", "background"].includes(value.mode)) throw new Error("mode must be sync or background");
       return value;
     },
     isConcurrencySafe(input) {
-      return Boolean(input.run_in_background || input.mode === "background" || input.mode === "fork" || input.parallel === true);
+      return Boolean(input.run_in_background || input.mode === "background" || input.parallel === true);
     },
     async call(input, context, options) {
       if (!runtime) {
         return { ok: false, output: { error: "AgentTool runtime is not configured" } };
       }
-      if (context.isSubagent || isForkChildContext(context)) {
+      if (context.isSubagent) {
         return { ok: false, output: { error: "Subagents cannot delegate additional agents; ask the main agent to coordinate." } };
       }
       const toolError = checkToolNames(input, context, runtime);
       if (toolError) return { ok: false, output: { error: toolError } };
 
-      const fork = input.mode === "fork";
-      const agent = fork ? FORK_AGENT : runtime.agent ?? GENERAL_PURPOSE_AGENT;
+      const agent = runtime.agent ?? GENERAL_PURPOSE_AGENT;
       const description = input.description ?? input.prompt.slice(0, 80);
-      const background = Boolean(input.run_in_background || input.mode === "background" || fork || agent.background);
+      const background = Boolean(input.run_in_background || input.mode === "background" || agent.background);
       const agentId = makeAgentId(input.name ?? agent.agentType);
 
       if (background) {
-        return launchAsyncAgent({ input, context, options, runtime, agent, fork, agentId, description });
+        return launchAsyncAgent({ input, context, options, runtime, agent, agentId, description });
       }
 
-      return runSyncAgent({ input, context, options, runtime, agent, fork, agentId, description });
+      return runSyncAgent({ input, context, options, runtime, agent, agentId, description });
     },
   };
 }
@@ -133,7 +129,6 @@ async function runSyncAgent(input: {
   options: { onProgress?: (event: ToolProgressEvent) => void };
   runtime: AgentToolRuntime;
   agent: AgentDefinition;
-  fork: boolean;
   agentId: string;
   description: string;
 }): Promise<ToolResult> {
@@ -168,7 +163,7 @@ async function runSyncAgent(input: {
     agentType: input.agent.agentType,
     description: input.description,
     prompt: input.input.prompt,
-    mode: resolveAgentActivityMode(input.fork, "sync"),
+    mode: "sync",
     cwd: workspaceCwd,
     model: input.input.model,
   });
@@ -180,7 +175,6 @@ async function runSyncAgent(input: {
       agent: input.agent,
       prompt: input.input.prompt,
       parentContext: input.context,
-      parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId, input.context.options?.modelGateway),
       ...task.executionOptions,
       runGeneration,
@@ -189,13 +183,13 @@ async function runSyncAgent(input: {
       },
       onContextMessagesChanged: (messages) => {
         if (!ownsRun()) return;
+        // The child transcript already holds these messages durably: keep the live copy, coalesce the record write.
         task.messages = [...messages];
         taskStore.confirmDelivery(task.taskId, messages.map((message) => message.id), runGeneration);
-        taskStore.upsert(task);
+        taskStore.upsert(task, { persist: false });
       },
       takePendingMessages: () => ownsRun() ? taskStore.deliverPendingMessages(task.taskId, runGeneration) : [],
       abortSignal: wall?.signal ?? abortController.signal,
-      fork: input.fork,
       workspaceCwd,
     });
 
@@ -323,7 +317,6 @@ function launchAsyncAgent(input: {
   options: { onProgress?: (event: { toolName: string; message: string; data?: unknown }) => void };
   runtime: AgentToolRuntime;
   agent: AgentDefinition;
-  fork: boolean;
   agentId: string;
   description: string;
 }): ToolResult {
@@ -370,7 +363,6 @@ async function runAsyncAgentLifecycle(input: {
   context: ToolUseContext;
   runtime: AgentToolRuntime;
   agent: AgentDefinition;
-  fork: boolean;
   agentId: string;
   description: string;
   taskId: string;
@@ -391,14 +383,13 @@ async function runAsyncAgentLifecycle(input: {
   // Pin the launch-time cwd like sync agents; never follow later parent cwd changes.
   const workspaceCwd = resolveAgentWorkspaceCwd(input.input.cwd, input.context) ?? task?.executionOptions?.cwd;
   const activityStore = input.runtime.agentActivityStore ?? globalAgentActivityStore;
-  const mode = resolveAgentActivityMode(input.fork, "background");
   activityStore.start({
     agentId: input.agentId,
     taskId: input.taskId,
     agentType: input.agent.agentType,
     description: input.description,
     prompt: input.input.prompt,
-    mode,
+    mode: "background",
     cwd: workspaceCwd,
     model: input.input.model,
   });
@@ -410,12 +401,10 @@ async function runAsyncAgentLifecycle(input: {
       agent: input.agent,
       prompt: input.input.prompt,
       parentContext: input.context,
-      parentMessages: input.fork ? input.context.messages : undefined,
       dependencies: buildRunAgentDependencies(input.runtime, input.context.session?.sessionId, input.context.options?.modelGateway),
       ...(task?.executionOptions ?? effectiveExecutionOptions(input.input, input.agent, input.context)),
       runGeneration,
       abortSignal: wall?.signal ?? input.abortController.signal,
-      fork: input.fork,
       existingMessages: input.existingMessages,
       resumeDirective: input.isResume ? input.input.prompt : undefined,
       takePendingMessages: () => ownsRun() ? input.taskStore.deliverPendingMessages(input.taskId, runGeneration) : [],
@@ -425,9 +414,10 @@ async function runAsyncAgentLifecycle(input: {
       onContextMessagesChanged: (messages) => {
         if (!ownsRun()) return;
         const current = input.taskStore.get(input.taskId)!;
+        // The child transcript already holds these messages durably: keep the live copy, coalesce the record write.
         current.messages = [...messages];
         input.taskStore.confirmDelivery(input.taskId, messages.map((message) => message.id), runGeneration);
-        input.taskStore.upsert(current);
+        input.taskStore.upsert(current, { persist: false });
       },
       workspaceCwd,
     });
@@ -527,13 +517,14 @@ export function resumeAgentTask(
   taskStore: TaskStore,
   parentContext: ToolUseContext,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (parentContext.isSubagent || isForkChildContext(parentContext)) return Promise.resolve({ ok: false, error: "Only the main agent may resume subagents." });
+  if (parentContext.isSubagent) return Promise.resolve({ ok: false, error: "Only the main agent may resume subagents." });
   const task = taskStore.getActive(taskId);
   if (!task) return Promise.resolve({ ok: false, error: `Unknown task: ${taskId}` });
   if (task.type !== "agent") return Promise.resolve({ ok: false, error: `Only agent tasks can be resumed` });
   if (task.ownerSessionDir && path.resolve(parentContext.session?.sessionDir ?? "") !== task.ownerSessionDir) return Promise.resolve({ ok: false, error: "Resume the owning main session before resuming this agent." });
 
-  const agent = agentForTask(task.agentType, runtime.agent);
+  // One worker kind: tasks recorded under former kinds (explore, fork) resume as the worker.
+  const agent = runtime.agent ?? GENERAL_PURPOSE_AGENT;
   const abortController = new AbortController();
 
   if (!taskStore.isTerminal(task)) return Promise.resolve({ ok: false, error: "Only terminal agent tasks can be resumed" });
@@ -549,7 +540,6 @@ export function resumeAgentTask(
     context: parentContext,
     runtime,
     agent,
-    fork: false,
     agentId: task.agentId,
     description: task.description,
     taskId: task.taskId,
@@ -601,10 +591,6 @@ function buildRunAgentDependencies(runtime: AgentToolRuntime, sessionId?: string
     compactor: runtime.compactor,
     contextBudget: runtime.contextBudget,
   };
-}
-
-function resolveAgentActivityMode(fork: boolean, fallback: "sync" | "background") {
-  return fork ? "fork" : fallback;
 }
 
 function makeAgentId(prefix: string): string {

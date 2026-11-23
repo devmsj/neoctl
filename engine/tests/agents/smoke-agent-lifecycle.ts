@@ -61,7 +61,9 @@ try {
   assert.equal(requests.length, 2);
   assert(text(requests[1]).includes("running-inbox-message"));
   const blocks = requests[1].messages.flatMap((m) => m.blocks);
-  assert(blocks.findIndex((b) => b.type === "tool_result") < blocks.findIndex((b) => b.type === "text" && b.text === "running-inbox-message"));
+  const inbox = blocks.findIndex((b) => b.type === "text" && b.text === '<parent-message from="main_agent" kind="message">\nrunning-inbox-message\n</parent-message>');
+  assert(inbox >= 0, "the inbox message reaches the child with its source");
+  assert(blocks.findIndex((b) => b.type === "tool_result") < inbox);
   assert.equal(queued.receipt.status, "delivered");
   assert(queued.receipt.deliveredAt);
   assert.equal(task.pendingMessages.length, 1);

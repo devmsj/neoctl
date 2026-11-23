@@ -287,7 +287,7 @@ test('users cannot list, resume, delete or subscribe to another user session, ev
   const listB = await (await f.request('/api/sessions?tabId=shared', b)).json();
   assert.deepEqual(listA.sessions.map(s => s.sessionId), [idA]);
   assert.deepEqual(listB.sessions.map(s => s.sessionId), [idB]);
-  for (const route of ['/api/state', '/api/runtime-context', '/events', '/api/tool-call-detail', '/api/terminal-output', '/api/agent-content', '/api/images/by-id/anything']) {
+  for (const route of ['/api/state', '/api/runtime-context', '/events', '/api/tool-call-detail', '/api/terminal-output', '/api/images/by-id/anything']) {
     assert.equal((await f.request(`${route}?sessionId=${idA}&tabId=shared`, b)).status, 404, route);
   }
   for (const route of ['/api/sessions/resume', '/api/sessions/delete']) assert.equal((await f.request(route + '?tabId=shared', b, { sessionId: idA })).status, 404);

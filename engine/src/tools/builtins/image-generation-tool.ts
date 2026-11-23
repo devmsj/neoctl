@@ -150,7 +150,7 @@ export function createOpenAIImageGenerationTool(options: CreateOpenAIImageGenera
   };
   return {
     name: "image_create",
-    description: `Use for requested image generation or editing via OpenAI's Images API. ${IMAGE_SELECTION_GUIDE} Use mode=generate for new images and mode=edit for attached/prior images. ${IMAGE_EDIT_REFERENCE_GUIDE} Valid results may include warnings: disclose material output mismatches. On validation failure, report the model and exact parameter reason. Available only when MODEL_PROVIDER=openai.`,
+    description: `Use for requested image generation or editing via OpenAI's Images API. ${IMAGE_SELECTION_GUIDE} Use mode=generate for new images and mode=edit for attached/prior images. The image model does not see this conversation. ${IMAGE_EDIT_REFERENCE_GUIDE} Valid results may include warnings: disclose material output mismatches. On validation failure, report the model and exact parameter reason. Available only when MODEL_PROVIDER=openai.`,
     inputSchema: { ...IMAGE_INPUT_SCHEMA, properties: { ...IMAGE_INPUT_SCHEMA.properties, model: { ...IMAGE_INPUT_SCHEMA.properties!.model, default: options.model?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_IMAGE_MODEL } } },
     metadata: {
       readOnly: false,

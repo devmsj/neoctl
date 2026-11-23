@@ -1,5 +1,4 @@
 import { resolve } from "node:path";
-import { isForkChildContext } from "../agents/agent-definition.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/tool.js";
 import { agentRunDurationMs, type LocalAgentTask } from "../agents/local-agent-task.js";
 import { advanceParentCursor, formatProgressDelta, progressDelta } from "../agents/progress-journal.js";
@@ -227,7 +226,7 @@ export function createSubagentResumeTool(taskStore: TaskStore = globalTaskStore,
       return input as SubagentResumeInput;
     },
     async call(input, context) {
-      if (context.isSubagent || isForkChildContext(context)) return { ok: false, output: { error: "Only the main agent may resume subagents." } };
+      if (context.isSubagent) return { ok: false, output: { error: "Only the main agent may resume subagents." } };
       const task = taskStore.getInSession(input.task_id, callerSessionDir(context));
       if (!task) return { ok: false, output: { error: `Unknown task: ${input.task_id}` } };
       if (task.type !== "agent") return { ok: false, output: { error: `Only agent tasks can be resumed, got type: ${task.type}` } };

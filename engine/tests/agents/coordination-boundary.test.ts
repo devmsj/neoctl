@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AGENT_TOOL_PROMPT_RULES, createAgentTool } from "../../src/agents/agent-tool.js";
-import { GENERAL_PURPOSE_AGENT, FORK_AGENT, SUBAGENT_COORDINATION_RULES, type AgentDefinition } from "../../src/agents/agent-definition.js";
+import { GENERAL_PURPOSE_AGENT, SUBAGENT_COORDINATION_RULES, type AgentDefinition } from "../../src/agents/agent-definition.js";
 import { DefaultContextManager } from "../../src/context/context-manager.js";
 import { runAgent } from "../../src/core/run-agent.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
@@ -18,7 +18,7 @@ test("delegation tool states sibling isolation, explicit ownership and parent-me
 });
 
 const custom: AgentDefinition = { agentType: "custom", whenToUse: "test", tools: [], buildSystemPrompt: () => "CUSTOM_SCOPE_RULE" };
-for (const agent of [GENERAL_PURPOSE_AGENT, FORK_AGENT, custom]) {
+for (const agent of [GENERAL_PURPOSE_AGENT, custom]) {
   for (const inheritedContext of [false, true]) {
     test(`${agent.agentType}: coordination rules reach model with ${inheritedContext ? "inherited" : "default"} context and remain stable on resume`, async () => {
       const requests: ModelRequest[] = [];

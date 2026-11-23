@@ -13,7 +13,7 @@ import { planTool } from "../tools/builtins/plan-tool.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolResult, ToolUseContext, ToolCallOptions } from "../tools/tool.js";
 import { redactedTerminalChunk, type TerminalOutputStore, type StoreResult } from "../tools/terminal-output-store.js";
-import { createTextMessage, type Message } from "../types/messages.js";
+import { createParentAgentMessage, createTextMessage, type Message } from "../types/messages.js";
 import { SessionStore } from "../session/session-store.js";
 import { resolveContextImage } from "../core/session-images.js";
 
@@ -129,7 +129,7 @@ export class DemoTools {
       this.tasks.attachTask(task, context.session?.sessionDir);
       this.taskSessions.set(id, await SessionStore.open({ agentId: task.agentId, sessionId: task.agentId, rootDir: path.join(context.session!.sessionDir, "subagents"), cwd: context.appState.snapshot().cwd }));
       this.tasks.markRunning(id);
-      this.recordTaskMessage(id, createTextMessage("user", input.prompt));
+      this.recordTaskMessage(id, createParentAgentMessage(input.prompt, "task"));
       this.recordTaskMessage(id, createTextMessage("assistant", "正在检查持久图片索引、上下文边界和恢复路径。"));
       return { ok: true, output: { status: "async_launched", task_id: id, agent_id: task.agentId, description: task.description, output_file: task.outputFile } };
     }

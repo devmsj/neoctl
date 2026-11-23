@@ -15,7 +15,6 @@ const files = [
   'attachment-input.test.mjs',
   'observation-idle.test.mjs',
   'execution-signal.test.mjs',
-  'agent-content-reader.test.mjs',
   'agent-task-presentation.test.mjs',
   'app-url.test.mjs',
   'artifacts.test.mjs',

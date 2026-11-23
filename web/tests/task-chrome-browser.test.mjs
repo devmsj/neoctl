@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
-const part = text => ({ state:'complete', text, offset:0, totalChars:text.length, hasMore:false })
 test('task chrome: status icons, history, terminal details (no subagents), focus, themes and mobile', async () => {
  const terminal={kind:'terminal',sessionId:'term-review',ownerSessionId:'obs-session',description:'运行项目测试',command:'npm run test',cwd:'D:\\workspace\\project',status:'running',startedAt:new Date().toISOString()}
  const agent={kind:'agent',taskId:'agent-review',agentId:'child',runGeneration:1,description:'检查文档与示例命令'.repeat(8),status:'completed',durationMs:10000}
@@ -13,11 +12,6 @@ test('task chrome: status icons, history, terminal details (no subagents), focus
   if(url.pathname==='/api/terminal-output'){
    const stream=url.searchParams.get('stream'), offset=Number(url.searchParams.get('offset')), text=offset?'':stream==='stdout'?'Tests passed\n':'Diagnostic note\n'
    await route.fulfill({json:{sessionId:'obs-session',runId:url.searchParams.get('runId'),stream,offset,nextOffset:offset+Buffer.byteLength(text),text,endOfStoredOutput:true,record:{availability:'available',lifecycle:'terminal',streams:{stdout:{storedBytes:13},stderr:{storedBytes:16}}}}});return true
-  }
-  if(url.pathname==='/api/agent-content'){
-   const view=url.searchParams.get('view'),base={ownerSessionId:'obs-session',taskId:agent.taskId,runGeneration:1,state:'complete',snapshotId:view}
-   const data=view==='delegation'?{delegation:{scope:'task',prompt:part('检查项目文档')}}:view==='messages'?{messages:{content:part('[]')}}:{report:{content:part('## 检查完成\n\n示例命令已确认。\n\n```js\nconst ok = true;\n```')}}
-   await route.fulfill({json:{...base,...data}});return true
   }
  })
  try {

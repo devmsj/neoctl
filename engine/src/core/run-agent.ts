@@ -7,9 +7,9 @@ import type { ModelGateway, ModelUsage } from "../model/model-gateway.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { CanUseTool, Tool, ToolUseContext } from "../tools/tool.js";
 import type { AgentEvent } from "../types/events.js";
-import { createTextMessage, type Message } from "../types/messages.js";
+import { createAgentSystemNotice, createParentAgentMessage, type Message } from "../types/messages.js";
 import type { AgentDefinition } from "../agents/agent-definition.js";
-import { buildForkChildPrompt, buildSubagentSystemPrompt, FORK_AGENT } from "../agents/agent-definition.js";
+import { buildSubagentSystemPrompt } from "../agents/agent-definition.js";
 import { AGENT_REPORT_TOOL_NAME, createAgentReportTool, type AgentReportOutput } from "../agents/agent-report-tool.js";
 import type { AgentToolResult } from "../agents/local-agent-task.js";
 import { SessionStore } from "../session/session-store.js";
@@ -38,7 +38,6 @@ export interface RunAgentOptions {
   agent: AgentDefinition;
   prompt: string;
   parentContext?: ToolUseContext;
-  parentMessages?: readonly Message[];
   dependencies: RunAgentDependencies;
   model?: string;
   reasoning?: QueryOptions["reasoning"];
@@ -52,7 +51,6 @@ export interface RunAgentOptions {
   onContextMessagesChanged?: (messages: Message[]) => void;
   maxTurns?: number;
   abortSignal?: AbortSignal;
-  fork?: boolean;
   existingMessages?: Message[];
   takePendingMessages?: () => Message[];
   onInitialMessages?: (messages: Message[]) => void;
@@ -178,7 +176,7 @@ export async function* runAgent(options: RunAgentOptions): AsyncGenerator<AgentE
   if (options.agent.requiresReport === true && !extractFinalAgentReport(agentMessages, options.agent.reportToolName)) {
     const retryTurns = options.agent.reportRetryTurns ?? 1;
     if (retryTurns > 0 && !options.abortSignal?.aborted && !isFailedAgentTerminal(terminalReason)) {
-      const reminder = createTextMessage("user", buildReportRequiredReminder());
+      const reminder = createAgentSystemNotice(buildReportRequiredReminder(), "report_required");
       appendContext([reminder]);
       const recoveryMessages = contextMessages.map(cloneMessage);
       yield* runQuery(recoveryMessages, Math.max(2, retryTurns + 1), { type: "function", name: options.agent.reportToolName ?? AGENT_REPORT_TOOL_NAME });
@@ -255,26 +253,16 @@ export function finalizeAgentTool(input: {
   };
 }
 
-function shouldAppendAgentPrompt(agent: AgentDefinition): boolean {
-  return agent.agentType === FORK_AGENT.agentType;
-}
-
 function buildInitialAgentMessages(options: RunAgentOptions): Message[] {
-  const prompt = options.fork ? buildForkChildPrompt(options.prompt) : options.prompt;
   const messages: Message[] = [];
-  if (options.fork && options.parentMessages?.length) {
-    messages.push(...options.parentMessages.map(cloneMessage));
-  }
-  if (options.agent.initialPrompt) messages.push(createTextMessage("user", options.agent.initialPrompt));
-  messages.push(createTextMessage("user", prompt));
+  if (options.agent.initialPrompt) messages.push(createAgentSystemNotice(options.agent.initialPrompt, "agent_initial_prompt"));
+  messages.push(createParentAgentMessage(options.prompt, "task"));
   return messages;
 }
 
 function buildResumeMessages(options: RunAgentOptions): Message[] {
   if (!options.resumeDirective?.trim()) return [];
-  const message = createTextMessage("user", `[Resumed] ${options.resumeDirective}`);
-  message.metadata = { ...message.metadata, agentMessageKind: "resume" };
-  return [message];
+  return [createParentAgentMessage(options.resumeDirective, "resume")];
 }
 
 async function createChildAgentSession(options: RunAgentOptions): Promise<SessionStore | undefined> {
@@ -300,7 +288,7 @@ function createAgentContextManager(options: RunAgentOptions): ContextManager {
         cwd: options.workspaceCwd ?? input.cwd,
         omitProjectMemory: options.agent.omitProjectMemory ?? input.omitProjectMemory,
         agentPrompt: buildSubagentSystemPrompt(options.agent, options.parentContext),
-        agentPromptMode: shouldAppendAgentPrompt(options.agent) ? "proactive_append" : "replace",
+        agentPromptMode: "replace",
       });
       return runtime;
     },

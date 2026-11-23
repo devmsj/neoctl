@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
 import { test } from 'node:test'
-import { contentText } from '../src/agent-content-reader.mjs'
-
-test('generated tool metadata uses lines while user content remains unchanged', () => {
-  const text = contentText({ items: [{ kind: 'tool_result', toolName: 'file_read', toolUseId: 'call-1', status: 'success', content: { state: 'complete', text: '用户内容 a·b' } }] }, 'timeline')
-  assert.match(text, /调用 ID：call-1\n调用状态：success/)
-  assert.ok(text.includes('用户内容 a·b'))
-  assert.equal((text.match(/·/g) || []).length, 1)
-})
 
 async function sources(url) {
   const result = []

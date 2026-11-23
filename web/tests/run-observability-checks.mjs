@@ -27,7 +27,6 @@ const agentDataFiles = [
 // Deliberately repeats focused checks: use run-unit-tests.mjs for the full non-browser web suite.
 // Explicit filenames avoid Node-version-dependent glob expansion and browser discovery.
 const webNonBrowserFiles = [
-  'tests/agent-content-reader.test.mjs',
   'tests/agent-task-presentation.test.mjs',
   'tests/artifacts.test.mjs',
   'tests/composer-presentation.test.mjs',
@@ -75,8 +74,6 @@ const jobs = [
   ['terminal-browser', 'web', ['tests/terminal-output-browser.test.mjs']],
   ['terminal-transition-browser', 'web', ['--test', 'tests/terminal-transition-browser.test.mjs']],
   ['artifact-version', 'web', ['--test', 'tests/artifacts.test.mjs', 'tests/plugins/xhs-artifact/version.test.mjs', 'tests/xhs-version-browser.test.mjs']],
-  ['agent-content-resolver', 'engine', [tsx, '--test', 'tests/web/agent-content-detail.test.ts'], defaultTimeout],
-  ['agent-content-http', 'engine', [tsx, 'tests/web/smoke-agent-content-http.ts'], defaultTimeout],
   ...agentDataFiles.map(([name, file]) => [name, 'engine', [tsx, '--test', file], defaultTimeout]),
   // Paths verified in the workspace; these security regressions are required gates.
   // Missing/unfinished files fail normally, never skip or count as part of the 69 baseline.
@@ -86,12 +83,6 @@ const jobs = [
   ['smoke-secrets', 'engine', [tsx, 'tests/secrets/smoke-secrets.ts'], defaultTimeout],
   ['smoke-agents', 'engine', [tsx, 'tests/agents/smoke-agents.ts'], defaultTimeout],
   ['smoke-agent-lifecycle', 'engine', [tsx, 'tests/agents/smoke-agent-lifecycle.ts'], defaultTimeout],
-  ['agent-reader-helper', 'web', ['--test', 'tests/agent-content-reader.test.mjs'], unitTimeout],
-  ['agent-reader-browser', 'web', ['tests/agent-content-reader-browser.test.mjs'], defaultTimeout],
-  // Formal App: five tests with up to 245s combined test budgets, plus Edge startup.
-  ['agent-content-app-browser', 'web', ['--test', 'tests/agent-content-app-browser.test.mjs'], 300000],
-  // Eleven real-clock/SSE cases: allow all per-case budgets plus browser cleanup.
-  ['agent-round-timing-browser', 'web', ['--test', 'tests/agent-round-timing-browser.test.mjs'], 420000],
   // plugins.test.mjs imports engine/dist and resolves 'plugins' relative to web cwd.
   ['web-non-browser', 'web', ['--test', ...webNonBrowserFiles], 300000],
 ]

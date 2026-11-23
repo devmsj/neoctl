@@ -105,6 +105,41 @@ export function createTaskNotificationMessage(payload: TaskNotificationPayload):
   };
 }
 
+/**
+ * A subagent has no human user: every user-role message in its context comes either from the
+ * parent (main) agent or from the framework. Each is its own message with an explicit source;
+ * framework text is never mixed into what the parent wrote.
+ */
+export type ParentMessageKind = "task" | "message" | "resume";
+const PARENT_MESSAGE_TAG = "parent-message";
+const PARENT_MESSAGE_CLOSE = `</${PARENT_MESSAGE_TAG}>`;
+const PARENT_MESSAGE_CLOSE_ESCAPED = `<\\/${PARENT_MESSAGE_TAG}>`;
+
+/** What the parent agent wrote, delivered to the subagent with its source; counts as the subagent's user turn. */
+export function createParentAgentMessage(text: string, kind: ParentMessageKind): Message {
+  const body = text.split(PARENT_MESSAGE_CLOSE).join(PARENT_MESSAGE_CLOSE_ESCAPED);
+  return {
+    ...createTextMessage("user", `<${PARENT_MESSAGE_TAG} from="main_agent" kind="${kind}">\n${body}\n${PARENT_MESSAGE_CLOSE}`),
+    metadata: { agentMessageSource: "parent", agentMessageKind: kind },
+  };
+}
+
+/** Runtime instructions for a subagent (required report, ...): separate meta messages, never part of a parent message. */
+export function createAgentSystemNotice(text: string, kind: string): Message {
+  return {
+    ...createTextMessage("user", `<system-notice>\n${text}\n</system-notice>`),
+    isMeta: true,
+    metadata: { agentMessageSource: "system", agentMessageKind: kind },
+  };
+}
+
+/** Display text of a user-role text block: a parent message shows what the parent wrote, without the source envelope. */
+export function userDisplayText(message: Pick<Message, "metadata">, text: string): string {
+  if (message.metadata?.agentMessageSource !== "parent") return text;
+  const match = /^<parent-message from="main_agent" kind="[a-z]+">\n([\s\S]*)\n<\/parent-message>$/u.exec(text);
+  return match ? match[1]!.split(PARENT_MESSAGE_CLOSE_ESCAPED).join(PARENT_MESSAGE_CLOSE) : text;
+}
+
 export function createThinkingMessage(text: string, signature?: string): Message {
   return {
     id: cryptoId(),

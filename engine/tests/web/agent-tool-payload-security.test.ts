@@ -5,9 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { readToolCallDetail, redactToolDetail } from '../../src/web/tool-call-detail.js';
 import type { Message } from '../../src/types/messages.js';
-import { TaskStore } from '../../src/tasks/task-store.js';
-import { createLocalAgentTask } from '../../src/agents/local-agent-task.js';
-import { createAgentContentDetailResolver } from '../../src/web/agent-content-detail.js';
 
 const hidden = 'LEGACY_PRIVATE_REPORT';
 const input = { task_id: 'task-safe', run_generation: 3, prompt: 'User delegation', description: 'User purpose' };
@@ -89,32 +86,6 @@ test('persisted result is filtered after reference restoration', async t => {
   const d = await detail('subagent_get', `<persisted-output>\nFull output saved to: ${file}\n${hidden}`, true, dir);
   assert.ok(!JSON.stringify(d).includes(hidden)); assert.equal(JSON.parse(d.result.text).task_id, 'task-safe'); assert.notEqual(d.result.state, 'complete');
 });
-
-for (const persisted of [false, true]) {
-  test(`agent tool timeline shares provenance boundary (persisted=${persisted})`, async t => {
-    const ownerDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-payload-timeline-')));
-    const store = new TaskStore();
-    const task = createLocalAgentTask({ taskId: 'task-safe', agentId: 'agent-safe', prompt: 'User delegation', description: 'User purpose' });
-    task.runGeneration = 3; store.attachTask(task, ownerDir);
-    t.after(async () => { store.flush(); await fs.rm(ownerDir, { recursive: true, force: true }); });
-    const child = path.join(ownerDir, 'subagents', task.agentId);
-    await fs.mkdir(path.join(child, 'tool-results'), { recursive: true });
-    const value = { task_id: 'nested-task', run_generation: 2, result: { content: hidden }, run_history: [{ result: { displaySource: 'agent_report', content: 'PUBLIC ARCHIVE' } }] };
-    const file = path.join(child, 'tool-results', 'call.json');
-    await fs.writeFile(file, JSON.stringify(value));
-    const output = persisted ? `<persisted-output>\nFull output saved to: ${file}\n${hidden}` : value;
-    const rows = entries('subagent_get', output).map(e => ({ ...e, sessionId: task.agentId, agentId: task.agentId, runGeneration: 3 }));
-    await fs.writeFile(path.join(child, 'transcript.jsonl'), rows.map(e => JSON.stringify(e) + '\n').join(''));
-    const resolver = createAgentContentDetailResolver();
-    const page = await resolver.timeline({ ownerSessionId: 'owner', ownerSessionDir: ownerDir, taskStore: store, redact: value => value }, { taskId: task.taskId, runGeneration: 3, pageChars: 16000 });
-    assert.notEqual(page.state, 'unavailable', page.reason);
-    assert.ok(!JSON.stringify(page).includes(hidden));
-    const item = page.items?.find(i => i.kind === 'tool_result'); assert.ok(item);
-    assert.equal(item.content.state, 'unavailable');
-    const data = JSON.parse(item.content.text); assert.equal(data.task_id, 'nested-task'); assert.equal(data.run_generation, 2);
-    assert.ok(item.content.text.includes('PUBLIC ARCHIVE'));
-  });
-}
 
 test('top-level structured agent failures remain readable, nested report errors do not', async () => {
   for (const name of ['subagent_get', 'subagent_run', 'subagent_output']) {

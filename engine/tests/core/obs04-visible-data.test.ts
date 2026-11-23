@@ -112,10 +112,6 @@ test("child transcript tags only new query messages with actual generation; rest
   try {
     const mapped = await streamEvents([{ type: "response.output_text.delta", delta: "ROUND_ONE" }, { type: "response.completed", response: { status: "completed" } }]);
     const input = options(root, mapped);
-    const inherited = createTextMessage("assistant", "PARENT_CONTEXT");
-    inherited.blocks = [{ type: "text", text: "PARENT_CONTEXT", displayChannel: "visible" }];
-    input.fork = true;
-    input.parentMessages = [inherited];
     input.runGeneration = 7;
     input.dependencies.modelGateway = gateway([...mapped, { type: "tool_use", toolUse: { id: "call-new", name: "missing-tool", input: {} } }]);
     input.takePendingMessages = (() => { let sent = false; return () => { if (sent) return []; sent = true; return [createTextMessage("user", "PENDING")]; }; })();
