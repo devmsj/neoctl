@@ -6,6 +6,7 @@ const webRoot = fileURLToPath(new URL('../', import.meta.url));
 const files = [
   'runtime-lines.test.mjs',
   'session-recency.test.mjs',
+  'stable-view.test.mjs',
   'tool-observation-reactivity.test.mjs',
   'appearance.test.mjs',
   'appearance-controller.test.mjs',

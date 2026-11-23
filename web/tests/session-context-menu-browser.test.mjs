@@ -42,6 +42,39 @@ test('session context menu confirms deletion without navigation and allows curre
   }finally{await f.close()}
 })
 
+test('columns render independently: transcript/right-panel scrolling and list refreshes never interrupt the sidebar menu',async()=>{
+  let items=[{sessionId:'obs-session',title:'Current'},{sessionId:'second',title:'Second'},{sessionId:'keep',title:'Keep'}]
+  const f=await createObservabilityBrowser(observabilitySnapshot(),async route=>{
+    if(new URL(route.request().url()).pathname==='/api/sessions'){await route.fulfill({json:{sessions:items,total:items.length,page:1,totalPages:1}});return true}
+    return false
+  },{viewport:{width:1180,height:760}})
+  try{
+    const p=f.page, menu=p.getByRole('menu',{name:'会话操作'})
+    const titles=()=>p.locator('.quick-session .quick-title').allInnerTexts()
+    await p.locator('.quick-session').nth(2).waitFor()
+    await p.locator('.quick-session').filter({hasText:'Keep'}).click({button:'right'});await menu.waitFor()
+    // Streaming auto-follow scrolls the transcript every frame; the right panel scrolls on its own too.
+    await p.evaluate(async()=>{
+      const transcript=document.querySelector('.transcript'), right=document.querySelector('.right-panel')
+      transcript.style.minHeight='0';const filler=document.createElement('div');filler.style.height='4000px';transcript.append(filler)
+      for(let i=0;i<20;i++){transcript.scrollTop+=40;transcript.dispatchEvent(new Event('scroll'));right?.dispatchEvent(new Event('scroll'));await new Promise(r=>requestAnimationFrame(r))}
+    })
+    assert.ok(await menu.isVisible(),'menu survives scrolling in other columns')
+    // A background list refresh reorders rows; they stay put while the menu is open.
+    const before=await titles();assert.deepEqual(before.slice(1),['Second','Keep'])
+    items=[items[2],items[0],items[1]]
+    await p.evaluate(()=>window.dispatchEvent(new Event('focus')));await p.waitForTimeout(400)
+    assert.deepEqual(await titles(),before);assert.ok(await menu.isVisible())
+    // Released on close: the refreshed order appears.
+    await p.keyboard.press('Escape');await menu.waitFor({state:'detached'})
+    await p.waitForFunction(()=>document.querySelector('.quick-session .quick-title')?.textContent==='Keep')
+    // Scrolling the sidebar itself still moves the anchor and dismisses the menu.
+    await p.locator('.quick-session').filter({hasText:'Second'}).click({button:'right'});await menu.waitFor()
+    await p.locator('.quick-scroll').dispatchEvent('scroll');await menu.waitFor({state:'detached'})
+    assert.deepEqual(f.errors,[])
+  }finally{await f.close()}
+})
+
 test('current-session deletion confirms, recovers a failure, then opens the replacement without resuming the deleted id',async()=>{
  let snapshot=observabilitySnapshot({session:{sessionId:'obs-session',title:'Current'}}), fail=true, deletes=0;
  const f=await createObservabilityBrowser(()=>snapshot,async route=>{

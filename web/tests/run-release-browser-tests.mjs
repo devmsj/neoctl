@@ -50,6 +50,7 @@ const files = [
   'workspace-layout-browser.test.mjs',
   'workspace-pages-browser.test.mjs',
   'task-chrome-browser.test.mjs',
+  'right-panel-browser.test.mjs',
   'runtime-tool-list-browser.test.mjs',
 ].map(file => `tests/${file}`)
 const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...files], {

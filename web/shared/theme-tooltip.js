@@ -20,8 +20,12 @@
     const description = document.createElement('span'); description.id='neo-tooltip-description';
     description.style.cssText='position:fixed;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);pointer-events:none';
     host.append(description);
-    let target, timer, closeTimer, observer;
-    const text = el => el?.getAttribute('data-tooltip') || '';
+    // Hover hints wait for the pointer to rest so passing over controls stays quiet.
+    const HOVER_DELAY = 700, FOCUS_DELAY = 100;
+    const CONTROL = 'button,a,summary,[role="button"]';
+    let target, timer, closeTimer, observer, suppressed;
+    // Icon controls without an explicit hint fall back to their accessible name.
+    const text = el => el?.getAttribute?.('data-tooltip') || (el?.matches?.(CONTROL) && iconOnly(el) ? (el.getAttribute('aria-label') || '').trim() : '');
     function position() {
       if (!target?.isConnected) { hide(); return; }
       const r=target.getBoundingClientRect(), w=tip.offsetWidth,h=tip.offsetHeight;
@@ -40,10 +44,10 @@
       const ids=new Set((target.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean));ids.add(description.id);target.setAttribute('aria-describedby',[...ids].join(' '));
       position();
       observer=new MutationObserver(()=>{if(!text(target)){hide();return;}tip.textContent=description.textContent=text(target);position();});
-      observer.observe(target,{attributes:true,attributeFilter:['data-tooltip']});
+      observer.observe(target,{attributes:true,attributeFilter:['data-tooltip','aria-label']});
     }
-    // Icon controls remain named for assistive technology, but never show a
-    // floating hint (including keyboard focus). Text titles/paths still expand.
+    // Icon controls (no visible words) show their hint after a hover pause or
+    // keyboard focus; text titles/paths still expand the same way.
     function iconOnly(node) {
       if(node.namespaceURI==='http://www.w3.org/2000/svg') return true;
       const walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);
@@ -64,28 +68,36 @@
         }
       }
       for(const node of path) {
-        if(!text(node) && !node.matches('button,a,summary,[role="button"]'))continue;
-        if(iconOnly(node)) {
-          if(text(node) && !node.hasAttribute('aria-label'))node.setAttribute('aria-label',text(node));
-          return;
+        const hint=text(node);
+        if(hint) {
+          if(!node.hasAttribute('aria-label') && iconOnly(node))node.setAttribute('aria-label',hint);
+          return node;
         }
-        if(text(node))return node;
+        // An unnamed icon control never borrows an ancestor's hint.
+        if(node.matches(CONTROL) && iconOnly(node))return;
       }
     }
     function enter(event) {
       if(event.pointerType==='touch')return;
       if(event.composedPath().includes(host)){clearTimeout(closeTimer);return;}
+      // Mouse clicks also focus controls; only keyboard focus should reveal hints.
+      if(event.type==='focusin' && !event.composedPath()[0]?.matches?.(':focus-visible'))return;
       const next=find(event);if(next===target){clearTimeout(closeTimer);return;}
-      hide();if(!next)return;target=next;timer=setTimeout(show,event.type==='focusin'?100:420);
+      // After a click, stay quiet until the pointer moves onto something else.
+      if(event.type==='pointerover'){if(next&&next===suppressed)return;suppressed=undefined;}
+      hide();if(!next)return;target=next;timer=setTimeout(show,event.type==='focusin'?FOCUS_DELAY:HOVER_DELAY);
     }
     document.addEventListener('pointerover',enter);
     document.addEventListener('focusin',enter);
     document.addEventListener('pointerout',event=>{if(target&&!event.composedPath().includes(host)&&!target.contains(event.relatedTarget))closeTimer=setTimeout(hide,140);});
     host.addEventListener('pointerleave',()=>{closeTimer=setTimeout(hide,140);});
     document.addEventListener('focusout',()=>{closeTimer=setTimeout(hide,140);});
-    document.addEventListener('pointerdown',event=>{if(!event.composedPath().includes(host))hide();},true);
+    document.addEventListener('pointerdown',event=>{if(event.composedPath().includes(host))return;hide();suppressed=find(event);},true);
     document.addEventListener('keydown',event=>{if(event.key==='Escape')hide();},true);
-    document.addEventListener('scroll',event=>{if(!event.composedPath().includes(host))hide();},true);
+    // Columns scroll independently (transcript auto-follow streams constantly);
+    // only a scroll that moves the hovered element dismisses its hint.
+    const movesTarget=source=>{if(!target?.isConnected||!source||source===document||source===document.documentElement||source===document.body)return true;for(let n=target;n;n=n.parentNode||n.host)if(n===source)return true;return false;};
+    document.addEventListener('scroll',event=>{if(target&&!event.composedPath().includes(host)&&movesTarget(event.target))hide();},true);
     window.addEventListener('resize',hide);window.addEventListener('blur',hide);
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});else mount();

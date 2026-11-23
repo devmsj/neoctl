@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChromeIcon from './ChromeIcon.vue'
+import { scrollMovesAnchor } from '../overlay-anchor.mjs'
 const props = defineProps({ target: Object, disabledReason: String })
 const emit = defineEmits(['close', 'delete'])
 const menu = ref(null), left = ref(0), top = ref(0)
@@ -22,7 +23,9 @@ function close(restore = false) {
   if (restore && origin?.isConnected) origin.focus?.({ preventScroll: true })
 }
 function outside(event) { if (!menu.value?.contains(event.target)) close() }
-function scroll(event) { if (!menu.value?.contains(event.target)) close() }
+// Streaming in the transcript scrolls continuously; only a scroll that moves
+// the clicked session row dismisses the menu.
+function scroll(event) { if (!menu.value?.contains(event.target) && scrollMovesAnchor(event, origin)) close() }
 function keydown(event) {
   if (!props.target) return
   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true) }

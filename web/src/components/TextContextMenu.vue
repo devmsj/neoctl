@@ -2,8 +2,10 @@
 import { nextTick, onMounted, onBeforeUnmount, ref } from 'vue'
 import ChromeIcon from './ChromeIcon.vue'
 import { isDesktop } from '../local-resources.mjs'
+import { scrollMovesAnchor } from '../overlay-anchor.mjs'
 const emit = defineEmits(['notify'])
 const target = ref(null), menu = ref(null), left = ref(0), top = ref(0), busy = ref(false)
+let anchor
 function editable(node) {
   const el = node?.closest?.('textarea,input,[contenteditable="true"]')
   if (!el || el.disabled) return null
@@ -32,7 +34,8 @@ async function open(event) {
   event.preventDefault(); event.stopPropagation()
   target.value = { field, start, end, text: field?.type === 'password' ? '' : text,
     writable: !!field && !field.readOnly, range: (!field || field.isContentEditable) && selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null }
-  const origin = (field || event.target).getBoundingClientRect()
+  anchor = field || event.target
+  const origin = anchor.getBoundingClientRect()
   const x = Number.isFinite(event.clientX) && event.clientX > 0 ? event.clientX : origin.left + 12
   const y = Number.isFinite(event.clientY) && event.clientY > 0 ? event.clientY : origin.top + 20
   left.value = x; top.value = y
@@ -94,7 +97,7 @@ async function act(action, snapshot = target.value) {
   finally { busy.value = false }
 }
 function outside(event) { if (!menu.value?.contains(event.target)) close() }
-function scroll(event) { if (!menu.value?.contains(event.target)) close() }
+function scroll(event) { if (target.value && !menu.value?.contains(event.target) && scrollMovesAnchor(event, anchor)) close() }
 function keydown(event) {
   if (isDesktop() && !event.isComposing && !event.repeat && (event.ctrlKey || event.metaKey) && !event.altKey && ['c','v'].includes(event.key.toLowerCase())) {
     const field = editable(event.target), selection = getSelection(), start = field?.selectionStart ?? null, end = field?.selectionEnd ?? null

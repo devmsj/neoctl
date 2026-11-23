@@ -44,6 +44,8 @@ import TextContextMenu from './components/TextContextMenu.vue'
 import SystemNotice from './components/SystemNotice.vue'
 import SettingsSaveButton from './components/SettingsSaveButton.vue'
 import TaskStatusIcon from './components/TaskStatusIcon.vue'
+import RightPanel from './components/RightPanel.vue'
+import { stableComputed } from './stable-view.mjs'
 import { highlightSource, normalizeCodeLanguage } from './code-highlight.mjs'
 import NeoSelect from './components/NeoSelect.vue'
 import ModelSettings from './components/ModelSettings.vue'
@@ -388,10 +390,19 @@ const sessionPage = ref(1)
 const quickListRevision = ref(0)
 const quickPendingKey = ref('')
 let sessionOpenVersion = 0, sessionOpenController
-const quickCurrentSession = computed(() => state.session?.sessionId ? {
-  ...state.session, title: currentTitle.value,
-  ...(adminViewing.value ? { ownerUsername: authState.adminOwnerUsername } : {}),
-} : null)
+// The sidebar renders independently of the transcript: every state sync replaces
+// state.session, so hand the list only the fields it shows and keep the same
+// object while they are unchanged (no sidebar re-render per streaming sync).
+const QUICK_SESSION_FIELDS = ['sessionId', 'title', 'updatedAt', 'createdAt', 'ownerUsername']
+const quickCurrentSession = computed((previous) => {
+  if (!state.session?.sessionId) return null
+  const next = {
+    sessionId: state.session.sessionId, title: currentTitle.value,
+    updatedAt: state.session.updatedAt, createdAt: state.session.createdAt,
+    ownerUsername: adminViewing.value ? authState.adminOwnerUsername : state.session.ownerUsername,
+  }
+  return previous && QUICK_SESSION_FIELDS.every(field => previous[field] === next[field]) ? previous : next
+})
 async function loadQuickPage({ page, pageSize, q, signal }) {
   const url = new URL(adminViewing.value ? '/api/admin/sessions' : runtimeUrl('/api/sessions'), location.href)
   url.searchParams.set('page', String(page)); url.searchParams.set('pageSize', String(pageSize))
@@ -452,7 +463,6 @@ const draggingPromptId = ref('')
 const sortingPromptId = ref('')
 const promptSortTargetId = ref('')
 const promptSortPosition = ref('before')
-const memoryHoverIndex = ref(-1)
 let es
 let toastTimer
 const transcriptFollow = createTranscriptFollow({ getElement: () => transcript.value })
@@ -677,10 +687,14 @@ const queuedDisplayText = computed(() => stripHiddenAttachmentManifest(stripImag
 const queuedImages = computed(() => state.queuedAttachments.filter(item => item.kind === 'image' && item.previewUrl))
 const queuedFiles = computed(() => state.queuedAttachments.filter(item => item.kind === 'file'))
 const liveRunningIds = ref([])
-const quickRunningIds = computed(() => [...new Set([
-  ...liveRunningIds.value, ...state.runningSessionIds,
-  ...(composerRunning.value && !state.runControl.canResume && state.session?.sessionId ? [state.session.sessionId] : []),
-])])
+const quickRunningIds = computed((previous) => {
+  const next = [...new Set([
+    ...liveRunningIds.value, ...state.runningSessionIds,
+    ...(composerRunning.value && !state.runControl.canResume && state.session?.sessionId ? [state.session.sessionId] : []),
+  ])]
+  // Same ids => same array, so state syncs do not re-render the sidebar.
+  return previous?.length === next.length && next.every((id, index) => previous[index] === id) ? previous : next
+})
 let runningStatusTimer, runningStatusController, runningStatusVersion = 0
 async function refreshRunningSessions() {
   if (document.hidden) return
@@ -854,24 +868,26 @@ const currentCpaQuota = computed(() => {
   if (!state.cpaQuotas.length) return null
   return state.cpaQuotas[state.cpaQuotaIndex % state.cpaQuotas.length] || state.cpaQuotas[0]
 })
-const memoryCurrent = computed(() => state.memory?.current || null)
-const memoryTrendPoints = computed(() => {
-  const entries = (state.memory?.history || []).filter((entry) => Number.isFinite(Number(entry?.rss)))
-  const values = entries.map((entry) => Number(entry.rss))
-  if (!values.length) return []
-  const minimum = Math.min(...values)
-  const maximum = Math.max(...values)
-  const range = Math.max(1, maximum - minimum)
-  return values.map((value, index) => ({
-    entry: entries[index],
-    x: values.length === 1 ? 130 : index / (values.length - 1) * 260,
-    y: values.length === 1 ? 22 : 40 - (value - minimum) / range * 36,
-  }))
+// The right panel gets small view models that keep their identity while unchanged,
+// so transcript streaming (which replaces state arrays every sync) never re-renders it.
+const rightPanelTaskView = (task) => ({
+  key: backgroundTaskKey(task), status: task.status,
+  title: backgroundTaskTitle(task), displayTitle: backgroundTaskDisplayTitle(task),
 })
-const memoryTrendPath = computed(() => memoryTrendPoints.value.map((point, index) => (
-  `${index ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
-)).join(' '))
-const memoryHoveredPoint = computed(() => memoryTrendPoints.value[memoryHoverIndex.value] || null)
+const rightPanelTasks = stableComputed(() => ({
+  count: backgroundTaskCount.value,
+  primary: primaryBackgroundTask.value ? rightPanelTaskView(primaryBackgroundTask.value) : null,
+  history: backgroundTaskHistory.value.map(rightPanelTaskView),
+}))
+const rightPanelQuota = stableComputed(() => controls.quota && currentCpaQuota.value ? {
+  account: currentCpaQuota.value.account, resetAt: currentCpaQuota.value.resetAt,
+  remainingPercent: currentCpaQuota.value.remainingPercent,
+  index: state.cpaQuotaIndex, total: state.cpaQuotas.length,
+} : null)
+function openRightPanelTask(key) {
+  const task = allBackgroundTasks.value.find((item) => backgroundTaskKey(item) === key)
+  if (task) openBackgroundTaskDetail(task)
+}
 
 watch(theme, applyTheme, { immediate: true })
 watch(() => state.activePanel, panel => { document.documentElement.dataset.neoPanel = panel }, { immediate: true })
@@ -2720,26 +2736,6 @@ async function saveCpaConfig() {
   } finally { state.cpaSaving = false }
 }
 
-function normalizedQuotaPercent(value) {
-  const number = Number.parseFloat(String(value ?? '').replace('%', ''))
-  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0
-}
-
-function quotaPercent(value) {
-  const raw = Number.parseFloat(String(value ?? '').replace('%', ''))
-  if (!Number.isFinite(raw)) return '—'
-  const number = normalizedQuotaPercent(raw)
-  return `${number.toFixed(number % 1 ? 1 : 0)}%`
-}
-
-function formatQuotaReset(value) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '—'
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(date)
-}
-
 function formatSessionTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
@@ -2754,47 +2750,12 @@ function rotateCpaQuota(direction) {
   state.cpaQuotaIndex = (state.cpaQuotaIndex + direction + count) % count
 }
 
-function quotaAccountLabel(value) {
-  const account = String(value || '').trim()
-  if (!account) return 'Codex 凭据'
-  const [name, domain] = account.split('@')
-  if (!domain || name.length <= 3) return account
-  return `${name.slice(0, 3)}***@${domain}`
-}
-
-function formatMemoryBytes(value) {
-  const bytes = Number(value)
-  if (!Number.isFinite(bytes) || bytes < 0) return '—'
-  const mb = bytes / 1024 / 1024
-  return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`
-}
-
 function formatMemoryTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '等待采样'
   return new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   }).format(date)
-}
-
-function formatMemoryTooltipTime(value) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '—'
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).format(date)
-}
-
-function updateMemoryHover(event) {
-  const count = memoryTrendPoints.value.length
-  if (!count) return
-  const rect = event.currentTarget.getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)))
-  memoryHoverIndex.value = count === 1 ? 0 : Math.round(ratio * (count - 1))
-}
-
-function clearMemoryHover() {
-  memoryHoverIndex.value = -1
 }
 
 async function postJson(url, body, scoped = false) {
@@ -5117,7 +5078,7 @@ function createMobileSession() {
         </button>
       </nav>
 
-      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="quickRunningIds" :pending-key="quickPendingKey" :revision="quickListRevision" :admin="adminViewing" :managing="state.activePanel === 'sessions'" @new="newSession" @manage="toggleSessionManager" @open="openQuickSession" @context="openSessionContext" />
+      <SessionQuickList :load-page="loadQuickPage" :current="quickCurrentSession" :running-ids="quickRunningIds" :pending-key="quickPendingKey" :revision="quickListRevision" :hold="!!sessionContextTarget" :admin="adminViewing" :managing="state.activePanel === 'sessions'" @new="newSession" @manage="toggleSessionManager" @open="openQuickSession" @context="openSessionContext" />
 
       <!-- 提示词管理侧栏入口暂时隐藏，保留模板及功能以便恢复。
       <section v-if="!authState.isolation" class="sidebar-card prompt-stack">
@@ -5651,95 +5612,7 @@ function createMobileSession() {
           </Teleport>
         </div>
 
-        <aside class="right-panel" :class="{ 'mobile-card-open': mobileCard }" :data-mobile-card="mobileCard" @keydown.esc.stop="closeMobileCard">
-          <button v-if="mobileCard" type="button" class="mobile-card-close" aria-label="关闭卡片" data-tooltip="关闭" @click="closeMobileCard"><ChromeIcon name="close" /></button>
-          <section v-if="controls.tasks" class="background-task-section" data-card="tasks">
-            <div class="background-task-head">
-              <div class="panel-title chrome-label"><ChromeIcon name="tasks" />{{ rightPanelTitle('tasks') }}</div>
-              <strong v-if="backgroundTaskCount" class="background-task-count">{{ backgroundTaskCount }}</strong>
-            </div>
-            <p v-if="mobileCard === 'tasks' && !primaryBackgroundTask && !backgroundTaskHistory.length" class="mobile-card-empty">暂无后台任务</p>
-            <button
-              v-if="primaryBackgroundTask"
-              type="button"
-              class="background-task-summary"
-              :data-tooltip="backgroundTaskTitle(primaryBackgroundTask)"
-              @click="openBackgroundTaskDetail(primaryBackgroundTask)"
-            >
-              <TaskStatusIcon :status="primaryBackgroundTask.status" />
-              <strong>{{ backgroundTaskDisplayTitle(primaryBackgroundTask) }}</strong>
-              <span v-if="backgroundTaskCount > 1" class="background-task-more">+{{ backgroundTaskCount - 1 }}</span>
-              <ChromeIcon name="chevron" class="task-entry-chevron" />
-            </button>
-            <details v-if="backgroundTaskHistory.length" class="background-task-history">
-              <summary><ChromeIcon name="clock" /><span>最近结束</span><strong>{{ backgroundTaskHistory.length }}</strong><ChromeIcon name="chevron" class="task-history-chevron" /></summary>
-              <div class="background-task-history-list">
-                <button
-                  v-for="task in backgroundTaskHistory"
-                  :key="backgroundTaskKey(task)"
-                  type="button"
-                  class="background-task-summary background-task-history-item"
-                  :data-tooltip="backgroundTaskTitle(task)"
-                  @click="openBackgroundTaskDetail(task)"
-                >
-                  <TaskStatusIcon :status="task.status" />
-                  <strong>{{ backgroundTaskDisplayTitle(task) }}</strong>
-                  <ChromeIcon name="chevron" class="task-entry-chevron" />
-                </button>
-              </div>
-            </details>
-          </section>
-          <section v-if="controls.quota && currentCpaQuota" class="quota-card" data-card="quota">
-            <div class="quota-card-head">
-              <div>
-                <span class="chrome-label" :data-tooltip="`周额度：${quotaAccountLabel(currentCpaQuota.account)}
-续期：${formatQuotaReset(currentCpaQuota.resetAt)}`"><ChromeIcon name="quota" />剩余额度</span>
-                <strong>{{ quotaPercent(currentCpaQuota.remainingPercent) }}</strong>
-              </div>
-              <div v-if="state.cpaQuotas.length > 1" class="quota-card-controls">
-                <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="上一个凭据" @click="rotateCpaQuota(-1)">‹</button>
-                <small :data-tooltip="quotaAccountLabel(currentCpaQuota.account)">{{ state.cpaQuotaIndex + 1 }}/{{ state.cpaQuotas.length }}</small>
-                <button v-if="state.cpaQuotas.length > 1" type="button" aria-label="下一个凭据" @click="rotateCpaQuota(1)">›</button>
-              </div>
-            </div>
-            <div class="quota-progress" role="progressbar" aria-label="周额度剩余" :aria-valuenow="normalizedQuotaPercent(currentCpaQuota.remainingPercent)" aria-valuemin="0" aria-valuemax="100">
-              <span class="quota-progress-fill" :style="{ width: `${normalizedQuotaPercent(currentCpaQuota.remainingPercent)}%` }"></span>
-            </div>
-          </section>
-          <section v-if="controls.memory" class="quota-card memory-card" data-card="memory">
-            <div class="memory-card-head">
-              <div>
-                <span class="chrome-label" :data-tooltip="rightPanelTitle('memory')"><ChromeIcon name="memory" />内存</span>
-                <strong>{{ formatMemoryBytes(memoryCurrent?.rss) }}</strong>
-              </div>
-            </div>
-            <div v-if="memoryTrendPath" class="memory-chart" @mousemove="updateMemoryHover" @mouseleave="clearMemoryHover">
-              <svg class="memory-trend" viewBox="0 0 260 44" preserveAspectRatio="none" role="img" aria-label="最近一小时内存趋势">
-                <path :d="memoryTrendPath" />
-                <circle
-                  v-for="(point, index) in memoryTrendPoints"
-                  :key="point.entry.at"
-                  :class="['memory-trend-point', { active: index === memoryHoverIndex }]"
-                  :cx="point.x"
-                  :cy="point.y"
-                  :r="index === memoryHoverIndex ? 3.2 : 1.5"
-                  tabindex="0"
-                  @focus="memoryHoverIndex = index"
-                  @blur="clearMemoryHover"
-                />
-              </svg>
-              <div
-                v-if="memoryHoveredPoint"
-                class="memory-tooltip"
-                :style="{ left: `clamp(58px, ${memoryHoveredPoint.x / 260 * 100}%, calc(100% - 58px))`, top: `${memoryHoveredPoint.y / 44 * 100}%` }"
-              >
-                <strong>{{ formatMemoryBytes(memoryHoveredPoint.entry.rss) }}</strong>
-                <span>{{ formatMemoryTooltipTime(memoryHoveredPoint.entry.at) }}</span>
-              </div>
-            </div>
-            <div v-else class="memory-trend-empty">—</div>
-          </section>
-        </aside>
+        <RightPanel :mobile-card="mobileCard" :show-tasks="controls.tasks" :show-memory="controls.memory" :tasks-title="rightPanelTitle('tasks')" :memory-title="rightPanelTitle('memory')" :tasks="rightPanelTasks" :quota="rightPanelQuota" :memory="state.memory" @close-card="closeMobileCard" @open-task="openRightPanelTask" @rotate-quota="rotateCpaQuota" />
       </section>
 
       <section v-else-if="state.activePanel === 'sessions'" class="content-grid single">

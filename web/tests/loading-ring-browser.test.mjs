@@ -12,7 +12,9 @@ test('pending operations use the shared ring; clocks remain time metadata only',
   }
   const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /\? 'clock'/)
-  assert.match(source, /最近结束/)
+  const rightPanel = await readFile(new URL('../src/components/RightPanel.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(rightPanel, /\? 'clock'/)
+  assert.match(rightPanel, /最近结束/)
   let release, started
   const saving = new Promise(resolve => { started = resolve })
   const blocked = new Promise(resolve => { release = resolve })

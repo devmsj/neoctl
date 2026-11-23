@@ -1,8 +1,8 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import LoadingRing from './LoadingRing.vue'
 import { sessionKey as key, sessionDateGroup, mergeSessionActivity } from '../session-recency.mjs'
-const props = defineProps({ loadPage: Function, current: Object, runningIds: { type: Array, default: () => [] }, pendingKey: String, revision: Number, admin: Boolean, managing: Boolean })
+const props = defineProps({ loadPage: Function, current: Object, runningIds: { type: Array, default: () => [] }, pendingKey: String, revision: Number, hold: Boolean, admin: Boolean, managing: Boolean })
 const emit = defineEmits(['open', 'context', 'new', 'manage'])
 const rows = ref([]), query = ref(''), searchOpen = ref(false), searchInput = ref(null), searchArea = ref(null), searchToggle = ref(null)
 const viewport = ref(null), sentinel = ref(null), loading = ref(false), error = ref(''), finished = ref(false)
@@ -17,7 +17,12 @@ watch(() => [key(props.current), props.current?.updatedAt, props.current?.title]
   rows.value = mergeCurrent(rows.value)
 }, { immediate: true })
 const currentKey = computed(() => key(props.current))
-const visibleRows = computed(() => mergeSessionActivity(rows.value, props.current, { insert: !query.value.trim() }))
+const liveRows = computed(() => mergeSessionActivity(rows.value, props.current, { insert: !query.value.trim() }))
+// While a row's context menu is open, activity elsewhere (a running session
+// moving to the top, background refresh) must not shift rows under the menu.
+const heldRows = shallowRef(null)
+watch(() => props.hold, hold => { heldRows.value = hold ? liveRows.value : null }, { immediate: true })
+const visibleRows = computed(() => heldRows.value || liveRows.value)
 function group(item) {
   calendarDay.value // Midnight invalidates grouping even without incoming activity.
   return sessionDateGroup(item)
