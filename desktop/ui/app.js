@@ -142,7 +142,6 @@ function fail(error, action) {
   $('#logDetails').open = true;
   const retryLabel = action === 'refresh-install' ? '重新读取位置并启动' : action === 'launch' ? '重新启动' : action === 'update' ? '重试更新' : action === 'install' ? '重试安装' : '重新连接';
   $('#retryLabel').textContent = retryLabel;
-  retryButton.setAttribute('aria-label', retryLabel);
   $('#backButton').hidden = !['install', 'update'].includes(action);
   retryButton.hidden = false;
   showView('progressView', 'error');
@@ -407,8 +406,6 @@ async function refreshBackend() {
   try { backendRunning = (await api.core.invoke('runtime_status')) === true; } catch { backendRunning = false; }
   if (disposed) return;
   const status = backendRunning ? '已就绪' : externalRuntime ? '开发服务未连接' : '未启动';
-  enterButton.setAttribute('data-tooltip', backendRunning ? '进入应用' : '启动并进入');
-  enterButton.setAttribute('aria-label', backendRunning ? '进入应用' : '启动并进入');
   $('#enterLabel').textContent = backendRunning ? '进入工作台' : '启动工作台';
   $('#stopBackend').hidden = externalRuntime || !backendRunning;
   $('#backendStatus').textContent = status;

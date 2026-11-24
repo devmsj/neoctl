@@ -32,7 +32,7 @@ const os = require('node:os');
         const layout=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,buttons:[...document.querySelectorAll('.control-dock button')].filter(e=>e.getBoundingClientRect().width).map(e=>({id:e.id,rect:e.getBoundingClientRect().toJSON(),text:e.textContent.trim(),label:e.getAttribute('aria-label')})),log:document.querySelector('#logDetails').getBoundingClientRect().toJSON()}));
         assert.ok(layout.scroll<=width,`${width}: no horizontal overflow`);
         assert.equal(await page.locator('#logDetails').isVisible(),false,'empty log stays hidden');
-        for(const button of layout.buttons){assert.ok(button.text);assert.ok(button.label);assert.ok(button.rect.width>=36);assert.equal(button.rect.top,layout.buttons[0].rect.top);}
+        for(const button of layout.buttons){assert.ok(button.text||button.label,`${button.id}: has an accessible name`);assert.ok(button.rect.width>=36);assert.equal(button.rect.top,layout.buttons[0].rect.top);}
         await page.screenshot({path:path.join(os.tmpdir(),`neo-launcher-${installed?'installed':'fresh'}-${width}.png`)});
       }
       if(installed){

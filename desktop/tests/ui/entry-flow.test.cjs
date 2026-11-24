@@ -28,7 +28,9 @@ test('attached server enters without start/update ownership and hides empty logs
 test('stopped managed runtime offers one-click startup; entry failures appear in logs',async()=>{
   const h=fixture({running:false,failEntry:true});await new Promise(setImmediate);
   assert.equal(h.node('enterButton').disabled,false);
-  assert.equal(h.node('enterButton').attributes['aria-label'],'启动并进入');
+  // The visible label names the action; no tooltip or aria-label repeats it.
+  assert.equal(h.node('enterLabel').textContent,'启动工作台');
+  assert.equal(h.node('enterButton').attributes['data-tooltip'],undefined);
   await h.node('enterButton').emit('click');
   assert.match(h.node('installLog').textContent,/entry failed/);
   assert.equal(h.node('logDetails').hidden,false);

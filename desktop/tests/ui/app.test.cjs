@@ -229,7 +229,7 @@ test('failed startup-page update returns to installed controls without reinstall
   assert.match(h.element('versionStatus').textContent, /Web .*Core/);
   await h.element('updateRuntime').emit('click');
   assert.equal(h.element('progressTitle').textContent, '更新未完成');
-  assert.equal(h.element('retryButton').attributes['aria-label'], '重试更新');
+  assert.equal(h.element('retryLabel').textContent, '重试更新');
   await h.element('retryButton').emit('click');
   assert.equal(h.calls.filter(c => c.name === 'update_runtime').length, 2);
   assert.equal(h.calls.findLast(c => c.name === 'update_runtime').args.retry, true);
@@ -300,7 +300,23 @@ test('native directory disclosure starts closed and submit needs no explicit sel
   assert.match(html, /<details id="pathOptions">[\s\S]*id="installPath"[\s\S]*id="browseButton"[\s\S]*<\/details>/);
   assert.ok(html.indexOf('id="pathDisplay"') < html.indexOf('id="pathOptions"'));
   assert.doesNotMatch(html.match(/<input id="installPath"[^>]+>/)[0], /required/);
-  assert.match(html, /安装并启动/);
+  assert.match(html, /<span>开始安装<\/span>/);
+});
+
+test('launcher hints only where they add something: icon-only controls, the full path, warnings', () => {
+  const html = readFileSync(`${__dirname}/../../ui/index.html`, 'utf8');
+  // Buttons and summaries with visible words carry no tooltip that repeats them.
+  for (const id of ['enterButton', 'installButton', 'stopBackend', 'updateRuntime', 'cleanupRuntime', 'retryButton']) {
+    assert.doesNotMatch(html.match(new RegExp(`<button id="${id}"[^>]*>`))[0], /data-tooltip|aria-label/, id);
+  }
+  assert.doesNotMatch(html.match(/<summary class="path-summary"[^>]*>/)[0], /data-tooltip/);
+  assert.doesNotMatch(html, /<summary data-tooltip/);
+  for (const id of ['browseButton', 'startBackend', 'clearInstallDirectory']) {
+    assert.match(html.match(new RegExp(`<button id="${id}"[^>]*>`))[0], /data-tooltip/, id);
+  }
+  // The shared hint layer gets launcher colors (dark surface, light text), not the workspace defaults.
+  const css = readFileSync(`${__dirname}/../../ui/styles.css`, 'utf8');
+  assert.match(css, /neo-tooltip-layer\{[^}]*--chrome-raised:/);
 });
 
 
