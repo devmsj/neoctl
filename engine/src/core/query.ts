@@ -1,5 +1,6 @@
 import { ToolInputStream } from '../model/tool-input-stream.js';
 import { QueryTimingState, type TimingClock, type TimingRecord } from "./query-timing.js";
+import { ModelSpeedMeter, globalModelSpeedStore, type ModelSpeedLiveHandle } from "./model-speed.js";
 import { abortableStream } from "./abortable-stream.js";
 import { withThinkingLifecycle } from "../model/thinking-lifecycle.js";
 import { InMemoryAppState } from "../app/app-state.js";
@@ -524,6 +525,7 @@ async function* callModelForTurn(
   yield { type: "context.metrics", metrics: telemetry.metrics };
   yield { type: "state", phase: "calling_model", detail: activeModel ? `model stream opened (${activeModel})` : "model stream opened" };
 
+  let liveSpeed: ModelSpeedLiveHandle | undefined;
   try {
     if (options.abortSignal?.aborted) return { terminal: "aborted_streaming" };
     const pending = options.takePendingMessages?.() ?? [];
@@ -549,6 +551,9 @@ async function* callModelForTurn(
       options.requestContext = undefined;
     }
     const fastModeRevision = options.getFastModeRevision?.() ?? 0;
+    const speed = new ModelSpeedMeter(activeModel);
+    const speedSessionDir = dependencies.session?.sessionDir;
+    liveSpeed = activeModel && speedSessionDir ? globalModelSpeedStore.begin(activeModel, speedSessionDir) : undefined;
     for await (const event of withThinkingLifecycle(abortableStream(streamWithFastModeFallback(dependencies.modelGateway, {
       model: activeModel,
       messages: modelMessages,
@@ -564,6 +569,10 @@ async function* callModelForTurn(
       fastMode: options.fastMode,
       cancellation: options.abortSignal,
     }), options.abortSignal))) {
+      if (event.type === "retrying") { speed.retry(event.delayMs); liveSpeed?.restart(event.delayMs); }
+      if (event.type === "fast_mode_fallback") { speed.retry(); liveSpeed?.restart(); }
+      if (event.type === "usage") speed.usage(event.usage, event.provisional);
+      if (event.type === "response_completed" || event.type === "response_incomplete") speed.usage(event.usage);
       if (event.type === "retrying" && event.resetOutput) {
         outputFilter = new DisplayOutputFilter(dependencies.secretRedactions);
         assistantMessages.length = 0;
@@ -593,7 +602,7 @@ async function* callModelForTurn(
       if (((event.type === "assistant_delta" || event.type === "thinking_delta") && event.text.length > 0)
         || (event.type === "tool_call_delta" && event.argumentsDelta.length > 0)
         || event.type === "tool_use"
-        || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) timing.firstOutput();
+        || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) { timing.firstOutput(); speed.firstOutput(); liveSpeed?.firstOutput(); }
       if(event.type === 'tool_call_started'&&!inputStreams.has(event.callId)) inputStreams.set(event.callId,new ToolInputStream());
       if(event.type === 'tool_call_delta') {
         const decoder=inputStreams.get(event.callId)??new ToolInputStream();
@@ -611,7 +620,14 @@ async function* callModelForTurn(
       incompleteReason = handled.incompleteReason ?? incompleteReason;
 
     }
+    // Completed requests only: aborted and failed ones never reach this point or are excluded here.
+    // Recorded before the live entry ends, so a viewer never sees the request vanish before its sample lands.
+    const sample = options.abortSignal?.aborted ? undefined : speed.finish();
+    if (sample && speedSessionDir) globalModelSpeedStore.record({ ...sample, sessionDir: speedSessionDir });
+    liveSpeed?.end();
   } catch (error) {
+    // A failed request is not shown in flight while the error is handled (e.g. reactive compaction).
+    liveSpeed?.end();
     const attempts = state.reactiveCompactAttempts ?? 0;
     if (isContextLengthError(error) && attempts < MAX_REACTIVE_COMPACT_ATTEMPTS) {
       const compactor = dependencies.compactor ?? new ModelDrivenCompactor(dependencies.modelGateway);
@@ -679,6 +695,9 @@ async function* callModelForTurn(
     const terminal = terminalForModelError(error);
     yield { type: "error", error: error instanceof Error ? error : new Error(String(error)) };
     return { terminal };
+  } finally {
+    // Every exit (completion, abort, error, an abandoned stream) ends the live entry; ending twice is a no-op.
+    liveSpeed?.end();
   }
 
   if (options.abortSignal?.aborted) {

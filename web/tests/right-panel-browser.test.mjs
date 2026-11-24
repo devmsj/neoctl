@@ -2,13 +2,55 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createObservabilityBrowser, observabilitySnapshot } from './observability-browser-fixture.mjs'
 
+const speedSamples = now => [
+  { at: now, model: 'model-a', firstTokenMs: 1200, tokensPerSecond: 60 },
+  { at: now, model: 'model-a', firstTokenMs: 2400 },
+  { at: now, model: 'model-b', firstTokenMs: 95_000, tokensPerSecond: 80 },
+]
+
+test('model speed: a request in flight runs a stopwatch on the axis and grows its first-token bar', async () => {
+  const now = new Date().toISOString()
+  const snapshot = observabilitySnapshot({ modelSpeed: { samples: speedSamples(now), live: [{ id: 'live-1', model: 'model-b', elapsedMs: 1500 }] } })
+  const f = await createObservabilityBrowser(snapshot)
+  try {
+    const p = f.page, speed = p.locator('[data-card="speed"]')
+    const timer = speed.locator('.speed-timer')
+    await timer.waitFor()
+    const first = await timer.innerText()
+    assert.match(first, /^\d+\.\d{2} s$/)
+    assert.equal(await timer.getAttribute('data-waiting'), 'true')
+    const barHeight = () => speed.locator('.speed-wave-live-bar').evaluate(rect => Number(rect.getAttribute('height')))
+    const before = await barHeight()
+    await p.waitForTimeout(400)
+    assert.ok(Number.parseFloat(await timer.innerText()) > Number.parseFloat(first))
+    assert.ok(await barHeight() > before)
+    // The timer stands on the axis inside its own lane: right of every completed wave, inside the chart.
+    const [chart, timerBox, wavesRight] = await Promise.all([
+      speed.locator('.speed-chart').boundingBox(),
+      timer.boundingBox(),
+      speed.locator('.speed-wave').evaluate(svg => {
+        const rect = svg.getBoundingClientRect()
+        return Math.max(...[...svg.querySelectorAll('.speed-wave-area')].map(area => { const box = area.getBBox(); return rect.left + (box.x + box.width) / 260 * rect.width }))
+      }),
+    ])
+    const axisY = chart.y + chart.height * 40 / 80
+    assert.ok(timerBox.x >= wavesRight && timerBox.x + timerBox.width <= chart.x + chart.width + 0.5, JSON.stringify({ chart, timerBox, wavesRight }))
+    assert.ok(timerBox.y + timerBox.height <= axisY && timerBox.y >= chart.y, JSON.stringify({ timerBox, axisY }))
+    // Same model as the last sample: the live slot continues its axis piece.
+    assert.equal(await speed.locator('.speed-wave-axis').count(), 2)
+    await p.mouse.move(timerBox.x + timerBox.width / 2, axisY + 6)
+    await p.waitForFunction(() => /进行中 \d+\.\d{2} s[\s\S]*首字 等待中[\s\S]*model-b/.test(document.querySelector('.memory-tooltip')?.innerText || ''))
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
 test('right panel is its own component: quota rotation, memory hover and task details still work', async () => {
   const now = new Date().toISOString()
   const agent = { kind: 'agent', taskId: 'task_rp', agentId: 'agent_rp', description: 'Subagent not listed', status: 'running', createdAt: now, progress: {} }
   const task = { kind: 'terminal', taskId: 'terminal:run_rp', type: '终端', ownerSessionId: 'obs-session', sessionId: 'run_rp', description: 'Right panel task', command: 'npm run dev', status: 'running', createdAt: now }
   const done = { ...task, taskId: 'terminal:run_done', sessionId: 'run_done', description: 'Finished task', status: 'exited', exitCode: 0, completedAt: now }
   const finishedAgent = { ...agent, taskId: 'task_old', agentId: 'agent_old', description: 'Finished subagent not listed', status: 'completed', completedAt: now }
-  const snapshot = observabilitySnapshot({ session: { sessionId: 'obs-session', title: 'Right panel' }, backgroundTasks: [agent, task], backgroundTaskCount: 2, agentTaskHistory: [finishedAgent], terminalTaskHistory: [done] })
+  const snapshot = observabilitySnapshot({ session: { sessionId: 'obs-session', title: 'Right panel' }, backgroundTasks: [agent, task], backgroundTaskCount: 2, agentTaskHistory: [finishedAgent], terminalTaskHistory: [done], modelSpeed: { samples: speedSamples(now), live: [] } })
   const f = await createObservabilityBrowser(snapshot, async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/cpa-quota') { await route.fulfill({ json: { quotas: [{ account: 'alpha@example.com', remainingPercent: 80, resetAt: now }, { account: 'beta@example.com', remainingPercent: 35, resetAt: now }], config: { url: '', hasPassword: false } } }); return true }
@@ -27,15 +69,48 @@ test('right panel is its own component: quota rotation, memory hover and task de
     assert.equal(await panel.locator('.quota-card-controls small').innerText(), '2/2')
     await panel.getByRole('button', { name: '上一个凭据' }).click()
     assert.equal(await panel.locator('.quota-card-controls small').innerText(), '1/2')
-    // Memory hover is local state of the panel.
+    // Memory hover is local state of the panel; the tooltip floats in <body>, fully inside the window.
+    const viewport = p.viewportSize()
+    async function assertTooltipUnclipped() {
+      const tooltip = p.locator('.memory-tooltip')
+      await p.waitForFunction(() => document.querySelector('.memory-tooltip')?.style.visibility !== 'hidden')
+      const rect = await tooltip.boundingBox()
+      assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= viewport.width && rect.y + rect.height <= viewport.height, JSON.stringify(rect))
+      assert.equal(await tooltip.evaluate(el => el.parentElement === document.body), true)
+    }
     assert.equal(await panel.locator('.memory-card-head strong').innerText(), '200 MB')
-    const chart = panel.locator('.memory-chart'), box = await chart.boundingBox()
+    const chart = panel.locator('[data-card="memory"] .memory-chart'), box = await chart.boundingBox()
     await p.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
-    await panel.locator('.memory-tooltip').waitFor()
-    assert.match(await panel.locator('.memory-tooltip strong').innerText(), /200 MB/)
+    await p.locator('.memory-tooltip').waitFor()
+    assert.match(await p.locator('.memory-tooltip strong').innerText(), /200 MB/)
+    await assertTooltipUnclipped()
     await p.mouse.move(box.x + 2, box.y + box.height / 2)
-    assert.match(await panel.locator('.memory-tooltip strong').innerText(), /100 MB/)
-    await p.mouse.move(0, 0); await panel.locator('.memory-tooltip').waitFor({ state: 'detached' })
+    assert.match(await p.locator('.memory-tooltip strong').innerText(), /100 MB/)
+    await assertTooltipUnclipped()
+    await p.mouse.move(0, 0); await p.locator('.memory-tooltip').waitFor({ state: 'detached' })
+    // Model speed: one wave per model (two models here), latest values above and below; hovering a
+    // request highlights its column and shows its values, model and time.
+    const speed = panel.locator('[data-card="speed"]')
+    assert.equal(await speed.locator('.speed-wave-axis').count(), 2)
+    assert.equal(await speed.locator('.speed-wave-missing').count(), 1)
+    assert.equal(await speed.locator('.speed-wave-over').count(), 1)
+    assert.deepEqual(await speed.locator('.speed-row strong').allInnerTexts(), ['80 tok/s', '>30 s'])
+    const speedBox = await speed.locator('.speed-chart').boundingBox()
+    await p.mouse.move(speedBox.x + speedBox.width - 2, speedBox.y + speedBox.height / 2)
+    await p.locator('.memory-tooltip').waitFor()
+    await assertTooltipUnclipped()
+    assert.equal(await speed.locator('.speed-wave-hover').count(), 1)
+    assert.match(await p.locator('.memory-tooltip').innerText(), /速度 80 tok\/s[\s\S]*首字 >30 s[\s\S]*model-b/)
+    // The first request sits left of the newest ones (right-aligned); hovering it shows that request.
+    const firstX = await speed.locator('.speed-wave').evaluate(svg => {
+      const rect = svg.getBoundingClientRect(), area = svg.querySelector('.speed-wave-area').getBBox()
+      return rect.left + (area.x + 1) / 260 * rect.width
+    })
+    await p.mouse.move(firstX, speedBox.y + speedBox.height / 2)
+    await p.waitForFunction(() => /1\.2 s/.test(document.querySelector('.memory-tooltip')?.innerText || ''))
+    await assertTooltipUnclipped()
+    assert.match(await p.locator('.memory-tooltip').innerText(), /速度 60 tok\/s[\s\S]*首字 1\.2 s[\s\S]*model-a/)
+    await p.mouse.move(0, 0); await p.locator('.memory-tooltip').waitFor({ state: 'detached' })
     // Subagents are not background tasks (they are reached via the agent switch).
     assert.doesNotMatch(await panel.locator('.background-task-section').innerText(), /not listed/)
     assert.equal(await panel.locator('.background-task-count').innerText(), '1')

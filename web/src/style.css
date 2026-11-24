@@ -811,6 +811,65 @@ a { color: var(--purple); }
 .memory-card-foot { color: var(--faint); font-size: calc(10px * var(--appearance-ui-scale, 1)); }
 .memory-stats strong { font-family: var(--appearance-code-font, var(--mono)); font-size: calc(12px * var(--appearance-ui-scale, 1)); }
 .memory-card-foot { align-items: center; justify-content: flex-end; margin-top: 8px; }
+/* Model speed waveform: speed above the axis, first token below. Text follows the theme; the chart uses
+   its own fixed, saturated fast/mid/slow colors so speed reads the same and stays clear on any theme. */
+.speed-row { position: relative; z-index: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--appearance-ui-scale, 1)); }
+.speed-row strong { color: var(--black); font-family: var(--appearance-code-font, var(--mono)); font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 500; white-space: nowrap; }
+.speed-chart { --speed-fast: #16a34a; --speed-mid: #f59e0b; --speed-slow: #e11d48; position: relative; z-index: 1; height: 80px; margin: 6px 0; }
+.speed-wave { display: block; width: 100%; height: 100%; overflow: visible; }
+.speed-wave-axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.speed-wave-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.speed-wave-missing { fill: none; stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.speed-wave-over { fill: var(--speed-slow); }
+.speed-wave-over[data-side="up"] { fill: var(--speed-fast); }
+.speed-wave-hover { fill: var(--text); opacity: .1; }
+.speed-wave-live[data-waiting] .speed-wave-live-bar { animation: speed-live-pulse 1.2s ease-in-out infinite; }
+@keyframes speed-live-pulse { 50% { opacity: .55; } }
+/* The stopwatch stands on the axis inside its request's own lane (the upper half, free until the speed
+   is known); tabular digits keep its width steady while it counts. */
+.speed-timer {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--black);
+  font-family: var(--appearance-code-font, var(--mono));
+  font-size: calc(11px * var(--appearance-ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(calc(-100% - 3px));
+}
+.speed-timer i { width: 5px; height: 5px; border-radius: 50%; background: var(--speed-fast); }
+.speed-timer[data-waiting] i { background: var(--speed-mid); animation: speed-live-pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .speed-wave-live-bar, .speed-timer i { animation: none !important; } }
+/* Chart tooltips live in <body> at viewport coordinates (placed by RightPanel), above everything.
+   Their box matches the app-wide hover hint (web/shared/theme-tooltip.js). */
+.memory-tooltip.chart-tooltip {
+  position: fixed;
+  z-index: 1000;
+  transform: none;
+  min-width: 0;
+  gap: 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--appearance-accent, var(--chrome-accent, #8c456e)) 48%, transparent);
+  border-radius: var(--appearance-radius, 5px);
+  background: color-mix(in srgb, var(--appearance-accent, var(--chrome-accent, #8c456e)) 8%, var(--chrome-raised, #fff));
+  color: var(--chrome-text, #20252d);
+  box-shadow: 0 4px 16px #0001;
+  font-family: var(--appearance-ui-font, var(--chrome-sans, system-ui, sans-serif));
+  font-size: calc(12px * var(--appearance-ui-scale, 1));
+  line-height: 1.6;
+  animation: chart-tooltip-show .12s ease-out;
+}
+.memory-tooltip.chart-tooltip :is(strong, span) { color: inherit; font: inherit; font-variant-numeric: tabular-nums; }
+.memory-tooltip.chart-tooltip strong { font-weight: 500; }
+.memory-tooltip.chart-tooltip span { color: var(--chrome-muted, #424c59); }
+@keyframes chart-tooltip-show { from { opacity: 0; translate: 0 2px; } to { opacity: 1; translate: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .memory-tooltip.chart-tooltip { animation: none; } }
 .runtime-phase { font-family: var(--appearance-code-font, var(--mono)); color: var(--green); margin-bottom: 12px; }
 .runtime-phase.active { color: var(--purple); }
 dl { margin: 0; display: grid; gap: 9px; }

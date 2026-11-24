@@ -27,6 +27,7 @@ const files = [
   'core-timing.test.mjs',
   'core-runtime-resolution.test.mjs',
   'cpa-quota.test.mjs',
+  'model-speed.test.mjs',
   'image-original-dimensions.test.mjs',
   'interrupt-regression.test.mjs',
   'run-control.test.mjs',

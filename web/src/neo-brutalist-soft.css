@@ -2253,7 +2253,8 @@ input[type='radio'] {
   .right-panel.mobile-card-open > section { display: none; }
   .right-panel[data-mobile-card="tasks"] > [data-card="tasks"],
   .right-panel[data-mobile-card="quota"] > [data-card="quota"],
-  .right-panel[data-mobile-card="memory"] > [data-card="memory"] { display: block; }
+  .right-panel[data-mobile-card="memory"] > [data-card="memory"],
+  .right-panel[data-mobile-card="speed"] > [data-card="speed"] { display: block; }
   .right-panel .mobile-card-close { display: block; justify-self: end; width: 36px; height: 36px; }
 }
 

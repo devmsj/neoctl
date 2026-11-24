@@ -73,7 +73,7 @@ try {
  assert.equal(await page.locator('.memory-stats, .memory-card-foot, .memory-card-head small, .quota-card-foot, .quota-card-update').count(),0,'secondary technical details removed')
  assert.equal(await page.locator('.right-panel').getByText(/RSS|V8 堆|外部内存|更新于/).count(),0)
  assert.equal(await page.locator('.memory-card-head strong').textContent(),'100 MB')
- assert.ok(await page.locator('.memory-card').evaluate(el=>el.getBoundingClientRect().height<120),'memory card stays compact')
+ assert.ok(await page.locator('[data-card="memory"]').evaluate(el=>el.getBoundingClientRect().height<120),'memory card stays compact')
  assert.equal(await page.locator('.quota-progress').getAttribute('aria-valuenow'),'91')
  await page.locator('.memory-trend-point').first().focus()
  await page.locator('.memory-tooltip').waitFor()

@@ -71,6 +71,7 @@ import { createImageId, userDisplayText, type Message, type MessageBlock, type T
 import { readToolCallDetail, toolErrorText, allowToolDetailRequest, sanitizeAgentToolPayload, redactToolDetail } from "./tool-call-detail.js";
 import { terminalFacts, terminalPreviews, terminalResultText } from "./terminal-presentation.js";
 import { toolDetailFieldsFromDetail } from "./tool-detail-fields.js";
+import { globalModelSpeedStore, type ModelSpeedLive, type ModelSpeedSample } from "../core/model-speed.js";
 import { WEB_HTML } from "./html.js";
 import { openDirectory } from "../open-directory.js";
 import { validateImageInput } from "../core/image-input.js";
@@ -1252,10 +1253,33 @@ export class WebRepl {
     this.sendSubscriberSnapshot(subscriber, this.snapshot(true));
     this.publishRuntimeContext([subscriber]);
     reqKeepAlive(res);
+    this.stopModelSpeed ??= globalModelSpeedStore.subscribe(() => this.publishModelSpeed());
     res.on("close", () => {
       this.subscribers.delete(subscriber);
       if (observer) this.releaseObserver(observer, subscriber);
+      if (!this.subscribers.size) { this.stopModelSpeed?.(); this.stopModelSpeed = undefined; }
     });
+  }
+
+  // ---- Model speed: a read-only indicator, pushed on its own so it never costs a full sync ----
+  private stopModelSpeed?: () => void;
+  private lastModelSpeed = "";
+
+  /** This user's sessions (everything under the current session's root, subagents included): completed samples and requests in flight. */
+  private modelSpeed(): { samples: ModelSpeedSample[]; live: ModelSpeedLive[] } {
+    const sessionDir = this.runtime.engine.snapshot().session?.sessionDir;
+    if (!sessionDir) return { samples: [], live: [] };
+    const root = path.dirname(sessionDir);
+    return { samples: globalModelSpeedStore.recent(root), live: globalModelSpeedStore.inFlight(root) };
+  }
+
+  private publishModelSpeed(): void {
+    const speed = this.modelSpeed();
+    // Elapsed time always moves; a push is due only when a sample or a live request's state changed.
+    const key = JSON.stringify([speed.samples, speed.live.map(({ elapsedMs: _elapsed, ...entry }) => entry)]);
+    if (key === this.lastModelSpeed) return;
+    this.lastModelSpeed = key;
+    for (const subscriber of this.subscribers) this.send(subscriber, "model.speed", speed);
   }
 
   // ---- Read-only subagent observation ----
@@ -1484,6 +1508,7 @@ export class WebRepl {
       terminalTaskHistory: this.terminalTaskHistory(),
       agentTaskHistory: sessionAgentTasks(this.runtime).filter((task) => this.runtime.taskStore.isTerminal(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((task) => this.agentTaskSnapshot(task)),
       backgroundSessionRunCount: this.backgroundSessionRuns.size,
+      modelSpeed: includeCatalog ? this.modelSpeed() : undefined,
       runningSessionIds: this.runningSessionIds(),
       session: engineSnapshot.session,
       modelSettings: { model: engineSnapshot.model, reasoning: engineSnapshot.reasoning, imageInput: findModelMetadata(engineSnapshot.model || "")?.imageInput },

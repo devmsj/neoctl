@@ -338,6 +338,8 @@ const state = reactive({
   cpaQuotas: [],
   cpaQuotaIndex: 0,
   memory: { current: null, history: [], sampleMs: 60_000, retentionMs: 86_400_000 },
+  modelSpeed: [],
+  modelSpeedLive: [],
   activePanel: 'chat',
   toolDetailLineId: undefined,
   expandedToolGroups: {},
@@ -441,6 +443,7 @@ const rightPanelCards = computed(() => [
   { id: 'tasks', title: '后台任务' },
   ...(currentCpaQuota.value ? [{ id: 'quota', title: '周额度' }] : []),
   { id: 'memory', title: '服务端内存' },
+  { id: 'speed', title: '模型速度' },
 ].filter(card => controls[card.id]))
 watch(controls, async () => {
   if (mobileCard.value && !controls[mobileCard.value]) mobileCard.value = ''
@@ -1345,6 +1348,10 @@ function connectEvents() {
     flushQueuedSync()
     applyRawDelta(event.data)
   })
+  es.addEventListener('model.speed', (event) => {
+    if (source !== es) return
+    try { applyModelSpeed(JSON.parse(event.data)) } catch {}
+  })
   es.addEventListener('terminal.output', (event) => {
     try {
       flushQueuedSync()
@@ -1614,6 +1621,16 @@ function appendBoundedText(current, incoming, limit) {
   return combined.length <= limit ? combined : combined.slice(-limit)
 }
 
+// Completed samples, and requests in flight anchored to this page's clock: the panel keeps counting
+// from elapsedMs without asking the server again.
+function applyModelSpeed(speed) {
+  if (Array.isArray(speed?.samples)) state.modelSpeed = speed.samples
+  if (Array.isArray(speed?.live)) {
+    const receivedAt = performance.now()
+    state.modelSpeedLive = speed.live.map(entry => ({ ...entry, startedAt: receivedAt - (Number(entry.elapsedMs) || 0) }))
+  }
+}
+
 function applySync(payload) {
   activityEntranceIds.clear()
   resetLineTextScheduler()
@@ -1688,6 +1705,8 @@ function applySync(payload) {
   }
   state.backgroundSessionRunCount = payload.backgroundSessionRunCount || 0
   state.runningSessionIds = payload.runningSessionIds || []
+  // Only the first snapshot of a connection carries it; later changes arrive as model.speed events.
+  if (payload.modelSpeed) applyModelSpeed(payload.modelSpeed)
   state.session = payload.session
   state.modelSettings = payload.modelSettings
   const acceptFastMode = payload.fastModeRevision === undefined || payload.fastModeRevision >= fastModeServerRevision
@@ -5623,7 +5642,7 @@ function createMobileSession() {
           </Teleport>
         </div>
 
-        <RightPanel :mobile-card="mobileCard" :show-tasks="controls.tasks" :show-memory="controls.memory" :tasks-title="rightPanelTitle('tasks')" :memory-title="rightPanelTitle('memory')" :tasks="rightPanelTasks" :quota="rightPanelQuota" :memory="state.memory" @close-card="closeMobileCard" @open-task="openRightPanelTask" @rotate-quota="rotateCpaQuota" />
+        <RightPanel :mobile-card="mobileCard" :show-tasks="controls.tasks" :show-memory="controls.memory" :show-speed="controls.speed" :tasks-title="rightPanelTitle('tasks')" :memory-title="rightPanelTitle('memory')" :speed-title="rightPanelTitle('speed')" :tasks="rightPanelTasks" :quota="rightPanelQuota" :memory="state.memory" :speed="state.modelSpeed" :speed-live="state.modelSpeedLive" @close-card="closeMobileCard" @open-task="openRightPanelTask" @rotate-quota="rotateCpaQuota" />
       </section>
 
       <section v-else-if="state.activePanel === 'sessions'" class="content-grid single">

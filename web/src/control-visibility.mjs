@@ -7,6 +7,7 @@ export const CONTROL_OPTIONS = [
   { key: 'tasks', label: '后台任务', group: '右侧' },
   { key: 'memory', label: '内存', group: '右侧' },
   { key: 'quota', label: '额度', group: '右侧' },
+  { key: 'speed', label: '模型速度', group: '右侧' },
 ]
 export const defaultControls = () => Object.fromEntries(CONTROL_OPTIONS.map(x => [x.key, true]))
 export function normalizeControls(value) {
