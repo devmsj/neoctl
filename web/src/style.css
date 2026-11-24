@@ -842,7 +842,7 @@ a { color: var(--purple); }
 .speed-wave-over { fill: var(--speed-slow); }
 .speed-wave-over[data-side="up"] { fill: var(--speed-fast); }
 .speed-wave-hover { fill: var(--text); opacity: .1; }
-.speed-wave-live[data-waiting] .speed-wave-live-bar { animation: speed-live-pulse 1.2s ease-in-out infinite; }
+.speed-wave-live-bar[data-waiting] { animation: speed-live-pulse 1.2s ease-in-out infinite; }
 @keyframes speed-live-pulse { 50% { opacity: .55; } }
 /* The stopwatch stands on the axis inside its request's own lane (the upper half, free until the speed
    is known); tabular digits keep its width steady while it counts. */
@@ -863,6 +863,8 @@ a { color: var(--purple); }
   transform: translateY(calc(-100% - 3px));
 }
 .speed-timer i { width: 5px; height: 5px; border-radius: 50%; background: var(--speed-fast); }
+/* How many requests run at once, quiet and centered right above the stopwatch. */
+.speed-timer-count { position: absolute; bottom: 100%; left: 50%; color: var(--faint); font-size: calc(10px * var(--appearance-ui-scale, 1)); line-height: 12px; transform: translateX(-50%); }
 .speed-timer[data-waiting] i { background: var(--speed-mid); animation: speed-live-pulse 1.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .speed-wave-live-bar, .speed-timer i { animation: none !important; } }
 /* Chart tooltips live in <body> at viewport coordinates (placed by RightPanel), above everything.

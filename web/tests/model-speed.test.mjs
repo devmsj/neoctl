@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SPEED_LIVE_LANE, SPEED_SERIES, SPEED_WAVE_HEIGHT, SPEED_WAVE_WIDTH, formatElapsed, formatSpeed, speedFirstTokenY, latestSpeed, speedFastness, speedWave, speedWaveHit } from '../src/model-speed.mjs'
+import { SPEED_LIVE_BARS, SPEED_LIVE_LANE, SPEED_SERIES, SPEED_WAVE_HEIGHT, SPEED_WAVE_WIDTH, formatElapsed, formatSpeed, speedFirstTokenY, latestSpeed, speedFastness, speedWave, speedWaveHit } from '../src/model-speed.mjs'
 
 const [tokensPerSecond, firstToken] = SPEED_SERIES
 const sample = (firstTokenMs, tps, model = 'm1') => ({ at: '2026-11-23T00:00:00.000Z', model, firstTokenMs, ...(tps === undefined ? {} : { tokensPerSecond: tps }) })
@@ -54,31 +54,29 @@ test('a single request in a model is a block; few requests stay narrow and right
   assert.equal(Math.round(wave.xs[1] + wave.slot), SPEED_WAVE_WIDTH)
 })
 
-test('requests in flight take slots after the completed ones and turn into the wave once done', () => {
+test('requests in flight share one lane at the right edge and turn into the wave once done', () => {
   const samples = [sample(1000, 50), sample(1200, 60)]
+  const idle = speedWave(samples)
   const live = speedWave(samples, [{ id: 'live-1', model: 'm1' }])
-  assert.equal(live.liveStart, 2)
-  assert.equal(live.xs.length, 3)
-  // The newest request in flight has a stopwatch-wide lane at the right edge; the completed slots keep their width.
-  assert.equal(live.laneIndex, 2)
-  assert.equal(live.widths[2], SPEED_LIVE_LANE)
-  assert.equal(Math.round(live.xs[2] + live.widths[2]), SPEED_WAVE_WIDTH)
-  assert.equal(live.widths[1], live.slot)
-  assert.ok(live.xs[2] >= live.xs[1] + live.widths[1])
+  // The lane is a fixed width at the right edge; completed requests keep their slot and stay left of it.
+  assert.deepEqual(live.lane, { x: SPEED_WAVE_WIDTH - SPEED_LIVE_LANE, width: SPEED_LIVE_LANE })
+  assert.equal(live.xs.length, 2)
+  assert.equal(live.slot, idle.slot)
+  assert.ok(live.xs[1] + live.slot <= live.lane.x + 0.1)
+  // Same model: the lane continues the last axis piece.
   assert.equal(live.axis.length, 1)
-  assert.equal(live.tops[2], live.axisY)
-  // Two in flight: only the newest gets the lane.
-  const two = speedWave(samples, [{ id: 'a', model: 'm1' }, { id: 'b', model: 'm1' }])
-  assert.deepEqual([two.widths[2] === two.slot, two.laneIndex], [true, 3])
+  assert.equal(live.axis[0].x2, SPEED_WAVE_WIDTH)
+  assert.equal(live.liveBars.length, 1)
+  const [bar] = live.liveBars
+  assert.ok(bar.x >= live.lane.x && bar.x + bar.width <= SPEED_WAVE_WIDTH)
   // Another model in flight opens its own axis piece after a gap.
   assert.equal(speedWave(samples, [{ id: 'live-2', model: 'm2' }]).axis.length, 2)
-  // Done: the same request is now a regular sample in the wave, at the right edge.
+  // Done: the same request is now a regular sample in the wave, at the right edge, and the lane is gone.
   const done = speedWave([...samples, sample(900, 70)])
-  assert.equal(done.laneIndex, -1)
-  assert.equal(Math.round(done.xs[2] + done.widths[2]), SPEED_WAVE_WIDTH)
+  assert.equal(done.lane, null)
+  assert.deepEqual(done.liveBars, [])
+  assert.equal(Math.round(done.xs[2] + done.slot), SPEED_WAVE_WIDTH)
   assert.equal(done.waves.find(item => item.side === 'down').line.split(' ').filter(part => part === 'L').length, 2)
-  // Hover over the lane hits the request in flight.
-  assert.equal(speedWaveHit(live, live.xs[2] + 2), 2)
   // The waiting bar grows with time, up to the edge of the scale.
   assert.ok(speedFirstTokenY(3000) > speedFirstTokenY(800))
   assert.equal(speedFirstTokenY(120_000), speedFirstTokenY(30_000))
@@ -86,13 +84,46 @@ test('requests in flight take slots after the completed ones and turn into the w
   assert.equal(formatElapsed(65_000), '65.00 s')
 })
 
-test('hover picks the nearest request; latest value skips requests without one', () => {
+test('many requests at once: thinner bars in the same lane, the history never narrows', () => {
+  const samples = Array.from({ length: 30 }, (_, index) => sample(1000 + index * 50, 60 + index))
+  const idle = speedWave(samples)
+  const live = count => Array.from({ length: count }, (_, index) => ({ id: `r${index}`, model: 'm1' }))
+  const three = speedWave(samples, live(3))
+  const twelve = speedWave(samples, live(12))
+  const many = speedWave(samples, live(40))
+  // The history only gives up the lane once, whatever the concurrency.
+  assert.equal(three.slot, twelve.slot)
+  assert.equal(twelve.slot, many.slot)
+  assert.ok(twelve.slot < idle.slot)
+  // More requests: more, thinner bars, all inside the lane and never overlapping.
+  assert.equal(twelve.liveBars.length, 12)
+  assert.ok(twelve.liveBars[0].width < three.liveBars[0].width)
+  for (const wave of [three, twelve, many]) {
+    wave.liveBars.forEach((bar, order) => {
+      assert.ok(bar.width >= 1)
+      assert.ok(bar.x >= wave.lane.x && bar.x + bar.width <= SPEED_WAVE_WIDTH + 0.1)
+      if (order) assert.ok(bar.x >= wave.liveBars[order - 1].x + wave.liveBars[order - 1].width)
+    })
+  }
+  // Beyond the cap only the newest are drawn; `order` still points into the full list.
+  assert.equal(many.liveBars.length, SPEED_LIVE_BARS)
+  assert.equal(many.liveBars[0].order, 40 - SPEED_LIVE_BARS)
+  assert.equal(many.liveBars.at(-1).id, 'r39')
+})
+
+test('hover picks the nearest request or bar in flight; latest value skips requests without one', () => {
   const wave = speedWave([sample(1000, 50), sample(1000, 60), sample(1000, 70, 'm2')])
   const center = index => wave.xs[index] + wave.slot / 2
-  assert.equal(speedWaveHit(wave, center(0)), 0)
-  assert.equal(speedWaveHit(wave, center(2) + 2), 2)
-  assert.equal(speedWaveHit(wave, wave.xs[0] - wave.slot), -1)
-  assert.equal(speedWaveHit(speedWave([]), 10), -1)
+  assert.deepEqual(speedWaveHit(wave, center(0)), { sample: 0 })
+  assert.deepEqual(speedWaveHit(wave, center(2) + 2), { sample: 2 })
+  assert.equal(speedWaveHit(wave, wave.xs[0] - wave.slot), null)
+  assert.equal(speedWaveHit(speedWave([]), 10), null)
+  const live = speedWave([sample(1000, 50)], [{ id: 'a', model: 'm1' }, { id: 'b', model: 'm1' }])
+  const [first, second] = live.liveBars
+  assert.deepEqual(speedWaveHit(live, first.hitX + first.hitWidth / 2), { live: 0 })
+  assert.deepEqual(speedWaveHit(live, second.hitX + second.hitWidth / 2), { live: 1 })
+  assert.deepEqual(speedWaveHit(live, SPEED_WAVE_WIDTH), { live: 1 })
+  assert.deepEqual(speedWaveHit(live, live.xs[0] + live.slot / 2), { sample: 0 })
   assert.equal(latestSpeed([sample(1, 40), sample(2)], tokensPerSecond), 40)
   assert.equal(latestSpeed([], tokensPerSecond), undefined)
 })

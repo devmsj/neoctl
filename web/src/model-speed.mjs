@@ -73,34 +73,38 @@ export function formatElapsed(ms) {
   return `${(Math.max(0, ms) / 1000).toFixed(2)} s`
 }
 
+/** At most this many in-flight bars are drawn (the newest); the count badge still tells the total. */
+export const SPEED_LIVE_BARS = 24
+
 /**
- * Waveform layout in a SPEED_WAVE_WIDTH x SPEED_WAVE_HEIGHT box: request slots (right-aligned, the
- * newest at the right edge, requests in flight after the completed ones), one axis piece and one wave
- * per model run, hollow dots for missing values and markers for values beyond the scale.
+ * Waveform layout in a SPEED_WAVE_WIDTH x SPEED_WAVE_HEIGHT box.
+ *
+ * Completed requests are slots (right-aligned, newest last), one axis piece and one wave per model run,
+ * hollow dots for missing values and markers for values beyond the scale. Requests in flight, however
+ * many, share one fixed lane at the right edge: the history never narrows because of concurrency. The lane
+ * holds one thin first-token bar per request (the newest SPEED_LIVE_BARS) below the axis and leaves the
+ * space above the axis free for the stopwatch.
  */
 export function speedWave(samples, live = []) {
-  const entries = [...samples, ...live]
-  const count = entries.length
-  const switches = entries.filter((entry, index) => index && entry.model !== entries[index - 1].model).length
-  // The newest request in flight gets a lane as wide as its stopwatch: its speed is not known yet, so the
-  // upper half of the lane is free for the timer and the lower half shows its growing first-token bar.
-  const laneIndex = live.length ? count - 1 : -1
-  const lane = laneIndex < 0 ? 0 : SPEED_LIVE_LANE
-  const slots = count - (laneIndex < 0 ? 0 : 1)
-  const slot = Math.min((SPEED_WAVE_WIDTH - switches * MODEL_GAP - lane) / Math.max(slots, 1), SPEED_WAVE_WIDTH / MIN_SLOTS)
-  const widths = entries.map((_, index) => index === laneIndex ? lane : slot)
-  const used = slot * slots + lane + switches * MODEL_GAP
+  const count = samples.length
+  const lane = live.length ? SPEED_LIVE_LANE : 0
+  const lastModel = samples.at(-1)?.model
+  // The lane continues the last model's axis when everything in flight is that model, else a model gap.
+  const laneGap = lane && count && live.some(entry => entry.model !== lastModel) ? MODEL_GAP : 0
+  const area = SPEED_WAVE_WIDTH - lane - laneGap
+  const switches = samples.filter((sample, index) => index && sample.model !== samples[index - 1].model).length
+  const slot = Math.min((area - switches * MODEL_GAP) / Math.max(count, 1), SPEED_WAVE_WIDTH / MIN_SLOTS)
   const xs = []
-  let cursor = SPEED_WAVE_WIDTH - used
-  entries.forEach((entry, index) => {
-    if (index && entry.model !== entries[index - 1].model) cursor += MODEL_GAP
+  let cursor = area - (slot * count + switches * MODEL_GAP)
+  samples.forEach((sample, index) => {
+    if (index && sample.model !== samples[index - 1].model) cursor += MODEL_GAP
     xs.push(cursor)
-    cursor += widths[index]
+    cursor += slot
   })
-  const center = index => xs[index] + widths[index] / 2
+  const center = index => xs[index] + slot / 2
   const runs = []
-  entries.forEach((entry, index) => {
-    if (!index || entry.model !== entries[index - 1].model) runs.push({ start: index, end: index })
+  samples.forEach((sample, index) => {
+    if (!index || sample.model !== samples[index - 1].model) runs.push({ start: index, end: index })
     else runs.at(-1).end = index
   })
   const waves = []
@@ -124,7 +128,12 @@ export function speedWave(samples, live = []) {
       waves.push({ side: series.side, area: `M ${points[0].x} ${base} ${line.replace(/^M/, 'L')} L ${points.at(-1).x} ${base} Z`, line })
     }
   }
-  const axis = runs.map(run => ({ x1: round(xs[run.start]), x2: round(xs[run.end] + widths[run.end]) }))
+  const axis = runs.map(run => ({ x1: round(xs[run.start]), x2: round(xs[run.end] + slot) }))
+  const laneX = SPEED_WAVE_WIDTH - lane
+  if (lane) {
+    if (axis.length && !laneGap) axis.at(-1).x2 = SPEED_WAVE_WIDTH
+    else axis.push({ x1: round(laneX), x2: SPEED_WAVE_WIDTH })
+  }
   const [up, down] = SPEED_SERIES
   const missing = samples.flatMap((sample, index) => speedValue(sample, up) === undefined ? [{ index, x: round(center(index)), y: AXIS - 5 }] : [])
   const over = samples.flatMap((sample, index) => {
@@ -136,22 +145,45 @@ export function speedWave(samples, live = []) {
     return marks
   })
   // Top of each request's column (for anchoring a tooltip): its speed point, else the axis.
-  const tops = entries.map((entry, index) => {
-    const tps = index < samples.length ? speedValue(entry, up) : undefined
+  const tops = samples.map(sample => {
+    const tps = speedValue(sample, up)
     return round(tps === undefined ? AXIS : offset(up, tps))
   })
-  // Requests in flight have no wave yet: they are slots (the first after the completed ones) that grow live.
-  return { slot: round(slot), xs: xs.map(round), widths: widths.map(round), axis, waves, missing, over, tops, axisY: AXIS, reach: ROOM + 2, liveStart: samples.length, laneIndex }
+  // In-flight bars: one pitch per request, as wide as a history slot at most and thinner as more run at
+  // once; the group is centered in the lane, oldest left, newest right.
+  const shown = live.slice(-SPEED_LIVE_BARS)
+  const first = live.length - shown.length
+  const pitch = shown.length ? Math.min(slot, SPEED_WAVE_WIDTH / MIN_SLOTS, (lane - 8) / shown.length) : 0
+  const barWidth = Math.max(1, Math.min(pitch - Math.max(1, pitch * 0.3), 10))
+  const start = laneX + (lane - pitch * shown.length) / 2
+  const liveBars = shown.map((entry, order) => ({
+    order: first + order,
+    id: entry.id,
+    x: round(start + order * pitch + (pitch - barWidth) / 2),
+    width: round(barWidth),
+    hitX: round(start + order * pitch),
+    hitWidth: round(pitch),
+  }))
+  return {
+    slot: round(slot), xs: xs.map(round), axis, waves, missing, over, tops, axisY: AXIS, reach: ROOM + 2,
+    lane: lane ? { x: round(laneX), width: lane } : null, liveBars,
+  }
 }
 
-/** Hovered request from a pointer x in chart units: the slot under it (or the nearest), -1 left of the first one. */
+/**
+ * What a pointer x (chart units) is over: { live: order } for an in-flight bar (the nearest in the lane),
+ * { sample: index } for a completed request (the nearest slot), or null left of everything.
+ */
 export function speedWaveHit(wave, x) {
-  if (!wave.xs.length || x < wave.xs[0] - wave.slot / 2) return -1
-  const distance = index => {
-    const left = wave.xs[index], right = left + wave.widths[index]
-    return x < left ? left - x : x > right ? x - right : 0
+  if (wave.lane && x >= wave.lane.x - MODEL_GAP / 2 && wave.liveBars.length) {
+    const distance = bar => x < bar.hitX ? bar.hitX - x : x > bar.hitX + bar.hitWidth ? x - bar.hitX - bar.hitWidth : 0
+    const bar = wave.liveBars.reduce((best, item) => distance(item) < distance(best) ? item : best)
+    return { live: bar.order }
   }
+  if (!wave.xs.length || x < wave.xs[0] - wave.slot / 2) return null
   let best = 0
-  wave.xs.forEach((_, index) => { if (distance(index) < distance(best)) best = index })
-  return best
+  wave.xs.forEach((left, index) => {
+    if (Math.abs(left + wave.slot / 2 - x) < Math.abs(wave.xs[best] + wave.slot / 2 - x)) best = index
+  })
+  return { sample: best }
 }

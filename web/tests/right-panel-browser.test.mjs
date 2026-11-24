@@ -59,6 +59,56 @@ test('model speed: a request in flight runs a stopwatch on the axis and grows it
     assert.equal(await speed.locator('.speed-wave-axis').count(), 2)
     await p.mouse.move(timerBox.x + timerBox.width / 2, axisY + 6)
     await p.waitForFunction(() => /进行中 \d+\.\d{2} s[\s\S]*首字 等待中[\s\S]*model-b/.test(document.querySelector('.memory-tooltip')?.innerText || ''))
+    assert.equal(await speed.locator('.speed-timer-count').count(), 0)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test('model speed: the stopwatch stops at the first token; many requests at once share the lane as thin bars', async () => {
+  const now = new Date().toISOString()
+  const live = Array.from({ length: 12 }, (_, index) => ({ id: `r${index}`, model: 'model-b', elapsedMs: 9000 - index * 600, ...(index < 9 ? { firstTokenMs: 800 + index * 150 } : {}) }))
+  const many = Array.from({ length: 30 }, (_, index) => ({ at: now, model: 'model-b', firstTokenMs: 900 + index * 40, tokensPerSecond: 50 + index }))
+  const snapshot = observabilitySnapshot({ modelSpeed: { samples: many, live } })
+  const f = await createObservabilityBrowser(snapshot)
+  try {
+    const p = f.page, speed = p.locator('[data-card="speed"]')
+    const timer = speed.locator('.speed-timer')
+    await timer.waitFor()
+    assert.equal(await speed.locator('.speed-wave-live-bar').count(), 12)
+    assert.equal(await speed.locator('.speed-wave-live-bar[data-waiting]').count(), 3)
+    assert.equal(await speed.locator('.speed-timer-count').innerText(), '×12')
+    // Some are still waiting: the stopwatch follows the newest waiting request and keeps running.
+    assert.equal(await timer.getAttribute('data-waiting'), 'true')
+    const timerText = () => timer.evaluate(el => el.lastChild.textContent.trim())
+    const before = Number.parseFloat(await timerText())
+    await p.waitForTimeout(300)
+    assert.ok(Number.parseFloat(await timerText()) > before)
+    // Bars stay inside the lane, apart from each other, and right of the history.
+    const bars = await speed.locator('.speed-wave-live-bar').evaluateAll(rects => rects.map(rect => ({ x: Number(rect.getAttribute('x')), width: Number(rect.getAttribute('width')) })))
+    bars.forEach((bar, order) => { if (order) assert.ok(bar.x >= bars[order - 1].x + bars[order - 1].width, JSON.stringify(bars)) })
+    assert.ok(bars[0].x >= 260 - 64 && bars.at(-1).x + bars.at(-1).width <= 260)
+    // Hovering one bar tells that request's own state.
+    const box = await speed.locator('.speed-chart').boundingBox()
+    const barX = bar => box.x + (bar.x + bar.width / 2) / 260 * box.width
+    await p.mouse.move(barX(bars[0]), box.y + box.height * 0.75)
+    await p.waitForFunction(() => /进行中 \d+\.\d{2} s[\s\S]*首字 0\.8 s/.test(document.querySelector('.memory-tooltip')?.innerText || ''))
+    await p.mouse.move(barX(bars.at(-1)), box.y + box.height * 0.75)
+    await p.waitForFunction(() => /首字 等待中/.test(document.querySelector('.memory-tooltip')?.innerText || ''))
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test('model speed: once every request in flight has its first token, the stopwatch stands still', async () => {
+  const now = new Date().toISOString()
+  const snapshot = observabilitySnapshot({ modelSpeed: { samples: speedSamples(now), live: [{ id: 'live-1', model: 'model-b', elapsedMs: 4000, firstTokenMs: 1234 }] } })
+  const f = await createObservabilityBrowser(snapshot)
+  try {
+    const timer = f.page.locator('[data-card="speed"] .speed-timer')
+    await timer.waitFor()
+    assert.equal(await timer.getAttribute('data-waiting'), null)
+    assert.equal(await timer.innerText(), '1.23 s')
+    await f.page.waitForTimeout(300)
+    assert.equal(await timer.innerText(), '1.23 s')
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })

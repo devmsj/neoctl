@@ -603,6 +603,9 @@ async function* callModelForTurn(
         || (event.type === "tool_call_delta" && event.argumentsDelta.length > 0)
         || event.type === "tool_use"
         || (event.type === "assistant_message" && event.message.blocks.some(block => block.type === "tool_use" || ((block.type === "text" || block.type === "thinking") && block.text.length > 0)))) { timing.firstOutput(); speed.firstOutput(); liveSpeed?.firstOutput(); }
+      // For model speed, a tool call opening is already the model's first output: the transcript shows the
+      // tool (command, purpose, edited file) from this point, before any argument characters arrive.
+      if (event.type === "tool_call_started") { speed.firstOutput(); liveSpeed?.firstOutput(); }
       if(event.type === 'tool_call_started'&&!inputStreams.has(event.callId)) inputStreams.set(event.callId,new ToolInputStream());
       if(event.type === 'tool_call_delta') {
         const decoder=inputStreams.get(event.callId)??new ToolInputStream();

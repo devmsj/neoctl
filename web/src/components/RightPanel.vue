@@ -114,41 +114,55 @@ watch(() => props.speedLive.length, (count) => {
   if (count && !speedFrame) speedFrame = requestAnimationFrame(tickSpeedClock)
 }, { immediate: true })
 onBeforeUnmount(() => { if (speedFrame) cancelAnimationFrame(speedFrame) })
-const speedLiveSlots = computed(() => {
-  const wave = speedWaveLayout.value
-  return props.speedLive.map((entry, order) => {
-    const index = wave.liveStart + order
-    const elapsed = Math.max(0, speedClock.value - entry.startedAt)
-    const waiting = entry.firstTokenMs === undefined
-    const x = wave.xs[index], width = wave.widths[index]
-    // The bar keeps a regular slot's width, centered in the (wider) lane of the newest request.
-    const barWidth = Math.max(2, Math.min(wave.slot, 12) - 2)
-    return { id: entry.id, index, x, width, barX: x + (width - barWidth) / 2, barWidth, elapsed, waiting, firstTokenMs: entry.firstTokenMs, model: entry.model, bottom: speedFirstTokenY(waiting ? elapsed : entry.firstTokenMs) }
-  })
-})
-// The stopwatch of the newest request in flight lives in that request's own lane, above the axis: its
-// speed is not known yet, so that space is free; nothing of the wave is covered or squeezed.
+const speedLiveEntry = (entry) => {
+  const elapsed = Math.max(0, speedClock.value - entry.startedAt)
+  const waiting = entry.firstTokenMs === undefined
+  return { id: entry.id, elapsed, waiting, firstTokenMs: entry.firstTokenMs, model: entry.model }
+}
+// One thin first-token bar per request in flight, all in the shared lane: it grows while the request
+// waits and stops at its first output.
+const speedLiveBars = computed(() => speedWaveLayout.value.liveBars.map((bar) => {
+  const live = speedLiveEntry(props.speedLive[bar.order])
+  return { ...bar, ...live, bottom: speedFirstTokenY(live.waiting ? live.elapsed : live.firstTokenMs) }
+}))
+// The stopwatch times the first token: it follows the newest request still waiting, else it stops at the
+// newest request's first-token time. It stands on the axis in the lane (the upper half is free until a
+// speed is known), so nothing of the wave is covered; a count tells how many requests run at once.
 const speedTimer = computed(() => {
-  const slot = speedLiveSlots.value.find(item => item.index === speedWaveLayout.value.laneIndex)
-  if (!slot) return null
   const wave = speedWaveLayout.value
+  if (!wave.lane || !props.speedLive.length) return null
+  const entries = props.speedLive.map(speedLiveEntry)
+  const focus = entries.findLast(entry => entry.waiting) || entries.at(-1)
   return {
-    text: formatElapsed(slot.elapsed),
-    waiting: slot.waiting,
-    style: { left: `${slot.x / SPEED_WAVE_WIDTH * 100}%`, width: `${slot.width / SPEED_WAVE_WIDTH * 100}%`, top: `${wave.axisY / SPEED_WAVE_HEIGHT * 100}%` },
+    text: formatElapsed(focus.waiting ? focus.elapsed : focus.firstTokenMs),
+    waiting: focus.waiting,
+    count: entries.length > 1 ? entries.length : 0,
+    style: { left: `${wave.lane.x / SPEED_WAVE_WIDTH * 100}%`, width: `${wave.lane.width / SPEED_WAVE_WIDTH * 100}%`, top: `${wave.axisY / SPEED_WAVE_HEIGHT * 100}%` },
   }
 })
 // Values are plain text in the theme's colors; only the waveform carries the speed colors.
 const speedUpLatest = computed(() => formatSpeed(speedUpSeries, latestSpeed(props.speed, speedUpSeries)))
 const speedDownLatest = computed(() => formatSpeed(speedDownSeries, latestSpeed(props.speed, speedDownSeries)))
-const speedHoverIndexValue = ref(-1)
+// What the pointer is over: { sample: index } for a completed request, { live: order } for one in flight.
+const speedHover = ref(null)
 function updateSpeedHover(event) {
   const rect = event.currentTarget.getBoundingClientRect()
-  speedHoverIndexValue.value = speedWaveHit(speedWaveLayout.value, (event.clientX - rect.left) / Math.max(1, rect.width) * SPEED_WAVE_WIDTH)
+  speedHover.value = speedWaveHit(speedWaveLayout.value, (event.clientX - rect.left) / Math.max(1, rect.width) * SPEED_WAVE_WIDTH)
 }
 function clearSpeedHover() {
-  speedHoverIndexValue.value = -1
+  speedHover.value = null
 }
+// Column highlighted under the pointer: a history slot or an in-flight bar's share of the lane.
+const speedHoverColumn = computed(() => {
+  const hover = speedHover.value
+  const wave = speedWaveLayout.value
+  if (hover?.live !== undefined) {
+    const bar = wave.liveBars.find(item => item.order === hover.live)
+    return bar ? { x: bar.hitX, width: bar.hitWidth } : null
+  }
+  if (hover?.sample !== undefined && wave.xs[hover.sample] !== undefined) return { x: wave.xs[hover.sample], width: wave.slot }
+  return null
+})
 
 // Chart tooltips (memory and speed) float in <body> at viewport coordinates, so neither the cards'
 // clipping nor the panel's scrolling cuts them. Anchored at the hovered point: above it, flipped
@@ -161,14 +175,22 @@ const chartTooltip = computed(() => {
     const point = memoryHoveredPoint.value
     return { kind: 'memory', chart: memoryChartEl.value, x: point.x / 260, y: point.y / 44 }
   }
-  const index = speedHoverIndexValue.value
+  const hover = speedHover.value
+  const column = speedHoverColumn.value
   const wave = speedWaveLayout.value
-  if (index < 0 || wave.xs[index] === undefined) return null
-  const anchor = { kind: 'speed', key: `speed:${index}`, chart: speedChartEl.value, x: (wave.xs[index] + wave.widths[index] / 2) / SPEED_WAVE_WIDTH, y: wave.tops[index] / SPEED_WAVE_HEIGHT }
-  const live = speedLiveSlots.value.find(slot => slot.index === index)
-  if (live) {
+  if (!hover || !column) return null
+  const x = (column.x + column.width / 2) / SPEED_WAVE_WIDTH
+  if (hover.live !== undefined) {
+    const entry = props.speedLive[hover.live]
+    if (!entry) return null
+    const live = speedLiveEntry(entry)
     return {
-      ...anchor,
+      kind: 'speed',
+      key: `speed:live:${live.id}`,
+      chart: speedChartEl.value,
+      x,
+      // Above the chart, so the stopwatch in the lane stays readable under the tooltip.
+      y: 0,
       values: [
         { key: 'elapsed', text: `进行中 ${formatElapsed(live.elapsed)}` },
         { key: 'first', text: `首字 ${live.waiting ? '等待中' : formatSpeed(speedDownSeries, live.firstTokenMs)}` },
@@ -176,10 +198,15 @@ const chartTooltip = computed(() => {
       model: live.model,
     }
   }
+  const index = hover.sample
   const sample = props.speed[index]
   if (!sample) return null
   return {
-    ...anchor,
+    kind: 'speed',
+    key: `speed:${index}`,
+    chart: speedChartEl.value,
+    x,
+    y: wave.tops[index] / SPEED_WAVE_HEIGHT,
     values: SPEED_SERIES.map(series => ({ key: series.key, text: `${series.label} ${formatSpeed(series, speedValue(sample, series))}` })),
     model: sample.model,
     time: formatMemoryTooltipTime(sample.at),
@@ -327,24 +354,25 @@ watch(chartTooltip, async (tooltip) => {
               </linearGradient>
             </defs>
             <rect
-              v-if="chartTooltip?.kind === 'speed'"
+              v-if="chartTooltip?.kind === 'speed' && speedHoverColumn"
               class="speed-wave-hover"
-              :x="speedWaveLayout.xs[speedHoverIndexValue]"
+              :x="speedHoverColumn.x"
               y="0"
-              :width="speedWaveLayout.widths[speedHoverIndexValue]"
+              :width="speedHoverColumn.width"
               :height="SPEED_WAVE_HEIGHT"
             />
-            <!-- A request in flight: a first-token bar that grows while it waits. -->
-            <g v-for="slot in speedLiveSlots" :key="slot.id" class="speed-wave-live" :data-waiting="slot.waiting || undefined">
-              <rect
-                class="speed-wave-live-bar"
-                :x="slot.barX"
-                :y="speedWaveLayout.axisY + 2"
-                :width="slot.barWidth"
-                :height="Math.max(0, slot.bottom - speedWaveLayout.axisY - 2)"
-                fill="url(#speed-wave-down)"
-              />
-            </g>
+            <!-- Requests in flight: thin first-token bars in the shared lane, growing while they wait. -->
+            <rect
+              v-for="bar in speedLiveBars"
+              :key="bar.id"
+              class="speed-wave-live-bar"
+              :data-waiting="bar.waiting || undefined"
+              :x="bar.x"
+              :y="speedWaveLayout.axisY + 2"
+              :width="bar.width"
+              :height="Math.max(0, bar.bottom - speedWaveLayout.axisY - 2)"
+              fill="url(#speed-wave-down)"
+            />
             <line v-if="!speedHasData" class="speed-wave-axis" data-empty="true" x1="0" :x2="SPEED_WAVE_WIDTH" :y1="speedWaveLayout.axisY" :y2="speedWaveLayout.axisY" />
             <line v-for="piece in speedWaveLayout.axis" :key="piece.x1" class="speed-wave-axis" :x1="piece.x1" :x2="piece.x2" :y1="speedWaveLayout.axisY" :y2="speedWaveLayout.axisY" />
             <g v-for="(wave, order) in speedWaveLayout.waves" :key="order">
@@ -360,8 +388,9 @@ watch(chartTooltip, async (tooltip) => {
               :d="mark.side === 'up' ? `M ${mark.x - 3} 5 L ${mark.x + 3} 5 L ${mark.x} 0 Z` : `M ${mark.x - 3} ${mark.y - 5} L ${mark.x + 3} ${mark.y - 5} L ${mark.x} ${mark.y} Z`"
             />
           </svg>
-          <!-- Stopwatch of the newest request in flight, standing on the axis inside that request's lane. -->
+          <!-- First-token stopwatch, standing on the axis in the in-flight lane; the count of requests in flight above it. -->
           <div v-if="speedTimer" class="speed-timer" :data-waiting="speedTimer.waiting || undefined" :style="speedTimer.style">
+            <span v-if="speedTimer.count" class="speed-timer-count">×{{ speedTimer.count }}</span>
             <i aria-hidden="true"></i>{{ speedTimer.text }}
           </div>
           <div v-if="!speedHasData" class="speed-empty" :style="{ top: `${speedWaveLayout.axisY / SPEED_WAVE_HEIGHT * 100}%` }">等待模型请求</div>
