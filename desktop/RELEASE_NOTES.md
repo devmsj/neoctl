@@ -1,4 +1,4 @@
-# Neo Desktop 0.1.42
+# Neo Desktop 0.1.43
 
 Includes Web 0.1.57 and Core 0.2.77.
 
