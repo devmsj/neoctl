@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 // Right column: background tasks, quota and server memory. It renders on its own
 // data only; the parent hands in small view models that keep their identity while
 // unchanged, so transcript streaming does not re-render this column.
@@ -295,12 +295,12 @@ watch(chartTooltip, async (tooltip) => {
           <span class="chrome-label" :data-tooltip="speedTitle"><ChromeIcon name="fast" />模型速度</span>
         </div>
       </div>
-      <template v-if="speedHasData">
+      <!-- One layout with or without data: the empty card keeps its size, so the first request does not shift the panel. -->
         <div class="speed-row">
           <span>{{ speedUpSeries.label }}</span>
           <strong>{{ speedUpLatest }}</strong>
         </div>
-        <div ref="speedChartEl" class="speed-chart" @mousemove="updateSpeedHover" @mouseleave="clearSpeedHover">
+        <div ref="speedChartEl" class="speed-chart" :data-empty="!speedHasData || undefined" @mousemove="updateSpeedHover" @mouseleave="clearSpeedHover">
           <svg class="speed-wave" :viewBox="`0 0 ${SPEED_WAVE_WIDTH} ${SPEED_WAVE_HEIGHT}`" preserveAspectRatio="none" role="img" aria-label="最近模型请求：上方速度越高越快，下方首字越深越慢">
             <defs>
               <!-- Color follows the distance from the axis: fast green near the outer edge on top, slow red at the bottom. -->
@@ -345,6 +345,7 @@ watch(chartTooltip, async (tooltip) => {
                 fill="url(#speed-wave-down)"
               />
             </g>
+            <line v-if="!speedHasData" class="speed-wave-axis" data-empty="true" x1="0" :x2="SPEED_WAVE_WIDTH" :y1="speedWaveLayout.axisY" :y2="speedWaveLayout.axisY" />
             <line v-for="piece in speedWaveLayout.axis" :key="piece.x1" class="speed-wave-axis" :x1="piece.x1" :x2="piece.x2" :y1="speedWaveLayout.axisY" :y2="speedWaveLayout.axisY" />
             <g v-for="(wave, order) in speedWaveLayout.waves" :key="order">
               <path class="speed-wave-area" :d="wave.area" :fill="`url(#speed-wave-${wave.side}${wave.line ? '-fill' : ''})`" />
@@ -363,13 +364,12 @@ watch(chartTooltip, async (tooltip) => {
           <div v-if="speedTimer" class="speed-timer" :data-waiting="speedTimer.waiting || undefined" :style="speedTimer.style">
             <i aria-hidden="true"></i>{{ speedTimer.text }}
           </div>
+          <div v-if="!speedHasData" class="speed-empty" :style="{ top: `${speedWaveLayout.axisY / SPEED_WAVE_HEIGHT * 100}%` }">等待模型请求</div>
         </div>
         <div class="speed-row">
           <span>{{ speedDownSeries.label }}</span>
           <strong>{{ speedDownLatest }}</strong>
         </div>
-      </template>
-      <div v-else class="memory-trend-empty">—</div>
     </section>
     <Teleport to="body">
       <div

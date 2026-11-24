@@ -8,6 +8,25 @@ const speedSamples = now => [
   { at: now, model: 'model-b', firstTokenMs: 95_000, tokensPerSecond: 80 },
 ]
 
+test('model speed: without requests the card keeps its layout, with a dashed axis and a hint', async () => {
+  const f = await createObservabilityBrowser(observabilitySnapshot({ modelSpeed: { samples: [], live: [] } }))
+  try {
+    const speed = f.page.locator('[data-card="speed"]')
+    await speed.locator('.speed-empty').waitFor()
+    assert.equal(await speed.locator('.speed-empty').innerText(), '等待模型请求')
+    assert.deepEqual(await speed.locator('.speed-row strong').allInnerTexts(), ['—', '—'])
+    assert.equal(await speed.locator('.speed-wave-axis[data-empty]').count(), 1)
+    assert.equal(Math.round((await speed.locator('.speed-chart').boundingBox()).height), 80)
+    assert.equal(await speed.locator('.memory-trend-empty').count(), 0)
+    // Nothing to hover yet.
+    const box = await speed.locator('.speed-chart').boundingBox()
+    await f.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await f.page.waitForTimeout(150)
+    assert.equal(await f.page.locator('.memory-tooltip').count(), 0)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
 test('model speed: a request in flight runs a stopwatch on the axis and grows its first-token bar', async () => {
   const now = new Date().toISOString()
   const snapshot = observabilitySnapshot({ modelSpeed: { samples: speedSamples(now), live: [{ id: 'live-1', model: 'model-b', elapsedMs: 1500 }] } })
