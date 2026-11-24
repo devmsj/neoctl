@@ -22,8 +22,14 @@ for (const quota of [false, true]) test(`control visibility releases columns and
     const initial = await box('.chat-panel')
     const initialTranscript = await box('.transcript')
     await open()
-    assert.equal(await page.getByRole('checkbox').count(), 5)
+    assert.equal(await page.getByRole('checkbox').count(), 6)
+    assert.equal(await page.getByRole('checkbox', { name: '模型速度', exact: true }).getAttribute('aria-checked'), 'true')
     await toggle('后台任务'); await toggle('内存')
+    // The speed indicator is also a right-column card; it keeps the column open until hidden.
+    assert.equal(await page.locator('[data-card="speed"]').isVisible(), true)
+    assert.equal(await page.locator('.right-panel').isVisible(), true)
+    await toggle('模型速度')
+    assert.equal(await page.locator('[data-card="speed"]').count(), 0)
     if (quota) {
       assert.equal(await page.locator('.right-panel').isVisible(), true)
       await toggle('额度')
