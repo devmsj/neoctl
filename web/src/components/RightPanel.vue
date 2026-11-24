@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 // Right column: background tasks, quota and server memory. It renders on its own
 // data only; the parent hands in small view models that keep their identity while
 // unchanged, so transcript streaming does not re-render this column.
@@ -297,7 +297,7 @@ watch(chartTooltip, async (tooltip) => {
       </div>
       <template v-if="speedHasData">
         <div class="speed-row">
-          <span>{{ speedUpSeries.label }} ↑</span>
+          <span>{{ speedUpSeries.label }}</span>
           <strong>{{ speedUpLatest }}</strong>
         </div>
         <div ref="speedChartEl" class="speed-chart" @mousemove="updateSpeedHover" @mouseleave="clearSpeedHover">
@@ -365,7 +365,7 @@ watch(chartTooltip, async (tooltip) => {
           </div>
         </div>
         <div class="speed-row">
-          <span>{{ speedDownSeries.label }} ↓</span>
+          <span>{{ speedDownSeries.label }}</span>
           <strong>{{ speedDownLatest }}</strong>
         </div>
       </template>

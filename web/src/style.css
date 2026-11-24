@@ -813,9 +813,13 @@ a { color: var(--purple); }
 .memory-card-foot { align-items: center; justify-content: flex-end; margin-top: 8px; }
 /* Model speed waveform: speed above the axis, first token below. Text follows the theme; the chart uses
    its own fixed, saturated fast/mid/slow colors so speed reads the same and stays clear on any theme. */
-.speed-row { position: relative; z-index: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--appearance-ui-scale, 1)); }
-.speed-row strong { color: var(--black); font-family: var(--appearance-code-font, var(--mono)); font-size: calc(13px * var(--appearance-ui-scale, 1)); font-weight: 500; white-space: nowrap; }
-.speed-chart { --speed-fast: #16a34a; --speed-mid: #f59e0b; --speed-slow: #e11d48; position: relative; z-index: 1; height: 80px; margin: 6px 0; }
+/* Quiet secondary rows: the card title stays the only heading; label and value share one size and weight. */
+.speed-row { position: relative; z-index: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 4px; color: var(--faint); font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 400; line-height: 16px; }
+/* Breathing room: apart from the title above, and inset from the card's edges like the chart's content. */
+.speed-card .memory-card-head + .speed-row { margin-top: 12px; }
+.speed-card .speed-row:last-child { margin-bottom: 2px; }
+.speed-row strong { color: var(--muted); font-family: var(--appearance-code-font, var(--mono)); font-size: calc(11px * var(--appearance-ui-scale, 1)); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.speed-chart { --speed-fast: #16a34a; --speed-mid: #f59e0b; --speed-slow: #e11d48; position: relative; z-index: 1; height: 80px; margin: 8px 4px; }
 .speed-wave { display: block; width: 100%; height: 100%; overflow: visible; }
 .speed-wave-axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .speed-wave-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
