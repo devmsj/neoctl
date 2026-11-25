@@ -44,6 +44,8 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
 
   private readonly credentialProvider: CredentialProvider;
   private readonly transport = new HttpTransport(this.name);
+  /** Runtime-learned (not a setting): this backend rejected allowed_tools. */
+  private allowedToolsUnsupported = false;
   private readonly baseUrl: string;
 
   constructor(private readonly options: OpenAIAdapterOptions) {
@@ -57,12 +59,29 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     this.assertRequestCapabilities(request);
     const endpoint = this.options.endpoint ?? "auto";
-    yield* streamWithRetry((attempt) => this.streamAttempt(request, endpoint, attempt), {
-      provider: this.name,
-      maxRetries: this.options.maxRetries,
-      signal: request.cancellation,
-      skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
-    });
+    for (;;) {
+      // Same condition under which buildResponsesRequest emits allowed_tools.
+      const allowedToolsSent = !this.allowedToolsUnsupported && endpoint !== "chat" && request.tools.length > 0
+        && request.toolChoice !== "none" && typeof request.toolChoice !== "object";
+      try {
+        yield* streamWithRetry((attempt) => this.streamAttempt(request, endpoint, attempt), {
+          provider: this.name,
+          maxRetries: this.options.maxRetries,
+          signal: request.cancellation,
+          skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
+        });
+        return;
+      } catch (error) {
+        // allowed_tools stays on whenever the backend accepts it; a backend that
+        // rejects it (a validation error, before any output) gets the standard
+        // tool_choice values, and this adapter stops sending it.
+        if (allowedToolsSent && !request.cancellation?.aborted && rejectsAllowedTools(normalizeUnknownError(error, this.name))) {
+          this.allowedToolsUnsupported = true;
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   private async *streamAttempt(
@@ -93,7 +112,7 @@ export class OpenAIAdapter implements ProviderAdapter, ModelGateway {
 
   private async *streamResponses(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
     const payloadRefs = new PayloadRefs();
-    const body = withPayloadRefs(payloadRefs, () => buildResponsesRequest(request, this.options));
+    const body = withPayloadRefs(payloadRefs, () => buildResponsesRequest(request, this.options, { allowedTools: !this.allowedToolsUnsupported }));
     const headers = await this.authHeaders();
     const timeoutMs = request.timeoutMs ?? this.options.timeoutMs ?? 120000;
 
@@ -209,6 +228,12 @@ function hasImageInput(request: ModelRequest): boolean {
       return type === "image" || type === "input_image" || (block.type === "text" && /!\[[^\]]*\]\([^\)]+\)/.test(block.text));
     }),
   );
+}
+
+/** A request-validation error about tool_choice/allowed_tools (sent only while the request used allowed_tools). */
+function rejectsAllowedTools(error: ModelAPIError): boolean {
+  if (error.status !== 400 && error.status !== 422) return false;
+  return /allowed_tools|tool_choice/i.test(`${error.message} ${JSON.stringify(error.raw ?? "")}`);
 }
 
 function shouldFallbackToChat(error: ModelAPIError): boolean {

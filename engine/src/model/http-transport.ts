@@ -1,4 +1,4 @@
-import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js";
+import { categoryForStatus, isQuotaExhausted, ModelAPIError, parseRetryAfterMs } from "./errors.js";
 import { jsonBody } from "./json-body.js";
 import type { PayloadRefs } from "../core/image-payload-refs.js";
 
@@ -29,35 +29,52 @@ export class HttpTransport {
   constructor(private readonly provider: string) {}
 
   async sendJson<T = unknown>(request: HttpJsonRequest): Promise<HttpJsonResponse<T>> {
-    const response = await this.fetch(request);
-    const bodyText = await response.text();
-    const body = bodyText ? safeJson(bodyText) : undefined;
-    if (!response.ok) throw this.toHttpError(response, body, request);
-    return { status: response.status, headers: response.headers, body: body as T };
+    const { response, release } = await this.fetch(request);
+    try {
+      const bodyText = await response.text();
+      const body = bodyText ? safeJson(bodyText) : undefined;
+      if (!response.ok) throw this.toHttpError(response, body, request);
+      return { status: response.status, headers: response.headers, body: body as T };
+    } finally {
+      release();
+    }
   }
 
   async sendStream(request: HttpJsonRequest): Promise<HttpStreamResponse> {
-    const response = await this.fetch(request);
+    const { response, release } = await this.fetch(request);
     if (!response.ok) {
-      const text = await response.text();
-      throw this.toHttpError(response, text ? safeJson(text) : undefined, request);
+      try {
+        const text = await response.text();
+        throw this.toHttpError(response, text ? safeJson(text) : undefined, request);
+      } finally {
+        release();
+      }
     }
     if (!response.body) {
+      release();
       throw new ModelAPIError({ category: "provider_bug", provider: this.provider, message: "Streaming response did not include a body" });
     }
-    return { status: response.status, headers: response.headers, body: response.body };
+    return { status: response.status, headers: response.headers, body: releaseWhenSettled(response.body, release) };
   }
 
-  private async fetch(request: HttpJsonRequest): Promise<Response> {
+  /**
+   * The caller's cancellation stays connected until `release()` (body fully read,
+   * failed or cancelled), so aborting a silent stream closes the connection at
+   * once instead of waiting for the provider's next chunk. The timeout covers
+   * only the time to response headers; streams use their own idle timeout.
+   */
+  private async fetch(request: HttpJsonRequest): Promise<{ response: Response; release: () => void }> {
     const controller = new AbortController();
     const timeout = request.timeoutMs
       ? setTimeout(() => controller.abort(), request.timeoutMs)
       : undefined;
     const abortListener = () => controller.abort();
     request.signal?.addEventListener("abort", abortListener, { once: true });
+    if (request.signal?.aborted) controller.abort();
+    const release = () => request.signal?.removeEventListener("abort", abortListener);
 
     try {
-      return await fetch(request.url, {
+      const response = await fetch(request.url, {
         method: request.method,
         headers: {
           "Content-Type": "application/json",
@@ -68,9 +85,12 @@ export class HttpTransport {
         body: request.body === undefined ? undefined : await jsonBody(request.body, request.payloadRefs),
         signal: controller.signal,
       });
+      return { response, release };
+    } catch (error) {
+      release();
+      throw error;
     } finally {
       if (timeout) clearTimeout(timeout);
-      request.signal?.removeEventListener("abort", abortListener);
     }
   }
 
@@ -81,6 +101,7 @@ export class HttpTransport {
       category: categoryForStatus(response.status, body),
       provider: this.provider,
       status: response.status,
+      ...(isQuotaExhausted(body) ? { retryable: false } : {}),
       code: typeof providerError?.code === "string" ? providerError.code : undefined,
       message,
       requestId: response.headers.get("x-request-id") ?? response.headers.get("openai-request-id") ?? undefined,
@@ -96,6 +117,29 @@ export class HttpTransport {
       raw: body,
     });
   }
+}
+
+/** Pass-through body that calls `release` exactly once when it ends, errors or is cancelled. */
+function releaseWhenSettled(body: ReadableStream<Uint8Array>, release: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let released = false;
+  const done = () => { if (!released) { released = true; release(); } };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) { done(); controller.close(); return; }
+        controller.enqueue(result.value);
+      } catch (error) {
+        done();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      done();
+      await reader.cancel(reason);
+    },
+  });
 }
 
 function safeJson(text: string): unknown {

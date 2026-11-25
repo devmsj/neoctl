@@ -66,12 +66,22 @@ export type ModelStreamEvent =
   | { type: "tool_call_delta"; callId: string; name?: string; argumentsDelta: string }
   | { type: "response_started"; responseId: string }
   | { type: "response_completed"; responseId?: string; stopReason?: string; usage?: ModelUsage }
-  | { type: "response_incomplete"; responseId?: string; reason?: string; usage?: ModelUsage }
+  /** detail: optional human-readable provider explanation (e.g. refusal text). */
+  | { type: "response_incomplete"; responseId?: string; reason?: string; detail?: string; usage?: ModelUsage }
   | { type: "usage"; usage: ModelUsage; provisional?: boolean }
   | { type: "retrying"; error: Error; attempt: number; delayMs: number; resetOutput?: boolean }
   | { type: "provider_event"; event: unknown }
   | { type: "error"; error: Error }
   | { type: "retry"; reason: string; attempt: number };
+
+/**
+ * Refused or filtered output is never a usable partial answer: it must not be
+ * committed to history (continuing from it tends to repeat the refusal).
+ * Truncation (max tokens) is different: its partial text is kept for continuation.
+ */
+export function discardsPartialOutput(reason: string | undefined): boolean {
+  return reason === "refusal" || reason === "content_filter";
+}
 
 export interface ModelGateway {
   estimateInputTokens?(request: ModelRequest): number | undefined;

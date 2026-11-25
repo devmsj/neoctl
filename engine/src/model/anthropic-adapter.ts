@@ -5,7 +5,7 @@ import { PayloadRefs, withPayloadRefs } from "../core/image-payload-refs.js";
 import { streamWithRetry } from "./retry-runner.js";
 import { anthropicFastModeBeta, isFastModeUnavailable } from "./fast-mode.js";
 import { EnvCredentialProvider, StaticCredentialProvider, type CredentialProvider } from "./credentials.js";
-import { categoryForStatus, ModelAPIError, parseRetryAfterMs } from "./errors.js";
+import { categoryForStatus, isQuotaExhausted, ModelAPIError, parseRetryAfterMs } from "./errors.js";
 import type { ModelRequest, ModelStreamEvent } from "./model-gateway.js";
 import type { ProviderAdapter, ProviderCapabilities } from "./provider-adapter.js";
 import { anthropicInvalid, buildAnthropicRequest, normalizeAnthropicObject, normalizeAnthropicStream, type AnthropicMapperOptions } from "./anthropic-mapper.js";
@@ -31,6 +31,18 @@ export interface AnthropicAdapterOptions extends AnthropicMapperOptions {
   maxRetries?: number;
 }
 
+/** A request-validation error that names the fine-grained tool streaming field. */
+function rejectsEagerInputStreaming(error: unknown): boolean {
+  if (!(error instanceof ModelAPIError) || (error.status !== 400 && error.status !== 422)) return false;
+  return /eager_input_streaming/i.test(`${error.message} ${JSON.stringify(error.raw ?? "")}`);
+}
+
+/** A request-validation error about message roles (sent only while the request contains system turns). */
+function rejectsSystemTurns(error: unknown): boolean {
+  if (!(error instanceof ModelAPIError) || (error.status !== 400 && error.status !== 422)) return false;
+  return /\brole\b/i.test(`${error.message} ${JSON.stringify(error.raw ?? "")}`);
+}
+
 /** Native Messages API. CPA owns upstream OAuth; neo only receives its API key. */
 export class AnthropicAdapter implements ProviderAdapter {
   readonly name = "anthropic";
@@ -41,6 +53,10 @@ export class AnthropicAdapter implements ProviderAdapter {
   private readonly credentials: CredentialProvider;
   private readonly url: string;
   private countingUnsupported = false;
+  /** Runtime-learned (not settings): this backend rejected eager_input_streaming / mid-conversation system turns. */
+  private eagerInputUnsupported = false;
+  private systemTurnsUnsupported = false;
+  private buildOptions() { return { eagerInputStreaming: !this.eagerInputUnsupported, foldSystemTurns: this.systemTurnsUnsupported }; }
   constructor(private readonly options: AnthropicAdapterOptions) {
     this.credentials = options.credentialProvider ?? (options.apiKey ? new StaticCredentialProvider(options.apiKey) : new EnvCredentialProvider("ANTHROPIC_API_KEY"));
     const base = (options.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
@@ -83,7 +99,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     const timer = setTimeout(cancel, 1500);
     try {
       const refs = new PayloadRefs();
-      const mapped = withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options));
+      const mapped = withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options, this.buildOptions()));
       const body = Object.fromEntries(["model", "messages", "system", "tools", "tool_choice", "thinking", "output_config"].filter(key => mapped[key] !== undefined).map(key => [key, mapped[key]]));
       const credential = await this.credentials.getCredential();
       if (!credential || controller.signal.aborted) return undefined;
@@ -103,19 +119,39 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async *stream(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
-    // Serialize once; retries reuse the Blob. Stored images stay on disk and are streamed during upload.
-    const refs = new PayloadRefs();
-    const body = await jsonBody(withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options)), refs);
+    // Serialize once per shape; retries reuse the Blob. Stored images stay on disk and are streamed during upload.
+    const serialize = async () => {
+      const refs = new PayloadRefs();
+      const mapped = withPayloadRefs(refs, () => buildAnthropicRequest(request, this.options, this.buildOptions()));
+      const tools = Array.isArray(mapped.tools) ? mapped.tools as Record<string, unknown>[] : [];
+      const messages = Array.isArray(mapped.messages) ? mapped.messages as Record<string, unknown>[] : [];
+      return {
+        body: await jsonBody(mapped, refs),
+        eagerSent: tools.some(tool => tool.eager_input_streaming === true),
+        systemTurnsSent: messages.some(message => message.role === "system"),
+      };
+    };
+    let prepared = await serialize();
     const credential = await this.credentials.getCredential();
     if (!credential) throw new ModelAPIError({ provider: this.name, category: "auth_unavailable", message: "ANTHROPIC_API_KEY (official or gateway key) is not configured" });
-    try {
-      yield* streamWithRetry(() => this.attempt(request, body, credential), {
-        provider: this.name, maxRetries: this.options.maxRetries, signal: request.cancellation,
-        skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
-      });
-    } catch (error) {
-      if (request.cancellation?.aborted) throw new ModelAPIError({ provider: this.name, category: "user_abort", message: "Claude request cancelled", retryable: false });
-      throw error;
+    for (;;) {
+      const { body } = prepared;
+      try {
+        yield* streamWithRetry(() => this.attempt(request, body, credential), {
+          provider: this.name, maxRetries: this.options.maxRetries, signal: request.cancellation,
+          skipRetry: request.fastMode ? isFastModeUnavailable : undefined,
+        });
+        return;
+      } catch (error) {
+        if (request.cancellation?.aborted) throw new ModelAPIError({ provider: this.name, category: "user_abort", message: "Claude request cancelled", retryable: false });
+        // Protocol extensions stay on whenever the backend accepts them. A
+        // backend that rejects one (a validation error, before any output) gets
+        // the same request without it, and this adapter stops sending it.
+        if (prepared.eagerSent && rejectsEagerInputStreaming(error)) this.eagerInputUnsupported = true;
+        else if (prepared.systemTurnsSent && !this.systemTurnsUnsupported && rejectsSystemTurns(error)) this.systemTurnsUnsupported = true;
+        else throw error;
+        prepared = await serialize();
+      }
     }
   }
 
@@ -140,7 +176,7 @@ export class AnthropicAdapter implements ProviderAdapter {
         try { parsed = JSON.parse(raw); } catch { parsed = { message: raw }; }
         const error = parsed.error && typeof parsed.error === "object" ? parsed.error as Record<string, unknown> : parsed;
         const message = typeof error.message === "string" ? error.message : `HTTP ${response.status} from Claude`;
-        throw new ModelAPIError({ provider: this.name, category: /prompt is too long|context.*(?:length|limit)/i.test(message) ? "context_length" : categoryForStatus(response.status, parsed), message, status: response.status, code: typeof error.type === "string" ? error.type : undefined, requestId: response.headers.get("request-id") ?? undefined, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")), raw: parsed });
+        throw new ModelAPIError({ provider: this.name, category: /prompt is too long|context.*(?:length|limit)/i.test(message) ? "context_length" : categoryForStatus(response.status, parsed), message, status: response.status, ...(isQuotaExhausted(parsed) ? { retryable: false } : {}), code: typeof error.type === "string" ? error.type : undefined, requestId: response.headers.get("request-id") ?? undefined, retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")), raw: parsed });
       }
       const model = request.model ?? this.options.model;
       if (request.stream === false) yield* normalizeAnthropicObject(await response.json() as Record<string, unknown>, model);

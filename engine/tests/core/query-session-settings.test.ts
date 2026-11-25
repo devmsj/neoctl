@@ -101,7 +101,7 @@ test("real model switch clears response chain, no-op model and canceling LWW do 
   }
 });
 
-test("max-output recovery keeps escalation and response chain under no-op/fast/context, actual model switch discards continuation-only input", async () => {
+test("max-output recovery keeps escalation and resends full history (no previous_response_id) under no-op/fast/context and model switch", async () => {
   for (const switchModel of [false, true]) {
     const opened = gate(), resume = gate(); const requests: ModelRequest[] = [];
     const f = fixture({ modelGateway: { async *stream(request): AsyncIterable<ModelStreamEvent> {
@@ -116,10 +116,13 @@ test("max-output recovery keeps escalation and response chain under no-op/fast/c
     await f.engine.updateSessionSettings({ model: switchModel ? "gpt-5-mini" : "gpt-5", fastMode: true, contextWindowTokens: 70000 });
     resume.release(); await done;
     assert.equal(requests[1].maxOutputTokens, 64000);
-    assert.equal(requests[1].previousResponseId, switchModel ? undefined : "resp-recover");
+    // Gateways may silently ignore previous_response_id; the continuation must carry its own context.
+    assert.equal(requests[1].previousResponseId, undefined);
     assert.equal(requests[1].fastMode, true);
-    if (switchModel) assert.match(JSON.stringify(requests[1].messages), /RECOVER_INPUT/);
-    else assert.match(JSON.stringify(requests[1].messages), /Continue from the exact point/);
+    const sent = JSON.stringify(requests[1].messages);
+    assert.match(sent, /RECOVER_INPUT/);
+    assert.match(sent, /PARTIAL_ANSWER/);
+    if (!switchModel) assert.match(sent, /Continue from the exact point/);
   }
 });
 

@@ -1,7 +1,7 @@
 import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
-import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
+import { discardsPartialOutput, type ModelRequest, type ModelStreamEvent, type ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import { ModelAPIError, normalizeUnknownError } from "./errors.js";
 import { withThinkingLifecycle } from "./thinking-lifecycle.js";
@@ -74,6 +74,7 @@ async function* normalizeChatStreamEvents(
   let responseId: string | undefined;
   let usage = undefined as ReturnType<typeof normalizeUsage>;
   let stopReason: string | undefined;
+  let refusal = "";
   let awaitingRead = true;
 
   try {
@@ -108,6 +109,7 @@ async function* normalizeChatStreamEvents(
         thinkingParts.push(reasoningContent);
         yield { type: "thinking_delta", text: reasoningContent };
       }
+      refusal += asString(delta?.refusal) ?? "";
       const content = asString(delta?.content);
       if (content) {
         const visible = allowsVisibleChatContent(event, choice, scope);
@@ -155,9 +157,23 @@ async function* normalizeChatStreamEvents(
   if (!stopReason) throw new ModelAPIError({ provider: options.providerName ?? "openai", category: "network", message: "Chat stream closed before finish_reason" });
   const thinking = thinkingParts.join("").trim();
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-  if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
-  if (stopReason === "length" || stopReason === "content_filter") yield { type: "response_incomplete", reason: stopReason === "length" ? "max_output_tokens" : stopReason, usage };
-  else yield { type: "response_completed", responseId, stopReason, usage };
+  yield* finishChat(textBlocks, refusal, stopReason, responseId, usage);
+}
+
+/** Shared ending for streamed and non-streamed Chat: refusal/filter/length are incomplete. */
+function* finishChat(
+  textBlocks: Extract<MessageBlock, { type: "text" }>[],
+  refusal: string,
+  stopReason: string | undefined,
+  responseId: string | undefined,
+  usage: ReturnType<typeof normalizeUsage>,
+): Generator<ModelStreamEvent> {
+  const detail = refusal.trim();
+  const reason = detail ? "refusal" : stopReason === "length" ? "max_output_tokens" : stopReason === "content_filter" ? "content_filter" : undefined;
+  if (textBlocks.length && !discardsPartialOutput(reason)) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
+  // Chat ids are not Responses ids: never offer them for previous_response_id chaining.
+  if (reason) yield { type: "response_incomplete", reason, ...(detail ? { detail } : {}), usage };
+  else yield { type: "response_completed", responseId, stopReason: stopReason ?? "completed", usage };
 }
 
 export function* normalizeChatObject(response: HttpJsonResponse<Record<string, unknown>>): Generator<ModelStreamEvent> {
@@ -166,17 +182,16 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   if (responseId) yield { type: "response_started", responseId };
   const choices = Array.isArray(body.choices) ? body.choices : [];
   let stopReason: string | undefined;
+  let refusal = "";
+  const textBlocks: Extract<MessageBlock, { type: "text" }>[] = [];
   for (const choice of choices as Record<string, unknown>[]) {
     stopReason = asString(choice.finish_reason) ?? stopReason;
     const message = choice.message as Record<string, unknown> | undefined;
     const reasoningContent = asString(message?.reasoning_content) ?? asString(message?.reasoning);
     if (reasoningContent) yield { type: "assistant_message", message: createThinkingMessage(reasoningContent) };
+    refusal += asString(message?.refusal) ?? "";
     const content = asString(message?.content);
-    if (content) {
-      const blocks: Extract<MessageBlock, { type: "text" }>[] = [];
-      appendChatText(blocks, content, allowsVisibleChatContent(body, choice, message));
-      yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks } };
-    }
+    if (content) appendChatText(textBlocks, content, allowsVisibleChatContent(body, choice, message));
     const toolCalls = Array.isArray(message?.tool_calls) ? message?.tool_calls : [];
     for (const toolCall of toolCalls as Record<string, unknown>[]) {
       const fn = toolCall.function as Record<string, unknown> | undefined;
@@ -192,8 +207,7 @@ export function* normalizeChatObject(response: HttpJsonResponse<Record<string, u
   }
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
-  if (stopReason === "length" || stopReason === "content_filter") yield { type: "response_incomplete", reason: stopReason === "length" ? "max_output_tokens" : stopReason, usage };
-  else yield { type: "response_completed", responseId, stopReason: stopReason ?? "completed", usage };
+  yield* finishChat(textBlocks, refusal, stopReason, responseId, usage);
 }
 
 // Chat content is public by contract, but compatible servers may explicitly

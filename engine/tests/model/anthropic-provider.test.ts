@@ -181,7 +181,7 @@ test("initial usage corrects input before output without resetting output estima
   assert.equal(events.filter(e => e.type === "response_completed").length, 1);
 });
 
-for (const reason of ["max_tokens", "model_context_window_exceeded"]) {
+for (const reason of ["max_tokens", "model_context_window_exceeded", "refusal"]) {
   for (const omitBlockStop of [false, true]) {
     test(`${reason} preserves usage and discards entire tool batch (open block: ${omitBlockStop})`, async () => {
       const content = [
@@ -319,6 +319,41 @@ test("max_tokens stop reason is incomplete, not successful completion", async ()
   for (const events of [streamed, plain]) {
     assert.equal(events.some(e => e.type === "response_completed"), false);
     assert.ok(events.some(e => e.type === "response_incomplete" && e.reason === "max_tokens"));
+  }
+});
+
+test("refusal fails the turn like OpenAI content_filter, discards partial output and surfaces optional stop_details", { timeout: 20000 }, async () => {
+  const explanation = "This request was declined.";
+  const refused = (details: boolean) => frames([{ type: "text", text: "partial" }], "refusal").map(e => e.type === "message_delta" && details ? { ...e, delta: { ...(e.delta as object), stop_details: { type: "refusal", category: null, explanation } } } : e);
+  const streamed = await collect(normalizeAnthropicStream(stream(refused(true)), model));
+  const plain = [...normalizeAnthropicObject({ ...completion([{ type: "text", text: "partial" }], "refusal"), stop_details: { type: "refusal", category: "cyber", explanation } }, model)];
+  for (const events of [streamed, plain]) {
+    assert.equal(events.some(e => e.type === "response_completed"), false);
+    const end = events.find(e => e.type === "response_incomplete");
+    assert.ok(end?.type === "response_incomplete" && end.reason === "refusal" && end.detail === explanation);
+    // Claude docs: a refusal's partial output is incomplete and must not be continued from.
+    assert.equal(events.some(e => e.type === "assistant_message"), false);
+  }
+  // Compatible servers that omit stop_details still fail cleanly.
+  const bare = await collect(normalizeAnthropicStream(stream(refused(false)), model));
+  assert.ok(bare.some(e => e.type === "response_incomplete" && e.reason === "refusal" && e.detail === undefined));
+
+  for (const details of [false, true]) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "neo-anthropic-refusal-"));
+    const local = await server((_req, res) => { res.setHeader("Content-Type", "text/event-stream"); res.end(encode(refused(details))); });
+    try {
+      const events = await collect(runAgent({ agentId: "refusal", agent: { agentType: "test", whenToUse: "test", tools: [] }, prompt: "hello", model, workspaceCwd: root, maxTurns: 3,
+        parentContext: { session: { sessionId: "parent", sessionDir: root } } as ToolUseContext,
+        dependencies: { tools: new ToolRegistry(), modelGateway: new AnthropicAdapter({ model, baseUrl: local.url, apiKey: "test", maxRetries: 0 }), contextManager: { async build() { return { systemPrompt: "test", promptSections: [], userContext: { currentDate: "2026-11-25" }, systemContext: { cwd: root, platform: process.platform } }; } }, compactor: { async compact(messages: readonly Message[]) { return { messages: [...messages], changed: false }; } } },
+      }));
+      const expected = details ? `Model response incomplete: refusal (${explanation})` : "Model response incomplete: refusal";
+      assert.ok(events.some(e => e.type === "error" && e.error.message === expected));
+      assert.ok(events.some(e => e.type === "terminal" && e.reason === "model_error"));
+      assert.ok(!events.some(e => e.type === "terminal" && e.reason === "completed"));
+      // Neither the provider message nor the streamed-draft fallback commits the refused text.
+      assert.ok(events.some(e => e.type === "message"), "message events are observable here");
+      assert.ok(!events.some(e => e.type === "message" && e.message.role === "assistant" && JSON.stringify(e.message.blocks).includes("partial")));
+    } finally { await local.close(); await fs.rm(root, { recursive: true, force: true }); }
   }
 });
 

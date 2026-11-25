@@ -9,7 +9,7 @@ import { ModelDrivenCompactor, withCompactionReport } from "../context/compactio
 import type { ContextManager, RuntimeContext } from "../context/context-manager.js";
 import type { PromptSection } from "../context/prompts.js";
 import { AdditionalPromptContextManager, DefaultContextManager } from "../context/context-manager.js";
-import type { ModelGateway, ModelRequest, ModelStreamEvent, ReasoningConfig } from "../model/model-gateway.js";
+import { discardsPartialOutput, type ModelGateway, type ModelRequest, type ModelStreamEvent, type ReasoningConfig } from "../model/model-gateway.js";
 import { ModelAPIError } from "../model/errors.js";
 import { AGENT_REPORT_TOOL_NAME } from "../agents/agent-report-tool.js";
 import { supportsImageInput } from "../model/context-window.js";
@@ -145,6 +145,7 @@ interface ModelTurnOutput {
   toolUses: ToolUseRequest[];
   previousResponseId?: string;
   incompleteReason?: string;
+  incompleteDetail?: string;
 }
 
 interface PreparedMessages {
@@ -339,16 +340,16 @@ async function* queryLoop(
       if (modelOutput.terminal) return modelOutput.terminal;
       if (!modelOutput.output) return "model_error";
 
-      const { assistantMessages, toolUses, previousResponseId, incompleteReason } = modelOutput.output;
+      const { assistantMessages, toolUses, previousResponseId, incompleteReason, incompleteDetail } = modelOutput.output;
 
       if (toolUses.length === 0) {
-        const recovery = maybeRecoverWithoutTools(state, incompleteReason, assistantMessages, previousResponseId, options);
+        const recovery = maybeRecoverWithoutTools(state, incompleteReason, assistantMessages, options);
         if (recovery) {
           state = recovery;
           continue;
         }
         if (incompleteReason) {
-          yield { type: "error", error: new Error(`Model response incomplete: ${incompleteReason}`) };
+          yield { type: "error", error: new Error(`Model response incomplete: ${incompleteReason}${incompleteDetail ? ` (${incompleteDetail})` : ""}`) };
           return "model_error";
         }
         return "completed";
@@ -514,6 +515,7 @@ async function* callModelForTurn(
   const inputStreams = new Map<string, ToolInputStream>();
   let previousResponseId = state.previousResponseId;
   let incompleteReason: string | undefined;
+  let incompleteDetail: string | undefined;
   let activeModel = state.currentModel ?? options.model;
   const historyIds = new Set((state.modelInputMessages ?? state.messages).map(message => message.id));
   const contextUpdates = messagesForQuery.filter(message => !historyIds.has(message.id)
@@ -581,6 +583,7 @@ async function* callModelForTurn(
         inputStreams.clear();
         previousResponseId = state.previousResponseId;
         incompleteReason = undefined;
+        incompleteDetail = undefined;
       }
       if (event.type === "fast_mode_fallback") {
         options.fastMode = false;
@@ -621,6 +624,7 @@ async function* callModelForTurn(
       const handled = yield* handleModelEvent(event, assistantMessages, toolUses, outputFilter, thinkingParts, dependencies.imageStore);
       previousResponseId = handled.previousResponseId ?? previousResponseId;
       incompleteReason = handled.incompleteReason ?? incompleteReason;
+      incompleteDetail = handled.incompleteDetail ?? incompleteDetail;
 
     }
     // Completed requests only: aborted and failed ones never reach this point or are excluded here.
@@ -718,7 +722,7 @@ async function* callModelForTurn(
   if (toolUses.length) dependencies.exportToolCalls?.(toolUses);
   const syntheticToolUseMessage = appendSyntheticToolUseMessage(assistantMessages, toolUses);
   if (syntheticToolUseMessage) yield { type: "message", message: syntheticToolUseMessage };
-  return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason } };
+  return { output: { assistantMessages, toolUses, previousResponseId, incompleteReason, incompleteDetail } };
 }
 
 function adaptMessagesForModelCapabilities(messages: Message[], model: string | undefined): Message[] {
@@ -763,7 +767,7 @@ async function* handleModelEvent(
   outputFilter: DisplayOutputFilter,
   thinkingParts: string[],
   imageStore?: SessionImageStore,
-): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string }, void> {
+): AsyncGenerator<AgentEvent, { previousResponseId?: string; incompleteReason?: string; incompleteDetail?: string }, void> {
   if (event.type === "assistant_delta") {
     yield* outputFilter.pushEvent(event);
     return {};
@@ -835,7 +839,8 @@ async function* handleModelEvent(
     if (event.usage) yield { type: "usage", usage: event.usage };
     if (event.reason === "max_tokens") throw new ModelAPIError({ provider: "anthropic", category: "max_output_tokens", message: "Claude reached max_tokens before completing the response. No incomplete tool call was executed; increase the output limit or split the work into smaller calls.", retryable: false });
     if (event.reason === "model_context_window_exceeded") throw new ModelAPIError({ provider: "anthropic", category: "context_length", message: "Claude model context window exceeded", retryable: false });
-    return { previousResponseId: event.responseId, incompleteReason: event.reason ?? "unknown" };
+    if (discardsPartialOutput(event.reason)) outputFilter.discardVisibleDraft();
+    return { previousResponseId: event.responseId, incompleteReason: event.reason ?? "unknown", ...(event.detail ? { incompleteDetail: event.detail } : {}) };
   }
 
   if (event.type === "error") {
@@ -934,7 +939,6 @@ function maybeRecoverWithoutTools(
   state: QueryState,
   incompleteReason: string | undefined,
   assistantMessages: Message[],
-  previousResponseId: string | undefined,
   options: QueryOptions,
 ): QueryState | undefined {
   if (incompleteReason === "pause_turn" && state.maxOutputTokensRecoveryCount === 0) {
@@ -944,13 +948,13 @@ function maybeRecoverWithoutTools(
       transition: { reason: "next_turn", detail: "pause_turn" } };
   }
   if (incompleteReason === "max_output_tokens" && state.maxOutputTokensRecoveryCount === 0) {
+    // Resend the full history: compatible gateways may silently ignore
+    // previous_response_id/store, which would leave the model with no context.
     return {
       ...state,
       messages: [...state.messages, ...assistantMessages],
-      modelInputMessages: previousResponseId
-        ? [createTextMessage("user", "Continue from the exact point where the previous response stopped.")]
-        : [...state.messages, ...assistantMessages, createTextMessage("user", "Continue from the exact point where the previous response stopped.")],
-      previousResponseId,
+      modelInputMessages: [...state.messages, ...assistantMessages, createTextMessage("user", "Continue from the exact point where the previous response stopped.")],
+      previousResponseId: undefined,
       maxOutputTokensOverride: Math.max(options.maxOutputTokensOverride ?? 0, 64000),
       maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount + 1,
       turnCount: state.turnCount + 1,
@@ -1239,6 +1243,14 @@ class DisplayOutputFilter extends AssistantOutputFilter {
 
   flushEvents(): AgentEvent[] {
     return this.events(super.flush());
+  }
+
+  /** Refused/filtered output: drop held-back and already-streamed draft so it is never committed. */
+  discardVisibleDraft(): void {
+    super.flush();
+    this.pending = [];
+    this.visibleParts = [];
+    this.secretStream = this.secrets?.createStreamingRedactor?.({ incompleteSecret: "redact" });
   }
 
   override sanitizeMessage(message: Message): Message {

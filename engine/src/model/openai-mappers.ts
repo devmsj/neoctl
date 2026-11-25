@@ -1,7 +1,7 @@
 import { projectToolHistory } from "./tool-history.js";
 import type { Message, MessageBlock, ToolUseRequest } from "../types/messages.js";
 import type { ToolDefinition } from "../tools/tool.js";
-import { categoryForStatus, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
+import { categoryForStatus, isQuotaExhausted, ModelAPIError, type ModelAPIErrorCategory } from "./errors.js";
 import type { ModelRequest, ModelUsage } from "./model-gateway.js";
 import { resolveModelImageSync } from "../core/image-storage.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
@@ -180,6 +180,7 @@ export function normalizeOpenAIStreamError(event: Record<string, unknown>, provi
     message,
     status,
     code,
+    ...(isQuotaExhausted(error) ? { retryable: false } : {}),
     raw: event,
   });
 }
@@ -315,7 +316,9 @@ function parseArguments(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    throw new Error(`Tool call arguments are not valid JSON: ${value}`);
+    // Model output, not transport: same classification as malformed Claude tool JSON
+    // (never retried as a network failure, never executed).
+    throw new ModelAPIError({ category: "provider_bug", provider: "openai", message: `Tool call arguments are not valid JSON: ${value.slice(0, 500)}`, retryable: false });
   }
 }
 

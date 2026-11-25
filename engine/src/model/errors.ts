@@ -93,6 +93,33 @@ export function categoryForStatus(status: number, body?: unknown): ModelAPIError
   return "invalid_request";
 }
 
+const QUOTA_CODES = new Set([
+  "insufficient_quota",
+  "credit_balance_exhausted",
+  "organization_spend_limit_exceeded",
+  "project_spend_limit_exceeded",
+  "organization_usage_limit_exceeded",
+  "billing_hard_limit_reached",
+  "billing_error",
+]);
+
+/**
+ * Billing/quota exhaustion, where retrying cannot succeed until the account changes.
+ * Matched only on explicit error codes or unambiguous phrases, so ordinary 429
+ * throttling from any provider or gateway keeps its normal retry behaviour.
+ */
+export function isQuotaExhausted(body: unknown): boolean {
+  const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  const error = isRecord(body) && isRecord(body.error) ? body.error : body;
+  if (!isRecord(error)) return false;
+  for (const key of ["code", "type"]) {
+    const value = error[key];
+    if (typeof value === "string" && QUOTA_CODES.has(value)) return true;
+  }
+  const message = typeof error.message === "string" ? error.message : "";
+  return /exceeded your current quota|credit balance is (?:too low|exhausted)|monthly spend cap|spend limit (?:reached|exceeded)|insufficient (?:balance|credits?)/i.test(message);
+}
+
 export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);

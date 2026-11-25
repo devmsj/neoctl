@@ -1,7 +1,7 @@
 import { createTextMessage, createThinkingMessage, type MessageBlock } from "../types/messages.js";
 import { buildPromptCacheIdentity } from "../core/prompt-cache-key.js";
 import type { HttpJsonResponse } from "./http-transport.js";
-import type { ModelRequest, ModelStreamEvent, ReasoningConfig } from "./model-gateway.js";
+import { discardsPartialOutput, type ModelRequest, type ModelStreamEvent, type ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import { withThinkingLifecycle } from "./thinking-lifecycle.js";
 import { findModelMetadata } from "./context-window.js";
@@ -26,7 +26,8 @@ export interface OpenAIResponsesMapperOptions {
   streamIdleTimeoutMs?: number;
 }
 
-export function buildResponsesRequest(request: ModelRequest, options: OpenAIResponsesMapperOptions): Record<string, unknown> {
+/** allowedTools=false uses standard tool_choice values for a backend that rejected allowed_tools. */
+export function buildResponsesRequest(request: ModelRequest, options: OpenAIResponsesMapperOptions, build: { allowedTools?: boolean } = {}): Record<string, unknown> {
   const tools = buildResponsesTools(request.tools);
   const model = request.model ?? options.model;
   const promptCache = buildPromptCacheIdentity(request.instructions ?? request.systemPrompt, request.tools, model, request.messages);
@@ -45,7 +46,7 @@ export function buildResponsesRequest(request: ModelRequest, options: OpenAIResp
   const supportsReasoning = findModelMetadata(model)?.reasoning ?? (!!reasoning || /^(?:o[134](?:-|$)|gpt-[5-9](?:[.-]|$))/i.test(model));
   const visibleReasoning = !reasoningDisabled && reasoning?.effort !== "none" && supportsReasoning
     ? { ...reasoning, summary: reasoning?.summary ?? "auto" } : reasoning;
-  const toolChoice = constrainedResponsesToolChoice(request.toolChoice, tools);
+  const toolChoice = constrainedResponsesToolChoice(request.toolChoice, tools, build.allowedTools !== false);
   const body = dropUndefined({
     model,
     instructions,
@@ -97,6 +98,7 @@ async function* normalizeResponsesStreamEvents(
   const contentParts = new Map<string, Record<string, unknown>>();
   const reasoningTextByPart = new Map<string, string>();
   const completedReasoning = new Map<string | number, Record<string, unknown>>();
+  const refusals = new Map<string, string>();
   function* publishReasoning(text: string, key: string, snapshot = false): Generator<ModelStreamEvent> {
     if (!text) return;
     const previous = reasoningTextByPart.get(key) ?? "";
@@ -163,6 +165,22 @@ async function* normalizeResponsesStreamEvents(
       yield { type: "assistant_text_done" };
     }
 
+    // A refusal is a standard message content part, never visible answer text.
+    if (type === "response.refusal.delta" || type === "response.refusal.done") {
+      const key = `${itemKey}:${asNumber(event.content_index) ?? 0}`;
+      const text = type === "response.refusal.done" ? asString(event.refusal) : (refusals.get(key) ?? "") + (asString(event.delta) ?? "");
+      if (text !== undefined) refusals.set(key, text);
+    }
+    if (type === "response.output_item.done" && (event.item as Record<string, unknown> | undefined)?.type === "message") {
+      const item = event.item as Record<string, unknown>;
+      const content = item.content;
+      for (const [index, part] of (Array.isArray(content) ? content as Record<string, unknown>[] : []).entries()) {
+        // Same key as refusal.delta/done (item id + content index) so a part is collected once.
+        const key = `${asString(item.id) ?? itemKey}:${index}`;
+        if (part?.type === "refusal" && typeof part.refusal === "string" && !refusals.get(key)) refusals.set(key, part.refusal);
+      }
+    }
+
     const reasoningEvent = { ...event, item_id: event.item_id ?? outputItems.get(asNumber(event.output_index) ?? 0)?.id };
     if (isReasoningDeltaEvent(type)) {
       yield* publishReasoning(extractThinkingDelta(event), reasoningPartKeyForEvent(type, reasoningEvent)!);
@@ -217,6 +235,10 @@ async function* normalizeResponsesStreamEvents(
           name: asString(item.name) ?? "unknown_tool",
           argumentsBuffer: asString(item.arguments) ?? "{}",
         };
+        // The finished item carries the complete arguments; some compatible
+        // servers send them only here, without argument delta events.
+        const finalArguments = asString(item.arguments);
+        if (finalArguments) buffer.argumentsBuffer = finalArguments;
         yield { type: "tool_use", toolUse: toToolUse(buffer) };
       }
     }
@@ -230,8 +252,15 @@ async function* normalizeResponsesStreamEvents(
       yield { type: "thinking_done" };
       const thinking = collectThinkingFromResponse({ output: [...completedReasoning.values()] }, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-      if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
+      const refusal = [...refusals.values()].join("\n").trim() || refusalFromOutput(response?.output);
       const usage = normalizeUsage(response?.usage);
+      if (refusal) {
+        // A "completed" response that only carries a refusal is not a successful answer.
+        if (usage) yield { type: "usage", usage };
+        yield { type: "response_incomplete", responseId, reason: "refusal", detail: refusal, usage };
+        return;
+      }
+      if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
       if (usage) yield { type: "usage", usage };
       yield { type: "response_completed", responseId, stopReason: asString(response?.status) ?? "completed", usage };
       return;
@@ -245,11 +274,15 @@ async function* normalizeResponsesStreamEvents(
       yield { type: "thinking_done" };
       const thinking = collectThinkingFromResponse({ output: [...completedReasoning.values()] }, thinkingParts);
       if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
+      const reason = asString((response?.incomplete_details as Record<string, unknown> | undefined)?.reason);
+      // Truncated text stays in history so a continuation has the context it
+      // extends; filtered output is discarded.
+      if (textBlocks.length && !discardsPartialOutput(reason)) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
       const usage = normalizeUsage(response?.usage);
       yield {
         type: "response_incomplete",
         responseId: asString(response?.id) ?? responseId,
-        reason: asString((response?.incomplete_details as Record<string, unknown> | undefined)?.reason),
+        reason,
         usage,
       };
       return;
@@ -298,14 +331,28 @@ export function* normalizeResponsesObject(response: HttpJsonResponse<Record<stri
 
   const thinking = collectThinkingFromResponse(body, thinkingParts);
   if (thinking) yield { type: "assistant_message", message: createThinkingMessage(thinking) };
-  if (textBlocks.length) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
+  const refusal = refusalFromOutput(output);
+  const incompleteReason = refusal ? "refusal" : body.status === "incomplete" ? asString((body.incomplete_details as Record<string, unknown> | undefined)?.reason) : undefined;
+  if (textBlocks.length && !discardsPartialOutput(incompleteReason)) yield { type: "assistant_message", message: { ...createTextMessage("assistant", ""), blocks: textBlocks } };
   const usage = normalizeUsage(body.usage);
   if (usage) yield { type: "usage", usage };
-  if (body.status === "incomplete") {
-    yield { type: "response_incomplete", responseId, reason: asString((body.incomplete_details as Record<string, unknown> | undefined)?.reason), usage };
+  if (refusal || body.status === "incomplete") {
+    yield { type: "response_incomplete", responseId, reason: incompleteReason, ...(refusal ? { detail: refusal } : {}), usage };
   } else {
     yield { type: "response_completed", responseId, stopReason: asString(body.status), usage };
   }
+}
+
+/** Joined text of standard `refusal` content parts in output message items. */
+function refusalFromOutput(output: unknown): string {
+  const parts: string[] = [];
+  for (const item of Array.isArray(output) ? output as Record<string, unknown>[] : []) {
+    if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const part of item.content as Record<string, unknown>[]) {
+      if (part?.type === "refusal" && typeof part.refusal === "string" && part.refusal.trim()) parts.push(part.refusal.trim());
+    }
+  }
+  return parts.join("\n");
 }
 
 function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean {
@@ -315,9 +362,13 @@ function shouldStoreResponse(request: ModelRequest, toolCount: number): boolean 
 function constrainedResponsesToolChoice(
   requested: ModelRequest["toolChoice"],
   tools: unknown[],
+  allowedTools: boolean,
 ): unknown {
   if (!tools.length || requested === "none") return requested;
   if (requested && typeof requested === "object") return requested;
+  // allowed_tools keeps gateway-injected hosted tools out of reach. It is sent
+  // to every backend; only one that rejected it gets the standard values.
+  if (!allowedTools) return requested ?? "auto";
   return {
     type: "allowed_tools",
     mode: requested === "required" ? "required" : "auto",

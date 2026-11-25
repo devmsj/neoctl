@@ -5,7 +5,7 @@ import { createTextMessage, type Message, type MessageBlock } from "../types/mes
 import { splitSystemPromptPrefix } from "../context/prompts.js";
 import { resolveModelImageSync } from "../core/image-storage.js";
 import { ModelAPIError } from "./errors.js";
-import type { ModelRequest, ModelStreamEvent, ModelUsage, ReasoningConfig } from "./model-gateway.js";
+import { discardsPartialOutput, type ModelRequest, type ModelStreamEvent, type ModelUsage, type ReasoningConfig } from "./model-gateway.js";
 import { decodeSSE } from "./sse-decoder.js";
 import { withThinkingLifecycle } from "./thinking-lifecycle.js";
 import { findModelMetadata } from "./context-window.js";
@@ -30,8 +30,12 @@ function visibleFingerprint(blocks: readonly MessageBlock[]): string {
   return createHash("sha256").update(JSON.stringify(blocks.filter(b => b.type !== "thinking"))).digest("hex");
 }
 
-/** imagePayloads=false maps images to empty placeholders for local estimation (no disk reads or decoding). */
-export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions, build: { imagePayloads?: boolean } = {}): Block {
+/**
+ * imagePayloads=false maps images to empty placeholders for local estimation (no disk reads or decoding).
+ * eagerInputStreaming=false omits fine-grained tool streaming for a backend that rejected it.
+ * foldSystemTurns=true moves mid-conversation system turns into the user turn for a backend that rejected them.
+ */
+export function buildAnthropicRequest(request: ModelRequest, options: AnthropicMapperOptions, build: { imagePayloads?: boolean; eagerInputStreaming?: boolean; foldSystemTurns?: boolean } = {}): Block {
   request = { ...request, messages: projectToolHistory(request.messages) };
   const model = request.model ?? options.model;
   const metadata = findModelMetadata(model);
@@ -114,6 +118,18 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
     runtimeContent.unshift({ type: "text", text: `Interrupted assistant output (quoted):\n${lastTurn.content.map(block => block.text).join("\n")}` });
   }
   flushRuntime();
+  // Mid-conversation system turns are sent to every backend (no model-name
+  // gate). Only after a backend rejects them does the adapter ask for the same
+  // text in the preceding user turn (their only valid position), marked as
+  // system context.
+  if (build.foldSystemTurns) {
+    for (let index = turns.length - 1; index > 0; index -= 1) {
+      const turn = turns[index]!, previous = turns[index - 1]!;
+      if (turn.role !== "system" || previous.role !== "user") continue;
+      previous.content.push(...turn.content.map(block => block.type === "text" ? { type: "text", text: `<system-reminder>\n${String(block.text)}\n</system-reminder>` } : block));
+      turns.splice(index, 1);
+    }
+  }
   // Multiple parallel tool results and injected runtime context share a user
   // turn. Anthropic requires all tool_result blocks before ordinary user text.
   for (const turn of turns) if (turn.role === "user") turn.content = [...turn.content.filter(b => b.type === "tool_result"), ...turn.content.filter(b => b.type !== "tool_result")];
@@ -139,8 +155,11 @@ export function buildAnthropicRequest(request: ModelRequest, options: AnthropicM
   const body: Block = { model, max_tokens: maxTokens, messages: turns, stream: request.stream !== false };
   if (system.length) body.system = system;
   // Standard Claude streaming buffers each parameter value. Request fragments
-  // for every client tool; previews remain non-executable until final validation.
-  const tools = request.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema, ...(request.stream !== false ? { eager_input_streaming: true } : {}) }));
+  // for every client tool so tool input (e.g. file content) is visible while it
+  // is generated; previews remain non-executable until final validation. Sent
+  // to every backend; the adapter drops it only after a backend rejects it.
+  const eager = request.stream !== false && build.eagerInputStreaming !== false;
+  const tools = request.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema, ...(eager ? { eager_input_streaming: true } : {}) }));
   if (tools.length) {
     body.tools = tools;
     const choice = request.toolChoice;
@@ -225,13 +244,21 @@ export function* normalizeAnthropicObject(body: Block, model: string): Generator
   if (body.type !== "message" || !Array.isArray(body.content)) protocolError("Expected an Anthropic Message response");
   if (typeof body.stop_reason !== "string" || !body.stop_reason) protocolError("Incomplete Claude Message response: missing stop_reason");
   if (!body.content.every(record)) protocolError("Invalid Claude Message content block");
-  const truncated = body.stop_reason === "max_tokens" || body.stop_reason === "model_context_window_exceeded";
+  const reason = body.stop_reason as string;
+  const truncated = isIncompleteStopReason(reason);
   // Match streaming safety: no tool from an incomplete response may execute.
   const content = (body.content as Block[]).filter(b => !truncated || b.type === "text" || b.type === "thinking");
   const id = typeof body.id === "string" ? body.id : undefined;
   if (id) yield { type: "response_started", responseId: id };
-  yield { type: "assistant_message", message: assistantMessage(content, model, id) };
-  yield completionEvent(body.stop_reason as string, anthropicUsage(record(body.usage) ? body.usage : {}));
+  if (!discardsPartialOutput(reason)) yield { type: "assistant_message", message: assistantMessage(content, model, id) };
+  yield completionEvent(reason, anthropicUsage(record(body.usage) ? body.usage : {}), stopDetailsText(body.stop_details));
+}
+
+/** Optional, provider-specific explanation; compatible servers may omit it entirely. */
+function stopDetailsText(value: unknown): string | undefined {
+  if (!record(value)) return undefined;
+  const text = typeof value.explanation === "string" ? value.explanation.trim() : "";
+  return text || undefined;
 }
 
 export async function* normalizeAnthropicStream(stream: ReadableStream<Uint8Array>, model: string, idleTimeoutMs = 120000): AsyncGenerator<ModelStreamEvent> {
@@ -243,7 +270,7 @@ async function* normalizeAnthropicStreamEvents(stream: ReadableStream<Uint8Array
   const partialJson = new Map<number, string>();
   const invalidToolInputs = new Set<number>();
   const openBlocks = new Set<number>();
-  let id: string | undefined, started = false, stopped = false, reason: string | undefined;
+  let id: string | undefined, started = false, stopped = false, reason: string | undefined, stopDetail: string | undefined;
   let usage: Block = {};
   for await (const sse of decodeSSE(stream, idleTimeoutMs)) {
     if (!record(sse.data)) protocolError("Invalid JSON in Claude SSE event");
@@ -306,15 +333,18 @@ async function* normalizeAnthropicStreamEvents(stream: ReadableStream<Uint8Array
       else if (block!.type === "thinking") yield { type: "thinking_done" };
     } else if (type === "message_delta") {
       if (record(event.delta) && typeof event.delta.stop_reason === "string") reason = event.delta.stop_reason;
+      if (record(event.delta)) stopDetail = stopDetailsText(event.delta.stop_details) ?? stopDetail;
       if (record(event.usage)) usage = { ...usage, ...event.usage };
     } else if (type === "message_stop") {
       if (!started || !reason) protocolError("Incomplete Claude message at message_stop");
-      if (reason === "max_tokens" || reason === "model_context_window_exceeded") {
-        // Some compatible servers omit block_stop on truncation. Preserve usage
-        // and the real stop reason, but discard the entire executable tool batch.
+      if (isIncompleteStopReason(reason!)) {
+        // Some compatible servers omit block_stop on truncation or a mid-stream
+        // refusal. Preserve usage and the real stop reason, but discard the
+        // entire executable tool batch.
+        // A refusal's partial output is discarded (Claude docs: reset, do not continue from it).
         const visible = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, b]) => b).filter(b => b.type === "text" || b.type === "thinking");
-        if (visible.length) yield { type: "assistant_message", message: assistantMessage(visible, model, id) };
-        yield completionEvent(reason, anthropicUsage(usage));
+        if (visible.length && !discardsPartialOutput(reason)) yield { type: "assistant_message", message: assistantMessage(visible, model, id) };
+        yield completionEvent(reason!, anthropicUsage(usage), stopDetail);
         stopped = true;
         break;
       }
@@ -332,9 +362,17 @@ async function* normalizeAnthropicStreamEvents(stream: ReadableStream<Uint8Array
   if (!stopped) throw new ModelAPIError({ provider: "anthropic", category: "network", message: "Claude stream closed before message_stop" });
 }
 
-function completionEvent(reason: string, usage: ModelUsage): ModelStreamEvent {
-  return reason === "max_tokens" || reason === "model_context_window_exceeded"
-    ? { type: "response_incomplete", reason, usage }
+// "refusal" is Claude's safety stop (streaming classifiers may cut a reply
+// mid-way). Like OpenAI's content_filter it is incomplete, never a success.
+const INCOMPLETE_STOP_REASONS = new Set(["max_tokens", "model_context_window_exceeded", "refusal"]);
+
+function isIncompleteStopReason(reason: string): boolean {
+  return INCOMPLETE_STOP_REASONS.has(reason);
+}
+
+function completionEvent(reason: string, usage: ModelUsage, detail?: string): ModelStreamEvent {
+  return isIncompleteStopReason(reason)
+    ? { type: "response_incomplete", reason, usage, ...(detail ? { detail } : {}) }
     : { type: "response_completed", stopReason: reason, usage };
 }
 
